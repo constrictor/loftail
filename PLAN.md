@@ -39,6 +39,7 @@ Project skeleton that builds and runs an empty window on all three platforms.
 - Tokenizer for the pattern string: literals, `%%`, specifiers with optional modifiers
 - Modifiers: left/right padding (`%-5p`), truncation (`%.30c`), width+precision (`%20.30m`)
 - Specifiers: `%d{...}` (strftime-style → sub-regex), `%p`, `%c`, `%m`, `%t`, `%F`, `%L`, `%M`, `%n`; unknown specifiers produce a structured error, not a silent mismatch
+- Both the local-time and UTC date specifiers, reporting which zone each implies via `LogFormat::impliedZone` (`ARCHITECTURE.md` §5.1) — this feeds the *Infer from pattern* default
 - Emit `recordRe`, `recordStartRe` (prefix up to the message field), field list, role indices
 - Structured `CompileError` carrying an offset into the pattern, so the UI can point at the mistake
 
@@ -66,7 +67,7 @@ The performance spine. `ARCHITECTURE.md` §4–§7.
 
 **M2 is now split**, since wrapping and encoding both landed inside it:
 
-- **M2a — the spine.** Encoding detection + `Decoder`; indexer producing the 32-byte `Record` (including parsed timestamps and interned threads); `Document`; `LogModel`; block prefix sums; and a throwaway scrolling prototype of `LogView` in **exact** geometry mode. Proves the performance targets against a real log.
+- **M2a — the spine.** Encoding detection and forced-encoding paths + `Decoder`; indexer producing the 32-byte `Record` (timestamps normalized to UTC epoch ms per `ARCHITECTURE.md` §5.1, threads interned); `Document`; `LogModel`; block prefix sums; and a throwaway scrolling prototype of `LogView` in **exact** geometry mode. Proves the performance targets against a real log.
 - **M2b — the production view.** `LogView` proper: selection, keyboard navigation, clipboard (raw + copy-as-columns), column headers, wrap modes off and selected-record-only.
 - **M2c — estimated geometry.** Wrap *always on*: character-count-based height, per-block measurement cache keyed by viewport width, debounced resize, refining scrollbar (`ARCHITECTURE.md` §7.1.1).
 
@@ -77,6 +78,8 @@ M2c is separable and lands last on purpose — the other two wrap modes are full
 Makes M1 reachable by the user. `SPEC.md` §4.
 
 - Log Format dialog: pattern entry, live preview over sample lines from the current file, per-field breakdown
+- Encoding selector (Auto-detect default; forced UTF-8 / UTF-16LE / UTF-16BE / system 8-bit), showing what auto-detect resolved to; changing it triggers a full rescan
+- Source and display time-zone selectors (`SPEC.md` §4); changing the source zone reparses timestamps only, not the whole index
 - Compile errors shown inline against the offending position
 - Warn when `%p` or `%c` is missing (filtering degrades)
 - `IFormatProvider` + `ManualFormatProvider`; per-file and per-directory format cache
@@ -161,7 +164,7 @@ Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10
 
 | Question (`SPEC.md`) | Blocks | Why it cannot be deferred past that point |
 |---|---|---|
-| Timestamp timezone (Q3) | M2a | Timestamps are parsed at index time; the wrong zone shifts every time-range filter by the UTC offset |
+| Display time zone default (Q3) | M3 | Presentation only — `Record::timestamp` is UTC regardless, so this is a formatting default, not a data decision |
 | Copy default (Q6) | M2b | The clipboard path is hand-rolled; trivial now, rework later |
 | Find scope (Q7) | M4 | Determines whether find can move the cursor to a filtered-out record |
 | Priority filter model (Q1) | M4 | Small, but it is the filter UI |
@@ -169,14 +172,15 @@ Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10
 | Multi-instance global state (Q4) | M5 | Determines when session state is written, not just what |
 | Bookmarks (Q2) | M5 | Touches the model and adds a pane; cheap if planned, awkward if bolted on |
 
-Only Q3 blocks M2a. The rest can be answered as their milestones come up.
+**Nothing blocks M0, M1, or M2a.** Making both time zones configurable removed the last blocking question: with `Record::timestamp` normalized to UTC at index time, zone handling became a conversion at the edges rather than a decision baked into the data. Every remaining question is answerable when its milestone arrives.
 
 **Resolved 2026-07-20 (second pass).** Two rounds of decisions have reshaped this plan:
 
 - Full-height multi-line records replaced `QTableView` with a custom `LogView` (`ARCHITECTURE.md` §7.1) — the single largest change.
 - Configurable wrapping added a second, estimated geometry mode (§7.1.1), now isolated in M2c so it cannot block anything else.
-- Encoding auto-detection added a `Decoder` layer between source and indexer (§6.1), and with it the UTF-16 line-terminator trap.
+- Encoding became an explicit setting defaulting to auto-detect, adding a `Decoder` layer between source and indexer (§6.1) and with it the UTF-16 line-terminator trap.
 - Parsed timestamps and interned threads grew `Record` from 24 to 32 bytes, buying time-range and thread filtering.
+- Configurable source and display time zones fixed `Record::timestamp` as UTC epoch ms with conversion only at the edges (§5.1).
 - Message-text filtering and Find/Find Next expanded M4 considerably.
 - Compressed and SSH sources, though deferred, constrain the indexer to a single forward pass (§6.2).
 - Multiple simultaneous instances made settings a cross-process shared resource (§8.1).

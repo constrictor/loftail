@@ -49,7 +49,11 @@ struct LogFormat {
     QVector<Field>     fields;          // ordered; drives column headers
     int prioGroup   = -1;               // -1 when the pattern omits the field
     int loggerGroup = -1;
+    int threadGroup = -1;
+    int dateGroup   = -1;
     int msgGroup    = -1;
+    DateFormat impliedDateFormat;       // how to parse the %d text
+    Qt::TimeSpec impliedZone;           // local or UTC, per the date specifier — §5.1
 };
 
 class PatternCompiler {
@@ -93,10 +97,25 @@ struct Record {
 Everything here is collected during the indexing scan, which is already reading every byte.
 
 - `lineCount` costs nothing to count.
-- `timestamp` is parsed eagerly because time-range filtering and jump-to-time need it, and adding it later would mean reindexing every file. The compiled `%d` sub-format tells the parser exactly how to read it.
+- `timestamp` is parsed eagerly because time-range filtering and jump-to-time need it, and adding it later would mean reindexing every file. The compiled `%d` sub-format tells the parser exactly how to read it. **It is always stored as UTC epoch milliseconds** — see §5.1.
 - `threadId` is interned exactly like `loggerId`, giving thread filtering the same integer-compare fast path and the same free discovery of the value set.
 
 **Budget:** ~32 MB of index per million records, up from 24. Worth the two filter axes it buys, but note it before anyone opens a 10 GB log.
+
+### 5.1 Time zones
+
+`SPEC.md` §4 makes both the source and display time zone user-configurable. One rule keeps that from leaking everywhere:
+
+> **`Record::timestamp` is always UTC epoch milliseconds.** Zone conversion happens exactly twice — once on the way in, once on the way out.
+
+- **In:** the indexer applies the *source* zone (inferred from the pattern's date specifier, or explicitly set) to convert parsed wall-clock text to UTC.
+- **Out:** the view applies the *display* zone when formatting a timestamp for a cell, and the filter UI applies it when interpreting typed range bounds.
+
+Comparison, sorting, filtering, and any future multi-file merge therefore operate on a single monotonic integer scale with no zone awareness whatsoever. Storing local wall-clock time instead would make every comparison zone-dependent and would break outright across a DST transition, where the same local timestamp occurs twice.
+
+**Changing the source zone requires reparsing timestamps** — but only timestamps, not a full reindex: record boundaries and byte offsets are unaffected, so it is a pass over the existing index. Changing the display zone is free, a repaint.
+
+`PatternCompiler` reports which zone the date specifier implies, since log4cplus distinguishes local-time and UTC date specifiers. That is what the *Infer from pattern* default consumes. Treat the inference as a hint that the user can override, not ground truth — the pattern reveals the specifier, not how the producing application was actually configured.
 
 Parse eagerly **only** what filtering needs — priority and logger. Everything else (timestamp, thread, message text) is parsed lazily in `QAbstractTableModel::data()` from the mapped bytes. Storing parsed strings per record is the single most likely way to make this application unusable on large files.
 
@@ -125,11 +144,17 @@ Files are opened in binary mode; CRLF is handled explicitly rather than via plat
 
 ### 6.1 Encoding
 
-`SPEC.md` §4 requires automatic encoding detection, because log4cplus built for `wchar_t` emits UTF-16 on Windows. Detection runs once, on open, over the first ~64 KB:
+`SPEC.md` §4 makes encoding an explicit per-file setting whose default is auto-detect. **The stored setting is the user's choice, including the sentinel `Auto`** — not the encoding that detection resolved to. Persisting the resolved value would silently freeze a guess made from one version of a file and apply it to a later one that may differ.
+
+Detection runs on open, over the first ~64 KB:
 
 1. **BOM** — decisive when present: UTF-8, UTF-16LE, UTF-16BE.
-2. **No BOM** — a high frequency of NUL bytes at alternating positions indicates UTF-16, and which position identifies the byte order. Otherwise, validate as UTF-8; on failure fall back to an 8-bit encoding.
-3. The result is shown in the Log Format dialog and can be overridden. Detection is a heuristic and will occasionally be wrong; the override is the escape hatch, not an optional extra.
+2. **No BOM** — a high frequency of NUL bytes at alternating positions indicates UTF-16, and which position identifies the byte order. Otherwise, validate as UTF-8; on failure fall back to the system 8-bit codepage.
+3. The resolved encoding is surfaced in the Log Format dialog so a wrong guess is visible rather than silent.
+
+Forcing an encoding skips detection entirely. Detection is a heuristic — unreliable on short files, on files whose leading records are pure ASCII, and on legacy 8-bit logs — so the explicit choice is a first-class path, not a fallback.
+
+Changing the encoding invalidates the index and requires a full rescan, since line boundaries themselves depend on it.
 
 The consequence that reaches furthest: **the record scanner cannot search for `\n` bytes.** In UTF-16 a newline is `0A 00` or `00 0A`, and a naive byte search both misses real terminators and fires inside unrelated code units. A `Decoder` sits between `LogSource` and the indexer, exposing line boundaries and decoded text; the indexer works in its terms and never touches raw bytes directly.
 

@@ -53,8 +53,30 @@ Because a log file does not describe its own layout, loftail needs to be told th
 
 ### Character encoding
 
-- loftail **detects the file's encoding automatically** — UTF-8, UTF-16 (either byte order), and 8-bit fallback — using the byte-order mark where present and content inspection otherwise. This matters because log4cplus built for `wchar_t` writes UTF-16 on Windows.
-- The detected encoding is shown in the Log Format dialog and can be **overridden manually** when detection gets it wrong, since no heuristic is perfect on short or unusual files.
+Encoding is an explicit setting in the Log Format dialog, offered as a list:
+
+| Choice | Behavior |
+|---|---|
+| **Auto-detect** *(default)* | Byte-order mark where present, content inspection otherwise |
+| UTF-8 | Forced, BOM tolerated and skipped |
+| UTF-16 LE / UTF-16 BE | Forced |
+| System 8-bit | The platform's local codepage |
+
+- Auto-detect is the default because it is right nearly always — this matters because log4cplus built for `wchar_t` writes UTF-16 on Windows, and users should not have to know that.
+- When auto-detect is active the dialog shows **which** encoding it settled on, so a wrong guess is visible rather than silent.
+- The choice is explicit and forceable because no heuristic is reliable on short files, on files whose first records are pure ASCII, or on legacy 8-bit logs — auto-detect is a convenience, not a guarantee.
+- The setting is remembered per file along with the rest of the format.
+
+### Timestamps and time zones
+
+Timestamps are parsed into real points in time, not treated as opaque text — this is what makes time-range filtering (§6) and jump-to-time possible.
+
+Because a log file records no zone information, two settings control interpretation, both in the Log Format dialog and both remembered per file:
+
+- **Source time zone** — how to read the timestamps in the file: **Infer from pattern** *(default)*, Local time, UTC, or a fixed offset. Inference uses the date specifier in the configured pattern, since log4cplus distinguishes local-time and UTC forms. Explicit selection exists because the producing application may have been configured in ways the pattern does not reveal, and because logs are routinely read on a different machine than they were written on.
+- **Display time zone** — how to show them: **As written in the file** *(default)*, Local time, or UTC. The default performs no conversion, so what loftail shows matches what a text editor shows — the least surprising behavior when cross-checking against raw log text.
+
+Time-range filter bounds are entered in the display time zone, so what you type matches what you see.
 
 ### Format autodetection — **P2**
 
@@ -84,7 +106,7 @@ Filtering removes non-matching records from the view. The underlying file is nev
 - **By priority.** Levels are selected as a set of checkboxes (TRACE…FATAL), all enabled by default. **[?]** Proposed over a minimum-threshold model, since it also allows isolating a single level.
 - **By thread.** Like subsystems, the thread list is discovered from the file as it is scanned. Available only when the log format includes a thread field.
 - **By message text.** Substring or regular-expression match against the message, with a case-sensitivity option. Unlike the other axes this cannot offer a pick-list, so it is a text box. A negation option (*hide* matching records) is included, since excluding known noise is as common as isolating a signal. **[?]**
-- **By time range.** A start and/or end bound; records outside the range are hidden. Available only when the log format includes a timestamp field. **[?]**
+- **By time range.** A start and/or end bound, entered in the display time zone (§4); records outside the range are hidden. Available only when the log format includes a timestamp field. **[?]**
 - Filters can be **enabled and disabled individually** without being deleted, so a user can toggle a view on and off while keeping it configured.
 - **[?]** Proposed combination semantics: within one axis, selected values are OR-ed (any of these subsystems); across axes, AND (matching subsystem **and** matching priority).
 - The subsystem list supports select-all / select-none / invert, and a text box to narrow long lists. **[?]**
@@ -149,10 +171,12 @@ To keep the first release focused, loftail does not:
 
 1. **Priority filtering model** (§6) — set of checkboxes as proposed, or minimum-severity threshold?
 2. **Bookmarks.** Not in the original sketch, but standard in log viewers: mark records of interest and jump between them. In or out?
-3. **Timestamp timezone** (§4). Now that timestamps are parsed rather than opaque, loftail must know whether a pattern's date field is local time or UTC — log4cplus has distinct specifiers for each, and getting it wrong shifts every time-range filter by the UTC offset. Proposed: infer from the specifier used, and display in local time with the source zone shown. Worth confirming against how your application actually configures it.
+3. **Display time zone default** (§4) — *as written in the file* as proposed, or convert to local time by default?
 4. **Multi-instance global state** (§10) — last-instance-to-close wins, or first-launched-instance owns it?
 5. **Palette size** (§7) — is 12 entries right, and should a free color picker be available as an escape hatch for users who want one?
 6. **Copy default** (§5) — raw original text as proposed, or parsed columns?
 7. **Find scope** (§5) — search the filtered subset as proposed, or the whole file with matches pulling records back into view?
 
-*Resolved 2026-07-20: full-height multi-line records with a 100-line cap (§5); multiple open files deferred but accommodated (§11); wrapping is a three-mode setting (§5); encoding is auto-detected with manual override (§4); timestamps are parsed (§4); message-text, thread, and time-range filtering are in scope (§6); Find/Find Next is in scope (§5); compressed and SSH sources are future work (§11); file association is out of scope (§11); command-line invocation and multiple simultaneous instances are supported (§3); highlight colors come from a curated dual-theme palette (§7).*
+None of these block implementation. Each is noted in `PLAN.md` against the milestone where it must be settled.
+
+*Resolved 2026-07-20: full-height multi-line records with a 100-line cap (§5); multiple open files deferred but accommodated (§11); wrapping is a three-mode setting (§5); encoding is an explicit setting defaulting to auto-detect (§4); timestamps are parsed, with configurable source and display time zones (§4); message-text, thread, and time-range filtering are in scope (§6); Find/Find Next is in scope (§5); compressed and SSH sources are future work (§11); file association is out of scope (§11); command-line invocation and multiple simultaneous instances are supported (§3); highlight colors come from a curated dual-theme palette (§7).*
