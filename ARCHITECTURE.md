@@ -227,7 +227,7 @@ The estimation machinery is only reachable in *always on* mode — the other two
 
 ## 8. Persistence
 
-- `QSettings` for window geometry, `QMainWindow::saveState()` output, column layout, active filters/highlighters, last file, and follow state (watching is always on, so it is not a stored choice).
+- `QSettings` for window geometry, `QMainWindow::saveState()` output, column layout, active filters/highlighters, and last file. Follow state is **not** persisted: every file opens at its end, following (`SPEC.md` §3), so there is nothing to restore.
 - Presets as JSON under `QStandardPaths::AppConfigLocation` — a discrete file format, since `SPEC.md` §9 proposes export/import.
 - Per-file format cache, keyed by canonical path, so a configured file reopens without prompting. Per file only — no directory-level fallback; a new file is never assumed to share a sibling's format.
 - Schema version field in both settings and preset files from day one; migrating unversioned user data later is unpleasant.
@@ -242,7 +242,7 @@ Preset export/import (`SPEC.md` §9) is JSON. Because rules carry palette *indic
 
 - **Write atomically.** Preset and settings files are written to a temp file and renamed, so an instance crashing or two writing at once can never leave a truncated file. `QSettings` handles this for its own store; the JSON preset file is ours to get right.
 - **Per-file state is keyed by file path**, so instances viewing different logs never contend. This is the main reason the per-file scoping in `SPEC.md` §10 is worth having beyond its UX merit.
-- **Global state is last-writer-wins**, since instances have no coordination channel. Writing on change rather than only at exit narrows the window in which one instance's state is lost, and is what we should do. **[?]** — see `SPEC.md` open question 4.
+- **Global state is last-writer-wins** (`SPEC.md` §10), since instances have no coordination channel. Write on change rather than only at exit, to narrow the window in which one instance's state is lost.
 
 Deliberately *not* doing: a lock file, a single-instance server, or inter-instance IPC. Each adds a failure mode (stale locks, port conflicts) far more annoying than the state loss it prevents.
 
@@ -312,7 +312,7 @@ The main window holds `std::vector<std::unique_ptr<Document>>` plus an *active d
 
 ```json
 { "schemaVersion": 1,
-  "documents": [ { "path": "...", "format": "...", "filters": [], "following": true } ],
+  "documents": [ { "path": "...", "format": "...", "filters": [], "highlighters": [], "columns": {} } ],
   "activeDocument": 0 }
 ```
 

@@ -30,7 +30,7 @@ It runs on Windows, macOS, and Linux.
 ## 3. Opening logs
 
 - Open a log file via menu, toolbar, keyboard shortcut, or drag-and-drop onto the window.
-- **From the command line:** `loftail <file>` opens that file directly. **[?]** Proposed additional switches: `--follow` to open at the end with follow on (updates are always watched regardless — see §3 live updates — so this only sets the initial scroll position and follow state), and `--pattern <p>` to supply the log format for a file loftail has not seen before.
+- **From the command line:** `loftail <file>` opens that file directly, at its end and following, like every other open (see live updates below). A `--pattern <p>` switch supplies the log format for a file loftail has not seen before.
 - **Multiple instances may run simultaneously.** loftail does not enforce a single instance; launching it again opens an independent window with its own file and its own filters.
 - The 10 most recently opened files are listed for quick reopening.
 - Opening a large file shows progress and remains responsive; the view populates as scanning proceeds rather than blocking until it finishes.
@@ -39,7 +39,8 @@ It runs on Windows, macOS, and Linux.
 ### Live updates
 
 - **Every file is opened as if it were live.** loftail cannot know whether a file is complete or still being written, so it always watches the open file and appends new records as they arrive. A file that is never appended to simply never produces any — there is no "post-mortem" versus "live" mode for the user to choose, and none to forget to turn on.
-- **Follow** is the one toggle in this area: when on, the view scrolls to keep the newest record visible. Scrolling up manually turns follow off; a control returns to the bottom and turns it back on. This lets the user inspect history while the file keeps growing. Follow defaults on for a file opened at its end. **[?]**
+- **A file always opens at its last position, following** — scrolled to the newest record, keeping up with new ones, exactly like `tail -f`. This is unconditional; there is no option to open at the top instead.
+- **Follow** can then be turned off: scrolling up manually detaches, so the user can inspect history while the file keeps growing; a control returns to the bottom and re-attaches. Follow is simply on at every open.
 - Active filters and highlighters apply to incoming records exactly as they do to existing ones.
 - If the file is rotated or truncated by the writing application, loftail detects this and reloads rather than showing stale or corrupt data. This happens silently — no notice is shown.
 - Because loftail always holds the file open for reading, it must never prevent the writing application from appending to, rotating, or truncating it. Observing a log must not disturb the process producing it.
@@ -86,7 +87,7 @@ Format autodetection — guessing the pattern on open — is planned for a later
 
 - Records are displayed as a table, one row per record, with a column per field in the configured format (timestamp, priority, subsystem, message, and any others the pattern defines).
 
-- Columns can be resized, reordered, and individually hidden. Column layout is remembered. **[?]**
+- Columns can be resized, reordered, and individually hidden. Column layout is remembered.
 
 - **Multi-line records are shown in full, in place.** A record whose message spans several lines occupies a correspondingly taller row in the table — the entire text is visible without expanding, selecting, or opening a detail pane. Row heights therefore vary throughout the table.
 
@@ -150,7 +151,7 @@ Filters, highlighters, and presets are each presented in a side pane, so they ar
 
 On relaunch, loftail restores:
 
-- The last opened file, and its follow state (updates are always watched, so only follow is a remembered choice)
+- The last opened file — reopened at its end and following, like any open (§3), so follow state is never a remembered choice
 - The log format in use
 - Active filters and highlighters, including which were enabled
 - Saved presets
@@ -176,8 +177,9 @@ These are things loftail will **not** do — as distinct from features deferred 
 
 ## Open questions
 
-The three headline questions are now settled: priority filtering uses a **minimum level** (§6); **bookmarks** are deferred to a later release (`FUTURE.md`); the display time zone defaults to **as written in the file** (§4).
+Two minor proposals remain unconfirmed, both marked **[?]** where they appear and neither blocking any milestone:
 
-Smaller inline proposals still await confirmation, marked **[?]** where they appear — none blocks anything: the CLI switch names (§3), follow-defaults-on when a file is opened at its end (§3), column reorder/hide and layout persistence (§5), filter combination semantics — OR within an axis, AND across axes (§6), and apply-preset-replaces-rather-than-merges (§9). Each is noted in `PLAN.md` against the milestone where it must be settled.
+- **Filter combination semantics** (§6) — within one axis, OR the selected values; across axes, AND.
+- **Applying a preset replaces** the current set on that axis rather than merging (§9).
 
-*Resolved 2026-07-20: full-height multi-line records with a 100-line cap (§5); wrapping is a three-mode setting (§5); encoding is an explicit setting defaulting to auto-detect (§4); timestamps are parsed, with configurable source and display time zones defaulting to as-written (§4); priority filtering is by minimum level, message-text/thread/time-range filtering are in scope (§6); Find/Find Next searches the filtered subset (§5); copy defaults to raw text with Copy as Columns as a separate action (§5); highlight rules set an independent background and text color, each from a 12-entry dual-theme palette or left at default (§7); presets export/import as JSON (§9); per-file vs global session scoping settled, last-instance-to-close wins for global state, missing last file opens empty (§10); command-line invocation and multiple simultaneous instances are supported (§3). Deferred to `FUTURE.md`: format autodetection, multiple open files, compressed and SSH sources, bookmarks.*
+Each is noted in `PLAN.md` against the milestone where it is settled.

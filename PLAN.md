@@ -128,7 +128,7 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 - `QFileSystemWatcher` + low-frequency size poll (watcher alone is unreliable on network mounts)
 - Incremental indexing of appended bytes; partial trailing record held until complete; block prefix sums extended in place
 - Rotation/truncation detection via size and file identity → silent rescan, no user notice
-- Follow toggle with scroll-away-to-detach and a return-to-bottom control
+- Follow is on at every open (view starts at the file's end); scroll-away detaches, a return-to-bottom control re-attaches
 - Incoming records pass through the active filters and highlighters unchanged
 
 **Done when:** every file visibly auto-updates as it grows with no user action, and the tail harness (append / truncate / rotate against a temp file) converges correctly — verified on all three platforms, since Windows file-sharing behavior differs and must be exercised there specifically.
@@ -137,7 +137,7 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 ## M7 — Packaging
 
-- Command-line argument handling (`loftail <file>`, `--follow`, `--pattern`)
+- Command-line argument handling (`loftail <file>`, `--pattern <p>`); files always open at end, following, so there is no `--follow`
 - File association is explicitly **not** handled by the application — if wanted, it belongs to the installer
 - Linux: AppImage or `.deb` **[?]** — decide based on how you intend to distribute
 - Windows: `windeployqt` + installer or portable zip
@@ -161,9 +161,7 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 ## Decisions needed before the milestone that blocks on them
 
-All three headline questions are now answered: display zone defaults to as-written (M3), priority filtering is by minimum level (M4), bookmarks are deferred to a later release (`FUTURE.md`). No headline question remains open.
-
-Only smaller inline `[?]` proposals in `SPEC.md` still await confirmation, and none blocks its milestone: CLI switch names (M7), follow-defaults-on-at-end (M6), column reorder/hide (M2b), filter combination semantics (M4), and apply-preset-replaces-vs-merges (M5).
+Two minor `[?]` proposals in `SPEC.md` still await confirmation, and neither blocks its milestone: filter combination semantics (M4) and apply-preset-replaces-vs-merges (M5).
 
 **Nothing blocks any milestone from starting.**
 
@@ -182,6 +180,6 @@ Only smaller inline `[?]` proposals in `SPEC.md` still await confirmation, and n
 
 Later-release features are catalogued in `FUTURE.md` (multi-file views, compressed and SSH sources, bookmarks, and — with a milestone, M8 — format autodetection); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.
 
-Smaller P1 deferral: column reorder/hide (`SPEC.md` §5 `[?]`) is additive to the M2 spine and can land in M2b or later. (Preset export/import, once deferred, is now in M5.)
+Column reorder/hide with remembered layout (`SPEC.md` §5, confirmed) is additive to the M2 spine and lands in M2b. (Preset export/import, once deferred, is now in M5.)
 
 Explicitly ruled out for now: caching the index to disk. It needs invalidation, versioning, and a cache location — real complexity to solve a problem that may not exist. Revisit only if the M2a measurements miss the §11 indexing target.
