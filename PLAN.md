@@ -162,15 +162,15 @@ Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10
 
 ## Decisions needed before the milestone that blocks on them
 
-| Question (`SPEC.md`) | Blocks | Why it cannot be deferred past that point |
-|---|---|---|
-| Display time zone default (Q3) | M3 | Presentation only — `Record::timestamp` is UTC regardless, so this is a formatting default, not a data decision |
-| Copy default (Q6) | M2b | The clipboard path is hand-rolled; trivial now, rework later |
-| Find scope (Q7) | M4 | Determines whether find can move the cursor to a filtered-out record |
-| Priority filter model (Q1) | M4 | Small, but it is the filter UI |
-| Palette size (Q5) | M5 | Rules persist a palette index, so the palette must be settled before rules are saved |
-| Multi-instance global state (Q4) | M5 | Determines when session state is written, not just what |
-| Bookmarks (Q2) | M5 | Touches the model and adds a pane; cheap if planned, awkward if bolted on |
+| Question (`SPEC.md`)             | Blocks | Why it cannot be deferred past that point                                                                       |
+| -------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------- |
+| Display time zone default (Q3)   | M3     | Presentation only — `Record::timestamp` is UTC regardless, so this is a formatting default, not a data decision |
+| Copy default (Q6)                | M2b    | The clipboard path is hand-rolled; trivial now, rework later                                                    |
+| Find scope (Q7)                  | M4     | Determines whether find can move the cursor to a filtered-out record                                            |
+| Priority filter model (Q1)       | M4     | Small, but it is the filter UI                                                                                  |
+| Palette size (Q5)                | M5     | Rules persist a palette index, so the palette must be settled before rules are saved                            |
+| Multi-instance global state (Q4) | M5     | Determines when session state is written, not just what                                                         |
+| Bookmarks (Q2)                   | M5     | Touches the model and adds a pane; cheap if planned, awkward if bolted on                                       |
 
 **Nothing blocks M0, M1, or M2a.** Making both time zones configurable removed the last blocking question: with `Record::timestamp` normalized to UTC at index time, zone handling became a conversion at the edges rather than a decision baked into the data. Every remaining question is answerable when its milestone arrives.
 

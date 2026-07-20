@@ -1,6 +1,6 @@
 # loftail — Product Specification
 
-**Status:** Draft, 2026-07-20. Supersedes `idea.md`.
+**Status:** Draft, 2026-07-20.
 **Scope:** User-visible behavior only. Internal design lives in `ARCHITECTURE.md`.
 
 Items marked **[?]** are proposals that need your confirmation — they were decided by inference, not instruction. Items marked **P2** are planned but out of scope for the first release.
@@ -18,12 +18,12 @@ It runs on Windows, macOS, and Linux.
 
 ## 2. Core concepts
 
-| Term | Meaning to the user |
-|---|---|
-| **Record** | One logged event. Usually one line, but a record may span multiple lines when the logged message itself contains line breaks. loftail treats such a record as a single row. |
-| **Subsystem** | The logger name the application passed to `getInstance()` — e.g. `net.socket`, `db.pool`. The primary axis for filtering. |
-| **Priority** | The severity level: TRACE, DEBUG, INFO, WARN, ERROR, FATAL. |
-| **Log format** | A log4cplus `ConversionPattern` describing how records are laid out on disk. loftail must know it to split records into fields. |
+| Term           | Meaning to the user                                                                                                                                                         |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Record**     | One logged event. Usually one line, but a record may span multiple lines when the logged message itself contains line breaks. loftail treats such a record as a single row. |
+| **Subsystem**  | The logger name the application passed to `getInstance()` — e.g. `net.socket`, `db.pool`. The primary axis for filtering.                                                   |
+| **Priority**   | The severity level: TRACE, DEBUG, INFO, WARN, ERROR, FATAL.                                                                                                                 |
+| **Log format** | A log4cplus `ConversionPattern` describing how records are laid out on disk. loftail must know it to split records into fields.                                             |
 
 ## 3. Opening logs
 
@@ -55,12 +55,12 @@ Because a log file does not describe its own layout, loftail needs to be told th
 
 Encoding is an explicit setting in the Log Format dialog, offered as a list:
 
-| Choice | Behavior |
-|---|---|
+| Choice                      | Behavior                                                    |
+| --------------------------- | ----------------------------------------------------------- |
 | **Auto-detect** *(default)* | Byte-order mark where present, content inspection otherwise |
-| UTF-8 | Forced, BOM tolerated and skipped |
-| UTF-16 LE / UTF-16 BE | Forced |
-| System 8-bit | The platform's local codepage |
+| UTF-8                       | Forced, BOM tolerated and skipped                           |
+| UTF-16 LE / UTF-16 BE       | Forced                                                      |
+| System 8-bit                | The platform's local codepage                               |
 
 - Auto-detect is the default because it is right nearly always — this matters because log4cplus built for `wchar_t` writes UTF-16 on Windows, and users should not have to know that.
 - When auto-detect is active the dialog shows **which** encoding it settled on, so a wrong guess is visible rather than silent.
@@ -85,17 +85,25 @@ A later release will guess the format when a file is opened and pre-fill the Log
 ## 5. Main view
 
 - Records are displayed as a table, one row per record, with a column per field in the configured format (timestamp, priority, subsystem, message, and any others the pattern defines).
+
 - Columns can be resized, reordered, and individually hidden. Column layout is remembered. **[?]**
+
 - **Multi-line records are shown in full, in place.** A record whose message spans several lines occupies a correspondingly taller row in the table — the entire text is visible without expanding, selecting, or opening a detail pane. Row heights therefore vary throughout the table.
+
 - **Oversized records are capped.** A record longer than 100 lines (a large stack dump, a serialized payload) displays truncated with an indicator and expands on request, so no single record can fill the viewport. Copying always yields the full text regardless of display truncation.
+
 - **Line wrapping is a user setting with three modes:**
+  
   - **Off** — long lines extend horizontally; the view scrolls sideways.
   - **Selected record only** — the focused record wraps so it can be read in full; all others stay unwrapped.
   - **Always on** — every record wraps to the viewport width.
-
+  
   The setting is remembered. Note that in *always on* mode the vertical scrollbar is an approximation that refines as you scroll, since exact total height cannot be known without measuring every record (see `ARCHITECTURE.md` §7.1). Scroll position and navigation stay accurate; only the thumb size and position are estimates.
+
 - Rows can be selected individually or as a range, and copied to the clipboard. Copying yields the original raw text by default, with **Copy as Columns** available as a separate action for pasting into a spreadsheet. **[?]**
+
 - **Find / Find Next.** Text search over record content, with next/previous navigation, case-sensitivity and regular-expression options, and wrap-around at the end. Distinct from filtering: find moves the cursor and leaves every record visible; filtering removes non-matching records. Find operates on what is currently visible — if a filter is active, find searches the filtered subset. **[?]**
+
 - A status area shows total record count, the count after filtering, and the current file and its live/static state.
 
 ## 6. Filtering

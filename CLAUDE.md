@@ -12,11 +12,11 @@ A cross-platform (Windows/macOS/Linux) desktop GUI viewer for logs produced by *
 
 ## Document map
 
-| File | Contents |
-|---|---|
-| `SPEC.md` | User-visible behavior only. The product definition. Supersedes `idea.md`. |
-| `ARCHITECTURE.md` | Internal technical decisions and rationale. Not user-visible. |
-| `PLAN.md` | Milestone-by-milestone implementation plan. |
+| File              | Contents                                                                  |
+| ----------------- | ------------------------------------------------------------------------- |
+| `SPEC.md`         | User-visible behavior only. The product definition.                       |
+| `ARCHITECTURE.md` | Internal technical decisions and rationale. Not user-visible.             |
+| `PLAN.md`         | Milestone-by-milestone implementation plan.                               |
 
 When a change alters user-visible behavior, update `SPEC.md`. When it alters an internal contract or invariant, update `ARCHITECTURE.md`. Keep product decisions out of `ARCHITECTURE.md` and implementation detail out of `SPEC.md`.
 
@@ -89,4 +89,3 @@ These ten constraints are cheap to honor from the start and expensive to retrofi
 
 - The user refers to the logging library as "cplus4log"; the actual library is **log4cplus**. Confirmed 2026-07-20.
 - Format configuration is manual in P1 (user supplies the `ConversionPattern`). Autodetection is P2 and is planned for but deliberately not built first — see `PLAN.md` M8 and the `IFormatProvider` seam.
-- The original `idea.md` sketch was superseded by `SPEC.md` and deleted on 2026-07-20 at the user's request.
