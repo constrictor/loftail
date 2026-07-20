@@ -21,11 +21,11 @@ Packaging (M7) is late but not last-minute — cross-platform packaging surprise
 
 Project skeleton that builds and runs an empty window on all three platforms.
 
-- [ ] CMake project (`cmake_minimum_required 3.21`, C++20), Ninja, `qt_add_executable`
-- [ ] Directory layout: `src/core/` (no UI), `src/ui/`, `tests/`
-- [ ] `QApplication` + empty `QMainWindow`; org/app name set so `QSettings` works
-- [ ] CTest wired up with one trivial passing test
-- [ ] `.gitignore`, and **initialize the git repository** — it is not one yet
+- [x] CMake project (`cmake_minimum_required 3.21`, C++20), Ninja, `qt_add_executable`
+- [x] Directory layout: `src/core/` (no UI), `src/ui/`, `tests/`
+- [x] `QApplication` + empty `QMainWindow`; org/app name set so `QSettings` works
+- [x] CTest wired up with one trivial passing test
+- [x] `.gitignore`, and **initialize the git repository** — it is not one yet
 - [ ] CI is optional at this stage but the build must be verified on Windows and macOS before M7
 
 **Done when:** `cmake --build build && ctest --test-dir build` succeeds and the app opens a window on Linux, and the build is confirmed on Windows and macOS.

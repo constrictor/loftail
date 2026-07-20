@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**Pre-implementation.** As of 2026-07-20 this repository contains specification documents only — no source, no build system, no git repository. The stack is decided (see below); nothing is scaffolded yet. The build commands in this file describe the intended layout and will not work until Milestone M0 of `PLAN.md` is complete. Update this section once it is.
+**M0 complete (scaffold), 2026-07-21.** The project builds and runs an empty `QMainWindow` on Linux, with CTest wired to one passing Qt Test. The commands below work. Directory layout is `src/core/` (UI-free, links QtCore only), `src/ui/` (Qt Widgets), and `tests/`. Next up is M1 (`PatternCompiler`) per `PLAN.md`. Windows/macOS builds are not yet verified — required before M7.
 
 ## What loftail is
 
@@ -31,7 +31,7 @@ When a change alters user-visible behavior, update `SPEC.md`. When it alters an 
 
 loftail does **not** link log4cplus. It reads log files as text; it has no compile-time relationship to the library that produced them.
 
-## Commands (intended — valid after M0)
+## Commands (valid as of M0)
 
 ```bash
 # Configure (Debug)
@@ -46,11 +46,11 @@ cmake --build build
 # All tests
 ctest --test-dir build --output-on-failure
 
-# A single test binary
-./build/tests/tst_patterncompiler
+# A single test binary (tst_patterncompiler arrives in M1)
+./build/tests/tst_scaffold
 
 # A single test case within a binary (Qt Test convention)
-./build/tests/tst_patterncompiler testPaddingModifier
+./build/tests/tst_scaffold applicationVersionIsNonEmpty
 ```
 
 On Windows and macOS, `CMAKE_PREFIX_PATH` must point at the Qt installation.
