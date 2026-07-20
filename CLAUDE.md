@@ -55,9 +55,9 @@ On Windows and macOS, `CMAKE_PREFIX_PATH` must point at the Qt installation.
 
 ## Architecture invariants
 
-These seven constraints are cheap to honor from the start and expensive to retrofit. Do not violate them without explicitly reopening the decision.
+These nine constraints are cheap to honor from the start and expensive to retrofit. Do not violate them without explicitly reopening the decision.
 
-1. **The model stores byte offsets, never parsed text.** A record entry is `{offset, length, loggerId, lineCount, priority}` (24 bytes). Message text is parsed lazily inside `data()`. Holding parsed strings for every record makes large files unusable.
+1. **The model stores byte offsets, never parsed text.** A record entry is `{offset, timestamp, length, loggerId, threadId, lineCount, priority}` — exactly 32 bytes. Message text is parsed lazily inside `data()`. Holding parsed strings for every record makes large files unusable.
 
 2. **A record is not a line.** log4cplus messages can contain embedded newlines, so one record may span several physical lines. Indexing rule: a line matching `recordStartRe` begins a record; non-matching lines are continuations of the preceding record. Code that assumes one-line-per-row is wrong.
 
@@ -67,9 +67,13 @@ These seven constraints are cheap to honor from the start and expensive to retro
 
 5. **File access goes through the `LogSource` interface.** Post-mortem uses mmap; live tail uses buffered incremental reads. The model must not be able to tell which. This exists because mmap semantics for growing files differ meaningfully on Windows — see `ARCHITECTURE.md`.
 
-6. **The record table is a custom `LogView : QAbstractScrollArea`, not a `QTableView`.** Multi-line records render at full height, and `QTableView` cannot do variable row heights lazily — it needs an O(n) `resizeRowsToContents()` pass or per-row entries in `QHeaderView`, either of which defeats the lazy index. `LogView` scrolls in *line* units over two-level prefix sums of `Record::lineCount`. See `ARCHITECTURE.md` §7.1; this is the project's highest-risk component.
+6. **The record table is a custom `LogView : QAbstractScrollArea`, not a `QTableView`.** Multi-line records render at full height, and `QTableView` cannot do variable row heights lazily — it needs an O(n) `resizeRowsToContents()` pass or per-row entries in `QHeaderView`, either of which defeats the lazy index. `LogView` scrolls in *line* units over two-level prefix sums of `Record::lineCount`. It has two geometry modes: **exact** (wrap off / selected-record-only) and **estimated** (wrap always on, where height depends on viewport width). Keep the estimation machinery unreachable from the exact path. See `ARCHITECTURE.md` §7.1–7.1.1; this is the project's highest-risk component.
 
 7. **All per-file state lives in `Document`; nothing reaches for "the current file" globally.** Multiple open files are deferred but must stay reachable: no singletons holding file state, panes bind to an `activeDocumentChanged(Document*)` signal rather than a fixed reference, and the settings schema stores a `documents` array even while it always has one element. See `ARCHITECTURE.md` §12.
+
+8. **Never scan for `\n` in raw bytes.** Encoding is auto-detected and may be UTF-16, where a newline is `0A 00` or `00 0A`. All line-boundary and text work goes through the `Decoder` layer; only `Record::offset`/`length` stay in byte terms. See `ARCHITECTURE.md` §6.1 — this is the easiest invariant to violate by accident.
+
+9. **The indexer is a single forward pass.** No backward passes, no seek-and-re-read. Compressed and SSH-backed sources are planned (`SPEC.md` §11) and neither supports random access during indexing. Random access is fine in `data()` on the paint path, which only touches already-indexed records. See `ARCHITECTURE.md` §6.2.
 
 ## Conventions
 

@@ -64,9 +64,13 @@ The performance spine. `ARCHITECTURE.md` §4–§7.
 
 **Risk: this is the highest-risk milestone in the project, and the custom view is the highest-risk part of it.** Build `LogView` against a real log *first*, before the surrounding UI — a scrolling prototype over a synthetic index is enough to prove or disprove the approach in `ARCHITECTURE.md` §7.1. Everything downstream assumes it works.
 
-**Suggested split** if M2 feels too large to land at once:
-- **M2a** — indexer, `Document`, `LogModel`, and a throwaway scrolling prototype of `LogView`. Proves performance.
-- **M2b** — production `LogView`: selection, keyboard navigation, clipboard, column headers.
+**M2 is now split**, since wrapping and encoding both landed inside it:
+
+- **M2a — the spine.** Encoding detection + `Decoder`; indexer producing the 32-byte `Record` (including parsed timestamps and interned threads); `Document`; `LogModel`; block prefix sums; and a throwaway scrolling prototype of `LogView` in **exact** geometry mode. Proves the performance targets against a real log.
+- **M2b — the production view.** `LogView` proper: selection, keyboard navigation, clipboard (raw + copy-as-columns), column headers, wrap modes off and selected-record-only.
+- **M2c — estimated geometry.** Wrap *always on*: character-count-based height, per-block measurement cache keyed by viewport width, debounced resize, refining scrollbar (`ARCHITECTURE.md` §7.1.1).
+
+M2c is separable and lands last on purpose — the other two wrap modes are fully usable without it, so if estimated mode proves troublesome it can slip without blocking anything downstream.
 
 ## M3 — Log format UI
 
@@ -84,22 +88,27 @@ Makes M1 reachable by the user. `SPEC.md` §4.
 
 `SPEC.md` §6.
 
-- Filter proxy over `LogModel`; priority as a bitmask, subsystems as a set of interned ids
-- Subsystem filter UI: auto-discovered list, manual entry, select-all/none/invert, narrowing text box
+- Filter proxy over `LogModel`; priority as a bitmask, subsystems and threads as sets of interned ids
+- Subsystem and thread filter UI: auto-discovered lists, manual entry, select-all/none/invert, narrowing text box
 - Priority filter UI: per-level checkboxes
+- Message-text filter: substring and regex, case-sensitivity, negation; ordered last in the predicate chain so integer tests run first
+- Time-range filter: start/end bounds against `Record::timestamp`
+- **Find / Find Next**: shares the matching code, walks visible rows from the cursor, changes no filter state
 - Individual enable/disable per filter, no dialog
 - Filtered/total counts in the status area
 
-**Done when:** filters apply to 1M records within the §11 repaint budget, and toggling one is a single click.
+**Done when:** filters apply to 1M records within the §11 repaint budget — measure with a message-text filter active, since it is the only axis without an integer fast path — and toggling one is a single click.
 
-**Blocked on:** `SPEC.md` open question 3 (checkbox set vs. minimum threshold).
+**Blocked on:** `SPEC.md` open question 1 (checkbox set vs. minimum threshold).
 
 ## M5 — Highlighting, panes, presets, persistence
 
 Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10.
 
+- Curated dual-theme palette; rules persist a palette **index**, never an RGB value
 - Highlight rules: ordered list, first-match-wins, evaluated in `data()`
-- Rule editor: match on subsystem and/or priority, choose color, reorder, enable/disable
+- Rule editor: match on subsystem and/or priority, choose a palette entry, reorder, enable/disable
+- Atomic (temp-file + rename) writes for settings and presets, for the multi-instance case (`ARCHITECTURE.md` §8.1)
 - Three `QDockWidget` panes: filters, highlighters, presets
 - Filter and highlighter presets: create from current state, apply, rename, delete; JSON under `AppConfigLocation` with a schema version
 - Session restore: last file, format, filters, highlighters, window geometry, pane and column layout
@@ -126,6 +135,8 @@ Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10
 
 ## M7 — Packaging
 
+- Command-line argument handling (`loftail <file>`, `--tail`, `--pattern`)
+- File association is explicitly **not** handled by the application — if wanted, it belongs to the installer
 - Linux: AppImage or `.deb` **[?]** — decide based on how you intend to distribute
 - Windows: `windeployqt` + installer or portable zip
 - macOS: `.app` bundle via `macdeployqt`; note that distribution outside a signed/notarized flow will warn users
@@ -150,18 +161,28 @@ Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10
 
 | Question (`SPEC.md`) | Blocks | Why it cannot be deferred past that point |
 |---|---|---|
-| Long-line wrapping (Q3) | M2 | Wrapping makes row height depend on viewport width, which invalidates the prefix-sum design on every resize (`ARCHITECTURE.md` §7.1) |
-| Character encoding (Q6) | M2 | UTF-16 input changes the byte-offset index and every parse path |
-| Timestamps parsed vs. opaque (Q5) | M2 | A parsed timestamp is a field on `Record`; adding one later means reindexing |
-| Message-text filtering (Q4) | M4 | A third filter axis that cannot use the interned-id fast path |
+| Timestamp timezone (Q3) | M2a | Timestamps are parsed at index time; the wrong zone shifts every time-range filter by the UTC offset |
+| Copy default (Q6) | M2b | The clipboard path is hand-rolled; trivial now, rework later |
+| Find scope (Q7) | M4 | Determines whether find can move the cursor to a filtered-out record |
 | Priority filter model (Q1) | M4 | Small, but it is the filter UI |
+| Palette size (Q5) | M5 | Rules persist a palette index, so the palette must be settled before rules are saved |
+| Multi-instance global state (Q4) | M5 | Determines when session state is written, not just what |
 | Bookmarks (Q2) | M5 | Touches the model and adds a pane; cheap if planned, awkward if bolted on |
-| Compressed logs (Q7) | M6 | A third `LogSource` implementation with no random access |
 
-Q3, Q5, and Q6 should be settled before M2 begins — each one reaches into the index or the view geometry. Q1, Q2, and Q4 can be answered during M3.
+Only Q3 blocks M2a. The rest can be answered as their milestones come up.
 
-**Resolved 2026-07-20:** multi-line records render at full height in the table — this replaced `QTableView` with a custom `LogView` (`ARCHITECTURE.md` §7.1) and is the largest single change to this plan. Multiple open files are deferred but architecturally accommodated via the four constraints in `ARCHITECTURE.md` §12, which land in M2 and M5.
+**Resolved 2026-07-20 (second pass).** Two rounds of decisions have reshaped this plan:
+
+- Full-height multi-line records replaced `QTableView` with a custom `LogView` (`ARCHITECTURE.md` §7.1) — the single largest change.
+- Configurable wrapping added a second, estimated geometry mode (§7.1.1), now isolated in M2c so it cannot block anything else.
+- Encoding auto-detection added a `Decoder` layer between source and indexer (§6.1), and with it the UTF-16 line-terminator trap.
+- Parsed timestamps and interned threads grew `Record` from 24 to 32 bytes, buying time-range and thread filtering.
+- Message-text filtering and Find/Find Next expanded M4 considerably.
+- Compressed and SSH sources, though deferred, constrain the indexer to a single forward pass (§6.2).
+- Multiple simultaneous instances made settings a cross-process shared resource (§8.1).
 
 ## Deliberately deferred
 
-Recorded so they are not silently dropped: multi-file/tabbed views (architecturally accommodated, not implemented), bookmarks (pending Q2), preset export/import, search-within-log, and column reorder/hide. Each is additive to the M2 spine rather than a change to it.
+Recorded so they are not silently dropped: multi-file/tabbed views (architecturally accommodated, not implemented), compressed `.gz` and SSH-retrieved sources (accommodated via the single-forward-pass constraint, `ARCHITECTURE.md` §6.2), bookmarks (pending Q2), preset export/import, and column reorder/hide. Each is additive to the M2 spine rather than a change to it.
+
+Explicitly ruled out for now: caching the index to disk. It needs invalidation, versioning, and a cache location — real complexity to solve a problem that may not exist. Revisit only if the M2a measurements miss the §11 indexing target.

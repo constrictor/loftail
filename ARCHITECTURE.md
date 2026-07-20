@@ -81,14 +81,22 @@ Lines that match nothing and precede any record start (or appear when the patter
 ```cpp
 struct Record {
     qint64  offset;    // byte offset into the source
+    qint64  timestamp; // epoch ms; INT64_MIN when the pattern has no date field
     quint32 length;    // spans continuation lines
     quint32 loggerId;  // interned
+    quint32 threadId;  // interned
     quint16 lineCount; // physical lines; drives row height (§7.1). Clamped to 65535.
     quint8  priority;  // Priority enum; Unknown for unparsed
-};                     // still 24 bytes with padding
+};                     // 32 bytes, exactly — no padding waste
 ```
 
-`lineCount` is counted during the indexing scan, which is already reading every byte — it costs nothing to collect and it fits in the existing padding, so the index stays at 24 bytes per record.
+Everything here is collected during the indexing scan, which is already reading every byte.
+
+- `lineCount` costs nothing to count.
+- `timestamp` is parsed eagerly because time-range filtering and jump-to-time need it, and adding it later would mean reindexing every file. The compiled `%d` sub-format tells the parser exactly how to read it.
+- `threadId` is interned exactly like `loggerId`, giving thread filtering the same integer-compare fast path and the same free discovery of the value set.
+
+**Budget:** ~32 MB of index per million records, up from 24. Worth the two filter axes it buys, but note it before anyone opens a 10 GB log.
 
 Parse eagerly **only** what filtering needs — priority and logger. Everything else (timestamp, thread, message text) is parsed lazily in `QAbstractTableModel::data()` from the mapped bytes. Storing parsed strings per record is the single most likely way to make this application unusable on large files.
 
@@ -102,6 +110,7 @@ Parse eagerly **only** what filtering needs — priority and logger. Everything 
 class LogSource {                       // the model cannot tell which impl it has
     virtual QByteArrayView bytes(qint64 offset, quint32 length) = 0;
     virtual qint64 size() const = 0;
+    virtual bool   isRandomAccess() const = 0;  // false for gz/remote (§6.2)
 };
 ```
 
@@ -113,6 +122,24 @@ The split exists because **mmap and live tailing interact badly on Windows**: a 
 **Rotation/truncation detection:** poll size and file identity (inode on POSIX, file index on Windows). If size shrinks or identity changes, the file was rotated — discard the index and rescan. `QFileSystemWatcher` is the primary change signal but is unreliable on some filesystems (notably network mounts), so pair it with a low-frequency size poll rather than trusting it alone.
 
 Files are opened in binary mode; CRLF is handled explicitly rather than via platform text-mode translation, so a Windows-authored log reads identically on Linux.
+
+### 6.1 Encoding
+
+`SPEC.md` §4 requires automatic encoding detection, because log4cplus built for `wchar_t` emits UTF-16 on Windows. Detection runs once, on open, over the first ~64 KB:
+
+1. **BOM** — decisive when present: UTF-8, UTF-16LE, UTF-16BE.
+2. **No BOM** — a high frequency of NUL bytes at alternating positions indicates UTF-16, and which position identifies the byte order. Otherwise, validate as UTF-8; on failure fall back to an 8-bit encoding.
+3. The result is shown in the Log Format dialog and can be overridden. Detection is a heuristic and will occasionally be wrong; the override is the escape hatch, not an optional extra.
+
+The consequence that reaches furthest: **the record scanner cannot search for `\n` bytes.** In UTF-16 a newline is `0A 00` or `00 0A`, and a naive byte search both misses real terminators and fires inside unrelated code units. A `Decoder` sits between `LogSource` and the indexer, exposing line boundaries and decoded text; the indexer works in its terms and never touches raw bytes directly.
+
+`Record::offset` and `length` remain **byte** offsets in all encodings — they index the source, not the decoded text. Only the decoder converts.
+
+### 6.2 Designing for future sources
+
+`SPEC.md` §11 defers `.gz` and SSH-retrieved logs but names them, because both violate an assumption that is otherwise easy to bake in: **that a log source is local and randomly seekable.** Neither is. Gzip has no random access without an index; a remote source adds latency to every read.
+
+The `isRandomAccess()` flag exists so the indexer can branch now rather than being restructured later. Concretely, the constraint to honor today: **the indexer must be able to work as a forward, single-pass stream.** It already does — it scans start to finish. Do not add a second backward pass or a "seek to offset X and re-read" step. Random access is a legitimate optimization for `data()` on the paint path, which is only reachable for records already indexed and, for non-seekable sources, will be served from a local cache.
 
 ## 7. Model, view, and filtering
 
@@ -133,16 +160,36 @@ The design that makes this cheap:
 
 Reused rather than rebuilt: `QItemSelectionModel` for selection state, the `LogFormat` field map for columns, and a `QStyledItemDelegate`-style paint helper per cell. Hand-rolled: hit-testing, rubber-band and shift-click range selection, keyboard navigation, and clipboard serialization.
 
-**[?]** `SPEC.md` §5 proposes capping displayed height at 100 lines. If accepted, `lineCount` is clamped for display purposes only — the prefix sums use the clamped value so geometry stays consistent, while copy operations use the true byte range.
+Displayed height is capped at 100 lines per record (`SPEC.md` §5). `lineCount` is clamped for display only — the prefix sums use the clamped value so geometry stays consistent, while copy operations use the true byte range.
 
-**This is the highest-risk component in the project.** Prototype it against a real log early in M2, before feature work depends on it.
+### 7.1.1 Line wrapping and the two geometry modes
+
+`SPEC.md` §5 makes wrapping a three-mode setting, and *always on* is the mode that breaks the scheme above: a wrapped record's height depends on the viewport width, so every resize invalidates every height. Measuring all records on resize is an O(n) text-shaping pass — worse than the `QTableView` problem this design exists to avoid.
+
+Hence two geometry modes behind one interface:
+
+**Exact mode** (wrap off, or selected-record-only). Height is a property of the record alone. Prefix sums are exact, the scrollbar is exact, and the *selected-record* case is a bounded special case: one record's height changes, so patch that single block's sum rather than rebuilding.
+
+**Estimated mode** (wrap always on):
+
+- Exploit the fixed-pitch font — wrapped height needs **no text shaping**, only a character count: `ceil(charsInLine / viewportCols)`. That reduces the problem from measuring text to counting characters.
+- Measure exactly the blocks that have been visited; estimate the rest from a running average of characters-per-record observed so far.
+- The scrollbar is therefore approximate and **refines as the user scrolls**, which `SPEC.md` §5 states plainly rather than hiding. Scroll position and navigation stay exact; only the thumb geometry is estimated.
+- Cache measured block heights keyed by viewport column count; a resize invalidates the cache, and recomputation is debounced so a drag-resize measures once at the end rather than per frame.
+
+The estimation machinery is only reachable in *always on* mode — the other two modes never construct it. This keeps the common path exact and simple, and confines the complexity to the mode that demands it.
+
+**This is the highest-risk component in the project, and 7.1.1 is the highest-risk part of it.** Prototype exact mode first in M2a to validate the core scheme; estimated mode can follow in M2b once the foundation is proven.
 
 ### 7.2 Model and filtering
 
 - `LogModel : QAbstractTableModel` — rows are records, columns come from `LogFormat::fields`. `data()` parses lazily; it is on the paint path and must not allocate more than necessary. Prefer `QStringView` into the mapped bytes. The model stays a `QAbstractTableModel` even though the view is custom: it keeps the proxy-filter machinery and the model/view separation intact.
 - Filtering via a `QSortFilterProxyModel` subclass over `LogModel`. Predicates read `Record::priority` and `Record::loggerId` directly, not display strings.
 - Priority filtering is a bitmask over the six levels — a single AND test per record.
-- Subsystem filtering is a `QSet<quint32>` of interned ids.
+- Subsystem and thread filtering are `QSet<quint32>` of interned ids.
+- Time-range filtering is two `qint64` comparisons against `Record::timestamp`.
+- **Message-text filtering is the one axis with no fast path.** It cannot use interned ids; it must decode and scan message bytes per record. Order the predicate chain so the cheap integer tests run first and text matching only sees what survives them — on a typical filter set that is a small fraction of records. For substring matching use a `QByteArray` search over the encoded form rather than constructing a `QString` per record; only regex matching needs decoded text.
+- Find/Find Next (`SPEC.md` §5) shares the text-matching code with message filtering but not the mechanism: find walks the proxy's visible rows from the cursor and returns a row index, changing no filter state.
 - Highlighting is **not** a proxy: it is applied in `data()` via `BackgroundRole`/`ForegroundRole`, evaluating the ordered rule list and returning on first match (`SPEC.md` §7).
 - Sorting is deliberately not offered: records are inherently in chronological order, and sorting a lazy offset index would require a full materialization pass.
 - **Filtering invalidates the §7.1 prefix sums**, since hidden records contribute no height. Rebuild the block sums over the visible subset whenever the filter changes — a single linear pass over the index with no parsing, comfortably inside the §11 repaint budget. Do not attempt incremental patching; the full rebuild is fast and much harder to get wrong.
@@ -155,6 +202,18 @@ Reused rather than rebuilt: `QItemSelectionModel` for selection state, the `LogF
 - Presets as JSON under `QStandardPaths::AppConfigLocation` — a discrete file format, since `SPEC.md` §9 proposes export/import.
 - Per-file (and per-directory fallback) format cache, keyed by canonical path, so a configured file reopens without prompting.
 - Schema version field in both settings and preset files from day one; migrating unversioned user data later is unpleasant.
+
+**Highlight colors store a palette index, never an RGB value** (`SPEC.md` §7). The palette maps each index to a light-theme and a dark-theme color, so switching themes remaps every existing rule automatically. Persisting raw colors would freeze rules to whichever theme was active when they were created — the exact problem the curated palette exists to prevent.
+
+### 8.1 Concurrent instances
+
+`SPEC.md` §3 allows multiple instances at once, which makes settings a shared mutable resource across processes. Three consequences:
+
+- **Write atomically.** Preset and settings files are written to a temp file and renamed, so an instance crashing or two writing at once can never leave a truncated file. `QSettings` handles this for its own store; the JSON preset file is ours to get right.
+- **Per-file state is keyed by file path**, so instances viewing different logs never contend. This is the main reason the per-file scoping in `SPEC.md` §10 is worth having beyond its UX merit.
+- **Global state is last-writer-wins**, since instances have no coordination channel. Writing on change rather than only at exit narrows the window in which one instance's state is lost, and is what we should do. **[?]** — see `SPEC.md` open question 4.
+
+Deliberately *not* doing: a lock file, a single-instance server, or inter-instance IPC. Each adds a failure mode (stale locks, port conflicts) far more annoying than the state loss it prevents.
 
 ## 9. Format autodetection (P2)
 
@@ -177,7 +236,9 @@ Detection produces a *pattern string*, never a bespoke parser — it reuses the 
 ## 10. Testing
 
 - **`PatternCompiler`** — the bulk of unit testing. Table-driven: pattern in, expected regex behavior and field map out. Cover every modifier, malformed patterns, and patterns missing `%p` or `%c`.
-- **Indexing** — small fixture logs covering multi-line records, unparsed leading lines, CRLF vs LF, empty files, a file ending mid-record.
+- **Indexing** — small fixture logs covering multi-line records, unparsed leading lines, CRLF vs LF, empty files, and a file ending mid-record.
+- **Encoding** — the same fixture log stored as UTF-8, UTF-8 with BOM, UTF-16LE, and UTF-16BE must produce byte-for-byte identical indexes apart from offsets. This is the cheapest possible guard against the §6.1 line-terminator trap.
+- **Geometry** — prefix-sum lookups against a synthetic index with known line counts, in both exact and estimated modes; assert that estimated mode converges to the exact total once every block has been visited.
 - **Tailing** — a test harness that appends to, truncates, and rotates a temp file, asserting the model converges to the right state.
 - **Model/filter** — assert filter predicates against a synthetic index without any UI.
 - Everything except the view layer must be testable without a `QApplication`; keep parsing and indexing free of UI dependencies.
