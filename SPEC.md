@@ -32,16 +32,16 @@ It runs on Windows, macOS, and Linux.
 - Open a log file via menu, toolbar, keyboard shortcut, or drag-and-drop onto the window.
 - **From the command line:** `loftail <file>` opens that file directly. **[?]** Proposed additional switches: `--follow` to open at the end with follow on (updates are always watched regardless — see §3 live updates — so this only sets the initial scroll position and follow state), and `--pattern <p>` to supply the log format for a file loftail has not seen before.
 - **Multiple instances may run simultaneously.** loftail does not enforce a single instance; launching it again opens an independent window with its own file and its own filters.
-- The most recently opened files are listed for quick reopening. **[?]** Proposed: 10 entries.
+- The 10 most recently opened files are listed for quick reopening.
 - Opening a large file shows progress and remains responsive; the view populates as scanning proceeds rather than blocking until it finishes.
-- Scanning can be cancelled, leaving whatever was scanned so far usable. **[?]**
+- Scanning can be cancelled, leaving whatever was scanned so far usable.
 
 ### Live updates
 
 - **Every file is opened as if it were live.** loftail cannot know whether a file is complete or still being written, so it always watches the open file and appends new records as they arrive. A file that is never appended to simply never produces any — there is no "post-mortem" versus "live" mode for the user to choose, and none to forget to turn on.
 - **Follow** is the one toggle in this area: when on, the view scrolls to keep the newest record visible. Scrolling up manually turns follow off; a control returns to the bottom and turns it back on. This lets the user inspect history while the file keeps growing. Follow defaults on for a file opened at its end. **[?]**
 - Active filters and highlighters apply to incoming records exactly as they do to existing ones.
-- If the file is rotated or truncated by the writing application, loftail detects this and reloads rather than showing stale or corrupt data. The user is informed that rotation occurred. **[?]**
+- If the file is rotated or truncated by the writing application, loftail detects this and reloads rather than showing stale or corrupt data. The reload is silent.
 - Because loftail always holds the file open for reading, it must never prevent the writing application from appending to, rotating, or truncating it. Observing a log must not disturb the process producing it.
 
 ## 4. Log format configuration
@@ -51,7 +51,7 @@ Because a log file does not describe its own layout, loftail needs to be told th
 - A **Log Format** dialog accepts the pattern string and shows a **live preview**: sample lines from the current file, split into the fields loftail would extract. This makes a wrong pattern immediately obvious rather than failing silently.
 - The dialog reports which fields were found. If **priority** or **subsystem** is absent from the pattern, loftail warns that filtering on the missing axis will be unavailable.
 - If a pattern matches poorly, the file still opens: unparsed lines are shown as plain text rather than being hidden or dropped. The user is never left staring at an empty window because of a format mistake.
-- The chosen format is remembered per file, so a file already configured opens correctly without asking again. **[?]** Proposed: also remembered per directory, so sibling log files from the same application inherit it.
+- The chosen format is remembered per file, so a file already configured opens correctly without asking again.
 
 ### Character encoding
 
