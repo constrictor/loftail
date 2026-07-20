@@ -102,9 +102,9 @@ A later release will guess the format when a file is opened and pre-fill the Log
   
   The setting is remembered. Note that in *always on* mode the vertical scrollbar is an approximation that refines as you scroll, since exact total height cannot be known without measuring every record (see `ARCHITECTURE.md` §7.1). Scroll position and navigation stay accurate; only the thumb size and position are estimates.
 
-- Rows can be selected individually or as a range, and copied to the clipboard. Copying yields the original raw text by default, with **Copy as Columns** available as a separate action for pasting into a spreadsheet. **[?]**
+- Rows can be selected individually or as a range, and copied to the clipboard. Copying yields the original raw text by default, with **Copy as Columns** available as a separate action for pasting into a spreadsheet.
 
-- **Find / Find Next.** Text search over record content, with next/previous navigation, case-sensitivity and regular-expression options, and wrap-around at the end. Distinct from filtering: find moves the cursor and leaves every record visible; filtering removes non-matching records. Find operates on what is currently visible — if a filter is active, find searches the filtered subset. **[?]**
+- **Find / Find Next.** Text search over record content, with next/previous navigation, case-sensitivity and regular-expression options, and wrap-around at the end. Distinct from filtering: find moves the cursor and leaves every record visible; filtering removes non-matching records. Find operates on what is currently visible — if a filter is active, find searches the filtered subset.
 
 - A status area shows total record count, the count after filtering, the current file, and whether it is currently receiving new records.
 
@@ -115,20 +115,21 @@ Filtering removes non-matching records from the view. The underlying file is nev
 - **By subsystem.** The subsystem list is discovered automatically from the file as it is scanned, so the user picks from what is actually present rather than typing from memory. Subsystems can also be entered manually — useful when following a file that has not yet emitted a given subsystem.
 - **By priority.** Levels are selected as a set of checkboxes (TRACE…FATAL), all enabled by default. **[?]** Proposed over a minimum-threshold model, since it also allows isolating a single level.
 - **By thread.** Like subsystems, the thread list is discovered from the file as it is scanned. Available only when the log format includes a thread field.
-- **By message text.** Substring or regular-expression match against the message, with a case-sensitivity option. Unlike the other axes this cannot offer a pick-list, so it is a text box. A negation option (*hide* matching records) is included, since excluding known noise is as common as isolating a signal. **[?]**
-- **By time range.** A start and/or end bound, entered in the display time zone (§4); records outside the range are hidden. Available only when the log format includes a timestamp field. **[?]**
+- **By message text.** Substring or regular-expression match against the message, with a case-sensitivity option. Unlike the other axes this cannot offer a pick-list, so it is a text box. A negation option (*hide* matching records) is included, since excluding known noise is as common as isolating a signal.
+- **By time range.** A start and/or end bound, entered in the display time zone (§4); records outside the range are hidden. Available only when the log format includes a timestamp field.
 - Filters can be **enabled and disabled individually** without being deleted, so a user can toggle a view on and off while keeping it configured.
 - **[?]** Proposed combination semantics: within one axis, selected values are OR-ed (any of these subsystems); across axes, AND (matching subsystem **and** matching priority).
-- The subsystem list supports select-all / select-none / invert, and a text box to narrow long lists. **[?]**
+- The subsystem list supports select-all / select-none / invert, and a text box to narrow long lists.
 
 ## 7. Highlighting
 
 Highlighting colors matching records without removing anything, for spotting events in context.
 
-- A highlight rule matches on subsystem and/or priority and applies a color.
-- Rules are an **ordered list**; when several match a record, the first match wins. Order is user-adjustable. **[?]**
+- A highlight rule matches on subsystem and/or priority and restyles the matching records.
+- Rules are an **ordered list**; when several match a record, the first match wins. Order is user-adjustable.
 - Rules can be enabled and disabled individually, like filters.
-- **Colors come from a curated palette**, not a free color picker. Each palette entry is defined once for light themes and once for dark, so a highlight chosen in one remains legible in the other and switching themes needs no rework. Rules store the palette entry, not a raw color value. **[?]** Proposed: 12 entries, covering the usual severity associations (reds, ambers, greens) plus neutral distinguishing hues.
+- **A rule sets a background color and a text (foreground) color, chosen independently.** Either can be left at its default, which is the record's normal un-highlighted appearance — so a rule may recolor only the background, only the text, or both. A highlight can therefore be as quiet as tinting the text or as loud as a full-row fill.
+- **Colors come from a curated palette**, not a free color picker. Each palette entry is defined once for light themes and once for dark, so a highlight stays legible in both and switching themes needs no rework. A rule stores, for each of background and text, either a palette entry or *default* — never a raw color value. The palette has 12 entries, covering the usual severity associations (reds, ambers, greens) plus neutral distinguishing hues.
 
 ## 8. Side panes
 
@@ -145,7 +146,7 @@ Filters, highlighters, and presets are each presented in a side pane, so they ar
 - Applying a preset replaces the current set on that axis. **[?]** Proposed over merging, which makes the result hard to predict.
 - Presets are listed in a side pane and applied in one click.
 - Presets persist across sessions and are independent of any particular log file.
-- **[?]** Proposed: presets can be exported to and imported from a file, for sharing with colleagues.
+- Presets can be exported to and imported from a JSON file, for sharing with colleagues.
 
 ## 10. Session persistence
 
@@ -157,11 +158,11 @@ On relaunch, loftail restores:
 - Saved presets
 - Window geometry, pane layout, and column layout
 
-**[?]** Proposed scoping, which matters for the eventual multi-file support: the log format, active filters, active highlighters, and column layout are remembered **per file**, so returning to a given log restores how you were reading *that* log. Presets and window/pane layout are global, shared across all files. This way, when several files can be open at once, each keeps its own working state without further redesign.
+**Scoping**, which matters for the eventual multi-file support: the log format, active filters, active highlighters, and column layout are remembered **per file**, so returning to a given log restores how you were reading *that* log. Presets and window/pane layout are global, shared across all files. This way, when several files can be open at once, each keeps its own working state without further redesign.
 
-**Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is keyed by file, so instances viewing different logs never conflict. For genuinely global state — window layout, and which file to restore on next launch — **the last instance to close wins**. **[?]** This is worth confirming: the alternative is that only the first-launched instance saves global state, which is more predictable but less likely to match what you last did.
+**Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is keyed by file, so instances viewing different logs never conflict. For genuinely global state — window layout, and which file to restore on next launch — **the last instance to close wins**.
 
-**[?]** Proposed: if the last opened file is missing or unreadable, loftail opens with an empty view and reports it, rather than showing an error dialog on every launch.
+If the last opened file is missing or unreadable, loftail opens with an empty view and reports it, rather than showing an error dialog on every launch.
 
 ## 11. Non-goals
 
@@ -182,11 +183,9 @@ To keep the first release focused, loftail does not:
 1. **Priority filtering model** (§6) — set of checkboxes as proposed, or minimum-severity threshold?
 2. **Bookmarks.** Not in the original sketch, but standard in log viewers: mark records of interest and jump between them. In or out?
 3. **Display time zone default** (§4) — *as written in the file* as proposed, or convert to local time by default?
-4. **Multi-instance global state** (§10) — last-instance-to-close wins, or first-launched-instance owns it?
-5. **Palette size** (§7) — is 12 entries right, and should a free color picker be available as an escape hatch for users who want one?
-6. **Copy default** (§5) — raw original text as proposed, or parsed columns?
-7. **Find scope** (§5) — search the filtered subset as proposed, or the whole file with matches pulling records back into view?
+
+Smaller inline proposals also await confirmation, marked **[?]** where they appear — none blocks anything: the CLI switch names (§3), follow-defaults-on when a file is opened at its end (§3), column reorder/hide and layout persistence (§5), filter combination semantics — OR within an axis, AND across axes (§6), and apply-preset-replaces-rather-than-merges (§9).
 
 None of these block implementation. Each is noted in `PLAN.md` against the milestone where it must be settled.
 
-*Resolved 2026-07-20: full-height multi-line records with a 100-line cap (§5); multiple open files deferred but accommodated (§11); wrapping is a three-mode setting (§5); encoding is an explicit setting defaulting to auto-detect (§4); timestamps are parsed, with configurable source and display time zones (§4); message-text, thread, and time-range filtering are in scope (§6); Find/Find Next is in scope (§5); compressed and SSH sources are future work (§11); file association is out of scope (§11); command-line invocation and multiple simultaneous instances are supported (§3); highlight colors come from a curated dual-theme palette (§7).*
+*Resolved 2026-07-20: full-height multi-line records with a 100-line cap (§5); multiple open files deferred but accommodated (§11); wrapping is a three-mode setting (§5); encoding is an explicit setting defaulting to auto-detect (§4); timestamps are parsed, with configurable source and display time zones (§4); message-text, thread, and time-range filtering are in scope (§6); Find/Find Next searches the filtered subset (§5); copy defaults to raw text with Copy as Columns as a separate action (§5); highlight rules set an independent background and text color, each from a 12-entry dual-theme palette or left at default (§7); presets export/import as JSON (§9); per-file vs global session scoping settled, last-instance-to-close wins for global state, missing last file opens empty (§10); compressed and SSH sources are future work (§11); file association is out of scope (§11); command-line invocation and multiple simultaneous instances are supported (§3).*

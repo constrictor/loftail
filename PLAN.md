@@ -108,16 +108,17 @@ Makes M1 reachable by the user. `SPEC.md` §4.
 
 Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10.
 
-- Curated dual-theme palette; rules persist a palette **index**, never an RGB value
-- Highlight rules: ordered list, first-match-wins, evaluated in `data()`
-- Rule editor: match on subsystem and/or priority, choose a palette entry, reorder, enable/disable
+- Curated 12-entry dual-theme palette; each rule persists a **background** and a **foreground** palette index (or *default*), never an RGB value
+- Highlight rules: ordered list, first-match-wins evaluated in `data()`; the matched rule supplies both roles, *default* falling back to the theme color
+- Rule editor: match on subsystem and/or priority, pick background and text color (each palette-or-default), reorder, enable/disable
 - Atomic (temp-file + rename) writes for settings and presets, for the multi-instance case (`ARCHITECTURE.md` §8.1)
 - Three `QDockWidget` panes: filters, highlighters, presets
 - Filter and highlighter presets: create from current state, apply, rename, delete; JSON under `AppConfigLocation` with a schema version
+- Preset **export/import** to a user-chosen JSON file, schema-versioned; portable across themes since rules carry palette indices, not colors (`ARCHITECTURE.md` §8)
 - Session restore: last file, format, filters, highlighters, window geometry, pane and column layout
 - Settings schema with a `documents` **array** and per-file scoping from the start (`ARCHITECTURE.md` §12.4) — writing it as a single-document schema now means a migration later
 - Panes bind to the active document by signal, not by construction (`ARCHITECTURE.md` §12.3)
-- Missing last-file handled gracefully (empty view + notice, not an error dialog every launch)
+- Missing last-file handled gracefully (empty view + inline notice, not an error dialog every launch)
 
 **Done when:** quitting and relaunching restores the previous working state completely.
 
@@ -161,15 +162,15 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 ## Decisions needed before the milestone that blocks on them
 
-| Question (`SPEC.md`)             | Blocks | Why it cannot be deferred past that point                                                                       |
-| -------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------- |
-| Display time zone default (Q3)   | M3     | Presentation only — `Record::timestamp` is UTC regardless, so this is a formatting default, not a data decision |
-| Copy default (Q6)                | M2b    | The clipboard path is hand-rolled; trivial now, rework later                                                    |
-| Find scope (Q7)                  | M4     | Determines whether find can move the cursor to a filtered-out record                                            |
-| Priority filter model (Q1)       | M4     | Small, but it is the filter UI                                                                                  |
-| Palette size (Q5)                | M5     | Rules persist a palette index, so the palette must be settled before rules are saved                            |
-| Multi-instance global state (Q4) | M5     | Determines when session state is written, not just what                                                         |
-| Bookmarks (Q2)                   | M5     | Touches the model and adds a pane; cheap if planned, awkward if bolted on                                       |
+Only three open questions remain, all answerable when their milestone arrives:
+
+| Question (`SPEC.md`)           | Blocks | Why it cannot be deferred past that point                                                                       |
+| ------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------- |
+| Display time zone default (Q3) | M3     | Presentation only — `Record::timestamp` is UTC regardless, so this is a formatting default, not a data decision |
+| Priority filter model (Q1)     | M4     | Small, but it is the filter UI                                                                                  |
+| Bookmarks (Q2)                 | M5     | Touches the model and adds a pane; cheap if planned, awkward if bolted on                                       |
+
+Smaller inline `[?]` proposals in `SPEC.md` also await confirmation but block nothing: CLI switch names (M7), follow-defaults-on-at-end (M6), column reorder/hide (M2b), filter combination semantics (M4), and apply-preset-replaces-vs-merges (M5).
 
 **Nothing blocks M0, M1, or M2a.** Making both time zones configurable removed the last blocking question: with `Record::timestamp` normalized to UTC at index time, zone handling became a conversion at the edges rather than a decision baked into the data. Every remaining question is answerable when its milestone arrives.
 
@@ -186,6 +187,6 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 ## Deliberately deferred
 
-Recorded so they are not silently dropped: multi-file/tabbed views (architecturally accommodated, not implemented), compressed `.gz` and SSH-retrieved sources (accommodated via the single-forward-pass constraint, `ARCHITECTURE.md` §6.2), bookmarks (pending Q2), preset export/import, and column reorder/hide. Each is additive to the M2 spine rather than a change to it.
+Recorded so they are not silently dropped: multi-file/tabbed views (architecturally accommodated, not implemented), compressed `.gz` and SSH-retrieved sources (accommodated via the single-forward-pass constraint, `ARCHITECTURE.md` §6.2), bookmarks (pending Q2), and column reorder/hide. Each is additive to the M2 spine rather than a change to it. (Preset export/import is no longer deferred — it is now in M5.)
 
 Explicitly ruled out for now: caching the index to disk. It needs invalidation, versioning, and a cache location — real complexity to solve a problem that may not exist. Revisit only if the M2a measurements miss the §11 indexing target.

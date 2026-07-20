@@ -219,7 +219,7 @@ The estimation machinery is only reachable in *always on* mode — the other two
 - Time-range filtering is two `qint64` comparisons against `Record::timestamp`.
 - **Message-text filtering is the one axis with no fast path.** It cannot use interned ids; it must decode and scan message bytes per record. Order the predicate chain so the cheap integer tests run first and text matching only sees what survives them — on a typical filter set that is a small fraction of records. For substring matching use a `QByteArray` search over the encoded form rather than constructing a `QString` per record; only regex matching needs decoded text.
 - Find/Find Next (`SPEC.md` §5) shares the text-matching code with message filtering but not the mechanism: find walks the proxy's visible rows from the cursor and returns a row index, changing no filter state.
-- Highlighting is **not** a proxy: it is applied in `data()` via `BackgroundRole`/`ForegroundRole`, evaluating the ordered rule list and returning on first match (`SPEC.md` §7).
+- Highlighting is **not** a proxy: it is applied in `data()` via `BackgroundRole`/`ForegroundRole`, evaluating the ordered rule list and returning on first match (`SPEC.md` §7). The matched rule carries an independent background and foreground choice, each either a palette index or *default*; a *default* returns an invalid `QVariant` for that role so the view falls back to the normal theme color. First-match-wins is per-rule, not per-role — a rule that sets only the background does not let a lower rule supply the foreground.
 - Sorting is deliberately not offered: records are inherently in chronological order, and sorting a lazy offset index would require a full materialization pass.
 - **Filtering invalidates the §7.1 prefix sums**, since hidden records contribute no height. Rebuild the block sums over the visible subset whenever the filter changes — a single linear pass over the index with no parsing, comfortably inside the §11 repaint budget. Do not attempt incremental patching; the full rebuild is fast and much harder to get wrong.
 
@@ -232,7 +232,9 @@ The estimation machinery is only reachable in *always on* mode — the other two
 - Per-file format cache, keyed by canonical path, so a configured file reopens without prompting. Per file only — no directory-level fallback; a new file is never assumed to share a sibling's format.
 - Schema version field in both settings and preset files from day one; migrating unversioned user data later is unpleasant.
 
-**Highlight colors store a palette index, never an RGB value** (`SPEC.md` §7). The palette maps each index to a light-theme and a dark-theme color, so switching themes remaps every existing rule automatically. Persisting raw colors would freeze rules to whichever theme was active when they were created — the exact problem the curated palette exists to prevent.
+**Highlight rules store two palette references — background and foreground — never RGB values** (`SPEC.md` §7). Each reference is a palette index into a 12-entry table, or a *default* sentinel meaning "leave this role at the theme's normal color." The palette maps each index to a light-theme and a dark-theme color, so switching themes remaps every existing rule automatically. Persisting raw colors would freeze rules to whichever theme was active when they were created — the exact problem the curated palette exists to prevent.
+
+Preset export/import (`SPEC.md` §9) is JSON. Because rules carry palette *indices* rather than colors, an exported preset is portable across themes by construction — the importing user's palette supplies the actual colors. Include the schema version (§8) in exported files so a preset shared today still imports after the format evolves.
 
 ### 8.1 Concurrent instances
 
