@@ -3,7 +3,7 @@
 **Status:** Draft, 2026-07-20.
 **Scope:** User-visible behavior only. Internal design lives in `ARCHITECTURE.md`.
 
-Items marked **[?]** are proposals that need your confirmation — they were decided by inference, not instruction. This document describes the **first release only**; features planned for later releases live in `FUTURE.md`.
+This document describes the **first release only**; features planned for later releases live in `FUTURE.md`.
 
 ---
 
@@ -117,7 +117,7 @@ Filtering removes non-matching records from the view. The underlying file is nev
 - **By message text.** Substring or regular-expression match against the message, with a case-sensitivity option. Unlike the other axes this cannot offer a pick-list, so it is a text box. A negation option (*hide* matching records) is included, since excluding known noise is as common as isolating a signal.
 - **By time range.** A start and/or end bound, entered in the display time zone (§4); records outside the range are hidden. Available only when the log format includes a timestamp field.
 - Filters can be **enabled and disabled individually** without being deleted, so a user can toggle a view on and off while keeping it configured.
-- **[?]** Proposed combination semantics: within one axis, selected values are OR-ed (any of these subsystems); across axes, AND (matching subsystem **and** matching priority).
+- **Combination semantics:** within one axis, selected values are OR-ed (any of these subsystems); across axes, AND (matching subsystem **and** matching priority).
 - The subsystem list supports select-all / select-none / invert, and a text box to narrow long lists.
 
 ## 7. Highlighting
@@ -142,7 +142,7 @@ Filters, highlighters, and presets are each presented in a side pane, so they ar
 
 - **Filter presets** store a complete set of filters; **highlighter presets** store a complete set of highlight rules. The two are independent and separately recallable.
 - Presets are created from the current state, and can be renamed and deleted.
-- Applying a preset replaces the current set on that axis. **[?]** Proposed over merging, which makes the result hard to predict.
+- Applying a preset replaces the current set on that axis, rather than merging — which would make the result hard to predict.
 - Presets are listed in a side pane and applied in one click.
 - Presets persist across sessions and are independent of any particular log file.
 - Presets can be exported to and imported from a JSON file, for sharing with colleagues.
@@ -172,14 +172,3 @@ These are things loftail will **not** do — as distinct from features deferred 
 - Aggregate several files into a single merged, time-ordered view — distinct from simply opening several files (which *is* planned; see `FUTURE.md`), and not planned at all
 - Provide charts, statistics, or alerting
 - Install itself as the system handler for `.log` files — file association is an installer concern, not an application one
-
----
-
-## Open questions
-
-Two minor proposals remain unconfirmed, both marked **[?]** where they appear and neither blocking any milestone:
-
-- **Filter combination semantics** (§6) — within one axis, OR the selected values; across axes, AND.
-- **Applying a preset replaces** the current set on that axis rather than merging (§9).
-
-Each is noted in `PLAN.md` against the milestone where it is settled.

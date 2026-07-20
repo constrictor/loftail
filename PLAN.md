@@ -102,7 +102,6 @@ Makes M1 reachable by the user. `SPEC.md` §4.
 
 **Done when:** filters apply to 1M records within the §11 repaint budget — measure with a message-text filter active, since it is the only axis without an integer fast path — and toggling one is a single click.
 
-
 ## M5 — Highlighting, panes, presets, persistence
 
 Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10.
@@ -139,7 +138,7 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 - Command-line argument handling (`loftail <file>`, `--pattern <p>`); files always open at end, following, so there is no `--follow`
 - File association is explicitly **not** handled by the application — if wanted, it belongs to the installer
-- Linux: AppImage or `.deb` **[?]** — decide based on how you intend to distribute
+- Linux: AppImage (built on Ubuntu 24.04, the reference environment — `ARCHITECTURE.md` §1), via `linuxdeploy` + `linuxdeploy-plugin-qt` to bundle Qt so it runs without a system Qt
 - Windows: `windeployqt` + installer or portable zip
 - macOS: `.app` bundle via `macdeployqt`; note that distribution outside a signed/notarized flow will warn users
 - Verify a clean-machine launch on each platform (no Qt installed)
@@ -159,27 +158,10 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 ---
 
-## Decisions needed before the milestone that blocks on them
-
-Two minor `[?]` proposals in `SPEC.md` still await confirmation, and neither blocks its milestone: filter combination semantics (M4) and apply-preset-replaces-vs-merges (M5).
-
-**Nothing blocks any milestone from starting.**
-
-**Resolved 2026-07-20 (second pass).** Two rounds of decisions have reshaped this plan:
-
-- Full-height multi-line records replaced `QTableView` with a custom `LogView` (`ARCHITECTURE.md` §7.1) — the single largest change.
-- Configurable wrapping added a second, estimated geometry mode (§7.1.1), now isolated in M2c so it cannot block anything else.
-- Encoding became an explicit setting defaulting to auto-detect, adding a `Decoder` layer between source and indexer (§6.1) and with it the UTF-16 line-terminator trap.
-- Parsed timestamps and interned threads grew `Record` from 24 to 32 bytes, buying time-range and thread filtering.
-- Configurable source and display time zones fixed `Record::timestamp` as UTC epoch ms with conversion only at the edges (§5.1).
-- Message-text filtering and Find/Find Next expanded M4 considerably.
-- Compressed and SSH sources, though deferred, constrain the indexer to a single forward pass (§6.2).
-- Multiple simultaneous instances made settings a cross-process shared resource (§8.1).
-
 ## Deliberately deferred
 
 Later-release features are catalogued in `FUTURE.md` (multi-file views, compressed and SSH sources, bookmarks, and — with a milestone, M8 — format autodetection); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.
 
-Column reorder/hide with remembered layout (`SPEC.md` §5, confirmed) is additive to the M2 spine and lands in M2b. (Preset export/import, once deferred, is now in M5.)
+Column reorder/hide with remembered layout (`SPEC.md` §5) is additive to the M2 spine and lands in M2b. (Preset export/import, once deferred, is now in M5.)
 
 Explicitly ruled out for now: caching the index to disk. It needs invalidation, versioning, and a cache location — real complexity to solve a problem that may not exist. Revisit only if the M2a measurements miss the §11 indexing target.

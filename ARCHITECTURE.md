@@ -7,13 +7,15 @@
 
 ## 1. Stack
 
-| Decision | Choice | Rationale |
-|---|---|---|
-| Language | C++20 | Matches the log4cplus ecosystem; needed for the performance profile in §7. |
-| Toolkit | Qt 6 Widgets | See §2. |
-| Minimum Qt | 6.5 LTS (dev machine has 6.10) | LTS is packaged everywhere; nothing needed requires newer. |
-| Build | CMake ≥ 3.21 + Ninja | `qt_add_executable`/`qt_add_test`; Ninja for build speed. |
-| Tests | Qt Test | In-tree, no extra dependency, integrates with CTest. |
+| Decision   | Choice                     | Rationale                                                                   |
+| ---------- | -------------------------- | --------------------------------------------------------------------------- |
+| Language   | C++20                      | Matches the log4cplus ecosystem; needed for the performance profile in §7.  |
+| Toolkit    | Qt 6 Widgets               | See §2.                                                                     |
+| Minimum Qt | 6.4 (dev machine has 6.10) | The version in Ubuntu 24.04's repos (6.4.2); nothing needed requires newer. |
+| Build      | CMake ≥ 3.21 + Ninja       | `qt_add_executable`/`qt_add_test`; Ninja for build speed.                   |
+| Tests      | Qt Test                    | In-tree, no extra dependency, integrates with CTest.                        |
+
+**Reference build environment: Ubuntu 24.04 LTS.** The project must build with the toolchain 24.04 ships — GCC 13, CMake 3.28, Ninja, and Qt 6.4.2 from the system repos — using no separately-installed Qt. This is why the minimum Qt is 6.4 rather than the 6.5 LTS: pinning to 6.5 would force a non-apt Qt on the reference distro for no functional gain. Nothing in the design uses a 6.5+ API; if that ever changes, this constraint must be revisited, not silently broken.
 
 **loftail does not link log4cplus.** It parses log files as text. There is no compile-time or runtime dependency on the producing library, which keeps the build trivial on all three platforms. (If loftail ever wants its own diagnostic logging, use `QLoggingCategory`, not log4cplus.)
 

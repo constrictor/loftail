@@ -23,10 +23,11 @@ When a change alters user-visible behavior, update `SPEC.md`. When it alters an 
 
 ## Stack
 
-- **C++20**, **Qt 6** (6.10 is installed on the dev machine; target 6.5 LTS minimum)
+- **C++20**, **Qt 6** (6.10 is installed on the dev machine; target 6.4 minimum — the version in Ubuntu 24.04's repos)
 - **Qt Widgets**, not QML — see `ARCHITECTURE.md` for the rationale; the decision is load-bearing and should not be revisited casually
 - **CMake ≥ 3.21** + **Ninja**
 - **Qt Test** for unit tests
+- **Reference build environment is Ubuntu 24.04 LTS**: the project must build with the stock toolchain (GCC 13, CMake 3.28, Ninja, Qt 6.4.2) using no separately-installed Qt. This is why the Qt minimum is 6.4, not 6.5 LTS — see `ARCHITECTURE.md` §1.
 
 loftail does **not** link log4cplus. It reads log files as text; it has no compile-time relationship to the library that produced them.
 
