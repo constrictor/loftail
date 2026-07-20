@@ -1,0 +1,58 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+out/
+install/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+compile_commands.json
+
+# Qt
+*.moc
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.qmlc
+*.jsc
+.qmake.stash
+.qtc_clangd/
+
+# CTest
+Testing/
+CTestTestfile.cmake
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.user
+*.user.*
+*.swp
+*~
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+
+# Local logs used for testing — never commit customer log data
+*.log
+testdata/

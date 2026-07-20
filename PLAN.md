@@ -1,0 +1,167 @@
+# loftail — Implementation Plan
+
+**Status:** Draft, 2026-07-20.
+See `SPEC.md` for user-visible behavior and `ARCHITECTURE.md` for the technical decisions these milestones implement.
+
+---
+
+## Sequencing rationale
+
+Three principles drive the ordering:
+
+1. **Riskiest contract first.** `PatternCompiler` (M1) determines the shape of everything downstream and has zero UI dependencies, so it is built and tested before any window exists.
+2. **Prove the performance path early.** The lazy-index-plus-virtualized-view pipeline (M2) is validated against a real large log before any feature work sits on top of it. If the design is wrong, that must surface in week one, not week six.
+3. **Static before live.** Live tailing (M6) adds concurrency, rotation handling, and platform divergence. It lands only once a correct static viewer exists to compare against.
+
+Packaging (M7) is late but not last-minute — cross-platform packaging surprises are real, and M7 sits before the optional work rather than after it.
+
+---
+
+## M0 — Scaffold
+
+Project skeleton that builds and runs an empty window on all three platforms.
+
+- CMake project (`cmake_minimum_required 3.21`, C++20), Ninja, `qt_add_executable`
+- Directory layout: `src/core/` (no UI), `src/ui/`, `tests/`
+- `QApplication` + empty `QMainWindow`; org/app name set so `QSettings` works
+- CTest wired up with one trivial passing test
+- `.gitignore`, and **initialize the git repository** — it is not one yet
+- CI is optional at this stage but the build must be verified on Windows and macOS before M7
+
+**Done when:** `cmake --build build && ctest --test-dir build` succeeds and the app opens a window on Linux, and the build is confirmed on Windows and macOS.
+
+**Also:** update the "Project status" and "Commands" sections of `CLAUDE.md`, which currently say nothing is scaffolded.
+
+## M1 — Pattern compiler
+
+`ConversionPattern` → `LogFormat`. Pure logic, no UI. `ARCHITECTURE.md` §3.
+
+- Tokenizer for the pattern string: literals, `%%`, specifiers with optional modifiers
+- Modifiers: left/right padding (`%-5p`), truncation (`%.30c`), width+precision (`%20.30m`)
+- Specifiers: `%d{...}` (strftime-style → sub-regex), `%p`, `%c`, `%m`, `%t`, `%F`, `%L`, `%M`, `%n`; unknown specifiers produce a structured error, not a silent mismatch
+- Emit `recordRe`, `recordStartRe` (prefix up to the message field), field list, role indices
+- Structured `CompileError` carrying an offset into the pattern, so the UI can point at the mistake
+
+**Done when:** table-driven tests cover every modifier and specifier, malformed patterns, and patterns lacking `%p` or `%c`. This milestone is disproportionately test-heavy by design.
+
+**Risk:** `%d{...}` inner-format translation is the fiddliest part. Handle the common strftime subset and reject the rest with a clear error rather than half-supporting it.
+
+## M2 — Index, model, static view
+
+The performance spine. `ARCHITECTURE.md` §4–§7.
+
+- `Document` type owning all per-file state, held in a one-element vector (`ARCHITECTURE.md` §12)
+- `LogSource` interface + `MappedLogSource` (mmap)
+- Indexer: scan → `QVector<Record>`, applying the record-start rule for multi-line records, counting `lineCount`, and retaining unparsed lines
+- Logger-name interning; subsystem set falls out of the scan
+- Two-level block prefix sums over `lineCount`
+- `LogModel : QAbstractTableModel`, lazy `data()`, columns from `LogFormat::fields`
+- **`LogView : QAbstractScrollArea`** — line-unit scrolling, variable row heights, visible-only painting, selection via `QItemSelectionModel`, copy-to-clipboard
+- Indexing on a worker thread with **batched** model updates, progress reporting, and cancellation
+- Open-file UI: dialog, drag-and-drop, recent files
+
+**Done when:** a multi-hundred-MB real log opens, scrolls smoothly, and shows correct fields — including multi-line records rendered at full height. **Measure against `ARCHITECTURE.md` §11 here** and correct the design now if the targets are missed.
+
+**Risk: this is the highest-risk milestone in the project, and the custom view is the highest-risk part of it.** Build `LogView` against a real log *first*, before the surrounding UI — a scrolling prototype over a synthetic index is enough to prove or disprove the approach in `ARCHITECTURE.md` §7.1. Everything downstream assumes it works.
+
+**Suggested split** if M2 feels too large to land at once:
+- **M2a** — indexer, `Document`, `LogModel`, and a throwaway scrolling prototype of `LogView`. Proves performance.
+- **M2b** — production `LogView`: selection, keyboard navigation, clipboard, column headers.
+
+## M3 — Log format UI
+
+Makes M1 reachable by the user. `SPEC.md` §4.
+
+- Log Format dialog: pattern entry, live preview over sample lines from the current file, per-field breakdown
+- Compile errors shown inline against the offending position
+- Warn when `%p` or `%c` is missing (filtering degrades)
+- `IFormatProvider` + `ManualFormatProvider`; per-file and per-directory format cache
+- Bad pattern → file still opens with unparsed lines as plain text
+
+**Done when:** a user can open an arbitrary log4cplus file, type its pattern, see the preview resolve, and get correct columns — with the choice remembered on reopen.
+
+## M4 — Filtering
+
+`SPEC.md` §6.
+
+- Filter proxy over `LogModel`; priority as a bitmask, subsystems as a set of interned ids
+- Subsystem filter UI: auto-discovered list, manual entry, select-all/none/invert, narrowing text box
+- Priority filter UI: per-level checkboxes
+- Individual enable/disable per filter, no dialog
+- Filtered/total counts in the status area
+
+**Done when:** filters apply to 1M records within the §11 repaint budget, and toggling one is a single click.
+
+**Blocked on:** `SPEC.md` open question 3 (checkbox set vs. minimum threshold).
+
+## M5 — Highlighting, panes, presets, persistence
+
+Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10.
+
+- Highlight rules: ordered list, first-match-wins, evaluated in `data()`
+- Rule editor: match on subsystem and/or priority, choose color, reorder, enable/disable
+- Three `QDockWidget` panes: filters, highlighters, presets
+- Filter and highlighter presets: create from current state, apply, rename, delete; JSON under `AppConfigLocation` with a schema version
+- Session restore: last file, format, filters, highlighters, window geometry, pane and column layout
+- Settings schema with a `documents` **array** and per-file scoping from the start (`ARCHITECTURE.md` §12.4) — writing it as a single-document schema now means a migration later
+- Panes bind to the active document by signal, not by construction (`ARCHITECTURE.md` §12.3)
+- Missing last-file handled gracefully (empty view + notice, not an error dialog every launch)
+
+**Done when:** quitting and relaunching restores the previous working state completely.
+
+## M6 — Live tailing
+
+`SPEC.md` §3, `ARCHITECTURE.md` §6.
+
+- `BufferedLogSource` for growing files
+- `QFileSystemWatcher` + low-frequency size poll (watcher alone is unreliable on network mounts)
+- Incremental indexing of appended bytes; partial trailing record held until complete
+- Rotation/truncation detection via size and file identity → rescan, with a user notice
+- Follow toggle with scroll-away-to-detach and a return-to-bottom control
+- Filters and highlighters apply to incoming records
+
+**Done when:** the tail harness (append / truncate / rotate against a temp file) converges correctly, verified on all three platforms — Windows file-locking behavior differs and must be exercised there specifically.
+
+**Risk:** the platform-divergent milestone. Budget time for Windows.
+
+## M7 — Packaging
+
+- Linux: AppImage or `.deb` **[?]** — decide based on how you intend to distribute
+- Windows: `windeployqt` + installer or portable zip
+- macOS: `.app` bundle via `macdeployqt`; note that distribution outside a signed/notarized flow will warn users
+- Verify a clean-machine launch on each platform (no Qt installed)
+
+**Done when:** each platform has an artifact that runs on a machine without a Qt development environment.
+
+## M8 — Format autodetection (P2)
+
+`ARCHITECTURE.md` §9. Deliberately after a shipping product.
+
+- Candidate pattern library + match-rate scoring over the first ~200 records
+- Structural inference fallback, anchored on the closed priority vocabulary
+- `DetectingFormatProvider` behind the existing `IFormatProvider` seam
+- Pre-fills the existing M3 dialog for confirmation — no new UI, never applied silently
+
+**Done when:** common log4cplus patterns are detected without user input, and detection failure falls back cleanly to manual entry.
+
+---
+
+## Decisions needed before the milestone that blocks on them
+
+| Question (`SPEC.md`) | Blocks | Why it cannot be deferred past that point |
+|---|---|---|
+| Long-line wrapping (Q3) | M2 | Wrapping makes row height depend on viewport width, which invalidates the prefix-sum design on every resize (`ARCHITECTURE.md` §7.1) |
+| Character encoding (Q6) | M2 | UTF-16 input changes the byte-offset index and every parse path |
+| Timestamps parsed vs. opaque (Q5) | M2 | A parsed timestamp is a field on `Record`; adding one later means reindexing |
+| Message-text filtering (Q4) | M4 | A third filter axis that cannot use the interned-id fast path |
+| Priority filter model (Q1) | M4 | Small, but it is the filter UI |
+| Bookmarks (Q2) | M5 | Touches the model and adds a pane; cheap if planned, awkward if bolted on |
+| Compressed logs (Q7) | M6 | A third `LogSource` implementation with no random access |
+
+Q3, Q5, and Q6 should be settled before M2 begins — each one reaches into the index or the view geometry. Q1, Q2, and Q4 can be answered during M3.
+
+**Resolved 2026-07-20:** multi-line records render at full height in the table — this replaced `QTableView` with a custom `LogView` (`ARCHITECTURE.md` §7.1) and is the largest single change to this plan. Multiple open files are deferred but architecturally accommodated via the four constraints in `ARCHITECTURE.md` §12, which land in M2 and M5.
+
+## Deliberately deferred
+
+Recorded so they are not silently dropped: multi-file/tabbed views (architecturally accommodated, not implemented), bookmarks (pending Q2), preset export/import, search-within-log, and column reorder/hide. Each is additive to the M2 spine rather than a change to it.
