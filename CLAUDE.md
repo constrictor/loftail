@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What loftail is
 
-A cross-platform (Windows/macOS/Linux) desktop GUI viewer for logs produced by **log4cplus**, supporting both post-mortem inspection and live tailing. It filters and highlights by subsystem (the logger name passed to `Logger::getInstance()`) and priority, with saved presets and full session restore.
+A cross-platform (Windows/macOS/Linux) desktop GUI viewer for logs produced by **log4cplus**. Every file is opened watched for new content, so it serves finished logs and still-being-written logs with no mode switch (`SPEC.md` §3). It filters and highlights by subsystem (the logger name passed to `Logger::getInstance()`) and priority, with saved presets and full session restore.
 
 ## Document map
 
@@ -65,7 +65,7 @@ These ten constraints are cheap to honor from the start and expensive to retrofi
 
 4. **Filtering compares integers, not strings.** Logger and thread names are interned to `quint32` ids at index time; priorities are an enum; timestamps are `qint64`. Filter predicates operate on those. The intern tables double as the subsystem and thread lists shown in the filter pane. Message-text filtering is the one axis with no integer fast path, so it runs last in the predicate chain.
 
-5. **File access goes through the `LogSource` interface.** Post-mortem uses mmap; live tail uses buffered incremental reads. The model must not be able to tell which. This exists because mmap semantics for growing files differ meaningfully on Windows — see `ARCHITECTURE.md`.
+5. **Every file is opened append-aware; there is no post-mortem vs live mode.** loftail cannot know whether a file is still being written, so all files are watched and a finished log is just one that never grows (`SPEC.md` §3). No `LogSource` may assume the file is immutable, and none may hold it in a way that blocks the writer from appending, rotating, or truncating — observing a log must not disturb the process producing it. File access goes through the `LogSource` interface; the model cannot tell which implementation it has. The mmap (POSIX) vs buffered (Windows) split is now platform-driven, not mode-driven — see `ARCHITECTURE.md` §6.
 
 6. **The record table is a custom `LogView : QAbstractScrollArea`, not a `QTableView`.** Multi-line records render at full height, and `QTableView` cannot do variable row heights lazily — it needs an O(n) `resizeRowsToContents()` pass or per-row entries in `QHeaderView`, either of which defeats the lazy index. `LogView` scrolls in *line* units over two-level prefix sums of `Record::lineCount`. It has two geometry modes: **exact** (wrap off / selected-record-only) and **estimated** (wrap always on, where height depends on viewport width). Keep the estimation machinery unreachable from the exact path. See `ARCHITECTURE.md` §7.1–7.1.1; this is the project's highest-risk component.
 

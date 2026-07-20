@@ -11,7 +11,7 @@ Three principles drive the ordering:
 
 1. **Riskiest contract first.** `PatternCompiler` (M1) determines the shape of everything downstream and has zero UI dependencies, so it is built and tested before any window exists.
 2. **Prove the performance path early.** The lazy-index-plus-virtualized-view pipeline (M2) is validated against a real large log before any feature work sits on top of it. If the design is wrong, that must surface in week one, not week six.
-3. **Static before live.** Live tailing (M6) adds concurrency, rotation handling, and platform divergence. It lands only once a correct static viewer exists to compare against.
+3. **Read-existing before watch-for-more.** Every file is conceptually live (`SPEC.md` §3), but the two halves stage cleanly: M2 reads and indexes the content present at open; M6 adds the watch-and-append loop, which is where the concurrency, rotation handling, and platform divergence live. During M2–M5 the app shows a snapshot that does not yet auto-update — an incomplete feature, not a design contradiction. The product is not complete until M6. Crucially, the `LogSource` built in M2a must be append-safe from the start (no immutability assumption, non-blocking file handles, rotation detection) even though append ingestion arrives in M6 — retrofitting those assumptions later would touch the whole read path.
 
 Packaging (M7) is late but not last-minute — cross-platform packaging surprises are real, and M7 sits before the optional work rather than after it.
 
@@ -47,12 +47,12 @@ Project skeleton that builds and runs an empty window on all three platforms.
 
 **Risk:** `%d{...}` inner-format translation is the fiddliest part. Handle the common strftime subset and reject the rest with a clear error rather than half-supporting it.
 
-## M2 — Index, model, static view
+## M2 — Index, model, view
 
 The performance spine. `ARCHITECTURE.md` §4–§7.
 
 - `Document` type owning all per-file state, held in a one-element vector (`ARCHITECTURE.md` §12)
-- `LogSource` interface + `MappedLogSource` (mmap)
+- `LogSource` interface + the platform read strategy (`MappedLogSource` on POSIX, `BufferedLogSource` on Windows), **built append-safe from the start**: no immutability assumption, non-blocking shared file handles, rotation/truncation detection wired up even though append *ingestion* lands in M6 (`ARCHITECTURE.md` §6)
 - Indexer: scan → `QVector<Record>`, applying the record-start rule for multi-line records, counting `lineCount`, and retaining unparsed lines
 - Logger-name interning; subsystem set falls out of the scan
 - Two-level block prefix sums over `lineCount`
@@ -121,24 +121,23 @@ Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10
 
 **Done when:** quitting and relaunching restores the previous working state completely.
 
-## M6 — Live tailing
+## M6 — Live updates
 
-`SPEC.md` §3, `ARCHITECTURE.md` §6.
+Completes the always-watched model from `SPEC.md` §3. The `LogSource` is already append-safe from M2 (§6); this milestone activates the watch-and-append loop on top of it.
 
-- `BufferedLogSource` for growing files
 - `QFileSystemWatcher` + low-frequency size poll (watcher alone is unreliable on network mounts)
-- Incremental indexing of appended bytes; partial trailing record held until complete
+- Incremental indexing of appended bytes; partial trailing record held until complete; block prefix sums extended in place
 - Rotation/truncation detection via size and file identity → rescan, with a user notice
 - Follow toggle with scroll-away-to-detach and a return-to-bottom control
-- Filters and highlighters apply to incoming records
+- Incoming records pass through the active filters and highlighters unchanged
 
-**Done when:** the tail harness (append / truncate / rotate against a temp file) converges correctly, verified on all three platforms — Windows file-locking behavior differs and must be exercised there specifically.
+**Done when:** every file visibly auto-updates as it grows with no user action, and the tail harness (append / truncate / rotate against a temp file) converges correctly — verified on all three platforms, since Windows file-sharing behavior differs and must be exercised there specifically.
 
 **Risk:** the platform-divergent milestone. Budget time for Windows.
 
 ## M7 — Packaging
 
-- Command-line argument handling (`loftail <file>`, `--tail`, `--pattern`)
+- Command-line argument handling (`loftail <file>`, `--follow`, `--pattern`)
 - File association is explicitly **not** handled by the application — if wanted, it belongs to the installer
 - Linux: AppImage or `.deb` **[?]** — decide based on how you intend to distribute
 - Windows: `windeployqt` + installer or portable zip

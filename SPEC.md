@@ -9,10 +9,12 @@ Items marked **[?]** are proposals that need your confirmation — they were dec
 
 ## 1. Purpose
 
-loftail is a desktop application for reading logs produced by log4cplus. It serves two situations:
+loftail is a desktop application for reading logs produced by log4cplus. It covers a spectrum of use with no mode switch:
 
-- **Post-mortem** — open a log file after the fact and navigate a large volume of records to find what went wrong.
-- **Live** — follow a log file as it is being written, like `tail -f`, without losing filters or position.
+- Open a finished log and navigate a large volume of records to find what went wrong.
+- Follow a log as it is being written, like `tail -f`, without losing filters or position.
+
+These are not separate modes. Every file is opened watched for new content (§3); a finished log is just one that never grows. This removes a decision the user would otherwise have to make correctly — and often could not, since a file gives no sign of whether more is coming.
 
 It runs on Windows, macOS, and Linux.
 
@@ -28,19 +30,19 @@ It runs on Windows, macOS, and Linux.
 ## 3. Opening logs
 
 - Open a log file via menu, toolbar, keyboard shortcut, or drag-and-drop onto the window.
-- **From the command line:** `loftail <file>` opens that file directly. **[?]** Proposed additional switches: `--tail` to start following immediately, and `--pattern <p>` to supply the log format for a file loftail has not seen before.
+- **From the command line:** `loftail <file>` opens that file directly. **[?]** Proposed additional switches: `--follow` to open at the end with follow on (updates are always watched regardless — see §3 live updates — so this only sets the initial scroll position and follow state), and `--pattern <p>` to supply the log format for a file loftail has not seen before.
 - **Multiple instances may run simultaneously.** loftail does not enforce a single instance; launching it again opens an independent window with its own file and its own filters.
 - The most recently opened files are listed for quick reopening. **[?]** Proposed: 10 entries.
 - Opening a large file shows progress and remains responsive; the view populates as scanning proceeds rather than blocking until it finishes.
 - Scanning can be cancelled, leaving whatever was scanned so far usable. **[?]**
 
-### Live tailing
+### Live updates
 
-- Live tailing is a toggle on the currently open file, not a separate mode of opening it.
-- When enabled, new records appear as they are written.
-- **Follow** is a separate toggle: when on, the view scrolls to keep the newest record visible. Scrolling up manually turns follow off; a control returns to the bottom and turns it back on. This lets the user inspect history while the file keeps growing.
-- Active filters apply to incoming records exactly as they do to existing ones.
+- **Every file is opened as if it were live.** loftail cannot know whether a file is complete or still being written, so it always watches the open file and appends new records as they arrive. A file that is never appended to simply never produces any — there is no "post-mortem" versus "live" mode for the user to choose, and none to forget to turn on.
+- **Follow** is the one toggle in this area: when on, the view scrolls to keep the newest record visible. Scrolling up manually turns follow off; a control returns to the bottom and turns it back on. This lets the user inspect history while the file keeps growing. Follow defaults on for a file opened at its end. **[?]**
+- Active filters and highlighters apply to incoming records exactly as they do to existing ones.
 - If the file is rotated or truncated by the writing application, loftail detects this and reloads rather than showing stale or corrupt data. The user is informed that rotation occurred. **[?]**
+- Because loftail always holds the file open for reading, it must never prevent the writing application from appending to, rotating, or truncating it. Observing a log must not disturb the process producing it.
 
 ## 4. Log format configuration
 
@@ -104,13 +106,13 @@ A later release will guess the format when a file is opened and pre-fill the Log
 
 - **Find / Find Next.** Text search over record content, with next/previous navigation, case-sensitivity and regular-expression options, and wrap-around at the end. Distinct from filtering: find moves the cursor and leaves every record visible; filtering removes non-matching records. Find operates on what is currently visible — if a filter is active, find searches the filtered subset. **[?]**
 
-- A status area shows total record count, the count after filtering, and the current file and its live/static state.
+- A status area shows total record count, the count after filtering, the current file, and whether it is currently receiving new records.
 
 ## 6. Filtering
 
 Filtering removes non-matching records from the view. The underlying file is never modified.
 
-- **By subsystem.** The subsystem list is discovered automatically from the file as it is scanned, so the user picks from what is actually present rather than typing from memory. Subsystems can also be entered manually — useful when tailing a file that has not yet emitted a given subsystem.
+- **By subsystem.** The subsystem list is discovered automatically from the file as it is scanned, so the user picks from what is actually present rather than typing from memory. Subsystems can also be entered manually — useful when following a file that has not yet emitted a given subsystem.
 - **By priority.** Levels are selected as a set of checkboxes (TRACE…FATAL), all enabled by default. **[?]** Proposed over a minimum-threshold model, since it also allows isolating a single level.
 - **By thread.** Like subsystems, the thread list is discovered from the file as it is scanned. Available only when the log format includes a thread field.
 - **By message text.** Substring or regular-expression match against the message, with a case-sensitivity option. Unlike the other axes this cannot offer a pick-list, so it is a text box. A negation option (*hide* matching records) is included, since excluding known noise is as common as isolating a signal. **[?]**
@@ -149,7 +151,7 @@ Filters, highlighters, and presets are each presented in a side pane, so they ar
 
 On relaunch, loftail restores:
 
-- The last opened file, and whether live tailing was active
+- The last opened file, and its follow state (updates are always watched, so only follow is a remembered choice)
 - The log format in use
 - Active filters and highlighters, including which were enabled
 - Saved presets

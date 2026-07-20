@@ -133,12 +133,16 @@ class LogSource {                       // the model cannot tell which impl it h
 };
 ```
 
-- **`MappedLogSource`** — mmap, for post-mortem. Immutable file, no copying, fast random access.
-- **`BufferedLogSource`** — incremental buffered reads, for live tailing.
+**Every local file is opened append-aware.** `SPEC.md` §3 removes the post-mortem/live distinction: loftail cannot know whether a file is finished, so it treats all of them as potentially-growing. **No `LogSource` may assume the file is immutable**, and none may hold the file in a way that blocks the writing process from appending, rotating, or truncating it — observing a log must not disturb the process producing it.
 
-The split exists because **mmap and live tailing interact badly on Windows**: a file mapping's size is fixed at creation, so it must be recreated as the file grows, and holding a mapping can block the writing process from rotating or truncating the file — precisely what a logging framework does. Using mmap only for static files sidesteps this entirely.
+Two implementations, selected by **platform**, not by mode:
 
-**Rotation/truncation detection:** poll size and file identity (inode on POSIX, file index on Windows). If size shrinks or identity changes, the file was rotated — discard the index and rescan. `QFileSystemWatcher` is the primary change signal but is unreliable on some filesystems (notably network mounts), so pair it with a low-frequency size poll rather than trusting it alone.
+- **`MappedLogSource`** (POSIX) — mmap of the currently-indexed extent, re-mapped as the file grows. Safe under rotation on POSIX: `rename`/`unlink` leave an existing mapping intact (it holds the inode), and copytruncate is caught by the size-shrink check below. No copying, fast random access on the paint path.
+- **`BufferedLogSource`** (Windows, and the fallback everywhere) — incremental buffered reads. Preferred on Windows because a held file mapping can block the writer from rotating or truncating the file — exactly what a logging framework does — and under the always-watched model that risk would otherwise apply to *every* open file, not just ones a user chose to tail. Opened with full sharing (`FILE_SHARE_READ | WRITE | DELETE`) so loftail never locks the writer out.
+
+The `bytes()`/`size()` interface hides which one is in use; the model and indexer are identical across both.
+
+**Rotation/truncation detection is always active** (it is not gated on a tailing toggle any more): poll size and file identity (inode on POSIX, file index on Windows). If size shrinks or identity changes, the file was rotated — discard the index and rescan. `QFileSystemWatcher` is the primary change signal but is unreliable on some filesystems (notably network mounts), so pair it with a low-frequency size poll rather than trusting it alone. On POSIX, guard mmap reads against a concurrent copytruncate so a read past the new EOF cannot `SIGBUS`.
 
 Files are opened in binary mode; CRLF is handled explicitly rather than via platform text-mode translation, so a Windows-authored log reads identically on Linux.
 
@@ -223,7 +227,7 @@ The estimation machinery is only reachable in *always on* mode — the other two
 
 ## 8. Persistence
 
-- `QSettings` for window geometry, `QMainWindow::saveState()` output, column layout, active filters/highlighters, last file, and live-tail state.
+- `QSettings` for window geometry, `QMainWindow::saveState()` output, column layout, active filters/highlighters, last file, and follow state (watching is always on, so it is not a stored choice).
 - Presets as JSON under `QStandardPaths::AppConfigLocation` — a discrete file format, since `SPEC.md` §9 proposes export/import.
 - Per-file (and per-directory fallback) format cache, keyed by canonical path, so a configured file reopens without prompting.
 - Schema version field in both settings and preset files from day one; migrating unversioned user data later is unpleasant.
@@ -292,7 +296,7 @@ class Document {              // one open log file
     FilterSet                  filters;
     HighlighterSet             highlighters;
     ColumnLayout               columns;
-    bool                       tailing;
+    bool                       following;  // auto-scroll to newest; watching is always on
 };
 ```
 
@@ -306,7 +310,7 @@ The main window holds `std::vector<std::unique_ptr<Document>>` plus an *active d
 
 ```json
 { "schemaVersion": 1,
-  "documents": [ { "path": "...", "format": "...", "filters": [], "tailing": true } ],
+  "documents": [ { "path": "...", "format": "...", "filters": [], "following": true } ],
   "activeDocument": 0 }
 ```
 
