@@ -229,7 +229,7 @@ The estimation machinery is only reachable in *always on* mode — the other two
 
 - `QSettings` for window geometry, `QMainWindow::saveState()` output, column layout, active filters/highlighters, last file, and follow state (watching is always on, so it is not a stored choice).
 - Presets as JSON under `QStandardPaths::AppConfigLocation` — a discrete file format, since `SPEC.md` §9 proposes export/import.
-- Per-file format cache, keyed by canonical path, so a configured file reopens without prompting. Format is remembered per file only — there is no per-directory inheritance.
+- Per-file format cache, keyed by canonical path, so a configured file reopens without prompting. Per file only — no directory-level fallback; a new file is never assumed to share a sibling's format.
 - Schema version field in both settings and preset files from day one; migrating unversioned user data later is unpleasant.
 
 **Highlight colors store a palette index, never an RGB value** (`SPEC.md` §7). The palette maps each index to a light-theme and a dark-theme color, so switching themes remaps every existing rule automatically. Persisting raw colors would freeze rules to whichever theme was active when they were created — the exact problem the curated palette exists to prevent.

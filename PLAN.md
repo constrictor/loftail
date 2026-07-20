@@ -82,7 +82,7 @@ Makes M1 reachable by the user. `SPEC.md` §4.
 - Source and display time-zone selectors (`SPEC.md` §4); changing the source zone reparses timestamps only, not the whole index
 - Compile errors shown inline against the offending position
 - Warn when `%p` or `%c` is missing (filtering degrades)
-- `IFormatProvider` + `ManualFormatProvider`; per-file format cache (no per-directory inheritance)
+- `IFormatProvider` + `ManualFormatProvider`; per-file format cache (no directory fallback)
 - Bad pattern → file still opens with unparsed lines as plain text
 
 **Done when:** a user can open an arbitrary log4cplus file, type its pattern, see the preview resolve, and get correct columns — with the choice remembered on reopen.
@@ -127,7 +127,7 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 - `QFileSystemWatcher` + low-frequency size poll (watcher alone is unreliable on network mounts)
 - Incremental indexing of appended bytes; partial trailing record held until complete; block prefix sums extended in place
-- Rotation/truncation detection via size and file identity → silent rescan
+- Rotation/truncation detection via size and file identity → silent rescan, no user notice
 - Follow toggle with scroll-away-to-detach and a return-to-bottom control
 - Incoming records pass through the active filters and highlighters unchanged
 

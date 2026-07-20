@@ -41,7 +41,7 @@ It runs on Windows, macOS, and Linux.
 - **Every file is opened as if it were live.** loftail cannot know whether a file is complete or still being written, so it always watches the open file and appends new records as they arrive. A file that is never appended to simply never produces any — there is no "post-mortem" versus "live" mode for the user to choose, and none to forget to turn on.
 - **Follow** is the one toggle in this area: when on, the view scrolls to keep the newest record visible. Scrolling up manually turns follow off; a control returns to the bottom and turns it back on. This lets the user inspect history while the file keeps growing. Follow defaults on for a file opened at its end. **[?]**
 - Active filters and highlighters apply to incoming records exactly as they do to existing ones.
-- If the file is rotated or truncated by the writing application, loftail detects this and reloads rather than showing stale or corrupt data. The reload is silent.
+- If the file is rotated or truncated by the writing application, loftail detects this and reloads rather than showing stale or corrupt data. This happens silently — no notice is shown.
 - Because loftail always holds the file open for reading, it must never prevent the writing application from appending to, rotating, or truncating it. Observing a log must not disturb the process producing it.
 
 ## 4. Log format configuration
@@ -51,7 +51,7 @@ Because a log file does not describe its own layout, loftail needs to be told th
 - A **Log Format** dialog accepts the pattern string and shows a **live preview**: sample lines from the current file, split into the fields loftail would extract. This makes a wrong pattern immediately obvious rather than failing silently.
 - The dialog reports which fields were found. If **priority** or **subsystem** is absent from the pattern, loftail warns that filtering on the missing axis will be unavailable.
 - If a pattern matches poorly, the file still opens: unparsed lines are shown as plain text rather than being hidden or dropped. The user is never left staring at an empty window because of a format mistake.
-- The chosen format is remembered per file, so a file already configured opens correctly without asking again.
+- The chosen format is remembered per file, so a file already configured opens correctly without asking again. It is remembered per file only — a newly opened file is never assumed to share another's format.
 
 ### Character encoding
 
