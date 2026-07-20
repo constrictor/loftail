@@ -10,3 +10,15 @@ target_link_libraries(tst_scaffold PRIVATE
 )
 
 add_test(NAME tst_scaffold COMMAND tst_scaffold)
+
+# M1 — PatternCompiler. Table-driven, links loftail_core only (no QApplication).
+qt_add_executable(tst_patterncompiler
+    tst_patterncompiler.cpp
+)
+
+target_link_libraries(tst_patterncompiler PRIVATE
+    loftail_core
+    Qt6::Test
+)
+
+add_test(NAME tst_patterncompiler COMMAND tst_patterncompiler)

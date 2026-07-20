@@ -4,6 +4,11 @@
 add_library(loftail_core STATIC
     Version.cpp
     Version.h
+    Expected.h
+    CompileError.h
+    LogFormat.h
+    PatternCompiler.cpp
+    PatternCompiler.h
 )
 
 target_link_libraries(loftail_core PUBLIC Qt6::Core)

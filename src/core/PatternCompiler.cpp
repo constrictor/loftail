@@ -1,0 +1,327 @@
+#include "PatternCompiler.h"
+
+#include <QChar>
+
+namespace loftail {
+
+namespace {
+
+// The format log4cplus uses for %d / %D when no braces are supplied.
+constexpr QLatin1String kDefaultDateFormat("%Y-%m-%d %H:%M:%S");
+
+CompileError makeError(CompileError::Code code, QString message, int offset)
+{
+    return CompileError{code, std::move(message), offset};
+}
+
+// Compile a run of literal pattern text into a regex fragment. Whitespace runs
+// become `\s+` so that field padding (%-5p leaves a trailing space) is absorbed
+// by the separators around it; everything else is matched exactly via
+// QRegularExpression::escape. Produces no capturing groups, which keeps the
+// group numbering equal to the field order.
+QString compileLiteral(QStringView text)
+{
+    QString out;
+    int i = 0;
+    const int n = text.size();
+    while (i < n) {
+        if (text[i].isSpace()) {
+            while (i < n && text[i].isSpace())
+                ++i;
+            out += QStringLiteral("\\s+");
+        } else {
+            const int start = i;
+            while (i < n && !text[i].isSpace())
+                ++i;
+            out += QRegularExpression::escape(text.sliced(start, i - start).toString());
+        }
+    }
+    return out;
+}
+
+// Translate a log4cplus strftime-style date format into a matching sub-regex and
+// a Qt date format. Handles the common numeric subset and rejects the rest with
+// a clear error (PLAN.md M1 risk note). `baseOffset` is the position in the
+// original pattern of the first character of `fmt`, so error offsets are exact.
+struct DateTranslation
+{
+    QString regex;   // matches the produced date text; no capturing groups
+    DateFormat format;
+};
+
+Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int baseOffset)
+{
+    DateTranslation result;
+    result.format.strftime = fmt.toString();
+
+    QString &re = result.regex;
+    QString &qt = result.format.qtFormat;
+
+    int i = 0;
+    const int n = fmt.size();
+    while (i < n) {
+        const QChar c = fmt[i];
+        if (c != QLatin1Char('%')) {
+            // A literal character inside the date format.
+            re += QRegularExpression::escape(QString(c));
+            if (c.isLetter())
+                qt += QLatin1Char('\'') + QString(c) + QLatin1Char('\''); // quote so Qt treats it as literal
+            else
+                qt += c;
+            ++i;
+            continue;
+        }
+
+        if (i + 1 >= n) {
+            return Expected<DateTranslation, CompileError>::makeError(
+                makeError(CompileError::Code::DanglingPercentInDate,
+                          QStringLiteral("Date format ends with a stray '%'"),
+                          baseOffset + i));
+        }
+
+        const QChar code = fmt[i + 1];
+        switch (code.unicode()) {
+        case u'Y': re += QStringLiteral("\\d{4}"); qt += QStringLiteral("yyyy"); break;
+        case u'y': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("yy"); break;
+        case u'm': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("MM"); break;
+        case u'd': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("dd"); break;
+        case u'H': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("HH"); break;
+        case u'I': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("hh"); break;
+        case u'M': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("mm"); break;
+        case u'S': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("ss"); break;
+        case u'p': re += QStringLiteral("[AP]M"); qt += QStringLiteral("AP"); break;
+        case u'q': re += QStringLiteral("\\d{3}"); qt += QStringLiteral("zzz"); break; // log4cplus milliseconds
+        case u'%': re += QRegularExpression::escape(QStringLiteral("%")); qt += QLatin1Char('%'); break;
+        default:
+            return Expected<DateTranslation, CompileError>::makeError(
+                makeError(CompileError::Code::UnsupportedDateCode,
+                          QStringLiteral("Unsupported date code '%%%1' in %d{...}").arg(code),
+                          baseOffset + i));
+        }
+        i += 2;
+    }
+
+    result.format.isValid = true;
+    return result;
+}
+
+QString fieldName(FieldRole role)
+{
+    switch (role) {
+    case FieldRole::Date:       return QStringLiteral("Time");
+    case FieldRole::Priority:   return QStringLiteral("Priority");
+    case FieldRole::Logger:     return QStringLiteral("Subsystem");
+    case FieldRole::Thread:     return QStringLiteral("Thread");
+    case FieldRole::Message:    return QStringLiteral("Message");
+    case FieldRole::FileName:   return QStringLiteral("File");
+    case FieldRole::LineNumber: return QStringLiteral("Line");
+    case FieldRole::Method:     return QStringLiteral("Method");
+    }
+    return QString();
+}
+
+// One compiled chunk of the pattern: either an inert literal, or a field that
+// contributes exactly one capturing group to recordRe.
+struct Piece
+{
+    QString regex;            // fragment appended to recordRe
+    bool isField = false;
+    FieldRole role = FieldRole::Message;
+    bool isMessage = false;
+};
+
+// Wrap a field's base pattern in a capture group, allowing surrounding space to
+// be absorbed when the field carries a min-width (which pads with spaces). The
+// padding-absorb matters for bracketed padded fields like "[%5t]" where there is
+// no whitespace separator to soak up the pad.
+Piece makeFieldPiece(const QString &base, FieldRole role, bool hasMinWidth, bool isMessage)
+{
+    Piece p;
+    p.isField = true;
+    p.role = role;
+    p.isMessage = isMessage;
+    p.regex = QLatin1Char('(') + base + QLatin1Char(')');
+    if (hasMinWidth)
+        p.regex = QStringLiteral("\\s*") + p.regex + QStringLiteral("\\s*");
+    return p;
+}
+
+} // namespace
+
+Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
+{
+    if (pattern.isEmpty()) {
+        return Expected<LogFormat, CompileError>::makeError(
+            makeError(CompileError::Code::EmptyPattern, QStringLiteral("Pattern is empty"), 0));
+    }
+
+    QVector<Piece> pieces;
+    QString literalBuf;
+    LogFormat format;
+
+    auto flushLiteral = [&]() {
+        if (!literalBuf.isEmpty()) {
+            pieces.append(Piece{compileLiteral(literalBuf), false, FieldRole::Message, false});
+            literalBuf.clear();
+        }
+    };
+
+    const int len = pattern.size();
+    int i = 0;
+    int groupCounter = 0;
+
+    while (i < len) {
+        const QChar ch = pattern[i];
+        if (ch != QLatin1Char('%')) {
+            literalBuf += ch;
+            ++i;
+            continue;
+        }
+
+        // At a '%'. Parse optional modifier  [-][digits][.digits]  then the specifier.
+        const int percentPos = i;
+        int j = i + 1;
+        if (j >= len) {
+            return Expected<LogFormat, CompileError>::makeError(
+                makeError(CompileError::Code::DanglingPercent,
+                          QStringLiteral("Pattern ends with a stray '%'"), percentPos));
+        }
+
+        bool hasMinWidth = false;
+        if (pattern[j] == QLatin1Char('-'))
+            ++j; // left-justify flag
+        while (j < len && pattern[j].isDigit()) {
+            hasMinWidth = true;
+            ++j;
+        }
+        if (j < len && pattern[j] == QLatin1Char('.')) {
+            ++j;
+            while (j < len && pattern[j].isDigit())
+                ++j; // maxWidth (truncation) — parsed, but does not change the regex
+        }
+
+        if (j >= len) {
+            return Expected<LogFormat, CompileError>::makeError(
+                makeError(CompileError::Code::DanglingPercent,
+                          QStringLiteral("Modifier is not followed by a specifier"), percentPos));
+        }
+
+        const QChar spec = pattern[j];
+
+        // %% is a literal percent; modifiers (if any) are meaningless before it.
+        if (spec == QLatin1Char('%')) {
+            literalBuf += QLatin1Char('%');
+            i = j + 1;
+            continue;
+        }
+
+        // Any real field or newline terminates the pending literal run.
+        auto emitSimpleField = [&](const QString &base, FieldRole role, int &groupOut) {
+            flushLiteral();
+            const bool isMsg = (role == FieldRole::Message);
+            pieces.append(makeFieldPiece(base, role, hasMinWidth, isMsg));
+            groupOut = ++groupCounter;
+        };
+
+        switch (spec.unicode()) {
+        case u'd':
+        case u'D': {
+            flushLiteral();
+            // Optional {inner-format}.
+            QString defaultHolder;        // keeps the default format alive for innerFmt
+            QStringView innerFmt;
+            int fmtOffset = j; // used only for error reporting
+            int k = j + 1;
+            if (k < len && pattern[k] == QLatin1Char('{')) {
+                const int braceContentStart = k + 1;
+                int end = braceContentStart;
+                while (end < len && pattern[end] != QLatin1Char('}'))
+                    ++end;
+                if (end >= len) {
+                    return Expected<LogFormat, CompileError>::makeError(
+                        makeError(CompileError::Code::UnterminatedDateBrace,
+                                  QStringLiteral("'%1{' has no closing '}'").arg(spec),
+                                  k));
+                }
+                innerFmt = pattern.sliced(braceContentStart, end - braceContentStart);
+                fmtOffset = braceContentStart;
+                k = end + 1;
+            } else {
+                defaultHolder = QString(kDefaultDateFormat);
+                innerFmt = defaultHolder;
+                fmtOffset = j;
+            }
+
+            auto translated = translateDateFormat(innerFmt, fmtOffset);
+            if (!translated)
+                return Expected<LogFormat, CompileError>::makeError(translated.error());
+
+            pieces.append(makeFieldPiece(translated.value().regex, FieldRole::Date, hasMinWidth, false));
+            format.dateGroup = ++groupCounter;
+            format.impliedDateFormat = translated.value().format;
+            format.impliedZone = (spec == QLatin1Char('D')) ? Qt::UTC : Qt::LocalTime;
+            i = k;
+            continue;
+        }
+        case u'p': emitSimpleField(QStringLiteral("\\S+"), FieldRole::Priority, format.prioGroup); i = j + 1; continue;
+        case u'c': emitSimpleField(QStringLiteral("\\S+"), FieldRole::Logger, format.loggerGroup); i = j + 1; continue;
+        case u't': emitSimpleField(QStringLiteral("\\S+"), FieldRole::Thread, format.threadGroup); i = j + 1; continue;
+        case u'F': { int dummy = -1; emitSimpleField(QStringLiteral("\\S+"), FieldRole::FileName, dummy); i = j + 1; continue; }
+        case u'L': { int dummy = -1; emitSimpleField(QStringLiteral("\\d+"), FieldRole::LineNumber, dummy); i = j + 1; continue; }
+        case u'M': { int dummy = -1; emitSimpleField(QStringLiteral("\\S+"), FieldRole::Method, dummy); i = j + 1; continue; }
+        case u'm': emitSimpleField(QStringLiteral(".*"), FieldRole::Message, format.msgGroup); i = j + 1; continue;
+        case u'n':
+            // Platform newline: not part of a decoded line's content, so it emits
+            // nothing. It still flushes the pending literal.
+            flushLiteral();
+            i = j + 1;
+            continue;
+        default:
+            return Expected<LogFormat, CompileError>::makeError(
+                makeError(CompileError::Code::UnknownSpecifier,
+                          QStringLiteral("Unknown conversion specifier '%%%1'").arg(spec), j));
+        }
+    }
+
+    flushLiteral();
+
+    // Assign group numbers to Field entries and build recordRe / recordStartRe.
+    // Group numbering follows field order because only field pieces contribute a
+    // capturing group; literals and the date sub-regex introduce none.
+    QString recordPattern = QStringLiteral("^");
+    QString startPattern = QStringLiteral("^");
+    int fieldCounter = 0;
+    int messagePieceIndex = -1;
+    for (int p = 0; p < pieces.size(); ++p) {
+        if (pieces[p].isMessage) {
+            messagePieceIndex = p;
+            break;
+        }
+    }
+
+    for (int p = 0; p < pieces.size(); ++p) {
+        const Piece &piece = pieces[p];
+        recordPattern += piece.regex;
+        if (messagePieceIndex < 0 || p < messagePieceIndex)
+            startPattern += piece.regex;
+
+        if (piece.isField) {
+            ++fieldCounter;
+            format.fields.append(Field{piece.role, fieldName(piece.role), fieldCounter});
+        }
+    }
+    recordPattern += QLatin1Char('$');
+
+    format.recordRe = QRegularExpression(recordPattern);
+    format.recordStartRe = QRegularExpression(startPattern);
+
+    if (!format.recordRe.isValid() || !format.recordStartRe.isValid()) {
+        return Expected<LogFormat, CompileError>::makeError(
+            makeError(CompileError::Code::InvalidRegex,
+                      QStringLiteral("Internal error: generated an invalid regular expression"), -1));
+    }
+
+    return format;
+}
+
+} // namespace loftail

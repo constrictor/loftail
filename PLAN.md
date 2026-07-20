@@ -36,12 +36,12 @@ Project skeleton that builds and runs an empty window on all three platforms.
 
 `ConversionPattern` → `LogFormat`. Pure logic, no UI. `ARCHITECTURE.md` §3.
 
-- [ ] Tokenizer for the pattern string: literals, `%%`, specifiers with optional modifiers
-- [ ] Modifiers: left/right padding (`%-5p`), truncation (`%.30c`), width+precision (`%20.30m`)
-- [ ] Specifiers: `%d{...}` (strftime-style → sub-regex), `%p`, `%c`, `%m`, `%t`, `%F`, `%L`, `%M`, `%n`; unknown specifiers produce a structured error, not a silent mismatch
-- [ ] Both the local-time and UTC date specifiers, reporting which zone each implies via `LogFormat::impliedZone` (`ARCHITECTURE.md` §5.1) — this feeds the *Infer from pattern* default
-- [ ] Emit `recordRe`, `recordStartRe` (prefix up to the message field), field list, role indices
-- [ ] Structured `CompileError` carrying an offset into the pattern, so the UI can point at the mistake
+- [x] Tokenizer for the pattern string: literals, `%%`, specifiers with optional modifiers
+- [x] Modifiers: left/right padding (`%-5p`), truncation (`%.30c`), width+precision (`%20.30m`)
+- [x] Specifiers: `%d{...}` (strftime-style → sub-regex), `%p`, `%c`, `%m`, `%t`, `%F`, `%L`, `%M`, `%n`; unknown specifiers produce a structured error, not a silent mismatch
+- [x] Both the local-time and UTC date specifiers, reporting which zone each implies via `LogFormat::impliedZone` (`ARCHITECTURE.md` §5.1) — this feeds the *Infer from pattern* default
+- [x] Emit `recordRe`, `recordStartRe` (prefix up to the message field), field list, role indices
+- [x] Structured `CompileError` carrying an offset into the pattern, so the UI can point at the mistake
 
 **Done when:** table-driven tests cover every modifier and specifier, malformed patterns, and patterns lacking `%p` or `%c`. This milestone is disproportionately test-heavy by design.
 
