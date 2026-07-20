@@ -14,7 +14,8 @@ A cross-platform (Windows/macOS/Linux) desktop GUI viewer for logs produced by *
 
 | File              | Contents                                                                  |
 | ----------------- | ------------------------------------------------------------------------- |
-| `SPEC.md`         | User-visible behavior only. The product definition.                       |
+| `SPEC.md`         | User-visible behavior of the **first release** only. The product definition. |
+| `FUTURE.md`       | User-visible features planned for **later** releases, and the P1 accommodations that keep them cheap to add. |
 | `ARCHITECTURE.md` | Internal technical decisions and rationale. Not user-visible.             |
 | `PLAN.md`         | Milestone-by-milestone implementation plan.                               |
 
@@ -61,9 +62,9 @@ These ten constraints are cheap to honor from the start and expensive to retrofi
 
 2. **A record is not a line.** log4cplus messages can contain embedded newlines, so one record may span several physical lines. Indexing rule: a line matching `recordStartRe` begins a record; non-matching lines are continuations of the preceding record. Code that assumes one-line-per-row is wrong.
 
-3. **Nothing downstream of the parser knows about the pattern string.** `PatternCompiler` turns a log4cplus `ConversionPattern` into a `LogFormat` (regex + field map). Views, filters, and highlighters consume only the field map. This indirection is what makes format autodetection (P2) a drop-in rather than a rewrite.
+3. **Nothing downstream of the parser knows about the pattern string.** `PatternCompiler` turns a log4cplus `ConversionPattern` into a `LogFormat` (regex + field map). Views, filters, and highlighters consume only the field map. This indirection is what makes format autodetection (a later-release feature, `FUTURE.md`) a drop-in rather than a rewrite.
 
-4. **Filtering compares integers, not strings.** Logger and thread names are interned to `quint32` ids at index time; priorities are an enum; timestamps are `qint64`. Filter predicates operate on those. The intern tables double as the subsystem and thread lists shown in the filter pane. Message-text filtering is the one axis with no integer fast path, so it runs last in the predicate chain.
+4. **Filtering compares integers, not strings.** Logger and thread names are interned to `quint32` ids at index time; priority is an enum **declared in severity order** so filtering by minimum level is one `>=` test (`ARCHITECTURE.md` §7.2); timestamps are `qint64`. Filter predicates operate on those. The intern tables double as the subsystem and thread lists shown in the filter pane. Message-text filtering is the one axis with no integer fast path, so it runs last in the predicate chain.
 
 5. **Every file is opened append-aware; there is no post-mortem vs live mode.** loftail cannot know whether a file is still being written, so all files are watched and a finished log is just one that never grows (`SPEC.md` §3). No `LogSource` may assume the file is immutable, and none may hold it in a way that blocks the writer from appending, rotating, or truncating — observing a log must not disturb the process producing it. File access goes through the `LogSource` interface; the model cannot tell which implementation it has. The mmap (POSIX) vs buffered (Windows) split is now platform-driven, not mode-driven — see `ARCHITECTURE.md` §6.
 
@@ -73,7 +74,7 @@ These ten constraints are cheap to honor from the start and expensive to retrofi
 
 8. **Never scan for `\n` in raw bytes.** Encoding is user-selectable, defaults to auto-detect, and may be UTF-16, where a newline is `0A 00` or `00 0A`. All line-boundary and text work goes through the `Decoder` layer; only `Record::offset`/`length` stay in byte terms. See `ARCHITECTURE.md` §6.1 — this is the easiest invariant to violate by accident.
 
-9. **The indexer is a single forward pass.** No backward passes, no seek-and-re-read. Compressed and SSH-backed sources are planned (`SPEC.md` §11) and neither supports random access during indexing. Random access is fine in `data()` on the paint path, which only touches already-indexed records. See `ARCHITECTURE.md` §6.2.
+9. **The indexer is a single forward pass.** No backward passes, no seek-and-re-read. Compressed and SSH-backed sources are planned (`FUTURE.md`) and neither supports random access during indexing. Random access is fine in `data()` on the paint path, which only touches already-indexed records. See `ARCHITECTURE.md` §6.2.
 
 10. **`Record::timestamp` is always UTC epoch milliseconds.** Source and display time zones are both user-configurable, but conversion happens exactly twice: source zone applied at index time, display zone applied when formatting or interpreting typed filter bounds. Nothing in between is zone-aware. Storing local wall-clock time would make comparisons zone-dependent and break across DST transitions, where the same local time occurs twice. See `ARCHITECTURE.md` §5.1.
 
@@ -88,4 +89,4 @@ These ten constraints are cheap to honor from the start and expensive to retrofi
 ## Working notes
 
 - The user refers to the logging library as "cplus4log"; the actual library is **log4cplus**. Confirmed 2026-07-20.
-- Format configuration is manual in P1 (user supplies the `ConversionPattern`). Autodetection is P2 and is planned for but deliberately not built first — see `PLAN.md` M8 and the `IFormatProvider` seam.
+- Format configuration is manual in the first release (user supplies the `ConversionPattern`). Autodetection is a later-release feature (`FUTURE.md`), deliberately not built first — see `PLAN.md` M8 and the `IFormatProvider` seam.

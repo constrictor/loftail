@@ -91,9 +91,9 @@ Makes M1 reachable by the user. `SPEC.md` §4.
 
 `SPEC.md` §6.
 
-- Filter proxy over `LogModel`; priority as a bitmask, subsystems and threads as sets of interned ids
+- Filter proxy over `LogModel`; priority as a minimum-level `>=` test, subsystems and threads as sets of interned ids
 - Subsystem and thread filter UI: auto-discovered lists, manual entry, select-all/none/invert, narrowing text box
-- Priority filter UI: per-level checkboxes
+- Priority filter: a single minimum-level selector; predicate is one `>=` test, which requires the `Priority` enum in severity order (`ARCHITECTURE.md` §7.2)
 - Message-text filter: substring and regex, case-sensitivity, negation; ordered last in the predicate chain so integer tests run first
 - Time-range filter: start/end bounds against `Record::timestamp`
 - **Find / Find Next**: shares the matching code, walks visible rows from the cursor, changes no filter state
@@ -102,7 +102,6 @@ Makes M1 reachable by the user. `SPEC.md` §4.
 
 **Done when:** filters apply to 1M records within the §11 repaint budget — measure with a message-text filter active, since it is the only axis without an integer fast path — and toggling one is a single click.
 
-**Blocked on:** `SPEC.md` open question 1 (checkbox set vs. minimum threshold).
 
 ## M5 — Highlighting, panes, presets, persistence
 
@@ -147,9 +146,9 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 **Done when:** each platform has an artifact that runs on a machine without a Qt development environment.
 
-## M8 — Format autodetection (P2)
+## M8 — Format autodetection (post-1.0)
 
-`ARCHITECTURE.md` §9. Deliberately after a shipping product.
+`ARCHITECTURE.md` §9, `FUTURE.md`. The one later-release feature with a scheduled milestone; deliberately after a shipping product.
 
 - Candidate pattern library + match-rate scoring over the first ~200 records
 - Structural inference fallback, anchored on the closed priority vocabulary
@@ -162,17 +161,11 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 ## Decisions needed before the milestone that blocks on them
 
-Only three open questions remain, all answerable when their milestone arrives:
+All three headline questions are now answered: display zone defaults to as-written (M3), priority filtering is by minimum level (M4), bookmarks are deferred to a later release (`FUTURE.md`). No headline question remains open.
 
-| Question (`SPEC.md`)           | Blocks | Why it cannot be deferred past that point                                                                       |
-| ------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------- |
-| Display time zone default (Q3) | M3     | Presentation only — `Record::timestamp` is UTC regardless, so this is a formatting default, not a data decision |
-| Priority filter model (Q1)     | M4     | Small, but it is the filter UI                                                                                  |
-| Bookmarks (Q2)                 | M5     | Touches the model and adds a pane; cheap if planned, awkward if bolted on                                       |
+Only smaller inline `[?]` proposals in `SPEC.md` still await confirmation, and none blocks its milestone: CLI switch names (M7), follow-defaults-on-at-end (M6), column reorder/hide (M2b), filter combination semantics (M4), and apply-preset-replaces-vs-merges (M5).
 
-Smaller inline `[?]` proposals in `SPEC.md` also await confirmation but block nothing: CLI switch names (M7), follow-defaults-on-at-end (M6), column reorder/hide (M2b), filter combination semantics (M4), and apply-preset-replaces-vs-merges (M5).
-
-**Nothing blocks M0, M1, or M2a.** Making both time zones configurable removed the last blocking question: with `Record::timestamp` normalized to UTC at index time, zone handling became a conversion at the edges rather than a decision baked into the data. Every remaining question is answerable when its milestone arrives.
+**Nothing blocks any milestone from starting.**
 
 **Resolved 2026-07-20 (second pass).** Two rounds of decisions have reshaped this plan:
 
@@ -187,6 +180,8 @@ Smaller inline `[?]` proposals in `SPEC.md` also await confirmation but block no
 
 ## Deliberately deferred
 
-Recorded so they are not silently dropped: multi-file/tabbed views (architecturally accommodated, not implemented), compressed `.gz` and SSH-retrieved sources (accommodated via the single-forward-pass constraint, `ARCHITECTURE.md` §6.2), bookmarks (pending Q2), and column reorder/hide. Each is additive to the M2 spine rather than a change to it. (Preset export/import is no longer deferred — it is now in M5.)
+Later-release features are catalogued in `FUTURE.md` (multi-file views, compressed and SSH sources, bookmarks, and — with a milestone, M8 — format autodetection); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.
+
+Smaller P1 deferral: column reorder/hide (`SPEC.md` §5 `[?]`) is additive to the M2 spine and can land in M2b or later. (Preset export/import, once deferred, is now in M5.)
 
 Explicitly ruled out for now: caching the index to disk. It needs invalidation, versioning, and a cache location — real complexity to solve a problem that may not exist. Revisit only if the M2a measurements miss the §11 indexing target.

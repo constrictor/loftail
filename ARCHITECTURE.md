@@ -90,7 +90,7 @@ struct Record {
     quint32 loggerId;  // interned
     quint32 threadId;  // interned
     quint16 lineCount; // physical lines; drives row height (§7.1). Clamped to 65535.
-    quint8  priority;  // Priority enum; Unknown for unparsed
+    quint8  priority;  // Priority enum, declared in severity order (§7.2); Unknown < Trace, for unparsed
 };                     // 32 bytes, exactly — no padding waste
 ```
 
@@ -166,7 +166,7 @@ The consequence that reaches furthest: **the record scanner cannot search for `\
 
 ### 6.2 Designing for future sources
 
-`SPEC.md` §11 defers `.gz` and SSH-retrieved logs but names them, because both violate an assumption that is otherwise easy to bake in: **that a log source is local and randomly seekable.** Neither is. Gzip has no random access without an index; a remote source adds latency to every read.
+`FUTURE.md` plans `.gz` and SSH-retrieved logs, and both violate an assumption that is otherwise easy to bake in: **that a log source is local and randomly seekable.** Neither is. Gzip has no random access without an index; a remote source adds latency to every read.
 
 The `isRandomAccess()` flag exists so the indexer can branch now rather than being restructured later. Concretely, the constraint to honor today: **the indexer must be able to work as a forward, single-pass stream.** It already does — it scans start to finish. Do not add a second backward pass or a "seek to offset X and re-read" step. Random access is a legitimate optimization for `data()` on the paint path, which is only reachable for records already indexed and, for non-seekable sources, will be served from a local cache.
 
@@ -214,7 +214,7 @@ The estimation machinery is only reachable in *always on* mode — the other two
 
 - `LogModel : QAbstractTableModel` — rows are records, columns come from `LogFormat::fields`. `data()` parses lazily; it is on the paint path and must not allocate more than necessary. Prefer `QStringView` into the mapped bytes. The model stays a `QAbstractTableModel` even though the view is custom: it keeps the proxy-filter machinery and the model/view separation intact.
 - Filtering via a `QSortFilterProxyModel` subclass over `LogModel`. Predicates read `Record::priority` and `Record::loggerId` directly, not display strings.
-- Priority filtering is a bitmask over the six levels — a single AND test per record.
+- Priority filtering is a single `>=` test against a minimum level (`SPEC.md` §6). This requires the `Priority` enum to be **declared in severity order** (`Trace < Debug < Info < Warn < Error < Fatal`) so the integer comparison is the severity comparison. `Unknown` (unparsed records) sorts below `Trace` so a minimum level never hides unparsed lines — they carry no priority to filter on and must stay visible.
 - Subsystem and thread filtering are `QSet<quint32>` of interned ids.
 - Time-range filtering is two `qint64` comparisons against `Record::timestamp`.
 - **Message-text filtering is the one axis with no fast path.** It cannot use interned ids; it must decode and scan message bytes per record. Order the predicate chain so the cheap integer tests run first and text matching only sees what survives them — on a typical filter set that is a small fraction of records. For substring matching use a `QByteArray` search over the encoded form rather than constructing a `QString` per record; only regex matching needs decoded text.
@@ -246,9 +246,9 @@ Preset export/import (`SPEC.md` §9) is JSON. Because rules carry palette *indic
 
 Deliberately *not* doing: a lock file, a single-instance server, or inter-instance IPC. Each adds a failure mode (stale locks, port conflicts) far more annoying than the state loss it prevents.
 
-## 9. Format autodetection (P2)
+## 9. Format autodetection (later release)
 
-Deliberately deferred, but the seam exists in P1:
+Deferred to a later release (`FUTURE.md`), but the seam exists in the first:
 
 ```cpp
 class IFormatProvider {
@@ -256,7 +256,7 @@ class IFormatProvider {
 };
 ```
 
-P1 ships `ManualFormatProvider` (reads the user's pattern from settings). P2 adds `DetectingFormatProvider`, which falls through three layers, cheapest first:
+The first release ships `ManualFormatProvider` (reads the user's pattern from settings). A later release adds `DetectingFormatProvider`, which falls through three layers, cheapest first:
 
 1. **Candidate scoring.** A library of known patterns — log4cplus defaults plus common house styles. Compile each, run over the first ~200 records, score by match rate. Resolves the common case in milliseconds with no inference.
 2. **Structural inference.** Tokenize a sample; find positionally stable fields. The strongest anchor is priority: `TRACE|DEBUG|INFO|WARN|ERROR|FATAL` is a closed six-word vocabulary, so a token column drawn from it is near-certainly `%p`. A leading date-shaped run is `%d`; a dotted identifier adjacent to the priority is `%c`; the remainder is `%m`. Synthesize a pattern string and hand it to the same `PatternCompiler`.
@@ -286,7 +286,7 @@ Provisional, to be validated against a real log early rather than assumed:
 
 ## 12. Multi-file accommodation
 
-`SPEC.md` §11 defers opening several files at once, but the architecture must not preclude it. Four constraints make later support additive rather than a rewrite. They cost almost nothing now and are expensive to retrofit.
+`FUTURE.md` plans opening several files at once, but the architecture must not preclude it. Four constraints make later support additive rather than a rewrite. They cost almost nothing now and are expensive to retrofit.
 
 **1. A `Document` owns all per-file state.**
 

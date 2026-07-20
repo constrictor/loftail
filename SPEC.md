@@ -3,7 +3,7 @@
 **Status:** Draft, 2026-07-20.
 **Scope:** User-visible behavior only. Internal design lives in `ARCHITECTURE.md`.
 
-Items marked **[?]** are proposals that need your confirmation — they were decided by inference, not instruction. Items marked **P2** are planned but out of scope for the first release.
+Items marked **[?]** are proposals that need your confirmation — they were decided by inference, not instruction. This document describes the **first release only**; features planned for later releases live in `FUTURE.md`.
 
 ---
 
@@ -80,9 +80,7 @@ Because a log file records no zone information, two settings control interpretat
 
 Time-range filter bounds are entered in the display time zone, so what you type matches what you see.
 
-### Format autodetection — **P2**
-
-A later release will guess the format when a file is opened and pre-fill the Log Format dialog with its best guess, shown for confirmation rather than applied silently. Manual entry remains available and authoritative. The dialog is the same one used in P1.
+Format autodetection — guessing the pattern on open — is planned for a later release; see `FUTURE.md`. In the first release the pattern is always entered manually.
 
 ## 5. Main view
 
@@ -113,7 +111,7 @@ A later release will guess the format when a file is opened and pre-fill the Log
 Filtering removes non-matching records from the view. The underlying file is never modified.
 
 - **By subsystem.** The subsystem list is discovered automatically from the file as it is scanned, so the user picks from what is actually present rather than typing from memory. Subsystems can also be entered manually — useful when following a file that has not yet emitted a given subsystem.
-- **By priority.** Levels are selected as a set of checkboxes (TRACE…FATAL), all enabled by default. **[?]** Proposed over a minimum-threshold model, since it also allows isolating a single level.
+- **By priority.** A single **minimum level** is chosen (TRACE…FATAL); records below it are hidden. Selecting WARN, for example, shows WARN, ERROR, and FATAL. The default is TRACE, which shows everything.
 - **By thread.** Like subsystems, the thread list is discovered from the file as it is scanned. Available only when the log format includes a thread field.
 - **By message text.** Substring or regular-expression match against the message, with a case-sensitivity option. Unlike the other axes this cannot offer a pick-list, so it is a text box. A negation option (*hide* matching records) is included, since excluding known noise is as common as isolating a signal.
 - **By time range.** A start and/or end bound, entered in the display time zone (§4); records outside the range are hidden. Available only when the log format includes a timestamp field.
@@ -166,26 +164,20 @@ If the last opened file is missing or unreadable, loftail opens with an empty vi
 
 ## 11. Non-goals
 
-To keep the first release focused, loftail does not:
+These are things loftail will **not** do — as distinct from features deferred to a later release, which are in `FUTURE.md`. loftail does not:
 
 - Edit, write, or delete log files — it is strictly a reader
 - Read log formats from other logging frameworks (the format is configurable, so some will happen to work; none are supported)
-- Open several log files simultaneously — **planned for a later release.** The first release shows one file at a time; the architecture is built to accommodate more (see `ARCHITECTURE.md` §12) so that adding it later is additive rather than a rewrite
-- Aggregate several files into a single merged, time-ordered view — this is a distinct feature from opening several files, and is not planned
+- Aggregate several files into a single merged, time-ordered view — distinct from simply opening several files (which *is* planned; see `FUTURE.md`), and not planned at all
 - Provide charts, statistics, or alerting
-- Read compressed (`.gz`) logs, or retrieve logs from remote hosts over SSH — **both planned for a later release.** They are named here because they shape the file-access design now: log sources must not assume a local, randomly-seekable file (`ARCHITECTURE.md` §6)
 - Install itself as the system handler for `.log` files — file association is an installer concern, not an application one
 
 ---
 
 ## Open questions
 
-1. **Priority filtering model** (§6) — set of checkboxes as proposed, or minimum-severity threshold?
-2. **Bookmarks.** Not in the original sketch, but standard in log viewers: mark records of interest and jump between them. In or out?
-3. **Display time zone default** (§4) — *as written in the file* as proposed, or convert to local time by default?
+The three headline questions are now settled: priority filtering uses a **minimum level** (§6); **bookmarks** are deferred to a later release (`FUTURE.md`); the display time zone defaults to **as written in the file** (§4).
 
-Smaller inline proposals also await confirmation, marked **[?]** where they appear — none blocks anything: the CLI switch names (§3), follow-defaults-on when a file is opened at its end (§3), column reorder/hide and layout persistence (§5), filter combination semantics — OR within an axis, AND across axes (§6), and apply-preset-replaces-rather-than-merges (§9).
+Smaller inline proposals still await confirmation, marked **[?]** where they appear — none blocks anything: the CLI switch names (§3), follow-defaults-on when a file is opened at its end (§3), column reorder/hide and layout persistence (§5), filter combination semantics — OR within an axis, AND across axes (§6), and apply-preset-replaces-rather-than-merges (§9). Each is noted in `PLAN.md` against the milestone where it must be settled.
 
-None of these block implementation. Each is noted in `PLAN.md` against the milestone where it must be settled.
-
-*Resolved 2026-07-20: full-height multi-line records with a 100-line cap (§5); multiple open files deferred but accommodated (§11); wrapping is a three-mode setting (§5); encoding is an explicit setting defaulting to auto-detect (§4); timestamps are parsed, with configurable source and display time zones (§4); message-text, thread, and time-range filtering are in scope (§6); Find/Find Next searches the filtered subset (§5); copy defaults to raw text with Copy as Columns as a separate action (§5); highlight rules set an independent background and text color, each from a 12-entry dual-theme palette or left at default (§7); presets export/import as JSON (§9); per-file vs global session scoping settled, last-instance-to-close wins for global state, missing last file opens empty (§10); compressed and SSH sources are future work (§11); file association is out of scope (§11); command-line invocation and multiple simultaneous instances are supported (§3).*
+*Resolved 2026-07-20: full-height multi-line records with a 100-line cap (§5); wrapping is a three-mode setting (§5); encoding is an explicit setting defaulting to auto-detect (§4); timestamps are parsed, with configurable source and display time zones defaulting to as-written (§4); priority filtering is by minimum level, message-text/thread/time-range filtering are in scope (§6); Find/Find Next searches the filtered subset (§5); copy defaults to raw text with Copy as Columns as a separate action (§5); highlight rules set an independent background and text color, each from a 12-entry dual-theme palette or left at default (§7); presets export/import as JSON (§9); per-file vs global session scoping settled, last-instance-to-close wins for global state, missing last file opens empty (§10); command-line invocation and multiple simultaneous instances are supported (§3). Deferred to `FUTURE.md`: format autodetection, multiple open files, compressed and SSH sources, bookmarks.*
