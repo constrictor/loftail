@@ -22,3 +22,10 @@ target_link_libraries(tst_patterncompiler PRIVATE
 )
 
 add_test(NAME tst_patterncompiler COMMAND tst_patterncompiler)
+
+# M2a — the spine. All link loftail_core only; none needs a QApplication.
+foreach(unit decoder indexer logmodel)
+    qt_add_executable(tst_${unit} tst_${unit}.cpp)
+    target_link_libraries(tst_${unit} PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_${unit} COMMAND tst_${unit})
+endforeach()

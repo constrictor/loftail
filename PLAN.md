@@ -51,15 +51,15 @@ Project skeleton that builds and runs an empty window on all three platforms.
 
 The performance spine. `ARCHITECTURE.md` §4–§7.
 
-- [ ] `Document` type owning all per-file state, held in a one-element vector (`ARCHITECTURE.md` §12)
-- [ ] `LogSource` interface + the platform read strategy (`MappedLogSource` on POSIX, `BufferedLogSource` on Windows), **built append-safe from the start**: no immutability assumption, non-blocking shared file handles, rotation/truncation detection wired up even though append *ingestion* lands in M6 (`ARCHITECTURE.md` §6)
-- [ ] Indexer: scan → `QVector<Record>`, applying the record-start rule for multi-line records, counting `lineCount`, and retaining unparsed lines
-- [ ] Logger-name interning; subsystem set falls out of the scan
-- [ ] Two-level block prefix sums over `lineCount`
-- [ ] `LogModel : QAbstractTableModel`, lazy `data()`, columns from `LogFormat::fields`
-- [ ] **`LogView : QAbstractScrollArea`** — line-unit scrolling, variable row heights, visible-only painting, selection via `QItemSelectionModel`, copy-to-clipboard
-- [ ] Indexing on a worker thread with **batched** model updates, progress reporting, and cancellation
-- [ ] Open-file UI: dialog, drag-and-drop, recent files
+- [x] `Document` type owning all per-file state, held in a one-element vector (`ARCHITECTURE.md` §12)
+- [x] `LogSource` interface + the platform read strategy (`MappedLogSource` on POSIX, `BufferedLogSource` on Windows), **built append-safe from the start**: no immutability assumption, non-blocking shared file handles, rotation/truncation detection wired up even though append *ingestion* lands in M6 (`ARCHITECTURE.md` §6) — POSIX `MappedLogSource` implemented and measured; `BufferedLogSource` is a portable QFile fallback with the rotation/truncation seam wired, its Windows-only non-blocking share-mode `CreateFile` open deferred to the M6 Windows work
+- [x] Indexer: scan → `QVector<Record>`, applying the record-start rule for multi-line records, counting `lineCount`, and retaining unparsed lines
+- [x] Logger-name interning; subsystem set falls out of the scan (thread names interned too)
+- [x] Two-level block prefix sums over `lineCount`
+- [x] `LogModel : QAbstractTableModel`, lazy `data()`, columns from `LogFormat::fields`
+- [ ] **`LogView : QAbstractScrollArea`** — line-unit scrolling, variable row heights, visible-only painting, selection via `QItemSelectionModel`, copy-to-clipboard *(M2b; M2a proved the scheme with a throwaway exact-geometry prototype)*
+- [ ] Indexing on a worker thread with **batched** model updates, progress reporting, and cancellation *(M2b; the `Indexer` progress/cancel seam exists, but M2a indexes synchronously)*
+- [ ] Open-file UI: dialog, drag-and-drop, recent files *(M2b)*
 
 **Done when:** a multi-hundred-MB real log opens, scrolls smoothly, and shows correct fields — including multi-line records rendered at full height. **Measure against `ARCHITECTURE.md` §11 here** and correct the design now if the targets are missed.
 
@@ -67,7 +67,7 @@ The performance spine. `ARCHITECTURE.md` §4–§7.
 
 **M2 is now split**, since wrapping and encoding both landed inside it:
 
-- [ ] **M2a — the spine.** Encoding detection and forced-encoding paths + `Decoder`; indexer producing the 32-byte `Record` (timestamps normalized to UTC epoch ms per `ARCHITECTURE.md` §5.1, threads interned); `Document`; `LogModel`; block prefix sums; and a throwaway scrolling prototype of `LogView` in **exact** geometry mode. Proves the performance targets against a real log.
+- [x] **M2a — the spine.** Encoding detection and forced-encoding paths + `Decoder`; indexer producing the 32-byte `Record` (timestamps normalized to UTC epoch ms per `ARCHITECTURE.md` §5.1, threads interned); `Document`; `LogModel`; block prefix sums; and a throwaway scrolling prototype of `LogView` in **exact** geometry mode. Proves the performance targets against a real log. *(Measured on a 200 MB / 1.9M-record synthetic log4cplus log, Release build, warm file: indexing 214 MB/s single-threaded vs the ≥100 target; block-sum rebuild 0.45 ms per 1M records vs <20; paint-frame model/geometry cost well under the 16.6 ms/frame 60 fps budget.)*
 - [ ] **M2b — the production view.** `LogView` proper: selection, keyboard navigation, clipboard (raw + copy-as-columns), column headers, wrap modes off and selected-record-only.
 - [ ] **M2c — estimated geometry.** Wrap *always on*: character-count-based height, per-block measurement cache keyed by viewport width, debounced resize, refining scrollbar (`ARCHITECTURE.md` §7.1.1).
 

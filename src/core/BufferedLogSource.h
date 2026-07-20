@@ -1,0 +1,45 @@
+#pragma once
+
+#include "LogSource.h"
+
+#include <QByteArray>
+#include <QFile>
+
+namespace loftail {
+
+// Buffered read strategy: the Windows source, and the portable fallback
+// everywhere (ARCHITECTURE.md §6). On Windows it is PREFERRED over a mapping
+// because a held file mapping can block the writer from rotating or truncating —
+// exactly what a logging framework does — and under the always-watched model
+// that risk would apply to every open file. The Windows open uses full sharing
+// (FILE_SHARE_READ | WRITE | DELETE) so loftail never locks the writer out.
+//
+// NOTE (M2a, Linux dev host): this is compiled and unit-tested on POSIX via
+// QFile, which is portable, so the seam is real and exercised. The Windows-only
+// non-blocking share-mode open (CreateFile) is NOT reachable to build/test on
+// this machine and lands with the M6 Windows work; QFile already opens for
+// shared read on Windows, which is enough for the M2a read path.
+class BufferedLogSource final : public LogSource
+{
+public:
+    static std::unique_ptr<BufferedLogSource> open(const QString &path);
+
+    QByteArrayView bytes(qint64 offset, qint64 length) override;
+    qint64 size() const override { return m_size; }
+    qint64 refreshSize() override;
+    bool isRandomAccess() const override { return true; }
+    quint64 identity() const override { return m_identity; }
+    bool wasTruncated() const override { return m_truncated; }
+
+private:
+    BufferedLogSource() = default;
+    quint64 computeIdentity() const;
+
+    QFile      m_file;
+    qint64     m_size = 0;
+    quint64    m_identity = 0;
+    bool       m_truncated = false;
+    QByteArray m_buffer;      // backs the QByteArrayView returned by bytes()
+};
+
+} // namespace loftail
