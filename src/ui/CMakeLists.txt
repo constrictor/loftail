@@ -2,6 +2,9 @@
 add_library(loftail_ui STATIC
     MainWindow.cpp
     MainWindow.h
+    # M2b — the production custom record view
+    LogView.cpp
+    LogView.h
 )
 
 target_link_libraries(loftail_ui PUBLIC

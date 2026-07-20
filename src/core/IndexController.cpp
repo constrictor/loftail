@@ -1,0 +1,144 @@
+#include "IndexController.h"
+
+#include "Document.h"
+#include "Indexer.h"
+#include "LogModel.h"
+#include "LogSource.h"
+#include "RecordIndex.h"
+
+#include <QThread>
+
+namespace loftail {
+
+IndexWorker::IndexWorker(Document *document) : m_document(document) {}
+
+void IndexWorker::run()
+{
+    LogSource *source = m_document->source();
+    if (!source) {
+        emit finished(false);
+        return;
+    }
+
+    Indexer indexer(m_document->format(), m_document->decoder(), m_document->sourceZone());
+
+    // Track how much has already been streamed so each batch carries only the new
+    // records and the intern names first seen since the previous batch.
+    int emittedRecords = 0;
+    int emittedLoggers = 1; // id 0 == "" is reserved in both intern tables
+    int emittedThreads = 1;
+
+    auto flush = [&](const RecordIndex &idx, bool final) {
+        // On a non-final flush the last record is still open for continuations, so
+        // hold it back (§4); on the final flush everything is settled.
+        const int upto = final ? idx.records.size()
+                               : qMax(emittedRecords, idx.records.size() - 1);
+
+        IndexBatch batch;
+        batch.final = final;
+
+        for (int i = emittedLoggers; i < idx.loggers.count(); ++i)
+            batch.newLoggers.push_back(idx.loggers.name(i));
+        emittedLoggers = idx.loggers.count();
+
+        for (int i = emittedThreads; i < idx.threads.count(); ++i)
+            batch.newThreads.push_back(idx.threads.name(i));
+        emittedThreads = idx.threads.count();
+
+        if (upto > emittedRecords) {
+            batch.records.reserve(upto - emittedRecords);
+            for (int i = emittedRecords; i < upto; ++i)
+                batch.records.push_back(idx.records.at(i));
+            emittedRecords = upto;
+        }
+
+        if (!batch.records.isEmpty() || !batch.newLoggers.isEmpty()
+            || !batch.newThreads.isEmpty() || final) {
+            emit batchReady(batch);
+        }
+    };
+
+    bool cancelled = false;
+    indexer.index(*source,
+                  [this, source](qint64 done, qint64 total) {
+                      emit progress(done, total);
+                      Q_UNUSED(source);
+                      return !m_cancel.load();
+                  },
+                  &cancelled, flush);
+
+    emit finished(cancelled);
+}
+
+IndexController::IndexController(Document *document, LogModel *model, QObject *parent)
+    : QObject(parent), m_document(document), m_model(model)
+{
+    // Register once so IndexBatch can cross the queued (thread) connection.
+    static const int metaId = qRegisterMetaType<loftail::IndexBatch>("loftail::IndexBatch");
+    Q_UNUSED(metaId);
+}
+
+IndexController::~IndexController()
+{
+    if (m_thread) {
+        if (m_worker)
+            m_worker->requestCancel();
+        m_thread->quit();
+        m_thread->wait();
+    }
+}
+
+void IndexController::start()
+{
+    if (m_running)
+        return;
+    m_running = true;
+
+    m_thread = new QThread(this);
+    m_worker = new IndexWorker(m_document);
+    m_worker->moveToThread(m_thread);
+
+    connect(m_thread, &QThread::started, m_worker, &IndexWorker::run);
+    connect(m_worker, &IndexWorker::batchReady, this, &IndexController::onBatch);
+    connect(m_worker, &IndexWorker::progress, this, &IndexController::progress);
+    connect(m_worker, &IndexWorker::finished, this, &IndexController::onFinished);
+    // Tear the thread down once the worker reports completion.
+    connect(m_worker, &IndexWorker::finished, m_thread, &QThread::quit);
+    connect(m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
+
+    m_thread->start();
+}
+
+void IndexController::cancel()
+{
+    if (m_worker)
+        m_worker->requestCancel();
+}
+
+void IndexController::onBatch(const IndexBatch &batch)
+{
+    RecordIndex &idx = m_document->index();
+
+    // Append new intern names first, in id order, so the GUI-side ids line up with
+    // the worker's ids the records already reference.
+    for (const QString &name : batch.newLoggers)
+        idx.loggers.intern(name);
+    for (const QString &name : batch.newThreads)
+        idx.threads.intern(name);
+
+    if (!batch.records.isEmpty()) {
+        m_model->beginAppendRows(batch.records.size());
+        idx.records.append(batch.records);
+        idx.rebuildBlockSums(); // one linear pass; cheap enough per batch (§7.2, §11)
+        m_model->endAppendRows();
+    }
+}
+
+void IndexController::onFinished(bool cancelled)
+{
+    m_running = false;
+    m_worker = nullptr; // deleteLater is wired on thread finish
+    emit finished(cancelled);
+}
+
+} // namespace loftail

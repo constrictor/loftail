@@ -57,9 +57,9 @@ The performance spine. `ARCHITECTURE.md` §4–§7.
 - [x] Logger-name interning; subsystem set falls out of the scan (thread names interned too)
 - [x] Two-level block prefix sums over `lineCount`
 - [x] `LogModel : QAbstractTableModel`, lazy `data()`, columns from `LogFormat::fields`
-- [ ] **`LogView : QAbstractScrollArea`** — line-unit scrolling, variable row heights, visible-only painting, selection via `QItemSelectionModel`, copy-to-clipboard *(M2b; M2a proved the scheme with a throwaway exact-geometry prototype)*
-- [ ] Indexing on a worker thread with **batched** model updates, progress reporting, and cancellation *(M2b; the `Indexer` progress/cancel seam exists, but M2a indexes synchronously)*
-- [ ] Open-file UI: dialog, drag-and-drop, recent files *(M2b)*
+- [x] **`LogView : QAbstractScrollArea`** — line-unit scrolling, variable row heights, visible-only painting, selection via `QItemSelectionModel`, copy-to-clipboard *(M2b; M2a proved the scheme with a throwaway exact-geometry prototype, now retired)*
+- [x] Indexing on a worker thread with **batched** model updates, progress reporting, and cancellation *(M2b; `IndexController` drives the `Indexer` off the GUI thread and streams `IndexBatch`es into `LogModel` via begin/endInsertRows)*
+- [x] Open-file UI: dialog, drag-and-drop, recent files *(M2b)*
 
 **Done when:** a multi-hundred-MB real log opens, scrolls smoothly, and shows correct fields — including multi-line records rendered at full height. **Measure against `ARCHITECTURE.md` §11 here** and correct the design now if the targets are missed.
 
@@ -68,7 +68,7 @@ The performance spine. `ARCHITECTURE.md` §4–§7.
 **M2 is now split**, since wrapping and encoding both landed inside it:
 
 - [x] **M2a — the spine.** Encoding detection and forced-encoding paths + `Decoder`; indexer producing the 32-byte `Record` (timestamps normalized to UTC epoch ms per `ARCHITECTURE.md` §5.1, threads interned); `Document`; `LogModel`; block prefix sums; and a throwaway scrolling prototype of `LogView` in **exact** geometry mode. Proves the performance targets against a real log. *(Measured on a 200 MB / 1.9M-record synthetic log4cplus log, Release build, warm file: indexing 214 MB/s single-threaded vs the ≥100 target; block-sum rebuild 0.45 ms per 1M records vs <20; paint-frame model/geometry cost well under the 16.6 ms/frame 60 fps budget.)*
-- [ ] **M2b — the production view.** `LogView` proper: selection, keyboard navigation, clipboard (raw + copy-as-columns), column headers, wrap modes off and selected-record-only.
+- [x] **M2b — the production view.** `LogView` proper: selection, keyboard navigation, clipboard (raw + copy-as-columns), column headers, wrap modes off and selected-record-only.
 - [ ] **M2c — estimated geometry.** Wrap *always on*: character-count-based height, per-block measurement cache keyed by viewport width, debounced resize, refining scrollbar (`ARCHITECTURE.md` §7.1.1).
 
 M2c is separable and lands last on purpose — the other two wrap modes are fully usable without it, so if estimated mode proves troublesome it can slip without blocking anything downstream.
@@ -162,6 +162,6 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 Later-release features are catalogued in `FUTURE.md` (multi-file views, compressed and SSH sources, bookmarks, and — with a milestone, M8 — format autodetection); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.
 
-Column reorder/hide with remembered layout (`SPEC.md` §5) is additive to the M2 spine and lands in M2b. (Preset export/import, once deferred, is now in M5.)
+Column reorder/hide with remembered layout (`SPEC.md` §5) is additive to the M2 spine and lands in M2b. **Done (M2b):** `LogView` drives its columns through a `QHeaderView` (reorder, resize, hide via the header context menu); the layout round-trips through the header's own `saveState()`/`restoreState()`, persisted to `QSettings` — full session restore is folded in at M5. (Preset export/import, once deferred, is now in M5.)
 
 Explicitly ruled out for now: caching the index to disk. It needs invalidation, versioning, and a cache location — real complexity to solve a problem that may not exist. Revisit only if the M2a measurements miss the §11 indexing target.

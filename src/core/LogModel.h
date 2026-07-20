@@ -28,9 +28,17 @@ public:
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
     QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
 
-    // Convenience for the prototype view: the display text of one cell without a
+    // Convenience for the view: the display text of one cell without a
     // QModelIndex round-trip.
     QString cellText(int row, int column) const;
+
+    // Batched-append hooks for the worker-thread indexer (M2b, §7.2). The caller
+    // appends `count` records to the Document's index BETWEEN these two calls, so
+    // rowCount() reads the old size at beginAppendRows() and the new size after
+    // endAppendRows(). This is the only way rows enter the model — records are
+    // never removed while indexing, so plain insert/endInsert semantics are safe.
+    void beginAppendRows(int count);
+    void endAppendRows();
 
 private:
     const Document *m_document;

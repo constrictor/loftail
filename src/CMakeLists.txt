@@ -3,10 +3,10 @@
 add_subdirectory(core)
 add_subdirectory(ui)
 
-# M2a throwaway targets: the performance harness (console) and the exact-geometry
-# scrolling prototype of LogView. Both are disposable and superseded in M2b.
+# M2a throwaway performance harness (console). The exact-geometry scrolling
+# prototype (src/proto) has been retired now that the production LogView (src/ui)
+# exists; the bench harness is kept because it still measures the §11 targets.
 add_subdirectory(bench)
-add_subdirectory(proto)
 
 qt_add_executable(loftail
     main.cpp

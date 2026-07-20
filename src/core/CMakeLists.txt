@@ -31,6 +31,9 @@ add_library(loftail_core STATIC
     Document.h
     LogModel.cpp
     LogModel.h
+    # M2b — worker-thread indexing controller (QtCore only, no Widgets)
+    IndexController.cpp
+    IndexController.h
 )
 
 # MappedLogSource is POSIX-only (mmap). On Windows the BufferedLogSource is the

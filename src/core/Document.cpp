@@ -18,13 +18,14 @@ QTimeZone Document::inferSourceZone(const LogFormat &format)
     return QTimeZone::systemTimeZone();
 }
 
-bool Document::open(const QString &path,
-                    QStringView pattern,
-                    Encoding requestedEncoding,
-                    const QTimeZone &sourceZone,
-                    const QTimeZone &displayZone)
+bool Document::prepare(const QString &path,
+                       QStringView pattern,
+                       Encoding requestedEncoding,
+                       const QTimeZone &sourceZone,
+                       const QTimeZone &displayZone)
 {
     m_lastError.clear();
+    m_index = RecordIndex();
 
     auto compiled = PatternCompiler::compile(pattern);
     if (!compiled) {
@@ -49,6 +50,18 @@ bool Document::open(const QString &path,
 
     m_sourceZone = sourceZone.isValid() ? sourceZone : inferSourceZone(m_format);
     m_displayZone = displayZone.isValid() ? displayZone : m_sourceZone;
+    m_index.rebuildBlockSums(); // empty index has a valid (zero) total
+    return true;
+}
+
+bool Document::open(const QString &path,
+                    QStringView pattern,
+                    Encoding requestedEncoding,
+                    const QTimeZone &sourceZone,
+                    const QTimeZone &displayZone)
+{
+    if (!prepare(path, pattern, requestedEncoding, sourceZone, displayZone))
+        return false;
 
     Indexer indexer(m_format, m_decoder, m_sourceZone);
     m_index = indexer.index(*m_source);

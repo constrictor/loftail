@@ -45,6 +45,18 @@ public:
               const QTimeZone &sourceZone = QTimeZone(),
               const QTimeZone &displayZone = QTimeZone());
 
+    // Everything open() does EXCEPT running the indexer: open the source, compile
+    // the pattern, resolve the encoding, and settle the source/display zones,
+    // leaving the index empty. This is the split M2b needs to drive indexing on a
+    // worker thread — the controller calls prepare() on the GUI thread (fast), then
+    // streams records into index() from a background scan. Returns false with
+    // lastError() set on a bad pattern or an unopenable file.
+    bool prepare(const QString &path,
+                 QStringView pattern,
+                 Encoding requestedEncoding = Encoding::Auto,
+                 const QTimeZone &sourceZone = QTimeZone(),
+                 const QTimeZone &displayZone = QTimeZone());
+
     const QString &path() const { return m_path; }
     const QString &lastError() const { return m_lastError; }
 

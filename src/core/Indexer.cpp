@@ -12,7 +12,8 @@ Indexer::Indexer(const LogFormat &format, const Decoder &decoder, const QTimeZon
 {
 }
 
-RecordIndex Indexer::index(LogSource &source, const Progress &progress, bool *cancelled) const
+RecordIndex Indexer::index(LogSource &source, const Progress &progress, bool *cancelled,
+                           const Batch &batch) const
 {
     RecordIndex idx;
     if (cancelled)
@@ -144,12 +145,21 @@ RecordIndex Indexer::index(LogSource &source, const Progress &progress, bool *ca
             if (!progress(pos, size)) {
                 if (cancelled)
                     *cancelled = true;
+                if (batch)
+                    batch(idx, /*final=*/true); // flush the remainder on cancel
                 idx.rebuildBlockSums();
                 return idx;
             }
         }
+
+        // Stream what has been scanned so far. `final=false` keeps the last record
+        // open for continuations still to arrive in the next chunk (§4).
+        if (batch)
+            batch(idx, /*final=*/false);
     }
 
+    if (batch)
+        batch(idx, /*final=*/true);
     idx.rebuildBlockSums();
     return idx;
 }

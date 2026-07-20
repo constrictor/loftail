@@ -93,6 +93,17 @@ QString LogModel::cellText(int row, int column) const
     return value;
 }
 
+void LogModel::beginAppendRows(int count)
+{
+    const int first = rowCount();
+    beginInsertRows(QModelIndex(), first, first + count - 1);
+}
+
+void LogModel::endAppendRows()
+{
+    endInsertRows();
+}
+
 QVariant LogModel::data(const QModelIndex &index, int role) const
 {
     if (!index.isValid() || (role != Qt::DisplayRole && role != Qt::ToolTipRole))
