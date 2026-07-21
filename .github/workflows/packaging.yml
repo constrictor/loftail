@@ -60,10 +60,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt 6
+      - name: Install Qt 6 (MSVC)
         uses: jurplel/install-qt-action@v4
         with:
           version: "6.4.2"
+          arch: win64_msvc2019_64
+
+      # Qt for Windows is built for MSVC and injects MSVC-only flags
+      # (/Zc:__cplusplus, /permissive-). With the Ninja generator CMake would
+      # otherwise pick up the MinGW g++ on the runner's PATH and choke on those
+      # flags, so activate the MSVC toolchain (puts cl.exe on PATH, exports the
+      # env to later steps) before configuring.
+      - name: Set up MSVC toolchain
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Configure + build and test
         shell: pwsh
