@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAbstractTableModel>
+#include <QColor>
 
 namespace loftail {
 
@@ -32,6 +33,13 @@ public:
     // QModelIndex round-trip.
     QString cellText(int row, int column) const;
 
+    // Highlighting (M5): the active theme decides which of each palette slot's two
+    // colors data() resolves for the Background/Foreground roles (SPEC.md §7). The
+    // UI sets this from the real widget palette and updates it on a theme change; it
+    // defaults to light so core tests are deterministic without a QApplication.
+    void setDarkTheme(bool dark) { m_darkTheme = dark; }
+    bool darkTheme() const { return m_darkTheme; }
+
     // Filter reset hooks (M4). The caller wraps Document::applyFilters() between
     // these so the view, header, and selection model refresh over the new visible
     // set (SPEC.md §6): the filtered set is a wholesale row remap, so a model reset
@@ -48,8 +56,14 @@ public:
     void beginAppendRows(int count);
     void endAppendRows();
 
+    // Resolve the first-match-wins highlight color for one view row's record, or an
+    // invalid QColor when no rule matches or the matched rule leaves that role at the
+    // theme default. `background` picks the background vs foreground role.
+    QColor highlightColor(int row, bool background) const;
+
 private:
     const Document *m_document;
+    bool            m_darkTheme = false;
 };
 
 } // namespace loftail

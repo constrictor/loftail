@@ -124,7 +124,7 @@ Filtering removes non-matching records from the view. The underlying file is nev
 
 Highlighting colors matching records without removing anything, for spotting events in context.
 
-- A highlight rule matches on subsystem and/or priority and restyles the matching records.
+- A highlight rule matches on subsystem and/or priority and restyles the matching records. Priority is matched as a **minimum level** (`≥`), the same way the priority filter works, so a rule for "ERROR and above" also colors FATAL; order the list high-severity-first for a per-level look. Unparsed records are never matched by a priority rule.
 - Rules are an **ordered list**; when several match a record, the first match wins. Order is user-adjustable.
 - Rules can be enabled and disabled individually, like filters.
 - **A rule sets a background color and a text (foreground) color, chosen independently.** Either can be left at its default, which is the record's normal un-highlighted appearance — so a rule may recolor only the background, only the text, or both. A highlight can therefore be as quiet as tinting the text or as loud as a full-row fill.

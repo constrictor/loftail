@@ -51,6 +51,18 @@ add_library(loftail_core STATIC
     FormatCache.h
     FormatPreview.cpp
     FormatPreview.h
+    # M5 — highlighting, presets, session persistence (all UI-free, name/index
+    # based so they are theme- and reindex-portable, ARCHITECTURE.md §8/§12.4).
+    Palette.cpp
+    Palette.h
+    Highlight.cpp
+    Highlight.h
+    AtomicJson.cpp
+    AtomicJson.h
+    PresetStore.cpp
+    PresetStore.h
+    SessionStore.cpp
+    SessionStore.h
 )
 
 # MappedLogSource is POSIX-only (mmap). On Windows the BufferedLogSource is the
@@ -59,7 +71,11 @@ if(NOT WIN32)
     target_sources(loftail_core PRIVATE MappedLogSource.cpp)
 endif()
 
-target_link_libraries(loftail_core PUBLIC Qt6::Core)
+# QtGui (not QtWidgets) for QColor: the highlight palette stores concrete colors and
+# LogModel::data() returns them via the Background/Foreground roles. QColor is a
+# plain value type needing no QApplication, so the "unit-testable without a
+# QApplication" rule (CLAUDE.md) still holds — the ban is on QtWidgets, not QtGui.
+target_link_libraries(loftail_core PUBLIC Qt6::Core Qt6::Gui)
 
 target_include_directories(loftail_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 

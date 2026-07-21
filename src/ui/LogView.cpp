@@ -471,6 +471,37 @@ void LogView::scrollContentsBy(int dx, int dy)
 // Painting
 // ---------------------------------------------------------------------------
 
+void LogView::resolveRowColors(int row, bool selected, QColor &bg, QColor &fg) const
+{
+    // Selection always wins — a highlighted record is still clearly selectable.
+    if (selected) {
+        bg = palette().highlight().color();
+        fg = palette().highlightedText().color();
+        return;
+    }
+
+    // Highlight rules (M5, SPEC.md §7): first-match-wins is evaluated in
+    // LogModel::data(), which hands back the matched rule's palette colors via the
+    // Background/Foreground roles — or an empty variant meaning "leave this role at
+    // the theme default". An invalid/absent background keeps the base fill with the
+    // subtle alternating-row zebra; an invalid foreground keeps the theme text color.
+    const QModelIndex idx = m_model->index(row, 0);
+    const QVariant bgv = m_model->data(idx, Qt::BackgroundRole);
+    const QVariant fgv = m_model->data(idx, Qt::ForegroundRole);
+
+    if (bgv.canConvert<QColor>() && bgv.value<QColor>().isValid()) {
+        bg = bgv.value<QColor>();
+    } else {
+        bg = palette().base().color();
+        if (row % 2)
+            bg = bg.lighter(108);
+    }
+
+    fg = (fgv.canConvert<QColor>() && fgv.value<QColor>().isValid())
+             ? fgv.value<QColor>()
+             : palette().text().color();
+}
+
 void LogView::paintEvent(QPaintEvent *event)
 {
     QPainter p(viewport());
@@ -500,24 +531,14 @@ void LogView::paintEvent(QPaintEvent *event)
         const int vw = viewport()->width();
 
         while (r < n && y < vh) {
-            const Record &rec = idx.records.at(r);
             const int hLines = qMax(1, m_estimated.recordHeightLines(r));
             const int rowH = hLines * lh;
             const bool selected = m_selection->isSelected(m_model->index(r, 0));
 
-            QColor band = palette().base().color();
-            if (selected) {
-                band = palette().highlight().color();
-            } else {
-                switch (rec.priorityEnum()) {
-                case Priority::Warn:  band = QColor(70, 60, 20); break;
-                case Priority::Error:
-                case Priority::Fatal: band = QColor(80, 30, 30); break;
-                default: if (r % 2) band = band.lighter(108); break;
-                }
-            }
+            QColor band, fg;
+            resolveRowColors(r, selected, band, fg);
             p.fillRect(QRect(0, y, vw, rowH), band);
-            p.setPen(selected ? palette().highlightedText().color() : palette().text().color());
+            p.setPen(fg);
 
             for (int vi = 0; vi < fields.size(); ++vi) {
                 const int logical = m_header->logicalIndex(vi);
@@ -558,24 +579,14 @@ void LogView::paintEvent(QPaintEvent *event)
     const int vw = viewport()->width();
 
     while (r < n && y < vh) {
-        const Record &rec = idx.records.at(r);
         const int hLines = recordHeightLines(r);
         const int rowH = hLines * lh;
         const bool selected = m_selection->isSelected(m_model->index(r, 0));
 
-        QColor band = palette().base().color();
-        if (selected) {
-            band = palette().highlight().color();
-        } else {
-            switch (rec.priorityEnum()) {
-            case Priority::Warn:  band = QColor(70, 60, 20); break;
-            case Priority::Error:
-            case Priority::Fatal: band = QColor(80, 30, 30); break;
-            default: if (r % 2) band = band.lighter(108); break;
-            }
-        }
+        QColor band, fg;
+        resolveRowColors(r, selected, band, fg);
         p.fillRect(QRect(0, y, vw, rowH), band);
-        p.setPen(selected ? palette().highlightedText().color() : palette().text().color());
+        p.setPen(fg);
 
         const bool wrapThis = (sel == r);
         for (int vi = 0; vi < fields.size(); ++vi) {

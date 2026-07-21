@@ -2,7 +2,9 @@
 
 #include "Decoder.h"
 #include "Document.h"
+#include "Highlight.h"
 #include "LogSource.h"
+#include "Palette.h"
 #include "Priority.h"
 
 #include <QDateTime>
@@ -123,11 +125,56 @@ void LogModel::endAppendRows()
     endInsertRows();
 }
 
+QColor LogModel::highlightColor(int row, bool background) const
+{
+    if (!m_document)
+        return QColor();
+
+    const HighlighterSet &set = m_document->highlighters();
+    if (set.rules.isEmpty())
+        return QColor();
+
+    // Map the view row to the source record (identity when no filter is active),
+    // then run the ordered rules first-match-wins on integers (invariant #4).
+    const RecordIndex &idx = m_document->index();
+    const int srcRow = m_document->filtered().sourceRow(row);
+    if (srcRow < 0 || srcRow >= idx.records.size())
+        return QColor();
+
+    const int ruleIndex = set.match(idx.records.at(srcRow));
+    if (ruleIndex < 0)
+        return QColor(); // no rule matched — the theme's normal color
+
+    const HighlightRule &rule = set.rules.at(ruleIndex);
+    const int slot = background ? rule.background : rule.foreground;
+    // kDefault (or a corrupt slot) resolves to an invalid color, i.e. "leave this
+    // role at the theme default" (SPEC.md §7). The view treats an invalid return as
+    // no override.
+    return HighlightPalette::color(slot, m_darkTheme);
+}
+
 QVariant LogModel::data(const QModelIndex &index, int role) const
 {
-    if (!index.isValid() || (role != Qt::DisplayRole && role != Qt::ToolTipRole))
+    if (!index.isValid())
         return {};
-    return cellText(index.row(), index.column());
+
+    switch (role) {
+    case Qt::DisplayRole:
+    case Qt::ToolTipRole:
+        return cellText(index.row(), index.column());
+    case Qt::BackgroundRole: {
+        // Highlighting (SPEC.md §7): the matched rule's background palette color, or
+        // an empty variant for "theme default" so the view keeps its normal fill.
+        const QColor c = highlightColor(index.row(), /*background=*/true);
+        return c.isValid() ? QVariant(c) : QVariant();
+    }
+    case Qt::ForegroundRole: {
+        const QColor c = highlightColor(index.row(), /*background=*/false);
+        return c.isValid() ? QVariant(c) : QVariant();
+    }
+    default:
+        return {};
+    }
 }
 
 QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role) const

@@ -13,6 +13,11 @@ add_library(loftail_ui STATIC
     FilterPane.h
     FindBar.cpp
     FindBar.h
+    # M5 — the Highlighters and Presets side panes
+    HighlighterPane.cpp
+    HighlighterPane.h
+    PresetPane.cpp
+    PresetPane.h
 )
 
 target_link_libraries(loftail_ui PUBLIC

@@ -106,17 +106,17 @@ Makes M1 reachable by the user. `SPEC.md` §4.
 
 Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10.
 
-- [ ] Curated 12-entry dual-theme palette; each rule persists a **background** and a **foreground** palette index (or *default*), never an RGB value
-- [ ] Highlight rules: ordered list, first-match-wins evaluated in `data()`; the matched rule supplies both roles, *default* falling back to the theme color
-- [ ] Rule editor: match on subsystem and/or priority, pick background and text color (each palette-or-default), reorder, enable/disable
-- [ ] Atomic (temp-file + rename) writes for settings and presets, for the multi-instance case (`ARCHITECTURE.md` §8.1)
-- [ ] Three `QDockWidget` panes: filters, highlighters, presets
-- [ ] Filter and highlighter presets: create from current state, apply, rename, delete; JSON under `AppConfigLocation` with a schema version
-- [ ] Preset **export/import** to a user-chosen JSON file, schema-versioned; portable across themes since rules carry palette indices, not colors (`ARCHITECTURE.md` §8)
-- [ ] Session restore: last file, format, filters, highlighters, window geometry, pane and column layout
-- [ ] Settings schema with a `documents` **array** and per-file scoping from the start (`ARCHITECTURE.md` §12.4) — writing it as a single-document schema now means a migration later
-- [ ] Panes bind to the active document by signal, not by construction (`ARCHITECTURE.md` §12.3)
-- [ ] Missing last-file handled gracefully (empty view + inline notice, not an error dialog every launch)
+- [x] Curated 12-entry dual-theme palette; each rule persists a **background** and a **foreground** palette index (or *default*), never an RGB value
+- [x] Highlight rules: ordered list, first-match-wins evaluated in `data()`; the matched rule supplies both roles, *default* falling back to the theme color
+- [x] Rule editor: match on subsystem and/or priority, pick background and text color (each palette-or-default), reorder, enable/disable
+- [x] Atomic (temp-file + rename) writes for settings and presets, for the multi-instance case (`ARCHITECTURE.md` §8.1)
+- [x] Three `QDockWidget` panes: filters, highlighters, presets
+- [x] Filter and highlighter presets: create from current state, apply, rename, delete; JSON under `AppConfigLocation` with a schema version
+- [x] Preset **export/import** to a user-chosen JSON file, schema-versioned; portable across themes since rules carry palette indices, not colors (`ARCHITECTURE.md` §8)
+- [x] Session restore: last file, format, filters, highlighters, window geometry, pane and column layout
+- [x] Settings schema with a `documents` **array** and per-file scoping from the start (`ARCHITECTURE.md` §12.4) — writing it as a single-document schema now means a migration later
+- [x] Panes bind to the active document by signal, not by construction (`ARCHITECTURE.md` §12.3)
+- [x] Missing last-file handled gracefully (empty view + inline notice, not an error dialog every launch)
 
 **Done when:** quitting and relaunching restores the previous working state completely.
 

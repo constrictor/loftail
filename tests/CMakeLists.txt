@@ -58,6 +58,16 @@ qt_add_executable(tst_filter tst_filter.cpp)
 target_link_libraries(tst_filter PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_filter COMMAND tst_filter)
 
+# M5 — highlight core (palette-index persistence, first-match-wins roles with the
+# default fallback), the preset store (schema-versioned JSON, atomic writes,
+# export/import portability), and the session `documents`-array round-trip. All
+# core-only; the highlight test is even QApplication-free (QColor is a value type).
+foreach(unit highlight presetstore session)
+    qt_add_executable(tst_${unit} tst_${unit}.cpp)
+    target_link_libraries(tst_${unit} PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_${unit} COMMAND tst_${unit})
+endforeach()
+
 # M2b — the production LogView. Links the UI layer; the geometry mapping and
 # clipboard builders are pure, and the header-state round-trip needs QWidget, so
 # the test runs under an offscreen QApplication (forced in its own main()).
@@ -65,3 +75,12 @@ qt_add_executable(tst_logview tst_logview.cpp)
 target_link_libraries(tst_logview PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_logview COMMAND tst_logview)
 set_tests_properties(tst_logview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# M5 — full session round-trip through the real MainWindow (open a file, set
+# filters + highlighters, quit, relaunch, confirm restored) and graceful handling
+# of a missing last file. Drives two MainWindow instances under an isolated config
+# home; links the UI layer and runs offscreen.
+qt_add_executable(tst_sessiongui tst_sessiongui.cpp)
+target_link_libraries(tst_sessiongui PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_sessiongui COMMAND tst_sessiongui)
+set_tests_properties(tst_sessiongui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

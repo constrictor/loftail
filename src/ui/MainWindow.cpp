@@ -7,12 +7,15 @@
 #include "FindBar.h"
 #include "FormatCache.h"
 #include "FormatPreview.h"
+#include "HighlighterPane.h"
 #include "IndexController.h"
 #include "LogFormat.h"
 #include "LogFormatDialog.h"
 #include "LogModel.h"
 #include "LogSource.h"
 #include "ManualFormatProvider.h"
+#include "PresetPane.h"
+#include "SessionStore.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -20,6 +23,7 @@
 #include <QDockWidget>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -60,18 +64,23 @@ MainWindow::MainWindow(QWidget *parent)
     statusBar()->addPermanentWidget(m_progressBar);
 
     // Central area is a container holding the record view above the (hidden) Find
-    // bar, so Find can dock at the bottom of the view without a modal dialog.
+    // bar, so Find can dock at the bottom of the view without a modal dialog. A
+    // placeholder fills the area when no file is open (or the last one is missing).
     auto *central = new QWidget(this);
     m_centralLayout = new QVBoxLayout(central);
     m_centralLayout->setContentsMargins(0, 0, 0, 0);
     m_centralLayout->setSpacing(0);
+    m_placeholder = new QLabel(QStringLiteral("No file open. Open a log file to begin."), central);
+    m_placeholder->setAlignment(Qt::AlignCenter);
+    m_placeholder->setWordWrap(true);
+    m_centralLayout->addWidget(m_placeholder, 1);
     m_findBar = new FindBar(central);
     m_centralLayout->addWidget(m_findBar);
     setCentralWidget(central);
     connect(m_findBar, &FindBar::findRequested, this, &MainWindow::runFind);
 
-    // Filters side pane (SPEC.md §8), bound to the active document by signal
-    // (invariant #7) rather than constructed against a fixed Document.
+    // Three side panes (SPEC.md §8): filters, highlighters, presets. Each binds to
+    // the active document by signal (invariant #7 / §12.3), never a fixed Document.
     m_filterPane = new FilterPane(this);
     auto *filterDock = new QDockWidget(QStringLiteral("Filters"), this);
     filterDock->setObjectName(QStringLiteral("filtersDock"));
@@ -80,7 +89,32 @@ MainWindow::MainWindow(QWidget *parent)
     connect(this, &MainWindow::activeDocumentChanged, m_filterPane, &FilterPane::setDocument);
     connect(m_filterPane, &FilterPane::filtersChanged, this, &MainWindow::applyActiveFilters);
 
+    m_highlighterPane = new HighlighterPane(this);
+    auto *highlightDock = new QDockWidget(QStringLiteral("Highlighters"), this);
+    highlightDock->setObjectName(QStringLiteral("highlightersDock"));
+    highlightDock->setWidget(m_highlighterPane);
+    addDockWidget(Qt::RightDockWidgetArea, highlightDock);
+    connect(this, &MainWindow::activeDocumentChanged, m_highlighterPane, &HighlighterPane::setDocument);
+    connect(m_highlighterPane, &HighlighterPane::highlightersChanged,
+            this, &MainWindow::applyActiveHighlighters);
+
+    m_presetPane = new PresetPane(m_filterPane, m_highlighterPane, this);
+    auto *presetDock = new QDockWidget(QStringLiteral("Presets"), this);
+    presetDock->setObjectName(QStringLiteral("presetsDock"));
+    presetDock->setWidget(m_presetPane);
+    addDockWidget(Qt::RightDockWidgetArea, presetDock);
+
+    // Tab the three panes together by default so they share the right edge; the
+    // user can pull any out, and the arrangement is part of the saved session.
+    tabifyDockWidget(filterDock, highlightDock);
+    tabifyDockWidget(highlightDock, presetDock);
+    filterDock->raise();
+
     buildMenus();
+
+    // Restore the previous working state last, once every dock exists with its
+    // object name (restoreState keys off those) — SPEC.md §10.
+    restoreSession();
 }
 
 MainWindow::~MainWindow()
@@ -212,6 +246,9 @@ void MainWindow::teardownDocument()
     m_documents.clear();
     m_activeIndex = -1;
 
+    if (m_placeholder)
+        m_placeholder->show();
+
     // Unbind the panes from the now-gone document (invariant #7).
     emit activeDocumentChanged(nullptr);
 
@@ -309,9 +346,12 @@ void MainWindow::buildViewAndIndex(const QString &path)
         return;
 
     m_model = new LogModel(active);
+    m_model->setDarkTheme(palette().base().color().lightness()
+                          < palette().text().color().lightness());
     m_view = new LogView(active, m_model);
     m_view->setWrapMode(m_wrapMode);
-    m_centralLayout->insertWidget(0, m_view); // above the Find bar
+    m_placeholder->hide();
+    m_centralLayout->insertWidget(0, m_view); // above the placeholder + Find bar
     m_view->setFocus();
 
     // Column layout persistence (SPEC.md §5): restore the saved header state.
@@ -425,10 +465,19 @@ void MainWindow::onIndexFinished(bool cancelled)
     // completed index.
     if (m_filterPane)
         m_filterPane->refreshDiscoveredLists();
-    if (activeDocument() && activeDocument()->filters().anyActive())
-        applyActiveFilters();
-    if (m_view)
-        m_view->scrollToEnd(); // open at the file's end, following (SPEC.md §3)
+    // Re-resolve highlight rules against the now-complete intern table so rules
+    // naming subsystems discovered late in the scan take effect (SPEC.md §6, §7).
+    if (m_highlighterPane)
+        m_highlighterPane->refreshDiscoveredLists();
+    if (activeDocument()) {
+        activeDocument()->resolveHighlighters();
+        if (activeDocument()->filters().anyActive())
+            applyActiveFilters();
+    }
+    if (m_view) {
+        m_view->viewport()->update(); // repaint with resolved highlights
+        m_view->scrollToEnd();        // open at the file's end, following (SPEC.md §3)
+    }
     updateStatus();
     if (cancelled)
         m_statusLabel->setText(m_statusLabel->text() + QStringLiteral("  (indexing cancelled)"));
@@ -451,6 +500,37 @@ void MainWindow::applyActiveFilters()
         m_view->viewport()->update();
     }
     updateStatus();
+}
+
+void MainWindow::applyActiveHighlighters()
+{
+    Document *doc = activeDocument();
+    if (!doc)
+        return;
+    // Highlighting recolors visible rows in place (SPEC.md §7): no rows are added or
+    // removed, so a viewport repaint is enough — no model reset, unlike filtering.
+    doc->resolveHighlighters();
+    if (m_view)
+        m_view->viewport()->update();
+}
+
+void MainWindow::updateModelTheme()
+{
+    if (!m_model)
+        return;
+    const bool dark = palette().base().color().lightness() < palette().text().color().lightness();
+    if (dark != m_model->darkTheme()) {
+        m_model->setDarkTheme(dark);
+        if (m_view)
+            m_view->viewport()->update();
+    }
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange)
+        updateModelTheme();
 }
 
 void MainWindow::runFind(bool forward, bool fromStart)
@@ -594,8 +674,75 @@ void MainWindow::dropEvent(QDropEvent *event)
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    // Persist the full session BEFORE teardown drops the view and unbinds the panes
+    // (SPEC.md §10). Global state is last-writer-wins across instances (§8.1).
+    saveSession();
     teardownDocument();
     event->accept();
+}
+
+// --- Session persistence ---------------------------------------------------
+
+void MainWindow::saveSession()
+{
+    Session session;
+    session.geometry = saveGeometry();
+    session.windowState = saveState(); // dock/pane layout (SPEC.md §8, §10)
+
+    // The active document's per-file state goes into the documents ARRAY (one
+    // element today, invariant #7 / §12.4). Everything here is portable name/index
+    // JSON, so restore is the same path as applying a preset.
+    Document *doc = activeDocument();
+    if (doc && m_view) {
+        SessionDocument d;
+        d.path = doc->path();
+        d.format = m_currentSettings;
+        d.columnState = m_view->saveColumnState();
+        d.filters = m_filterPane ? m_filterPane->saveState() : QJsonObject();
+        d.highlighters = m_highlighterPane ? m_highlighterPane->saveState() : QJsonObject();
+        session.documents.append(d);
+        session.activeDocument = 0;
+    }
+
+    QSettings store;
+    SessionStore::save(store, session);
+}
+
+void MainWindow::restoreSession()
+{
+    QSettings store;
+    const Session session = SessionStore::load(store);
+
+    if (!session.geometry.isEmpty())
+        restoreGeometry(session.geometry);
+    if (!session.windowState.isEmpty())
+        restoreState(session.windowState);
+
+    const SessionDocument *d = session.active();
+    if (!d || d->path.isEmpty())
+        return;
+
+    // A missing/unreadable last file must not error every launch (SPEC.md §10):
+    // leave the view empty and show an inline notice, no dialog.
+    const QFileInfo info(d->path);
+    if (!info.exists() || !info.isReadable()) {
+        m_placeholder->setText(
+            QStringLiteral("The last opened file is no longer available:\n%1").arg(d->path));
+        m_statusLabel->setText(QStringLiteral("Last file unavailable: %1").arg(info.fileName()));
+        return;
+    }
+
+    // Reopen with the saved format (no prompt), then reapply the saved per-file
+    // column layout, filters and highlighters into the freshly-bound panes.
+    openWithSettings(d->path, d->format, /*promptIfNoMatch=*/false);
+    if (!activeDocument())
+        return;
+    if (m_view && !d->columnState.isEmpty())
+        m_view->restoreColumnState(d->columnState);
+    if (m_highlighterPane)
+        m_highlighterPane->restoreState(d->highlighters);
+    if (m_filterPane)
+        m_filterPane->restoreState(d->filters); // emits filtersChanged -> applies
 }
 
 } // namespace loftail

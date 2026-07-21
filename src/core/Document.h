@@ -5,6 +5,7 @@
 #include "Encoding.h"
 #include "Filter.h"
 #include "FilteredIndex.h"
+#include "Highlight.h"
 #include "LogFormat.h"
 #include "RecordIndex.h"
 
@@ -121,6 +122,20 @@ public:
     // view (no subset materialized). A single linear pass; §11 repaint budget.
     void applyFilters();
 
+    // Highlighting (M5, SPEC.md §7). The HighlighterSet is the per-file highlight
+    // state (invariant #7): an ordered rule list, first-match-wins, each rule
+    // supplying a background and a foreground palette reference. LogModel::data()
+    // consults it for the Background/Foreground roles. Mutate highlighters() then
+    // call resolveHighlighters() so the rules' subsystem NAMES are re-bound to the
+    // current intern table's ids (the match runs on integers, invariant #4).
+    HighlighterSet &highlighters() { return m_highlighters; }
+    const HighlighterSet &highlighters() const { return m_highlighters; }
+
+    // Re-resolve every highlight rule's subsystem names to interned ids against the
+    // current index. Call after editing the rules and after indexing discovers more
+    // subsystems. Cheap (a hash lookup per name); leaves the rule list unchanged.
+    void resolveHighlighters() { m_highlighters.resolve(m_index); }
+
     // Decode one record's message text through the Decoder (invariant #8, no raw
     // byte scans) — the message field when the pattern defines one, else the whole
     // record so text filtering still works on plain-text/unparsed logs (SPEC.md §6).
@@ -150,6 +165,7 @@ private:
     RecordIndex                m_index;
     FilterSet                  m_filters;
     FilteredIndex              m_filtered;
+    HighlighterSet             m_highlighters;
     QTimeZone                  m_sourceZone;
     QTimeZone                  m_displayZone;
     CompileError               m_formatError;

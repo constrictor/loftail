@@ -10,6 +10,7 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDateTimeEdit>
+#include <QJsonArray>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -309,6 +310,97 @@ void FilterPane::refreshDiscoveredLists()
     // does not emit filtersChanged() — MainWindow reapplies explicitly when the scan
     // finishes; a plain repopulation should not itself trigger a recompute storm.
     applyToDocument();
+}
+
+// ---------------------------------------------------------------------------
+// Portable state snapshot (presets + session restore)
+// ---------------------------------------------------------------------------
+
+namespace {
+QJsonArray namesToArray(const QSet<QString> &names)
+{
+    QStringList sorted = names.values();
+    sorted.sort(Qt::CaseInsensitive);
+    QJsonArray a;
+    for (const QString &n : sorted)
+        a.append(n);
+    return a;
+}
+
+QSet<QString> arrayToNames(const QJsonArray &a)
+{
+    QSet<QString> out;
+    for (const QJsonValue &v : a)
+        out.insert(v.toString());
+    return out;
+}
+} // namespace
+
+QJsonObject FilterPane::saveState() const
+{
+    QJsonObject o;
+    o.insert(QStringLiteral("priorityEnabled"), m_priorityEnable->isChecked());
+    o.insert(QStringLiteral("minPriorityIndex"), m_priorityCombo->currentIndex());
+
+    o.insert(QStringLiteral("loggerEnabled"), m_loggerEnable->isChecked());
+    o.insert(QStringLiteral("loggerChecked"), namesToArray(checkedNames(m_loggerList)));
+
+    o.insert(QStringLiteral("threadEnabled"), m_threadEnable->isChecked());
+    o.insert(QStringLiteral("threadChecked"), namesToArray(checkedNames(m_threadList)));
+
+    o.insert(QStringLiteral("textEnabled"), m_textEnable->isChecked());
+    o.insert(QStringLiteral("text"), m_textEdit->text());
+    o.insert(QStringLiteral("textRegex"), m_textRegex->isChecked());
+    o.insert(QStringLiteral("textCase"), m_textCase->isChecked());
+    o.insert(QStringLiteral("textNegate"), m_textNegate->isChecked());
+
+    o.insert(QStringLiteral("timeEnabled"), m_timeEnable->isChecked());
+    o.insert(QStringLiteral("timeStart"), m_timeStart->dateTime().toString(Qt::ISODate));
+    o.insert(QStringLiteral("timeEnd"), m_timeEnd->dateTime().toString(Qt::ISODate));
+    return o;
+}
+
+void FilterPane::restoreState(const QJsonObject &o)
+{
+    m_populating = true;
+
+    m_priorityEnable->setChecked(o.value(QStringLiteral("priorityEnabled")).toBool(false));
+    m_priorityCombo->setCurrentIndex(
+        qMax(0, o.value(QStringLiteral("minPriorityIndex")).toInt(0)));
+
+    // Restored subsystem/thread selections are carried as manual names so they
+    // survive discovery timing: at restore the intern lists are usually still empty
+    // (indexing just started), and manual names are always re-inserted and checked,
+    // then merged with the discovered set when the scan completes (SPEC.md §6, §10).
+    m_loggerEnable->setChecked(o.value(QStringLiteral("loggerEnabled")).toBool(false));
+    m_loggerManualNames = arrayToNames(o.value(QStringLiteral("loggerChecked")).toArray());
+
+    m_threadEnable->setChecked(o.value(QStringLiteral("threadEnabled")).toBool(false));
+    m_threadManualNames = arrayToNames(o.value(QStringLiteral("threadChecked")).toArray());
+
+    m_textEnable->setChecked(o.value(QStringLiteral("textEnabled")).toBool(false));
+    m_textEdit->setText(o.value(QStringLiteral("text")).toString());
+    m_textRegex->setChecked(o.value(QStringLiteral("textRegex")).toBool(false));
+    m_textCase->setChecked(o.value(QStringLiteral("textCase")).toBool(false));
+    m_textNegate->setChecked(o.value(QStringLiteral("textNegate")).toBool(false));
+
+    m_timeEnable->setChecked(o.value(QStringLiteral("timeEnabled")).toBool(false));
+    const QDateTime start =
+        QDateTime::fromString(o.value(QStringLiteral("timeStart")).toString(), Qt::ISODate);
+    const QDateTime end =
+        QDateTime::fromString(o.value(QStringLiteral("timeEnd")).toString(), Qt::ISODate);
+    if (start.isValid())
+        m_timeStart->setDateTime(start);
+    if (end.isValid())
+        m_timeEnd->setDateTime(end);
+
+    m_populating = false;
+
+    // Repopulate the lists (checking the restored manual names) and push the state
+    // into the document, then let the caller recompute the visible set.
+    refreshDiscoveredLists();
+    applyToDocument();
+    emit filtersChanged();
 }
 
 // ---------------------------------------------------------------------------

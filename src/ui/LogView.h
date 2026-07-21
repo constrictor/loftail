@@ -163,6 +163,12 @@ private:
     int measureWrappedLines(const QString &text, int width) const;
     int messageColumn() const; // logical column of the Message field, or -1
 
+    // Resolve one row's background and text color for painting (M5). Selection wins;
+    // otherwise the highlight rules speak through the model's Background/Foreground
+    // roles (SPEC.md §7), each falling back to the theme color (with a subtle zebra
+    // on the background when no rule applies).
+    void resolveRowColors(int row, bool selected, QColor &bg, QColor &fg) const;
+
     void recomputeGeometry();     // recompute selection-dependent wrap + scrollbars
     void updateScrollBars();
     void layoutHeader();

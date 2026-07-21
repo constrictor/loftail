@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonObject>
 #include <QSet>
 #include <QString>
 #include <QWidget>
@@ -45,6 +46,14 @@ public:
     // when indexing progresses/finishes so newly-seen subsystems/threads appear
     // (SPEC.md §6: the lists are discovered as the file is scanned).
     void refreshDiscoveredLists();
+
+    // Portable, name-based snapshot of the pane's filter state (SPEC.md §9, §10).
+    // Used for both filter presets (create-from-current-state / apply) and per-file
+    // session restore. Carries subsystem/thread NAMES, never interned ids, so it is
+    // portable across files and a re-index. restoreState() applies a snapshot and
+    // emits filtersChanged() so the caller recomputes the visible set.
+    QJsonObject saveState() const;
+    void restoreState(const QJsonObject &state);
 
 signals:
     // Emitted whenever any control changes. MainWindow rebuilds the Document's

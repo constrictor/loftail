@@ -23,6 +23,8 @@ class Document;
 class LogModel;
 class IndexController;
 class FilterPane;
+class HighlighterPane;
+class PresetPane;
 class FindBar;
 
 // The application's top-level window. M2b brings the open-file UI (dialog,
@@ -54,6 +56,9 @@ protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    // Re-resolve the highlight theme (light vs dark palette) when it changes so the
+    // model resolves the right variant of each palette slot (SPEC.md §7).
+    void changeEvent(QEvent *event) override;
 
 private slots:
     void chooseFileToOpen();
@@ -67,6 +72,9 @@ private slots:
     // Walk the visible rows for the Find bar's query and move the selection
     // (SPEC.md §5); changes no filter state.
     void runFind(bool forward, bool fromStart);
+    // Re-resolve the active document's highlight rules and repaint (M5). Highlighting
+    // recolors rows in place, so no model reset — just a viewport update.
+    void applyActiveHighlighters();
 
 private:
     void buildMenus();
@@ -74,6 +82,14 @@ private:
     void rememberRecentFile(const QString &path);
     void teardownDocument();
     void updateStatus();
+    void updateModelTheme(); // push the light/dark cue into the model (highlighting)
+
+    // Full session persistence (SPEC.md §10, ARCHITECTURE.md §12.4): write the active
+    // document's per-file state (format, filters, highlighters, columns) into the
+    // `documents` array plus global geometry/pane layout on close; restore it on
+    // launch. A missing last file yields an empty view with an inline notice.
+    void saveSession();
+    void restoreSession();
 
     // Open `path` under `settings`. When `promptIfNoMatch` and the pattern matches
     // no sample record, the Log Format dialog is offered first (SPEC.md §4). Builds
@@ -104,9 +120,12 @@ private:
     QLabel       *m_statusLabel = nullptr;
     QProgressBar *m_progressBar = nullptr;
 
-    FilterPane  *m_filterPane = nullptr; // M4 filters side pane
-    FindBar     *m_findBar = nullptr;    // M4 find bar
-    QVBoxLayout *m_centralLayout = nullptr; // holds [LogView, FindBar]
+    FilterPane      *m_filterPane = nullptr;      // M4 filters side pane
+    HighlighterPane *m_highlighterPane = nullptr; // M5 highlighters side pane
+    PresetPane      *m_presetPane = nullptr;      // M5 presets side pane
+    FindBar         *m_findBar = nullptr;         // M4 find bar
+    QVBoxLayout     *m_centralLayout = nullptr;   // holds [LogView, placeholder, FindBar]
+    QLabel          *m_placeholder = nullptr;     // shown when no file / last file missing
 
     QString m_defaultPattern;
     // The format choice for the active document (SPEC.md §4). Held here as UI
