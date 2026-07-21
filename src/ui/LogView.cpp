@@ -17,7 +17,9 @@
 #include <QPaintEvent>
 #include <QScrollBar>
 #include <QSignalBlocker>
+#include <QStyle>
 #include <QTimer>
+#include <QToolButton>
 
 namespace loftail {
 
@@ -145,7 +147,23 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent)
     connect(m_header, &QHeaderView::sectionResized, this, [this](int, int, int) { recomputeGeometry(); });
     connect(m_header, &QHeaderView::sectionMoved, this, [this](int, int, int) { viewport()->update(); });
     connect(m_model, &QAbstractItemModel::rowsInserted, this, &LogView::handleRowsInserted);
+    connect(m_model, &QAbstractItemModel::rowsRemoved, this, &LogView::handleRowsRemoved);
     connect(m_model, &QAbstractItemModel::modelReset, this, &LogView::handleModelReset);
+    // A trailing record that grew in place (M6 live append with no new rows) arrives
+    // as a dataChanged, not an insert; it changes that record's height, so refresh
+    // geometry and keep following if attached.
+    connect(m_model, &QAbstractItemModel::dataChanged, this,
+            [this](const QModelIndex &, const QModelIndex &, const QList<int> &) { handleTailChanged(); });
+
+    // Return-to-bottom control (SPEC.md §3): a small overlay shown only when follow
+    // has detached; clicking it re-attaches and jumps to the newest record.
+    m_followButton = new QToolButton(viewport());
+    m_followButton->setText(QStringLiteral("Follow tail ↓"));
+    m_followButton->setToolTip(QStringLiteral("Jump to the newest record and follow new ones"));
+    m_followButton->setCursor(Qt::PointingHandCursor);
+    m_followButton->setAutoRaise(false);
+    m_followButton->hide();
+    connect(m_followButton, &QToolButton::clicked, this, &LogView::followTail);
 
     layoutHeader();
     recomputeGeometry();
@@ -425,6 +443,7 @@ void LogView::resizeEvent(QResizeEvent *event)
 {
     QAbstractScrollArea::resizeEvent(event);
     layoutHeader();
+    positionFollowButton();
     if (estimating()) {
         // Debounce (§7.1.1): a drag-resize fires a burst of these. Keep the view
         // usable now from the existing (possibly stale-width) estimates, and
@@ -463,7 +482,8 @@ void LogView::scrollContentsBy(int dx, int dy)
 {
     if (dx != 0)
         m_header->setOffset(horizontalScrollBar()->value());
-    Q_UNUSED(dy);
+    if (dy != 0)
+        updateFollowFromScrollPosition(); // a vertical move may detach/re-attach follow
     viewport()->update();
 }
 
@@ -828,18 +848,87 @@ bool LogView::restoreColumnState(const QByteArray &state)
 
 void LogView::scrollToEnd()
 {
+    // Programmatic jump to the end (follow, or an explicit End). Guard the follow
+    // bookkeeping so this move is never misread as the user scrolling away.
+    m_inFollowScroll = true;
     verticalScrollBar()->setValue(verticalScrollBar()->maximum());
+    m_inFollowScroll = false;
+}
+
+void LogView::followTail()
+{
+    setFollowingState(true);
+    scrollToEnd();
+    viewport()->update();
+}
+
+void LogView::setFollowingState(bool following)
+{
+    if (m_followButton)
+        m_followButton->setVisible(!following);
+    if (following != m_following) {
+        m_following = following;
+        if (!following && m_followButton)
+            positionFollowButton();
+        emit followingChanged(m_following);
+    }
+}
+
+void LogView::updateFollowFromScrollPosition()
+{
+    if (m_inFollowScroll)
+        return; // our own scroll-to-end, not a user action
+    const bool atBottom = verticalScrollBar()->value() >= verticalScrollBar()->maximum();
+    // Scrolling to the bottom re-attaches; scrolling away detaches (SPEC.md §3).
+    setFollowingState(atBottom);
+}
+
+void LogView::positionFollowButton()
+{
+    if (!m_followButton)
+        return;
+    m_followButton->adjustSize();
+    const int m = 12;
+    const QSize s = m_followButton->size();
+    m_followButton->move(viewport()->width() - s.width() - m,
+                         viewport()->height() - s.height() - m);
 }
 
 void LogView::handleRowsInserted()
 {
-    // Keep following the tail during a scan if the view is already at the bottom
-    // (SPEC.md §3: files open at their end, following). Full follow/detach is M6.
-    const bool wasAtBottom = verticalScrollBar()->value() >= verticalScrollBar()->maximum();
+    // Stay pinned to the newest record while following (SPEC.md §3). Detached, the
+    // rows still index and the view holds its position for reading history.
     if (estimating())
         ensureEstimatorBound(); // extend the estimator over the newly appended blocks
     updateScrollBars();
-    if (wasAtBottom)
+    if (m_following)
+        scrollToEnd();
+    if (m_followButton && !m_following)
+        positionFollowButton();
+    viewport()->update();
+}
+
+void LogView::handleRowsRemoved()
+{
+    // The trailing (provisional) record's view row was dropped for re-evaluation
+    // under an active filter (M6). Refresh geometry; a following view re-pins after
+    // the matching re-insert arrives.
+    if (estimating())
+        ensureEstimatorBound();
+    updateScrollBars();
+    if (m_following)
+        scrollToEnd();
+    viewport()->update();
+}
+
+void LogView::handleTailChanged()
+{
+    // A trailing record grew taller in place (continuation lines appended) with no
+    // new rows: its height changed, so the scroll range must be recomputed.
+    if (estimating())
+        ensureEstimatorBound();
+    updateScrollBars();
+    if (m_following)
         scrollToEnd();
     viewport()->update();
 }
@@ -853,6 +942,8 @@ void LogView::handleModelReset()
     // (with fresh measurements) on the next AlwaysOn geometry query.
     m_estimated.clear();
     recomputeGeometry();
+    if (m_followButton)
+        m_followButton->setVisible(!m_following);
 }
 
 } // namespace loftail

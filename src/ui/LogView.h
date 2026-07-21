@@ -9,6 +9,7 @@ QT_BEGIN_NAMESPACE
 class QHeaderView;
 class QItemSelectionModel;
 class QTimer;
+class QToolButton;
 QT_END_NAMESPACE
 
 namespace loftail {
@@ -81,6 +82,13 @@ public:
     int currentRecord() const { return m_current; }
     void scrollToEnd();
 
+    // Follow mode (SPEC.md §3, M6). Every open starts following: as records are
+    // appended the view stays pinned to the newest. Scrolling away from the bottom
+    // DETACHES follow (history stays put while the file keeps growing); returning to
+    // the bottom — by the scrollbar or the return-to-bottom control — RE-ATTACHES it.
+    bool following() const { return m_following; }
+    void followTail(); // re-attach: jump to the end and resume following
+
     // The estimated-geometry cache backing AlwaysOn (M2c). Exposed const for
     // tests (measurement refinement, width-keyed invalidation, and that switching
     // to an exact mode leaves the cache untouched); meaningful only in AlwaysOn.
@@ -113,8 +121,14 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     void scrollContentsBy(int dx, int dy) override;
 
+signals:
+    // Follow attached/detached, so the window can reflect it (menu check, control).
+    void followingChanged(bool following);
+
 private slots:
     void handleRowsInserted();
+    void handleRowsRemoved();
+    void handleTailChanged(); // a trailing record grew in place (M6 live update)
     void handleModelReset();
     void applyDebouncedResize();
 
@@ -169,6 +183,10 @@ private:
     // on the background when no rule applies).
     void resolveRowColors(int row, bool selected, QColor &bg, QColor &fg) const;
 
+    void setFollowingState(bool following); // update state + control + emit signal
+    void updateFollowFromScrollPosition();  // detach/re-attach from the scrollbar
+    void positionFollowButton();            // place the return-to-bottom overlay
+
     void recomputeGeometry();     // recompute selection-dependent wrap + scrollbars
     void updateScrollBars();
     void layoutHeader();
@@ -191,6 +209,11 @@ private:
     // survives a round-trip through the exact modes.
     EstimatedGeometry m_estimated;
     QTimer  *m_resizeTimer = nullptr; // debounces width-change remeasurement
+
+    // Follow state (M6). Every open follows the tail; scrolling away detaches.
+    bool         m_following = true;
+    bool         m_inFollowScroll = false; // guards the programmatic scroll-to-end
+    QToolButton *m_followButton = nullptr; // return-to-bottom overlay, shown detached
 };
 
 } // namespace loftail

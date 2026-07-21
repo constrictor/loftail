@@ -114,6 +114,10 @@ public:
     FilterSet &filters() { return m_filters; }
     const FilterSet &filters() const { return m_filters; }
     const FilteredIndex &filtered() const { return m_filtered; }
+    // Mutable access for the live-append path (M6): LiveController extends the
+    // visible subset in place as records arrive, under the active filter, rather
+    // than recomputing it (invariant #1). Not used by the normal filter apply.
+    FilteredIndex &filtered() { return m_filtered; }
 
     // Recompute the visible subset from the current filters over the current index.
     // Runs the predicate chain with integer axes first and message-text last
@@ -151,6 +155,15 @@ public:
     // The watch/append loop itself is M6; the flag lives here from the start.
     bool following() const { return m_following; }
     void setFollowing(bool f) { m_following = f; }
+
+    // Re-open the file at the current path and rebuild the index from scratch with
+    // the SAME compiled format, decoder, and source zone (M6 rotation/truncation:
+    // the old content is gone or invalidated, so a silent full rescan replaces it —
+    // SPEC.md §3, invariant #5). The pattern is NOT recompiled (invariant #3: the
+    // format is already resolved). Clears the filtered subset; the caller re-applies
+    // filters and re-resolves highlighters against the new intern tables. Returns
+    // false only if the file cannot be reopened, leaving an empty, valid index.
+    bool rescan();
 
     // The zone inferred from a compiled format's date specifier (§5.1): UTC for a
     // %D pattern, the system zone otherwise. A hint the user may override.

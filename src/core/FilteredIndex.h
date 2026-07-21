@@ -88,6 +88,41 @@ public:
     // tests and diagnostics.
     const QVector<qint32> &visible() const { return m_visible; }
 
+    // --- M6 incremental append (live updates) ---------------------------------
+    // When a filter is active and records are appended to the source index, the
+    // visible subset is extended in place rather than recomputed (invariant #1):
+    // newly-visible records are appended and the compact block sums extended from
+    // the first new visible row. The trailing (provisional) record may also be
+    // popped and re-evaluated when its bytes changed. Only meaningful while active.
+
+    // The source ordinal of the last visible record, or -1 when none is visible.
+    int lastVisibleSource() const { return m_visible.isEmpty() ? -1 : int(m_visible.last()); }
+
+    // Drop the trailing visible record (its source row must be the provisional one
+    // being reconsidered). Does NOT touch the compact block sums — the caller
+    // extends them once after all edits.
+    void popLastVisible()
+    {
+        if (!m_visible.isEmpty()) {
+            m_visible.removeLast();
+            m_compact.records.removeLast();
+        }
+    }
+
+    // Append one now-visible source record (a copy of its 32-byte Record) at the
+    // end of the visible subset. Block sums are extended separately via
+    // extendCompactSums() after a batch of appends.
+    void appendVisible(int sourceRow, const Record &rec)
+    {
+        m_visible.append(sourceRow);
+        m_compact.records.append(rec);
+    }
+
+    // Extend the compact subset's block sums in place (invariant #1) after
+    // appendVisible()/popLastVisible() edits; `validCount` is the number of leading
+    // visible records whose sums are unchanged.
+    void extendCompactSums(int validCount) { m_compact.extendBlockSums(validCount); }
+
 private:
     const RecordIndex *m_source = nullptr;
     bool               m_active = false;

@@ -54,4 +54,14 @@ public:
 // is platform-driven, not mode-driven (invariant #5, §6).
 std::unique_ptr<LogSource> openLogSource(const QString &path);
 
+// The file-identity token for the file CURRENTLY at `path`, in the same encoding
+// LogSource::identity() uses (device+inode on POSIX). Unlike an open source — whose
+// identity() follows the inode it holds even after a rename — this re-resolves the
+// path, so the M6 watch loop can detect a rotation that replaced the path with a
+// NEW file (rename + recreate) by comparing this against the open source's
+// identity() (invariant #5, §6). Returns 0 when the path cannot be stat'd or the
+// platform has no cheap identity (then rotation-by-replace relies on size/truncation
+// detection — the Windows path, deferred).
+quint64 pathIdentity(const QString &path);
+
 } // namespace loftail

@@ -22,6 +22,7 @@ namespace loftail {
 class Document;
 class LogModel;
 class IndexController;
+class LiveController;
 class FilterPane;
 class HighlighterPane;
 class PresetPane;
@@ -111,12 +112,14 @@ private:
     LogModel        *m_model = nullptr;
     LogView         *m_view = nullptr;
     IndexController *m_controller = nullptr;
+    LiveController  *m_live = nullptr; // M6 watch-and-append loop (starts post-scan)
 
     QMenu   *m_recentMenu = nullptr;
     QAction *m_cancelAction = nullptr;
     QAction *m_copyAction = nullptr;
     QAction *m_copyColumnsAction = nullptr;
     QAction *m_formatAction = nullptr;
+    QAction *m_followAction = nullptr; // View ▸ Follow Tail (return-to-bottom, M6)
     QLabel       *m_statusLabel = nullptr;
     QProgressBar *m_progressBar = nullptr;
 

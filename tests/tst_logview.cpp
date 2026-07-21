@@ -2,6 +2,8 @@
 
 #include <QApplication>
 #include <QHeaderView>
+#include <QScrollBar>
+#include <QSignalSpy>
 #include <QTemporaryFile>
 
 #include "Document.h"
@@ -80,6 +82,7 @@ private slots:
     void alwaysOnUnreachableFromExactPath();
     void alwaysOnPaintRefinesWhileScrolling();
     void filterRestrictsVisibleSetAndGeometry();
+    void followDetachesAndReattaches();
 };
 
 void TestLogView::wrapOffMappingMatchesBase()
@@ -365,6 +368,47 @@ void TestLogView::filterRestrictsVisibleSetAndGeometry()
     doc.applyFilters();
     model.endFilterReset();
     QCOMPARE(model.rowCount(), 5);
+}
+
+// Follow mode (SPEC.md §3, M6): every open follows the tail; scrolling away detaches;
+// scrolling back to the bottom OR the return-to-bottom control re-attaches.
+void TestLogView::followDetachesAndReattaches()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 300), qPrintable(doc.lastError())); // enough to scroll
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(400, 120); // a small viewport so a vertical scroll range exists
+
+    QSignalSpy spy(&view, &LogView::followingChanged);
+
+    // Normalize to "following at the bottom" (as an open does).
+    view.followTail();
+    QVERIFY(view.following());
+    QScrollBar *sb = view.verticalScrollBar();
+    QVERIFY(sb->maximum() > 0);
+    QCOMPARE(sb->value(), sb->maximum());
+
+    // Scrolling up detaches follow.
+    sb->setValue(sb->maximum() / 2);
+    QVERIFY(!view.following());
+
+    // Scrolling back to the bottom re-attaches.
+    sb->setValue(sb->maximum());
+    QVERIFY(view.following());
+
+    // Detach again, then re-attach via the return-to-bottom control.
+    sb->setValue(0);
+    QVERIFY(!view.following());
+    view.followTail();
+    QVERIFY(view.following());
+    QCOMPARE(sb->value(), sb->maximum());
+
+    // The state actually toggled (not stuck): several transitions were signalled.
+    QVERIFY(spy.count() >= 3);
 }
 
 int main(int argc, char *argv[])

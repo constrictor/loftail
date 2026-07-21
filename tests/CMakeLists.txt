@@ -68,6 +68,20 @@ foreach(unit highlight presetstore session)
     add_test(NAME tst_${unit} COMMAND tst_${unit})
 endforeach()
 
+# M6 — the tail harness: append (incl. a multi-line record split across writes),
+# truncate, rotate, and filtered/highlighted append, all driven synchronously via
+# LiveController::checkNow() against a real temp file. Core-only, GUILESS.
+qt_add_executable(tst_tail tst_tail.cpp)
+target_link_libraries(tst_tail PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_tail COMMAND tst_tail)
+
+# M6 — live smoke: the REAL QFileSystemWatcher + poll path under a running event
+# loop (a background timer appends "like another process"; the model must grow with
+# no manual poke). Core-only, GUILESS.
+qt_add_executable(tst_livegui tst_livegui.cpp)
+target_link_libraries(tst_livegui PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_livegui COMMAND tst_livegui)
+
 # M2b — the production LogView. Links the UI layer; the geometry mapping and
 # clipboard builders are pure, and the header-state round-trip needs QWidget, so
 # the test runs under an offscreen QApplication (forced in its own main()).

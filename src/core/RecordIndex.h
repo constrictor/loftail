@@ -52,6 +52,45 @@ public:
         m_blockSums.append(acc); // final sentinel == total display lines
     }
 
+    // Extend/repair the block prefix sums in place after records were appended (or
+    // the trailing record changed height), WITHOUT the O(n) full rebuild (M6,
+    // invariant #1). `validCount` is the number of leading records whose sums are
+    // still correct — records at index < the block boundary at or before
+    // `validCount` are assumed unchanged; everything from that boundary to the end
+    // is recomputed from the live record data. Cost is O(kBlockSize + appended),
+    // bounded and independent of the total record count. The common append path
+    // passes validCount == oldRecordCount; the trailing-record-grew path passes
+    // oldRecordCount - 1 so the reconsidered last record is recomputed too.
+    void extendBlockSums(int validCount)
+    {
+        const int n = records.size();
+        if (validCount < 0)
+            validCount = 0;
+        if (validCount > n)
+            validCount = n;
+        if (m_blockSums.isEmpty()) {
+            // No baseline to extend (sums were never built): fall back to a full
+            // build. Cheap and keeps `resize(startBlock)` below from fabricating
+            // zero-valued boundary entries.
+            rebuildBlockSums();
+            return;
+        }
+        const int startBlock = validCount / kBlockSize;
+        const int startRec = startBlock * kBlockSize;
+        // m_blockSums[startBlock] is the cumulative display lines before record
+        // startRec; it was written by a previous build/extend and covers only
+        // unchanged records, so it is safe to keep. Drop everything after it
+        // (later boundary entries and the stale grand-total sentinel) and rebuild.
+        quint64 acc = (startBlock < m_blockSums.size()) ? m_blockSums.at(startBlock) : 0;
+        m_blockSums.resize(startBlock); // the boundary entry for startBlock is re-added below
+        for (int i = startRec; i < n; ++i) {
+            if ((i % kBlockSize) == 0)
+                m_blockSums.append(acc);
+            acc += displayLines(records.at(i));
+        }
+        m_blockSums.append(acc); // final sentinel == total display lines
+    }
+
     // The display line at which record `r` begins (its first physical line).
     qint64 firstLineOfRecord(int r) const
     {

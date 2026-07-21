@@ -9,6 +9,7 @@
 #include "FormatPreview.h"
 #include "HighlighterPane.h"
 #include "IndexController.h"
+#include "LiveController.h"
 #include "LogFormat.h"
 #include "LogFormatDialog.h"
 #include "LogModel.h"
@@ -209,6 +210,19 @@ void MainWindow::buildMenus()
         if (m_view)
             m_view->setWrapMode(m_wrapMode);
     });
+
+    // Return-to-bottom / follow control (SPEC.md §3, M6). Checked reflects whether
+    // the view is currently following; triggering it re-attaches and jumps to the end.
+    viewMenu->addSeparator();
+    m_followAction = viewMenu->addAction(QStringLiteral("&Follow Tail"));
+    m_followAction->setCheckable(true);
+    m_followAction->setChecked(true);
+    m_followAction->setEnabled(false);
+    m_followAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_End));
+    connect(m_followAction, &QAction::triggered, this, [this]() {
+        if (m_view)
+            m_view->followTail();
+    });
 }
 
 Document *MainWindow::activeDocument() const
@@ -229,6 +243,13 @@ void MainWindow::chooseFileToOpen()
 
 void MainWindow::teardownDocument()
 {
+    // Stop the live watcher first: it references the model and document we are about
+    // to drop (M6).
+    if (m_live) {
+        m_live->stop();
+        delete m_live;
+        m_live = nullptr;
+    }
     if (m_controller) {
         m_controller->cancel();
         delete m_controller; // dtor joins the worker thread
@@ -258,6 +279,10 @@ void MainWindow::teardownDocument()
         m_copyColumnsAction->setEnabled(false);
     if (m_formatAction)
         m_formatAction->setEnabled(false);
+    if (m_followAction) {
+        m_followAction->setEnabled(false);
+        m_followAction->setChecked(true); // the next open follows again (SPEC.md §3)
+    }
 }
 
 void MainWindow::openFile(const QString &path, const QString &pattern)
@@ -350,6 +375,13 @@ void MainWindow::buildViewAndIndex(const QString &path)
                           < palette().text().color().lightness());
     m_view = new LogView(active, m_model);
     m_view->setWrapMode(m_wrapMode);
+    // Reflect follow state in the View menu (M6): the checkbox tracks the view, and
+    // the overlay button/scroll gestures keep them in sync.
+    if (m_followAction) {
+        m_followAction->setEnabled(true);
+        m_followAction->setChecked(m_view->following());
+        connect(m_view, &LogView::followingChanged, m_followAction, &QAction::setChecked);
+    }
     m_placeholder->hide();
     m_centralLayout->insertWidget(0, m_view); // above the placeholder + Find bar
     m_view->setFocus();
@@ -479,8 +511,37 @@ void MainWindow::onIndexFinished(bool cancelled)
         m_view->scrollToEnd();        // open at the file's end, following (SPEC.md §3)
     }
     updateStatus();
-    if (cancelled)
+    if (cancelled) {
         m_statusLabel->setText(m_statusLabel->text() + QStringLiteral("  (indexing cancelled)"));
+        return; // a cancelled scan is not watched — the user chose to stop reading it
+    }
+
+    // Activate the always-watched model (SPEC.md §3, M6): from here the file
+    // auto-updates as it grows. The initial scan captured the size at open, so the
+    // controller's first check catches up anything appended while it ran.
+    if (Document *active = activeDocument()) {
+        m_live = new LiveController(active, m_model, this);
+        connect(m_live, &LiveController::ingested, this, [this](qint64) {
+            // Newly discovered subsystems/threads and the growing counts (SPEC.md §6).
+            if (m_filterPane)
+                m_filterPane->refreshDiscoveredLists();
+            if (m_highlighterPane)
+                m_highlighterPane->refreshDiscoveredLists();
+            updateStatus();
+        });
+        connect(m_live, &LiveController::rescanned, this, [this]() {
+            // Rotation/truncation reloaded silently (SPEC.md §3): refresh the panes
+            // against the fresh index and keep following if we were.
+            if (m_filterPane)
+                m_filterPane->refreshDiscoveredLists();
+            if (m_highlighterPane)
+                m_highlighterPane->refreshDiscoveredLists();
+            if (m_view && m_view->following())
+                m_view->followTail();
+            updateStatus();
+        });
+        m_live->start();
+    }
 }
 
 void MainWindow::applyActiveFilters()

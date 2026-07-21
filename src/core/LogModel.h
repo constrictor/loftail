@@ -56,6 +56,16 @@ public:
     void beginAppendRows(int count);
     void endAppendRows();
 
+    // Live-update hooks (M6). The trailing (provisional) record can be re-evaluated
+    // as the file grows: when a filter is active its visible view row may need to be
+    // dropped and re-added (removeTail), and in the unfiltered case a trailing record
+    // that grew taller with continuation lines is signalled in place (rowChanged) so
+    // the view refreshes its line geometry. The caller mutates the Document's
+    // index/FilteredIndex to match, exactly as with the append hooks above.
+    void beginRemoveTail(int count);
+    void endRemoveTail();
+    void notifyRowChanged(int row);
+
     // Resolve the first-match-wins highlight color for one view row's record, or an
     // invalid QColor when no rule matches or the matched rule leaves that role at the
     // theme default. `background` picks the background vs foreground role.

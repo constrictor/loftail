@@ -108,6 +108,27 @@ bool Document::open(const QString &path,
     return open(path, provider, requestedEncoding, sourceZone, displayZone);
 }
 
+bool Document::rescan()
+{
+    // Rotation/truncation (M6, SPEC.md §3): the bytes we indexed are gone or moved,
+    // so drop the index and read the file at m_path again from the top — a single
+    // forward pass (invariant #9), same format/decoder/zone (invariant #3). The
+    // FilteredIndex is bound to &m_index (a stable member), so reassigning the
+    // index's contents keeps that binding valid; we only clear its active subset.
+    m_filtered.clear();
+    m_source = openLogSource(m_path);
+    if (!m_source) {
+        m_index = RecordIndex();
+        m_index.rebuildBlockSums();
+        m_lastError = QStringLiteral("Cannot reopen file: %1").arg(m_path);
+        return false;
+    }
+
+    Indexer indexer(m_format, m_decoder, m_sourceZone);
+    m_index = indexer.index(*m_source);
+    return true;
+}
+
 QString Document::messageText(const Record &rec) const
 {
     if (!m_source)

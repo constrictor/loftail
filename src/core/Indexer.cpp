@@ -12,19 +12,15 @@ Indexer::Indexer(const LogFormat &format, const Decoder &decoder, const QTimeZon
 {
 }
 
-RecordIndex Indexer::index(LogSource &source, const Progress &progress, bool *cancelled,
-                           const Batch &batch) const
+bool Indexer::forwardScan(LogSource &source, qint64 startPos, QVector<Record> &records,
+                          InternTable &loggers, InternTable &threads,
+                          const std::function<bool(qint64)> &onChunk) const
 {
-    RecordIndex idx;
-    if (cancelled)
-        *cancelled = false;
-
     const qint64 size = source.size();
     const int unit = m_decoder.unitSize();
     const bool haveFormat = !m_format.recordStartRe.pattern().isEmpty()
                             && m_format.recordStartRe.isValid();
 
-    // A reusable QRegularExpressionMatch avoids per-line allocation churn.
     const QRegularExpression &startRe = m_format.recordStartRe;
     const TimestampParser tsParser(m_format.impliedDateFormat.qtFormat, m_sourceZone);
 
@@ -54,18 +50,18 @@ RecordIndex Indexer::index(LogSource &source, const Progress &progress, bool *ca
                                            : Priority::Unknown);
 
                 r.loggerId = (m_format.loggerGroup > 0)
-                                 ? idx.loggers.intern(m.captured(m_format.loggerGroup))
+                                 ? loggers.intern(m.captured(m_format.loggerGroup))
                                  : 0;
                 r.threadId = (m_format.threadGroup > 0)
-                                 ? idx.threads.intern(m.captured(m_format.threadGroup))
+                                 ? threads.intern(m.captured(m_format.threadGroup))
                                  : 0;
 
                 r.timestamp = (m_format.dateGroup > 0)
                                   ? tsParser.parse(m.capturedView(m_format.dateGroup))
                                   : Record::kNoTimestamp;
 
-                idx.records.append(r);
-                currentRecord = idx.records.size() - 1;
+                records.append(r);
+                currentRecord = records.size() - 1;
                 currentIsParsed = true;
             }
         }
@@ -73,7 +69,7 @@ RecordIndex Indexer::index(LogSource &source, const Progress &progress, bool *ca
         if (!isStart) {
             if (currentRecord >= 0 && currentIsParsed) {
                 // Continuation of a parsed record: extend its byte span and lines.
-                Record &r = idx.records[currentRecord];
+                Record &r = records[currentRecord];
                 const qint64 newLen = static_cast<qint64>(r.length) + byteLen;
                 r.length = static_cast<quint32>(qMin<qint64>(newLen, std::numeric_limits<quint32>::max()));
                 if (r.lineCount < Record::kMaxLineCount)
@@ -90,14 +86,14 @@ RecordIndex Indexer::index(LogSource &source, const Progress &progress, bool *ca
                 r.timestamp = Record::kNoTimestamp;
                 r.priority = static_cast<quint8>(Priority::Unknown);
                 r.reserved = 0;
-                idx.records.append(r);
-                currentRecord = idx.records.size() - 1;
+                records.append(r);
+                currentRecord = records.size() - 1;
                 currentIsParsed = false;
             }
         }
     };
 
-    qint64 pos = m_decoder.bomLength();
+    qint64 pos = startPos;
     while (pos < size) {
         // Read a window at `pos`, growing it (rare) only when the very first line
         // does not terminate within it — a single line longer than the chunk. No
@@ -141,27 +137,57 @@ RecordIndex Indexer::index(LogSource &source, const Progress &progress, bool *ca
 
         pos += scan;
 
-        if (progress) {
-            if (!progress(pos, size)) {
-                if (cancelled)
-                    *cancelled = true;
-                if (batch)
-                    batch(idx, /*final=*/true); // flush the remainder on cancel
-                idx.rebuildBlockSums();
-                return idx;
-            }
-        }
-
-        // Stream what has been scanned so far. `final=false` keeps the last record
-        // open for continuations still to arrive in the next chunk (§4).
-        if (batch)
-            batch(idx, /*final=*/false);
+        if (onChunk && !onChunk(pos))
+            return false; // cancelled
     }
+    return true;
+}
+
+RecordIndex Indexer::index(LogSource &source, const Progress &progress, bool *cancelled,
+                           const Batch &batch) const
+{
+    RecordIndex idx;
+    if (cancelled)
+        *cancelled = false;
+
+    const qint64 size = source.size();
+    bool wasCancelled = false;
+
+    // Bridge the shared forward pass to the streaming progress/batch seam: after
+    // each chunk, report progress (which may cancel) and flush a non-final batch —
+    // the last record stays open for continuations still to arrive (§4).
+    const bool completed = forwardScan(
+        source, m_decoder.bomLength(), idx.records, idx.loggers, idx.threads,
+        [&](qint64 pos) -> bool {
+            if (progress && !progress(pos, size)) {
+                wasCancelled = true;
+                return false;
+            }
+            if (batch)
+                batch(idx, /*final=*/false);
+            return true;
+        });
+    Q_UNUSED(completed);
+
+    if (wasCancelled && cancelled)
+        *cancelled = true;
 
     if (batch)
-        batch(idx, /*final=*/true);
+        batch(idx, /*final=*/true); // flush the remainder (completion or cancel)
     idx.rebuildBlockSums();
     return idx;
+}
+
+QVector<Record> Indexer::scanAppendedTail(LogSource &source, qint64 startOffset,
+                                          InternTable &loggers, InternTable &threads) const
+{
+    // A self-contained forward pass over the appended tail: currentRecord seeds to
+    // -1, so the line at `startOffset` opens a fresh record (a record boundary by
+    // contract). No progress/batch streaming — the appended delta is small and the
+    // caller applies it synchronously (invariant #9: still forward-only).
+    QVector<Record> tail;
+    forwardScan(source, startOffset, tail, loggers, threads, {});
+    return tail;
 }
 
 } // namespace loftail

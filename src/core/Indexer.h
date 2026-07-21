@@ -47,10 +47,32 @@ public:
     RecordIndex index(LogSource &source, const Progress &progress = {}, bool *cancelled = nullptr,
                       const Batch &batch = {}) const;
 
+    // Continue the single forward pass over the APPENDED tail (M6 live updates,
+    // invariant #9): scan [startOffset, source.size()) as a self-contained forward
+    // pass, appending records to the returned vector and interning logger/thread
+    // names into the CALLER's tables so ids stay consistent with the existing index
+    // (invariant #4). `startOffset` must be a record boundary — normally the offset
+    // of the previous scan's last (provisional) record, which is re-read here so a
+    // trailing record that grew with continuation lines is resolved correctly
+    // (invariant #2). The record starting at `startOffset` is element 0 of the
+    // result; brand-new records follow. Record offsets are absolute file offsets.
+    QVector<Record> scanAppendedTail(LogSource &source, qint64 startOffset,
+                                     InternTable &loggers, InternTable &threads) const;
+
     // Chunk size for reading from the source. Public for the perf harness.
     static constexpr qint64 kChunkBytes = 4 * 1024 * 1024;
 
 private:
+    // Shared core of index()/scanAppendedTail(): a forward pass over
+    // [startPos, source.size()) appending records to `records` and interning into
+    // `loggers`/`threads` (invariant #9 — no backward passes, no re-reads).
+    // `onChunk(pos)` runs after each processed chunk for progress/streaming and
+    // returns false to request cancellation. Returns true if it ran to completion,
+    // false if `onChunk` cancelled it.
+    bool forwardScan(LogSource &source, qint64 startPos, QVector<Record> &records,
+                     InternTable &loggers, InternTable &threads,
+                     const std::function<bool(qint64)> &onChunk) const;
+
     const LogFormat &m_format;
     Decoder          m_decoder;
     QTimeZone        m_sourceZone;

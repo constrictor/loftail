@@ -125,6 +125,25 @@ void LogModel::endAppendRows()
     endInsertRows();
 }
 
+void LogModel::beginRemoveTail(int count)
+{
+    const int last = rowCount() - 1;
+    beginRemoveRows(QModelIndex(), last - count + 1, last);
+}
+
+void LogModel::endRemoveTail()
+{
+    endRemoveRows();
+}
+
+void LogModel::notifyRowChanged(int row)
+{
+    const int cols = columnCount();
+    if (row < 0 || cols <= 0)
+        return;
+    emit dataChanged(index(row, 0), index(row, cols - 1));
+}
+
 QColor LogModel::highlightColor(int row, bool background) const
 {
     if (!m_document)
