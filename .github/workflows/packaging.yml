@@ -1,0 +1,112 @@
+name: build-test-package
+
+# Builds, tests, and packages loftail on all three target platforms.
+#
+# This workflow is the vehicle for the cross-platform verification that cannot
+# happen on the Linux dev machine: it produces the Windows and macOS artifacts
+# and smoke-tests them, and doubles as the "verify the build on Windows and
+# macOS" check that PLAN.md M0 left open.
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    # Ubuntu 24.04 is the reference build environment (ARCHITECTURE.md §1):
+    # stock GCC 13 + CMake + Ninja + Qt 6.4.2 from the system repos, no
+    # separately-installed Qt.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain + system Qt 6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake \
+            qt6-base-dev libgl1-mesa-dev \
+            libfuse2 file desktop-file-utils
+
+      - name: Configure + build (Debug) and test
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build
+          QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+
+      - name: Build AppImage
+        run: packaging/linux/build-appimage.sh Release
+
+      - name: Smoke-test the AppImage (no dev Qt env)
+        run: |
+          APPIMG=$(ls dist/loftail-*-x86_64.AppImage | head -n1)
+          chmod +x "$APPIMG"
+          APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMG" --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loftail-linux-appimage
+          path: dist/*.AppImage
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.4.2"
+
+      - name: Configure + build and test
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          $env:QT_QPA_PLATFORM = "offscreen"
+          ctest --test-dir build --output-on-failure
+
+      - name: Build portable zip
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File packaging\windows\build-portable.ps1
+
+      - name: Smoke-test the portable build (uses bundled Qt only)
+        shell: pwsh
+        run: |
+          & dist\loftail-portable\loftail.exe --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loftail-windows-portable
+          path: dist/*.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.4.2"
+
+      - name: Configure + build and test
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+
+      - name: Build .app bundle + dmg
+        run: packaging/macos/build-appbundle.sh Release
+
+      - name: Smoke-test the bundle
+        run: |
+          ./build-macos/src/loftail.app/Contents/MacOS/loftail --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loftail-macos-dmg
+          path: dist/*.dmg

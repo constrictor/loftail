@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <rect width="256" height="256" rx="48" fill="#1e2733"/>
+  <rect x="40" y="40" width="176" height="176" rx="20" fill="#263445"/>
+  <!-- log lines -->
+  <g fill="#8aa0b8">
+    <rect x="64" y="72"  width="96"  height="12" rx="6"/>
+    <rect x="64" y="100" width="128" height="12" rx="6"/>
+    <rect x="64" y="128" width="80"  height="12" rx="6"/>
+  </g>
+  <!-- highlighted "tail" line (newest record) -->
+  <rect x="64" y="156" width="128" height="16" rx="8" fill="#4fc08d"/>
+  <!-- tail arrow: following the end of the log -->
+  <path d="M64 190 h96 l-14 -12 v8 h-82 z M160 190 l0 0 z" fill="#f0b429"/>
+  <path d="M150 178 l24 12 l-24 12 v-8 h-14 v-8 h14 z" fill="#f0b429"/>
+</svg>

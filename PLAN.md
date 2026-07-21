@@ -26,7 +26,7 @@ Project skeleton that builds and runs an empty window on all three platforms.
 - [x] `QApplication` + empty `QMainWindow`; org/app name set so `QSettings` works
 - [x] CTest wired up with one trivial passing test
 - [x] `.gitignore`, and **initialize the git repository** — it is not one yet
-- [ ] CI is optional at this stage but the build must be verified on Windows and macOS before M7
+- [ ] CI is optional at this stage but the build must be verified on Windows and macOS before M7 — a CI workflow (`.github/workflows/packaging.yml`) that builds + tests + packages on `ubuntu-24.04`, `windows-latest`, and `macos-latest` was authored in M7 and is the vehicle for this verification, but it has **not been executed** (no runner available on this Linux-only dev machine), so the Windows/macOS build confirmation remains genuinely outstanding until the workflow runs green.
 
 **Done when:** `cmake --build build && ctest --test-dir build` succeeds and the app opens a window on Linux, and the build is confirmed on Windows and macOS.
 
@@ -136,14 +136,16 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 ## M7 — Packaging
 
-- [ ] Command-line argument handling (`loftail <file>`, `--pattern <p>`); files always open at end, following, so there is no `--follow`
-- [ ] File association is explicitly **not** handled by the application — if wanted, it belongs to the installer
-- [ ] Linux: AppImage (built on Ubuntu 24.04, the reference environment — `ARCHITECTURE.md` §1), via `linuxdeploy` + `linuxdeploy-plugin-qt` to bundle Qt so it runs without a system Qt
-- [ ] Windows: `windeployqt` + installer or portable zip
-- [ ] macOS: `.app` bundle via `macdeployqt`; note that distribution outside a signed/notarized flow will warn users
-- [ ] Verify a clean-machine launch on each platform (no Qt installed)
+- [x] Command-line argument handling (`loftail <file>`, `--pattern <p>`); files always open at end, following, so there is no `--follow` — finalized in `src/main.cpp` with `QCommandLineParser` (positional `[file]`, `--pattern`, `--help`, `--version`, app description). No `--follow` by design (SPEC.md §3). Degrades gracefully: no file → empty window; bad `--pattern` → opens as plain text (M3); missing/unknown option → Qt usage message. Verified: `--version`, `--help`, unknown-option exit 1, and headless (`QT_QPA_PLATFORM=offscreen`) opens of a good pattern, a bad pattern, and a nonexistent file all behave correctly.
+- [x] File association is explicitly **not** handled by the application — if wanted, it belongs to the installer — decision documented in `packaging/README.md` and enforced in the packaging assets: the `.desktop` file carries no `MimeType=`, the macOS `Info.plist` no `CFBundleDocumentTypes`, and CMake registers nothing. This box is satisfied by deliberately NOT doing it.
+- [x] Linux: AppImage (built on Ubuntu 24.04, the reference environment — `ARCHITECTURE.md` §1), via `linuxdeploy` + `linuxdeploy-plugin-qt` to bundle Qt so it runs without a system Qt — mechanism is `install()` rules in `src/CMakeLists.txt` (binary → `usr/bin`, `.desktop` → `usr/share/applications`, SVG icon → `usr/share/icons/...`) plus `packaging/linux/build-appimage.sh`. **Actually built and verified here:** produced a 55 MB `loftail-Release-x86_64.AppImage`; a headless run under a stripped `env -i` (`QT_QPA_PLATFORM=offscreen`, offscreen QPA plugin bundled alongside xcb) prints the version and opens a file, and `/proc/<pid>/maps` confirms it loads `libQt6Core.so.6` + `libqoffscreen.so` from the AppImage's own tree, not system `/usr/lib` — i.e. it runs without a system Qt.
+- [x] Windows: `windeployqt` + installer or portable zip — script authored: `packaging/windows/build-portable.ps1` (Release build → `cmake --install` → `windeployqt` → zip); CMake install rules are platform-aware for the Windows path; an MSI/NSIS installer is noted as an option. **Authored but NOT run/verified from this Linux machine** — the CI workflow builds+smoke-tests it on `windows-latest`.
+- [x] macOS: `.app` bundle via `macdeployqt`; note that distribution outside a signed/notarized flow will warn users — script authored: `packaging/macos/build-appbundle.sh` (`MACOSX_BUNDLE` + `Info.plist.in` in CMake → `macdeployqt -dmg`); the unsigned-Gatekeeper-warning and the `-codesign`/notarization path are documented. **Authored but NOT run/verified from this Linux machine** — the CI workflow builds it on `macos-latest`.
+- [ ] Verify a clean-machine launch on each platform (no Qt installed) — **Linux: done** (see above). **Windows/macOS: outstanding** — cannot be produced/verified from this Linux dev machine; `.github/workflows/packaging.yml` is the vehicle that builds and smoke-tests those two artifacts on their native runners.
 
 **Done when:** each platform has an artifact that runs on a machine without a Qt development environment.
+
+**Status:** Linux AppImage is built and clean-run-verified here. Windows and macOS packaging mechanisms are authored and correct but remain unbuilt/unverified on this Linux-only machine; the added CI workflow is where they get built and smoke-tested (consistent with M0's still-open cross-platform verification).
 
 ## M8 — Format autodetection (post-1.0)
 

@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=loftail
+GenericName=Log Viewer
+Comment=Desktop viewer for log4cplus logs — filters and follows live logs
+Exec=loftail %f
+Icon=loftail
+Terminal=false
+Categories=Development;Utility;TextTools;
+Keywords=log;log4cplus;tail;viewer;debug;
+# NOTE: MimeType / file-association registration is deliberately omitted here.
+# Per PLAN.md M7, the application does not claim file associations; if a
+# distribution wants loftail to open .log files from the file manager, that
+# is the installer's/packager's decision and belongs in the packaging layer,
+# not in the application.
+StartupWMClass=loftail

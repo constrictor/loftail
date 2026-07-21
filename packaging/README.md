@@ -1,0 +1,130 @@
+# Packaging loftail
+
+This directory holds everything needed to turn a build of loftail into a
+distributable artifact on each platform. The goal (PLAN.md M7) is one artifact
+per platform that **runs on a machine with no Qt development environment
+installed**.
+
+The Qt runtime is bundled into every artifact by the platform's standard deploy
+tool — `linuxdeploy` on Linux, `windeployqt` on Windows, `macdeployqt` on macOS.
+loftail does not link log4cplus, so there is nothing else to bundle.
+
+## Command line
+
+All platforms share the same CLI (finalized in M7, `src/main.cpp`):
+
+```
+loftail [options] [file]
+
+  file            Log file to open (optional). Opens at its end and follows it,
+                  like tail -f — this is unconditional (SPEC.md §3), which is why
+                  there is deliberately no --follow flag.
+  --pattern <p>   log4cplus ConversionPattern for a file loftail has not seen
+                  before. A file with a remembered format ignores it; a pattern
+                  that does not match opens the file as plain text.
+  -h, --help      Show usage and exit.
+  -v, --version   Show version and exit.
+```
+
+No file argument opens an empty window (session restore may still reopen the
+last file).
+
+## File association — deliberately not in the app
+
+loftail never registers itself as the handler for `.log` (or any) files, on any
+platform. This is a deliberate decision (PLAN.md M7): if a distribution wants
+loftail to open logs from the file manager, that association belongs in the
+**installer/packager**, not the application. Accordingly:
+
+- the Linux `.desktop` file carries **no** `MimeType=` key,
+- the macOS `Info.plist` carries **no** `CFBundleDocumentTypes`,
+- the Windows script builds a portable zip and registers nothing.
+
+An installer (NSIS/MSI/`.deb`) is the place to add associations if wanted.
+
+## Linux — AppImage (reference environment: Ubuntu 24.04)
+
+Ubuntu 24.04 LTS is the reference build environment (ARCHITECTURE.md §1): stock
+GCC 13 + CMake + Ninja + Qt 6.4.2 from the system repos, no separately-installed
+Qt.
+
+```bash
+packaging/linux/build-appimage.sh          # Release by default
+```
+
+What it does:
+
+1. downloads (and caches under `packaging/linux/tools/`) `linuxdeploy` and
+   `linuxdeploy-plugin-qt` from their upstream GitHub releases,
+2. configures + builds loftail,
+3. `cmake --install`s into a staging `AppDir` (the `install()` rules in
+   `src/CMakeLists.txt` place the binary in `usr/bin`, the `.desktop` file in
+   `usr/share/applications`, and the icon in `usr/share/icons/...`),
+4. runs `linuxdeploy --plugin qt` to pull the Qt libraries + platform plugins
+   into the AppDir and emit `dist/loftail-Release-x86_64.AppImage`.
+
+For an offline build, drop the two `linuxdeploy*.AppImage` tools into
+`packaging/linux/tools/` yourself; the script only downloads what is missing.
+
+**Clean-machine verify:** copy the `.AppImage` to a machine (or container) with
+no Qt installed and run it. Headless smoke check:
+
+```bash
+./loftail-Release-x86_64.AppImage --version
+QT_QPA_PLATFORM=offscreen ./loftail-Release-x86_64.AppImage some.log --pattern '%d{%Y-%m-%d %H:%M:%S} [%t] %-5p %c - %m%n'
+```
+
+A GUI launch should show the window with no `libQt6*.so` on the system.
+
+## Windows — portable zip (+ optional installer)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\windows\build-portable.ps1 `
+    -QtDir C:\Qt\6.4.2\msvc2019_64
+```
+
+Builds Release, installs the exe, runs `windeployqt` to copy the Qt DLLs +
+plugins next to it, and produces `dist\loftail-Release-windows-x64.zip`. Unzip
+anywhere and run `loftail.exe`.
+
+An MSI/NSIS installer can wrap the same staged tree (and is the right place for
+Start-menu shortcuts and file association, if wanted). The portable zip is the
+baseline and needs no installer.
+
+**Clean-machine verify:** unzip on a Windows machine with no Qt installed and
+run `loftail.exe` (and `loftail.exe --version`).
+
+> Status: this script is authored but has **not** been run or verified on
+> Windows from this Linux dev environment. The CI workflow
+> (`.github/workflows/packaging.yml`) is the vehicle for actually building and
+> smoke-testing it.
+
+## macOS — .app bundle (+ .dmg)
+
+```bash
+packaging/macos/build-appbundle.sh
+```
+
+Builds Release as a `MACOSX_BUNDLE`, runs `macdeployqt` to copy the Qt
+frameworks into the bundle, and wraps it in `dist/loftail-Release-macos.dmg`.
+
+**Signing / notarization:** the baseline bundle is **unsigned**. Distributed as
+is, Gatekeeper warns users and they must right-click ▸ Open (or
+`xattr -dr com.apple.quarantine loftail.app`). For real distribution, set
+`CODESIGN_IDENTITY` to a Developer ID and notarize the `.dmg` with `notarytool`.
+
+**Clean-machine verify:** copy the `.app`/`.dmg` to a Mac with no Qt installed
+and launch it (`open loftail.app`, or `loftail.app/Contents/MacOS/loftail
+--version`).
+
+> Status: this script is authored but has **not** been run or verified on macOS
+> from this Linux dev environment. The CI workflow is the vehicle for actually
+> building it.
+
+## Continuous integration
+
+`.github/workflows/packaging.yml` builds, tests, and packages loftail on Linux,
+Windows, and macOS. It is the mechanism by which the Windows and macOS artifacts
+— which cannot be produced from the Linux dev machine — get built and
+smoke-tested, and it doubles as the "verify the build on Windows and macOS"
+check that M0 left open.

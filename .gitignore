@@ -5,6 +5,12 @@ cmake-build-*/
 out/
 install/
 
+# Packaging output and cached deploy tools (packaging/README.md)
+dist/
+packaging/linux/tools/
+AppDir/
+*.AppImage
+
 # CMake
 CMakeCache.txt
 CMakeFiles/

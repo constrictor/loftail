@@ -16,3 +16,42 @@ target_link_libraries(loftail PRIVATE
     loftail_core
     loftail_ui
 )
+
+# --- Packaging / install layout (PLAN.md M7) -------------------------------
+#
+# These rules give every platform a standard install tree that the deploy
+# tools (linuxdeploy / windeployqt / macdeployqt) run against. See
+# packaging/README.md for how each artifact is built and clean-machine-verified.
+#
+# File association is deliberately NOT registered by the application on any
+# platform. If a distribution wants loftail to own .log files, that belongs to
+# the installer/packager (PLAN.md M7), not here.
+
+set(LOFTAIL_DESKTOP_FILE "${CMAKE_SOURCE_DIR}/packaging/linux/loftail.desktop")
+set(LOFTAIL_ICON_FILE    "${CMAKE_SOURCE_DIR}/packaging/linux/loftail.svg")
+
+if(APPLE)
+    # macOS: build a relocatable .app bundle. Info.plist is generated from the
+    # template in packaging/macos so macdeployqt has a proper bundle to sign.
+    set_target_properties(loftail PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "loftail"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "org.loftail.loftail"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/packaging/macos/Info.plist.in"
+    )
+    install(TARGETS loftail BUNDLE DESTINATION .)
+elseif(WIN32)
+    # Windows: install the bare executable; windeployqt copies the Qt runtime
+    # next to it (see packaging/windows/build-portable.ps1).
+    install(TARGETS loftail RUNTIME DESTINATION .)
+else()
+    # Linux / other Unix: FHS-style layout that AppImage tooling understands.
+    include(GNUInstallDirs)
+    install(TARGETS loftail RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(FILES "${LOFTAIL_DESKTOP_FILE}"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
+    install(FILES "${LOFTAIL_ICON_FILE}"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
+endif()
