@@ -158,9 +158,10 @@ QString Document::messageText(const Record &rec) const
     // recordStartRe matches exactly up to the message field). Matching that shorter,
     // capture-free prefix — instead of the full-record recordRe with all its groups
     // — is markedly cheaper on the text-filter hot path, which runs once per record
-    // that survives the integer axes (invariant #4). matchView avoids an extra
-    // QString copy of the subject.
-    const QRegularExpressionMatch sm = m_format.recordStartRe.matchView(firstLine);
+    // that survives the integer axes (invariant #4). firstLine is an owned QString,
+    // so match() shares its data (COW) with no deep copy; the QStringView-taking
+    // matchView() is Qt 6.5+ only and the target minimum is 6.4 (ARCHITECTURE.md §1).
+    const QRegularExpressionMatch sm = m_format.recordStartRe.match(firstLine);
     QString value = sm.hasMatch() ? firstLine.sliced(sm.capturedEnd()) : QString();
 
     // The message spans continuation lines (invariant #2): append the rest so a
