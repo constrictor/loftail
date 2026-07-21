@@ -16,6 +16,8 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QScrollBar>
+#include <QSignalBlocker>
+#include <QTimer>
 
 namespace loftail {
 
@@ -131,6 +133,13 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent)
 
     m_selection = new QItemSelectionModel(m_model, this);
 
+    // Debounces width-change remeasurement in AlwaysOn (§7.1.1): a drag-resize
+    // fires many events, so remeasure once when it settles rather than per frame.
+    m_resizeTimer = new QTimer(this);
+    m_resizeTimer->setSingleShot(true);
+    m_resizeTimer->setInterval(120);
+    connect(m_resizeTimer, &QTimer::timeout, this, &LogView::applyDebouncedResize);
+
     verticalScrollBar()->setSingleStep(1);
 
     connect(m_header, &QHeaderView::sectionResized, this, [this](int, int, int) { recomputeGeometry(); });
@@ -195,11 +204,183 @@ int LogView::recordHeightLines(int r) const
 }
 
 // ---------------------------------------------------------------------------
+// Mode-branching geometry wrappers (invariant #6). This is the ONLY seam where
+// the exact and estimated paths meet: each wrapper branches on the mode once.
+// When not estimating() the wrappers forward to the exact statics with the
+// selected-record wrap folded in, so the M2b exact path is byte-identical; the
+// estimated machinery (m_estimated) is reached from nowhere else.
+// ---------------------------------------------------------------------------
+
+bool LogView::estimating() const
+{
+    // AlwaysOn with a message column to wrap. Without a message field there is
+    // nothing width-dependent to estimate, so we stay on the exact path.
+    return m_wrapMode == WrapMode::AlwaysOn && messageColumn() >= 0;
+}
+
+qint64 LogView::mapTotalLines() const
+{
+    if (estimating())
+        return m_estimated.totalLines();
+    return totalScrollLines(m_document->index(), selRecordForGeometry(), selWrapLines());
+}
+
+qint64 LogView::mapLineOfRecord(int r) const
+{
+    if (estimating())
+        return m_estimated.firstLineOfRecord(r);
+    return scrollLineOfRecord(m_document->index(), selRecordForGeometry(), selWrapLines(), r);
+}
+
+int LogView::mapRecordAtLine(qint64 line) const
+{
+    if (estimating())
+        return m_estimated.recordAtLine(line);
+    return recordAtScrollLine(m_document->index(), selRecordForGeometry(), selWrapLines(), line);
+}
+
+int LogView::mapRecordHeightLines(int r) const
+{
+    if (estimating())
+        return qMax(1, m_estimated.recordHeightLines(r));
+    return recordHeightLines(r);
+}
+
+// ---------------------------------------------------------------------------
+// Estimated-mode support (AlwaysOn only)
+// ---------------------------------------------------------------------------
+
+int LogView::viewportCols() const
+{
+    // Characters that fit across the wrapped message column. Fixed-pitch font, so
+    // this is a divide, not a shaping pass (§7.1.1). The message wraps within the
+    // width from its column origin to the viewport's right edge.
+    const int msgCol = messageColumn();
+    const int x = msgCol >= 0 ? m_header->sectionViewportPosition(msgCol) : 0;
+    const int avail = qMax(1, viewport()->width() - x);
+    const int cw = qMax(1, fontMetrics().averageCharWidth());
+    return qMax(1, avail / cw);
+}
+
+void LogView::ensureEstimatorBound()
+{
+    // Bind (or rebind) the estimator to the current index. Rebinds only when the
+    // index identity or its block count changed (e.g. records appended during the
+    // scan) — never on a plain width change, which the debounced resize owns.
+    const RecordIndex &idx = m_document->index();
+    const int wantBlocks =
+        (idx.records.size() + RecordIndex::kBlockSize - 1) / RecordIndex::kBlockSize;
+    if (m_estimated.index() != &idx || m_estimated.blockCount() != wantBlocks)
+        m_estimated.reset(&idx, viewportCols());
+}
+
+void LogView::measureBlock(int block)
+{
+    if (!estimating() || block < 0 || block >= m_estimated.blockCount()
+        || m_estimated.isBlockMeasured(block))
+        return;
+
+    const int msgCol = messageColumn();
+    const int cols = m_estimated.columns();
+    const int cap = RecordIndex::kDisplayLineCap;
+    const int start = block * RecordIndex::kBlockSize;
+    const int n = recordCount();
+    const int end = qMin(start + RecordIndex::kBlockSize, n);
+
+    QVector<quint16> lines;
+    lines.reserve(end - start);
+    QVector<int> lineChars;
+    for (int r = start; r < end; ++r) {
+        // Decoded message text via the model (invariant #8: split the decoded
+        // string on '\n', never scan raw bytes). Only char counts are kept — no
+        // parsed text is retained per record (invariant #1); the block cache
+        // stores heights, and only for visited blocks.
+        const QString msg = m_model->cellText(r, msgCol);
+        lineChars.clear();
+        int from = 0;
+        while (true) {
+            const int nl = msg.indexOf(QLatin1Char('\n'), from);
+            if (nl < 0) {
+                lineChars.append(int(msg.size()) - from);
+                break;
+            }
+            lineChars.append(nl - from);
+            from = nl + 1;
+        }
+        lines.append(quint16(EstimatedGeometry::measuredRecordLines(lineChars, cols, cap)));
+    }
+    m_estimated.measureBlock(block, lines);
+}
+
+void LogView::measureBlockOfRecord(int record)
+{
+    if (!estimating())
+        return;
+    ensureEstimatorBound();
+    if (record >= 0 && record < recordCount())
+        measureBlock(m_estimated.blockOfRecord(record));
+    updateScrollBars();
+    viewport()->update();
+}
+
+void LogView::measureVisibleBlocks()
+{
+    // Measure every block the viewport touches, then re-anchor so a height
+    // refinement does not make the content under the cursor jump. Called from
+    // paint; the whole thing is cached, so subsequent frames measure nothing.
+    ensureEstimatorBound();
+    const int n = recordCount();
+    if (n == 0)
+        return;
+
+    const qint64 topLine = verticalScrollBar()->value();
+    const int topRec = m_estimated.recordAtLine(topLine);
+    if (topRec < 0)
+        return;
+    // A viewport of V lines holds at most V records (each >= 1 line), so
+    // [topRec, topRec+V] bounds everything paintable this frame.
+    const int lastRec = qMin(n - 1, topRec + visibleLines());
+    const int b0 = m_estimated.blockOfRecord(topRec);
+    const int b1 = m_estimated.blockOfRecord(lastRec);
+
+    bool measured = false;
+    for (int b = b0; b <= b1; ++b) {
+        if (!m_estimated.isBlockMeasured(b)) {
+            measureBlock(b);
+            measured = true;
+        }
+    }
+    if (measured) {
+        // Refined heights change the total and can shift records; keep topRec put
+        // (snap to its top) and refresh the scrollbar range without recursing.
+        const QSignalBlocker guard(verticalScrollBar());
+        updateScrollBars();
+        const qint64 anchor = m_estimated.firstLineOfRecord(topRec);
+        verticalScrollBar()->setValue(int(qMin<qint64>(anchor, verticalScrollBar()->maximum())));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Geometry / scrollbars / header layout
 // ---------------------------------------------------------------------------
 
 void LogView::recomputeGeometry()
 {
+    if (estimating()) {
+        // Estimated path: no per-record selection wrap to fold in. Ensure the
+        // estimator tracks the current index, then let the scrollbar reflect the
+        // (refining) estimated total. Measurement happens lazily on paint.
+        ensureEstimatorBound();
+        m_selWrapCache = -1;
+        updateScrollBars();
+        viewport()->update();
+        // A column resize changes the message width (hence the wrap column count)
+        // just like a viewport resize does, so re-sync the width-keyed cache on
+        // the same debounce rather than remeasuring on every drag step.
+        m_resizeTimer->start();
+        return;
+    }
+
     const int sel = selRecordForGeometry();
     if (sel >= 0) {
         const int msgCol = messageColumn();
@@ -219,11 +400,7 @@ void LogView::recomputeGeometry()
 
 void LogView::updateScrollBars()
 {
-    const RecordIndex &idx = m_document->index();
-    const int sel = selRecordForGeometry();
-    const int selW = selWrapLines();
-
-    const qint64 total = totalScrollLines(idx, sel, selW);
+    const qint64 total = mapTotalLines(); // exact or estimated, per the mode
     const int page = visibleLines();
     verticalScrollBar()->setRange(0, int(qMax<qint64>(0, total - page)));
     verticalScrollBar()->setPageStep(page);
@@ -247,7 +424,38 @@ void LogView::resizeEvent(QResizeEvent *event)
 {
     QAbstractScrollArea::resizeEvent(event);
     layoutHeader();
+    if (estimating()) {
+        // Debounce (§7.1.1): a drag-resize fires a burst of these. Keep the view
+        // usable now from the existing (possibly stale-width) estimates, and
+        // remeasure once when the drag settles.
+        ensureEstimatorBound();
+        updateScrollBars();
+        viewport()->update();
+        m_resizeTimer->start();
+        return;
+    }
     recomputeGeometry();
+}
+
+void LogView::applyDebouncedResize()
+{
+    if (!estimating())
+        return;
+    ensureEstimatorBound();
+    const int topRec = m_estimated.recordAtLine(verticalScrollBar()->value());
+    if (m_estimated.setColumns(viewportCols())) {
+        // Width actually changed: every measurement was width-keyed and is now
+        // dropped, so the total falls back to estimates until blocks are
+        // remeasured on the next paint. Re-anchor on the top record so the
+        // content does not jump under the new geometry.
+        const QSignalBlocker guard(verticalScrollBar());
+        updateScrollBars();
+        if (topRec >= 0) {
+            const qint64 anchor = m_estimated.firstLineOfRecord(topRec);
+            verticalScrollBar()->setValue(int(qMin<qint64>(anchor, verticalScrollBar()->maximum())));
+        }
+    }
+    viewport()->update();
 }
 
 void LogView::scrollContentsBy(int dx, int dy)
@@ -273,6 +481,66 @@ void LogView::paintEvent(QPaintEvent *event)
         return;
 
     const int lh = lineHeight();
+
+    // Estimated (wrap-always-on) path — kept entirely separate from the exact
+    // painting below so the exact path never routes through estimation (#6).
+    if (estimating()) {
+        measureVisibleBlocks(); // one-time per block; cached, re-anchors if refined
+
+        const qint64 topLine = verticalScrollBar()->value();
+        int r = m_estimated.recordAtLine(topLine);
+        if (r < 0)
+            return;
+        int y = int((m_estimated.firstLineOfRecord(r) - topLine) * lh);
+
+        const QVector<Field> &fields = m_document->format().fields;
+        const int msgCol = messageColumn();
+        const int vh = viewport()->height();
+        const int vw = viewport()->width();
+
+        while (r < n && y < vh) {
+            const Record &rec = idx.records.at(r);
+            const int hLines = qMax(1, m_estimated.recordHeightLines(r));
+            const int rowH = hLines * lh;
+            const bool selected = m_selection->isSelected(m_model->index(r, 0));
+
+            QColor band = palette().base().color();
+            if (selected) {
+                band = palette().highlight().color();
+            } else {
+                switch (rec.priorityEnum()) {
+                case Priority::Warn:  band = QColor(70, 60, 20); break;
+                case Priority::Error:
+                case Priority::Fatal: band = QColor(80, 30, 30); break;
+                default: if (r % 2) band = band.lighter(108); break;
+                }
+            }
+            p.fillRect(QRect(0, y, vw, rowH), band);
+            p.setPen(selected ? palette().highlightedText().color() : palette().text().color());
+
+            for (int vi = 0; vi < fields.size(); ++vi) {
+                const int logical = m_header->logicalIndex(vi);
+                if (logical < 0 || m_header->isSectionHidden(logical))
+                    continue;
+                const int x = m_header->sectionViewportPosition(logical);
+                const int w = m_header->sectionSize(logical);
+                if (logical == msgCol) {
+                    const int availW = qMax(10, vw - x);
+                    // Character wrapping (TextWrapAnywhere) so the painted height
+                    // matches the ceil(chars/cols) measurement model exactly.
+                    p.drawText(QRect(x, y, availW, rowH),
+                               Qt::TextWrapAnywhere | Qt::AlignTop, m_model->cellText(r, logical));
+                } else {
+                    p.drawText(QRect(x, y, w, lh), Qt::AlignVCenter | Qt::TextSingleLine,
+                               m_model->cellText(r, logical));
+                }
+            }
+            y += rowH;
+            ++r;
+        }
+        return;
+    }
+
     const int sel = selRecordForGeometry();
     const int selW = selWrapLines();
     const qint64 topLine = verticalScrollBar()->value();
@@ -349,7 +617,7 @@ int LogView::recordAtViewportY(int yPix) const
     if (idx.records.isEmpty() || yPix < 0)
         return -1;
     const qint64 line = qint64(verticalScrollBar()->value()) + yPix / lineHeight();
-    return recordAtScrollLine(idx, selRecordForGeometry(), selWrapLines(), line);
+    return mapRecordAtLine(line);
 }
 
 void LogView::selectRange(int anchor, int current)
@@ -396,11 +664,8 @@ void LogView::setCurrentRecord(int record, bool extendSelection)
 
 void LogView::ensureRecordVisible(int record)
 {
-    const RecordIndex &idx = m_document->index();
-    const int sel = selRecordForGeometry();
-    const int selW = selWrapLines();
-    const qint64 recTop = scrollLineOfRecord(idx, sel, selW, record);
-    const qint64 recBottom = recTop + recordHeightLines(record);
+    const qint64 recTop = mapLineOfRecord(record);
+    const qint64 recBottom = recTop + mapRecordHeightLines(record);
     const qint64 top = verticalScrollBar()->value();
     const qint64 page = visibleLines();
     if (recTop < top)
@@ -429,9 +694,7 @@ void LogView::keyPressEvent(QKeyEvent *event)
         return;
     }
     const bool shift = event->modifiers().testFlag(Qt::ShiftModifier);
-    const int cur = m_current < 0 ? int(recordAtScrollLine(m_document->index(), selRecordForGeometry(),
-                                                           selWrapLines(), verticalScrollBar()->value()))
-                                  : m_current;
+    const int cur = m_current < 0 ? mapRecordAtLine(verticalScrollBar()->value()) : m_current;
 
     if (event->matches(QKeySequence::Copy)) {
         copySelectionRaw();
@@ -449,17 +712,13 @@ void LogView::keyPressEvent(QKeyEvent *event)
     case Qt::Key_Home: setCurrentRecord(0, shift); return;
     case Qt::Key_End:  setCurrentRecord(n - 1, shift); return;
     case Qt::Key_PageUp: {
-        const qint64 target = scrollLineOfRecord(m_document->index(), selRecordForGeometry(),
-                                                 selWrapLines(), cur) - visibleLines();
-        setCurrentRecord(recordAtScrollLine(m_document->index(), selRecordForGeometry(),
-                                            selWrapLines(), qMax<qint64>(0, target)), shift);
+        const qint64 target = mapLineOfRecord(cur) - visibleLines();
+        setCurrentRecord(mapRecordAtLine(qMax<qint64>(0, target)), shift);
         return;
     }
     case Qt::Key_PageDown: {
-        const qint64 target = scrollLineOfRecord(m_document->index(), selRecordForGeometry(),
-                                                 selWrapLines(), cur) + visibleLines();
-        setCurrentRecord(recordAtScrollLine(m_document->index(), selRecordForGeometry(),
-                                            selWrapLines(), target), shift);
+        const qint64 target = mapLineOfRecord(cur) + visibleLines();
+        setCurrentRecord(mapRecordAtLine(target), shift);
         return;
     }
     default:
@@ -524,6 +783,16 @@ void LogView::setWrapMode(WrapMode mode)
     if (m_wrapMode == mode)
         return;
     m_wrapMode = mode;
+    if (mode == WrapMode::AlwaysOn) {
+        // Bind the estimator and sync it to the current width. setColumns() is a
+        // no-op (and preserves the cache) when the width is unchanged since the
+        // last AlwaysOn stint, so a plain Off<->AlwaysOn toggle keeps measurements.
+        ensureEstimatorBound();
+        m_estimated.setColumns(viewportCols());
+    }
+    // Switching AWAY from AlwaysOn deliberately leaves m_estimated untouched: the
+    // exact path never reads it, and keeping the cache means returning to AlwaysOn
+    // does not re-measure from scratch.
     recomputeGeometry();
 }
 
@@ -549,6 +818,8 @@ void LogView::handleRowsInserted()
     // Keep following the tail during a scan if the view is already at the bottom
     // (SPEC.md §3: files open at their end, following). Full follow/detach is M6.
     const bool wasAtBottom = verticalScrollBar()->value() >= verticalScrollBar()->maximum();
+    if (estimating())
+        ensureEstimatorBound(); // extend the estimator over the newly appended blocks
     updateScrollBars();
     if (wasAtBottom)
         scrollToEnd();
@@ -560,6 +831,9 @@ void LogView::handleModelReset()
     m_current = -1;
     m_anchor = -1;
     m_selWrapCache = -1;
+    // The index the estimator was bound to is gone; drop the cache so it rebinds
+    // (with fresh measurements) on the next AlwaysOn geometry query.
+    m_estimated.clear();
     recomputeGeometry();
 }
 

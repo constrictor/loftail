@@ -25,6 +25,9 @@ add_library(loftail_core STATIC
     TimestampParser.cpp
     TimestampParser.h
     RecordIndex.h
+    # M2c — estimated geometry for wrap-always-on (pure math, no UI/decoding)
+    EstimatedGeometry.cpp
+    EstimatedGeometry.h
     Indexer.cpp
     Indexer.h
     Document.cpp

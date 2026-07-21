@@ -36,6 +36,12 @@ qt_add_executable(tst_indexcontroller tst_indexcontroller.cpp)
 target_link_libraries(tst_indexcontroller PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_indexcontroller COMMAND tst_indexcontroller)
 
+# M2c — estimated geometry math (wrap-always-on). Pure integer/vector logic, no
+# decoding and no QApplication (QTEST_APPLESS_MAIN); links loftail_core only.
+qt_add_executable(tst_estimatedgeometry tst_estimatedgeometry.cpp)
+target_link_libraries(tst_estimatedgeometry PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_estimatedgeometry COMMAND tst_estimatedgeometry)
+
 # M2b — the production LogView. Links the UI layer; the geometry mapping and
 # clipboard builders are pure, and the header-state round-trip needs QWidget, so
 # the test runs under an offscreen QApplication (forced in its own main()).

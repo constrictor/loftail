@@ -98,7 +98,8 @@ void MainWindow::buildMenus()
     auto *wrapGroup = new QActionGroup(this);
     QAction *wrapOff = wrapMenu->addAction(QStringLiteral("&Off"));
     QAction *wrapSel = wrapMenu->addAction(QStringLiteral("&Selected Record Only"));
-    for (QAction *a : {wrapOff, wrapSel}) {
+    QAction *wrapAll = wrapMenu->addAction(QStringLiteral("&Always On"));
+    for (QAction *a : {wrapOff, wrapSel, wrapAll}) {
         a->setCheckable(true);
         wrapGroup->addAction(a);
     }
@@ -110,6 +111,11 @@ void MainWindow::buildMenus()
     });
     connect(wrapSel, &QAction::triggered, this, [this]() {
         m_wrapMode = LogView::WrapMode::SelectedRecordOnly;
+        if (m_view)
+            m_view->setWrapMode(m_wrapMode);
+    });
+    connect(wrapAll, &QAction::triggered, this, [this]() {
+        m_wrapMode = LogView::WrapMode::AlwaysOn;
         if (m_view)
             m_view->setWrapMode(m_wrapMode);
     });

@@ -45,11 +45,38 @@ private:
         return true;
     }
 
+    // A log with `n` records whose messages are long enough to wrap in AlwaysOn.
+    static QByteArray makeLog(int n)
+    {
+        QByteArray bytes;
+        for (int i = 0; i < n; ++i) {
+            bytes += "2026-07-21 14:32:05,123 [main] INFO  net.socket - ";
+            // A ~200-char message so it wraps to several visual lines at any
+            // realistic viewport width, driving the expansion factor above 1.
+            bytes += QByteArray("payload ").repeated(25);
+            bytes += "\n";
+        }
+        return bytes;
+    }
+
+    static bool openLog(Document &doc, QTemporaryFile &file, int n)
+    {
+        if (!writeLog(file, makeLog(n)))
+            return false;
+        return doc.open(file.fileName(),
+                        QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                        Encoding::Utf8, QTimeZone::utc());
+    }
+
 private slots:
     void wrapOffMappingMatchesBase();
     void selectedRecordWrapPatchesGeometry();
     void flattenAndTsvBuilders();
     void columnStateRoundTrips();
+    void alwaysOnMeasuresAndRefines();
+    void switchingToExactKeepsEstimationCache();
+    void alwaysOnUnreachableFromExactPath();
+    void alwaysOnPaintRefinesWhileScrolling();
 };
 
 void TestLogView::wrapOffMappingMatchesBase()
@@ -145,6 +172,137 @@ void TestLogView::columnStateRoundTrips()
     QVERIFY(v2.header()->isSectionHidden(2));
     QCOMPARE(v2.header()->logicalIndex(0), 4); // Message moved to the front
     QCOMPARE(v2.header()->visualIndex(4), 0);
+}
+
+// AlwaysOn engages the estimated geometry: measuring the visible block records
+// their exact wrapped heights and refines the total toward truth (§7.1.1).
+void TestLogView::alwaysOnMeasuresAndRefines()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 40), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400); // a finite viewport so wrapping has a width to work with
+
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    const EstimatedGeometry &g = view.estimatedGeometry();
+    QVERIFY(g.isBound());
+    QVERIFY(g.blockCount() >= 1);
+    QVERIFY(!g.isBlockMeasured(0)); // nothing measured until painted/forced
+
+    const qint64 beforeTotal = g.totalLines();
+
+    // Force the block containing record 0 to be measured (what painting does
+    // lazily) and confirm the wrapped total exceeds the unwrapped physical total.
+    view.measureBlockOfRecord(0);
+    QVERIFY(g.isBlockMeasured(0));
+    QVERIFY(g.expansionFactor() > 1.0);
+    QVERIFY(g.totalLines() > beforeTotal);
+    QCOMPARE(g.totalLines(), g.firstLineOfRecord(doc.index().records.size()));
+}
+
+// Switching to an exact wrap mode must NOT touch the estimation cache: the exact
+// path never reads it, and a round-trip back to AlwaysOn should not re-measure.
+void TestLogView::switchingToExactKeepsEstimationCache()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 30), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    view.measureBlockOfRecord(0);
+    const EstimatedGeometry &g = view.estimatedGeometry();
+    QVERIFY(g.isBlockMeasured(0));
+    const int cols = g.columns();
+    const int measured = g.measuredBlockCount();
+    const qint64 total = g.totalLines();
+
+    // Switch to each exact mode; the cache is left exactly as it was.
+    view.setWrapMode(LogView::WrapMode::Off);
+    QVERIFY(g.isBlockMeasured(0));
+    QCOMPARE(g.measuredBlockCount(), measured);
+    QCOMPARE(g.columns(), cols);
+    QCOMPARE(g.totalLines(), total);
+
+    view.setWrapMode(LogView::WrapMode::SelectedRecordOnly);
+    view.setCurrentRecord(5); // exercises the exact selected-record wrap path
+    QVERIFY(g.isBlockMeasured(0));
+    QCOMPARE(g.measuredBlockCount(), measured);
+    QCOMPARE(g.columns(), cols);
+
+    // Returning to AlwaysOn at the same width keeps the measurements (no reset).
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    QVERIFY(g.isBlockMeasured(0));
+    QCOMPARE(g.measuredBlockCount(), measured);
+}
+
+// In the exact modes the estimator is never bound at all — proof the estimation
+// machinery is unreachable from the exact path (invariant #6).
+void TestLogView::alwaysOnUnreachableFromExactPath()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 12), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+
+    // Default mode is Off; geometry queries and navigation exercise the exact
+    // path, which must never construct/bind the estimator.
+    QVERIFY(!view.estimatedGeometry().isBound());
+    view.setWrapMode(LogView::WrapMode::SelectedRecordOnly);
+    view.setCurrentRecord(3);
+    QVERIFY(!view.estimatedGeometry().isBound());
+    // measureBlockOfRecord is a no-op outside AlwaysOn.
+    view.measureBlockOfRecord(0);
+    QVERIFY(!view.estimatedGeometry().isBound());
+}
+
+// The real paint path (not the forced measure hook) drives measurement lazily:
+// rendering the viewport measures the visible block, and scrolling into a second
+// block measures it too, refining the total further. Uses a >1-block synthetic
+// log and QWidget::render to trigger paintEvent synchronously, headless.
+void TestLogView::alwaysOnPaintRefinesWhileScrolling()
+{
+    QTemporaryFile file;
+    Document doc;
+    // 5000 records spans two index blocks (kBlockSize == 4096).
+    QVERIFY2(openLog(doc, file, 5000), qPrintable(doc.lastError()));
+    QVERIFY(doc.index().records.size() > RecordIndex::kBlockSize);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    const EstimatedGeometry &g = view.estimatedGeometry();
+    QVERIFY(g.blockCount() >= 2);
+
+    auto paint = [&view]() {
+        QPixmap pm(view.viewport()->size());
+        view.viewport()->render(&pm); // invokes LogView::paintEvent synchronously
+    };
+
+    // First paint at the top measures block 0 and refines the total upward.
+    const qint64 estTotal = g.totalLines(); // pre-measurement estimate
+    paint();
+    QVERIFY(g.isBlockMeasured(0));
+    QCOMPARE(g.measuredBlockCount(), 1);
+    QVERIFY(g.totalLines() > estTotal);
+
+    // Scroll into the second block and paint: it gets measured too.
+    view.setCurrentRecord(4500); // scrolls the target into view
+    paint();
+    QVERIFY(g.isBlockMeasured(1));
+    QVERIFY(g.measuredBlockCount() >= 2);
+    // Fully measured blocks make their portion of the mapping exact.
+    QCOMPARE(g.totalLines(), g.firstLineOfRecord(doc.index().records.size()));
 }
 
 int main(int argc, char *argv[])

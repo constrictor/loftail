@@ -69,7 +69,7 @@ The performance spine. `ARCHITECTURE.md` §4–§7.
 
 - [x] **M2a — the spine.** Encoding detection and forced-encoding paths + `Decoder`; indexer producing the 32-byte `Record` (timestamps normalized to UTC epoch ms per `ARCHITECTURE.md` §5.1, threads interned); `Document`; `LogModel`; block prefix sums; and a throwaway scrolling prototype of `LogView` in **exact** geometry mode. Proves the performance targets against a real log. *(Measured on a 200 MB / 1.9M-record synthetic log4cplus log, Release build, warm file: indexing 214 MB/s single-threaded vs the ≥100 target; block-sum rebuild 0.45 ms per 1M records vs <20; paint-frame model/geometry cost well under the 16.6 ms/frame 60 fps budget.)*
 - [x] **M2b — the production view.** `LogView` proper: selection, keyboard navigation, clipboard (raw + copy-as-columns), column headers, wrap modes off and selected-record-only.
-- [ ] **M2c — estimated geometry.** Wrap *always on*: character-count-based height, per-block measurement cache keyed by viewport width, debounced resize, refining scrollbar (`ARCHITECTURE.md` §7.1.1).
+- [x] **M2c — estimated geometry.** Wrap *always on*: character-count-based height, per-block measurement cache keyed by viewport width, debounced resize, refining scrollbar (`ARCHITECTURE.md` §7.1.1).
 
 M2c is separable and lands last on purpose — the other two wrap modes are fully usable without it, so if estimated mode proves troublesome it can slip without blocking anything downstream.
 

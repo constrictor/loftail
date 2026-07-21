@@ -1,11 +1,14 @@
 #pragma once
 
+#include "EstimatedGeometry.h"
+
 #include <QAbstractScrollArea>
 #include <QVector>
 
 QT_BEGIN_NAMESPACE
 class QHeaderView;
 class QItemSelectionModel;
+class QTimer;
 QT_END_NAMESPACE
 
 namespace loftail {
@@ -23,12 +26,19 @@ class RecordIndex;
 // resolves a scroll position to a record in O(log n), and painting walks forward
 // from the first visible record so only visible records are ever touched.
 //
-// Geometry has two EXACT modes (M2b); the estimated always-on mode (M2c) is not
-// built here and is unreachable from this path (see WrapMode):
+// Geometry has two EXACT modes (M2b) plus one ESTIMATED mode (M2c). The exact
+// path never touches the estimation machinery, and the estimated path never
+// touches the exact statics/selWrap machinery — every geometry query routes
+// through the map* wrappers, which branch on the mode once (see WrapMode):
 //   * Off               — every record is its unwrapped physical-line height.
 //   * SelectedRecordOnly — the one selected record wraps to the available width;
 //     its height is measured directly and patched into the line mapping, so the
 //     geometry stays exact because exactly one record's height varies.
+//   * AlwaysOn          — EVERY record wraps to the viewport width, so heights
+//     depend on width and cannot be known without measuring. Geometry is handled
+//     by EstimatedGeometry (ARCHITECTURE.md §7.1.1): visited blocks measured and
+//     cached keyed by column count, the rest estimated, the scrollbar refining as
+//     blocks are measured, and a debounced resize remeasuring once per drag.
 //
 // Reused: QItemSelectionModel for selection, a QHeaderView for column geometry
 // (giving resize/reorder/hide and remembered layout for free), and LogModel for
@@ -42,7 +52,7 @@ public:
     enum class WrapMode {
         Off,                // long lines extend horizontally (SPEC.md §5)
         SelectedRecordOnly, // only the focused record wraps
-        // AlwaysOn is deliberately absent — it needs estimated geometry (M2c).
+        AlwaysOn,           // every record wraps; estimated geometry (M2c, §7.1.1)
     };
 
     LogView(const Document *document, LogModel *model, QWidget *parent = nullptr);
@@ -71,6 +81,16 @@ public:
     int currentRecord() const { return m_current; }
     void scrollToEnd();
 
+    // The estimated-geometry cache backing AlwaysOn (M2c). Exposed const for
+    // tests (measurement refinement, width-keyed invalidation, and that switching
+    // to an exact mode leaves the cache untouched); meaningful only in AlwaysOn.
+    const EstimatedGeometry &estimatedGeometry() const { return m_estimated; }
+    // Force the block containing `record` to be measured now (decodes the block's
+    // records via LogModel and folds exact heights into m_estimated). Normally
+    // driven lazily from painting; exposed so tests can drive it deterministically
+    // without a shown window. No-op outside AlwaysOn.
+    void measureBlockOfRecord(int record);
+
     // --- Pure geometry mapping (public for unit tests; no widget state) ---------
     // These express the exact-mode line<->record mapping with the selected record's
     // measured wrapped height folded in. `selRecord` is -1 when nothing wraps;
@@ -96,11 +116,31 @@ protected:
 private slots:
     void handleRowsInserted();
     void handleModelReset();
+    void applyDebouncedResize();
 
 private:
     int lineHeight() const;
     int visibleLines() const;
     int recordCount() const;
+
+    // --- Mode-branching geometry wrappers --------------------------------------
+    // Every geometry query goes through these; they branch on the wrap mode ONCE.
+    // In AlwaysOn (with a message column) they consult m_estimated; otherwise they
+    // forward to the exact statics with the selected-record wrap folded in. This
+    // is the single seam that keeps the estimation machinery unreachable from the
+    // exact path and vice versa (invariant #6).
+    bool estimating() const;
+    qint64 mapTotalLines() const;
+    qint64 mapLineOfRecord(int r) const;
+    int    mapRecordAtLine(qint64 line) const;
+    int    mapRecordHeightLines(int r) const;
+
+    // AlwaysOn support: characters that fit across the message column, block
+    // measurement from decoded text, and keeping the visible blocks measured.
+    int viewportCols() const;
+    void ensureEstimatorBound();
+    void measureBlock(int block);
+    void measureVisibleBlocks();
 
     // The record whose height varies under the current wrap mode, or -1 when
     // nothing wraps (wrap off, or no selection). Drives the geometry statics.
@@ -133,6 +173,12 @@ private:
     int      m_current = -1;   // focused record (drives keyboard nav + wrap)
     int      m_anchor = -1;    // range-selection anchor
     int      m_selWrapCache = -1; // memoized selWrapLines() for the current width
+
+    // Estimated geometry for AlwaysOn (M2c). Only ever constructed/consulted in
+    // AlwaysOn; switching to an exact mode leaves it untouched so its cache
+    // survives a round-trip through the exact modes.
+    EstimatedGeometry m_estimated;
+    QTimer  *m_resizeTimer = nullptr; // debounces width-change remeasurement
 };
 
 } // namespace loftail
