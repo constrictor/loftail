@@ -56,7 +56,12 @@ jobs:
           path: dist/*.AppImage
 
   windows:
-    runs-on: windows-latest
+    # Pin windows-2022 (VS 2022 / MSVC 14.4x). windows-latest now ships a much
+    # newer toolset (VS 18 / MSVC 14.51) whose STL fully removed the legacy
+    # stdext::checked_array_iterator that Qt 6.4.2's qvarlengtharray.h uses on
+    # the MSVC path -- an unconditional use no compile flag can restore. VS 2022
+    # still provides stdext, so the reference Qt 6.4 compiles there.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
@@ -70,9 +75,12 @@ jobs:
       # (/Zc:__cplusplus, /permissive-). With the Ninja generator CMake would
       # otherwise pick up the MinGW g++ on the runner's PATH and choke on those
       # flags, so activate the MSVC toolchain (puts cl.exe on PATH, exports the
-      # env to later steps) before configuring.
+      # env to later steps) before configuring. Constrain it to VS 2022 so a
+      # newer side-by-side toolset can't be selected.
       - name: Set up MSVC toolchain
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          vsversion: "2022"
 
       - name: Configure + build and test
         shell: pwsh
