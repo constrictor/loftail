@@ -9,6 +9,7 @@ QT_BEGIN_NAMESPACE
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QSpinBox;
 class QTableWidget;
 QT_END_NAMESPACE
@@ -41,6 +42,7 @@ public:
 
 private slots:
     void refresh(); // recompile the pattern, rebuild the preview, update messages
+    void detect();  // autodetect the pattern (M8) and fill the pattern field
 
 private:
     void buildUi(const QString &fileName);
@@ -50,6 +52,7 @@ private:
     QByteArray m_sample;
 
     QLineEdit    *m_patternEdit = nullptr;
+    QPushButton  *m_detectButton = nullptr;
     QLabel       *m_errorLabel = nullptr;
     QLabel       *m_warnLabel = nullptr;
     QComboBox    *m_encodingCombo = nullptr;

@@ -151,10 +151,10 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 `ARCHITECTURE.md` §9, `FUTURE.md`. The one later-release feature with a scheduled milestone; deliberately after a shipping product.
 
-- [ ] Candidate pattern library + match-rate scoring over the first ~200 records
-- [ ] Structural inference fallback, anchored on the closed priority vocabulary
-- [ ] `DetectingFormatProvider` behind the existing `IFormatProvider` seam
-- [ ] Pre-fills the existing M3 dialog for confirmation — no new UI, never applied silently
+- [x] Candidate pattern library + match-rate scoring over the first ~200 records — `FormatDetector` (`src/core`) compiles a curated library of common log4cplus patterns (all date-led, so the numeric date shape anchors against false matches) and scores each by match rate over the first 200 records via the existing `FormatPreview` (matched records / total). The best candidate at or above a 0.6 confidence threshold wins; ties break toward the richer pattern. Pure/UI-free, `QApplication`-less.
+- [x] Structural inference fallback, anchored on the closed priority vocabulary — when no library candidate clears the bar, `FormatDetector` synthesizes candidates from the sample lines anchored on the closed priority vocabulary (built from the `Priority` enum via `priorityName()`, not a duplicated list): a token from `TRACE|DEBUG|INFO|WARN|ERROR|FATAL` pivots the line, a leading date-shaped run becomes `%d{...}`, a token after it `%c`, the remainder `%m`, and separators (`" - "`, `" | "`, `[%t]`, …) are reconstructed verbatim. Each synthesized pattern is scored the same way and accepted only if it too clears the threshold.
+- [x] `DetectingFormatProvider` behind the existing `IFormatProvider` seam — `DetectingFormatProvider : IFormatProvider` inspects the sample and returns a `LogFormat` from the same `PatternCompiler`, so nothing downstream of the parser can tell a detected format from a typed one (invariant #3). It exposes `detected()`/`detectedPattern()`; on no-detection it returns a `CompileError` (drop-in for `ManualFormatProvider`).
+- [x] Pre-fills the existing M3 dialog for confirmation — no new UI, never applied silently — `MainWindow::openWithSettings` runs detection on the uncached-open path (a cached format still short-circuits it, M3 unchanged) and seeds the existing `LogFormatDialog` pattern field with the detected pattern; the user still confirms via OK. Detection failure leaves the dialog seeded with the fallback default, i.e. it opens as it did before M8. The dialog also gains a "Detect" button that re-runs detection into the pattern field. Verified headless (`-platform offscreen`): a library-detected non-default log, an inference-recovered non-library log, and a garbage file all behave as specified.
 
 **Done when:** common log4cplus patterns are detected without user input, and detection failure falls back cleanly to manual entry.
 

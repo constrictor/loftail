@@ -55,6 +55,12 @@ add_library(loftail_core STATIC
     FormatCache.h
     FormatPreview.cpp
     FormatPreview.h
+    # M8 — format autodetection: candidate-library scoring + priority-anchored
+    # structural inference, behind the same IFormatProvider seam (no UI, §9).
+    FormatDetector.cpp
+    FormatDetector.h
+    DetectingFormatProvider.cpp
+    DetectingFormatProvider.h
     # M5 — highlighting, presets, session persistence (all UI-free, name/index
     # based so they are theme- and reindex-portable, ARCHITECTURE.md §8/§12.4).
     Palette.cpp

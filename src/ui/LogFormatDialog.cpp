@@ -1,6 +1,7 @@
 #include "LogFormatDialog.h"
 
 #include "Decoder.h"
+#include "FormatDetector.h"
 #include "FormatPreview.h"
 #include "PatternCompiler.h"
 
@@ -11,6 +12,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -66,10 +68,19 @@ void LogFormatDialog::buildUi(const QString &fileName)
     outer->addLayout(form);
 
     // --- Pattern -----------------------------------------------------------
+    auto *patRow = new QHBoxLayout;
     m_patternEdit = new QLineEdit(this);
     m_patternEdit->setPlaceholderText(QStringLiteral("e.g. %d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"));
-    form->addRow(QStringLiteral("Conversion &pattern:"), m_patternEdit);
+    patRow->addWidget(m_patternEdit, 1);
+    // M8: re-run autodetection over the sample and fill the pattern field. It only
+    // pre-fills — the user still confirms via OK, so nothing is applied silently.
+    m_detectButton = new QPushButton(QStringLiteral("&Detect"), this);
+    m_detectButton->setToolTip(QStringLiteral("Guess the pattern from the sample lines"));
+    m_detectButton->setEnabled(!m_sample.isEmpty());
+    patRow->addWidget(m_detectButton);
+    form->addRow(QStringLiteral("Conversion &pattern:"), patRow);
     connect(m_patternEdit, &QLineEdit::textChanged, this, &LogFormatDialog::refresh);
+    connect(m_detectButton, &QPushButton::clicked, this, &LogFormatDialog::detect);
 
     // Inline compile error, pointing at the offending offset (CompileError::offset).
     m_errorLabel = new QLabel(this);
@@ -262,6 +273,21 @@ void LogFormatDialog::refresh()
         m_matchLabel->setText(QStringLiteral("%1 of %2 sample records matched the pattern.")
                                   .arg(pv.matchedCount)
                                   .arg(pv.totalCount));
+}
+
+void LogFormatDialog::detect()
+{
+    // Autodetect over the sample (M8, ARCHITECTURE.md §9) using the encoding the
+    // dialog currently has selected, and fill the pattern field. Setting the text
+    // triggers refresh() (the live preview), so the user sees the guess resolve and
+    // confirms it with OK — detection never applies itself.
+    const Decoder decoder = Decoder::detect(m_sample, currentEncoding());
+    const DetectionResult r =
+        FormatDetector::detect(QByteArrayView(m_sample.constData(), m_sample.size()), decoder);
+    if (r.detected)
+        m_patternEdit->setText(r.pattern);
+    else
+        m_matchLabel->setText(QStringLiteral("No log format could be detected — enter the pattern manually."));
 }
 
 } // namespace loftail

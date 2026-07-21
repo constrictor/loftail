@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "Decoder.h"
+#include "DetectingFormatProvider.h"
 #include "Document.h"
 #include "Filter.h"
 #include "FilterPane.h"
@@ -336,7 +337,18 @@ void MainWindow::openWithSettings(const QString &path, FormatSettings settings, 
         if (pv.matchedCount > 0) {
             persist = true; // the default matched — remember it
         } else {
-            LogFormatDialog dlg(QFileInfo(path).fileName(), sample, settings, this);
+            // The default did not match and no format is cached (M3 unchanged: a
+            // cached file never reaches here). Autodetect (M8, ARCHITECTURE.md §9)
+            // and PRE-FILL the dialog with the detected pattern for confirmation —
+            // never applied silently. A no-detection result leaves the dialog
+            // seeded with the fallback default, i.e. it opens as it does today.
+            FormatSettings seed = settings;
+            DetectingFormatProvider detector(settings.encoding);
+            detector.formatFor(QByteArrayView(sample.constData(), sample.size()));
+            if (detector.detected())
+                seed.pattern = detector.detectedPattern();
+
+            LogFormatDialog dlg(QFileInfo(path).fileName(), sample, seed, this);
             if (dlg.exec() == QDialog::Accepted) {
                 settings = dlg.settings();
                 ManualFormatProvider chosen(settings.pattern);

@@ -51,6 +51,13 @@ foreach(unit formatprovider formatpreview documentzone)
     add_test(NAME tst_${unit} COMMAND tst_${unit})
 endforeach()
 
+# M8 — format autodetection: candidate-library match-rate scoring, the priority-
+# anchored structural-inference fallback, and the DetectingFormatProvider behind the
+# IFormatProvider seam. Core-only, no QApplication.
+qt_add_executable(tst_formatdetector tst_formatdetector.cpp)
+target_link_libraries(tst_formatdetector PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_formatdetector COMMAND tst_formatdetector)
+
 # M4 — filtering core: the predicate chain (integers before text), each axis, the
 # FilteredIndex geometry over the visible subset, Document::applyFilters end to end,
 # and the Find walk. Core-only, GUILESS (a temp file + QCoreApplication).
