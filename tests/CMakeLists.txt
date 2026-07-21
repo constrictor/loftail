@@ -42,6 +42,15 @@ qt_add_executable(tst_estimatedgeometry tst_estimatedgeometry.cpp)
 target_link_libraries(tst_estimatedgeometry PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_estimatedgeometry COMMAND tst_estimatedgeometry)
 
+# M3 — log-format seam and per-file cache: ManualFormatProvider round-trip,
+# FormatCache save/restore (QSettings), the pure preview/field-breakdown builder,
+# and the source-zone timestamp reparse. Core-only, no QApplication.
+foreach(unit formatprovider formatpreview documentzone)
+    qt_add_executable(tst_${unit} tst_${unit}.cpp)
+    target_link_libraries(tst_${unit} PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_${unit} COMMAND tst_${unit})
+endforeach()
+
 # M2b — the production LogView. Links the UI layer; the geometry mapping and
 # clipboard builders are pure, and the header-state round-trip needs QWidget, so
 # the test runs under an offscreen QApplication (forced in its own main()).

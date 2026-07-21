@@ -5,6 +5,9 @@ add_library(loftail_ui STATIC
     # M2b — the production custom record view
     LogView.cpp
     LogView.h
+    # M3 — the Log Format dialog
+    LogFormatDialog.cpp
+    LogFormatDialog.h
 )
 
 target_link_libraries(loftail_ui PUBLIC

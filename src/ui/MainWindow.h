@@ -1,5 +1,6 @@
 #pragma once
 
+#include "FormatSettings.h"
 #include "LogView.h"
 
 #include <QMainWindow>
@@ -34,9 +35,10 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
-    // Open `path` with `pattern` (the M3 Log Format dialog will replace the fixed
-    // pattern; until then the caller supplies one, defaulting to a common
-    // log4cplus layout). Safe to call repeatedly; it replaces the open document.
+    // Open `path`. Its format is recalled from the per-file cache if seen before
+    // (SPEC.md §4); otherwise `pattern` (or a common log4cplus default) is tried,
+    // and the Log Format dialog is offered when that pattern does not match. Safe
+    // to call repeatedly; it replaces the open document.
     void openFile(const QString &path, const QString &pattern = QString());
 
 protected:
@@ -46,6 +48,7 @@ protected:
 
 private slots:
     void chooseFileToOpen();
+    void showFormatDialog();
     void onIndexProgress(qint64 done, qint64 total);
     void onIndexFinished(bool cancelled);
     void showColumnMenu(const QPoint &pos);
@@ -56,6 +59,18 @@ private:
     void rememberRecentFile(const QString &path);
     void teardownDocument();
     void updateStatus();
+
+    // Open `path` under `settings`. When `promptIfNoMatch` and the pattern matches
+    // no sample record, the Log Format dialog is offered first (SPEC.md §4). Builds
+    // the model/view, starts indexing, and persists the format on a good result.
+    void openWithSettings(const QString &path, FormatSettings settings, bool promptIfNoMatch);
+    // Build the model + view + controller for the active document and start the scan.
+    void buildViewAndIndex(const QString &path);
+    // Apply a new format to the ALREADY-OPEN document, choosing the change-cost:
+    // pattern/encoding change → full rescan; source-zone change → timestamp reparse;
+    // display-zone change → repaint only (§5.1, §6.1).
+    void applySettings(const FormatSettings &newSettings);
+    void persistFormat(const QString &path, const FormatSettings &s);
 
     Document *activeDocument() const;
 
@@ -70,10 +85,16 @@ private:
     QAction *m_cancelAction = nullptr;
     QAction *m_copyAction = nullptr;
     QAction *m_copyColumnsAction = nullptr;
+    QAction *m_formatAction = nullptr;
     QLabel       *m_statusLabel = nullptr;
     QProgressBar *m_progressBar = nullptr;
 
     QString m_defaultPattern;
+    // The format choice for the active document (SPEC.md §4). Held here as UI
+    // configuration for the single active document; the source of truth across
+    // sessions is the per-file FormatCache. The pattern never reaches the view,
+    // filters, or highlighters (invariant #3).
+    FormatSettings m_currentSettings;
     LogView::WrapMode m_wrapMode = LogView::WrapMode::Off;
 };
 

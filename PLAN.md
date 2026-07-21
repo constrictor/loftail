@@ -77,13 +77,13 @@ M2c is separable and lands last on purpose — the other two wrap modes are full
 
 Makes M1 reachable by the user. `SPEC.md` §4.
 
-- [ ] Log Format dialog: pattern entry, live preview over sample lines from the current file, per-field breakdown
-- [ ] Encoding selector (Auto-detect default; forced UTF-8 / UTF-16LE / UTF-16BE / system 8-bit), showing what auto-detect resolved to; changing it triggers a full rescan
-- [ ] Source and display time-zone selectors (`SPEC.md` §4); changing the source zone reparses timestamps only, not the whole index
-- [ ] Compile errors shown inline against the offending position
-- [ ] Warn when `%p` or `%c` is missing (filtering degrades)
-- [ ] `IFormatProvider` + `ManualFormatProvider`; per-file format cache (no directory fallback)
-- [ ] Bad pattern → file still opens with unparsed lines as plain text
+- [x] Log Format dialog: pattern entry, live preview over sample lines from the current file, per-field breakdown
+- [x] Encoding selector (Auto-detect default; forced UTF-8 / UTF-16LE / UTF-16BE / system 8-bit), showing what auto-detect resolved to; changing it triggers a full rescan
+- [x] Source and display time-zone selectors (`SPEC.md` §4); changing the source zone reparses timestamps only, not the whole index
+- [x] Compile errors shown inline against the offending position
+- [x] Warn when `%p` or `%c` is missing (filtering degrades)
+- [x] `IFormatProvider` + `ManualFormatProvider`; per-file format cache (no directory fallback)
+- [x] Bad pattern → file still opens with unparsed lines as plain text
 
 **Done when:** a user can open an arbitrary log4cplus file, type its pattern, see the preview resolve, and get correct columns — with the choice remembered on reopen.
 

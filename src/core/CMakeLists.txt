@@ -37,6 +37,15 @@ add_library(loftail_core STATIC
     # M2b — worker-thread indexing controller (QtCore only, no Widgets)
     IndexController.cpp
     IndexController.h
+    # M3 — log-format seam, per-file cache, and the pure preview builder (no UI)
+    FormatSettings.h
+    IFormatProvider.h
+    ManualFormatProvider.cpp
+    ManualFormatProvider.h
+    FormatCache.cpp
+    FormatCache.h
+    FormatPreview.cpp
+    FormatPreview.h
 )
 
 # MappedLogSource is POSIX-only (mmap). On Windows the BufferedLogSource is the
