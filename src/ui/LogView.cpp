@@ -159,7 +159,8 @@ LogView::~LogView() = default;
 
 int LogView::lineHeight() const { return qMax(1, fontMetrics().height()); }
 int LogView::visibleLines() const { return qMax(1, viewport()->height() / lineHeight()); }
-int LogView::recordCount() const { return m_document->index().records.size(); }
+int LogView::recordCount() const { return m_document->filtered().recordCount(); }
+const RecordIndex &LogView::geom() const { return m_document->filtered().geometry(); }
 
 int LogView::messageColumn() const
 {
@@ -193,14 +194,14 @@ int LogView::selWrapLines() const
         return 0;
     if (m_selWrapCache > 0)
         return m_selWrapCache;
-    return RecordIndex::displayLines(m_document->index().records.at(sel));
+    return RecordIndex::displayLines(geom().records.at(sel));
 }
 
 int LogView::recordHeightLines(int r) const
 {
     if (selRecordForGeometry() == r)
         return qMax(1, selWrapLines());
-    return RecordIndex::displayLines(m_document->index().records.at(r));
+    return RecordIndex::displayLines(geom().records.at(r));
 }
 
 // ---------------------------------------------------------------------------
@@ -222,21 +223,21 @@ qint64 LogView::mapTotalLines() const
 {
     if (estimating())
         return m_estimated.totalLines();
-    return totalScrollLines(m_document->index(), selRecordForGeometry(), selWrapLines());
+    return totalScrollLines(geom(), selRecordForGeometry(), selWrapLines());
 }
 
 qint64 LogView::mapLineOfRecord(int r) const
 {
     if (estimating())
         return m_estimated.firstLineOfRecord(r);
-    return scrollLineOfRecord(m_document->index(), selRecordForGeometry(), selWrapLines(), r);
+    return scrollLineOfRecord(geom(), selRecordForGeometry(), selWrapLines(), r);
 }
 
 int LogView::mapRecordAtLine(qint64 line) const
 {
     if (estimating())
         return m_estimated.recordAtLine(line);
-    return recordAtScrollLine(m_document->index(), selRecordForGeometry(), selWrapLines(), line);
+    return recordAtScrollLine(geom(), selRecordForGeometry(), selWrapLines(), line);
 }
 
 int LogView::mapRecordHeightLines(int r) const
@@ -267,7 +268,7 @@ void LogView::ensureEstimatorBound()
     // Bind (or rebind) the estimator to the current index. Rebinds only when the
     // index identity or its block count changed (e.g. records appended during the
     // scan) — never on a plain width change, which the debounced resize owns.
-    const RecordIndex &idx = m_document->index();
+    const RecordIndex &idx = geom();
     const int wantBlocks =
         (idx.records.size() + RecordIndex::kBlockSize - 1) / RecordIndex::kBlockSize;
     if (m_estimated.index() != &idx || m_estimated.blockCount() != wantBlocks)
@@ -389,7 +390,7 @@ void LogView::recomputeGeometry()
             const int avail = qMax(50, viewport()->width() - msgX);
             m_selWrapCache = measureWrappedLines(m_model->cellText(sel, msgCol), avail);
         } else {
-            m_selWrapCache = RecordIndex::displayLines(m_document->index().records.at(sel));
+            m_selWrapCache = RecordIndex::displayLines(geom().records.at(sel));
         }
     } else {
         m_selWrapCache = -1;
@@ -475,7 +476,7 @@ void LogView::paintEvent(QPaintEvent *event)
     QPainter p(viewport());
     p.fillRect(event->rect(), palette().base());
 
-    const RecordIndex &idx = m_document->index();
+    const RecordIndex &idx = geom();
     const int n = idx.records.size();
     if (n == 0)
         return;
@@ -736,11 +737,17 @@ void LogView::copySelectionRaw() const
     if (rows.isEmpty())
         return;
     const RecordIndex &idx = m_document->index();
+    const FilteredIndex &filtered = m_document->filtered();
     LogSource *src = m_document->source();
     const Decoder &dec = m_document->decoder();
     QStringList parts;
     parts.reserve(rows.size());
-    for (int r : rows) {
+    for (int viewRow : rows) {
+        // Selection rows are VIEW rows; copy must read the SOURCE record's true byte
+        // range (invariant #6 mapping, and the full text regardless of display cap).
+        const int r = filtered.sourceRow(viewRow);
+        if (r < 0 || r >= idx.records.size())
+            continue;
         const Record &rec = idx.records.at(r);
         // The true byte range — copy yields full text regardless of display cap (§5).
         QString text = src ? dec.decode(src->bytes(rec.offset, rec.length)) : QString();

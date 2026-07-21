@@ -32,6 +32,14 @@ public:
     // QModelIndex round-trip.
     QString cellText(int row, int column) const;
 
+    // Filter reset hooks (M4). The caller wraps Document::applyFilters() between
+    // these so the view, header, and selection model refresh over the new visible
+    // set (SPEC.md §6): the filtered set is a wholesale row remap, so a model reset
+    // is the correct, cheap signal — LogView::handleModelReset already rebuilds its
+    // geometry and drops any stale estimation cache over the filtered subset.
+    void beginFilterReset();
+    void endFilterReset();
+
     // Batched-append hooks for the worker-thread indexer (M2b, §7.2). The caller
     // appends `count` records to the Document's index BETWEEN these two calls, so
     // rowCount() reads the old size at beginAppendRows() and the new size after

@@ -2,9 +2,13 @@
 
 #include "Decoder.h"
 #include "Document.h"
+#include "Filter.h"
+#include "FilterPane.h"
+#include "FindBar.h"
 #include "FormatCache.h"
 #include "FormatPreview.h"
 #include "IndexController.h"
+#include "LogFormat.h"
 #include "LogFormatDialog.h"
 #include "LogModel.h"
 #include "LogSource.h"
@@ -13,11 +17,13 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QCloseEvent>
+#include <QDockWidget>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
@@ -26,6 +32,7 @@
 #include <QScrollBar>
 #include <QSettings>
 #include <QStatusBar>
+#include <QVBoxLayout>
 
 namespace loftail {
 
@@ -51,6 +58,27 @@ MainWindow::MainWindow(QWidget *parent)
     m_statusLabel = new QLabel(QStringLiteral("No file open"), this);
     statusBar()->addWidget(m_statusLabel, 1);
     statusBar()->addPermanentWidget(m_progressBar);
+
+    // Central area is a container holding the record view above the (hidden) Find
+    // bar, so Find can dock at the bottom of the view without a modal dialog.
+    auto *central = new QWidget(this);
+    m_centralLayout = new QVBoxLayout(central);
+    m_centralLayout->setContentsMargins(0, 0, 0, 0);
+    m_centralLayout->setSpacing(0);
+    m_findBar = new FindBar(central);
+    m_centralLayout->addWidget(m_findBar);
+    setCentralWidget(central);
+    connect(m_findBar, &FindBar::findRequested, this, &MainWindow::runFind);
+
+    // Filters side pane (SPEC.md §8), bound to the active document by signal
+    // (invariant #7) rather than constructed against a fixed Document.
+    m_filterPane = new FilterPane(this);
+    auto *filterDock = new QDockWidget(QStringLiteral("Filters"), this);
+    filterDock->setObjectName(QStringLiteral("filtersDock"));
+    filterDock->setWidget(m_filterPane);
+    addDockWidget(Qt::RightDockWidgetArea, filterDock);
+    connect(this, &MainWindow::activeDocumentChanged, m_filterPane, &FilterPane::setDocument);
+    connect(m_filterPane, &FilterPane::filtersChanged, this, &MainWindow::applyActiveFilters);
 
     buildMenus();
 }
@@ -104,6 +132,22 @@ void MainWindow::buildMenus()
         if (m_view)
             m_view->copySelectionAsColumns();
     });
+
+    // Find / Find Next / Find Previous (SPEC.md §5). Find opens the bar; F3 /
+    // Shift+F3 navigate the current query over the visible rows.
+    editMenu->addSeparator();
+    QAction *findAction = editMenu->addAction(QStringLiteral("&Find..."));
+    findAction->setShortcut(QKeySequence::Find);
+    connect(findAction, &QAction::triggered, this, [this]() {
+        if (m_findBar)
+            m_findBar->activate();
+    });
+    QAction *findNextAction = editMenu->addAction(QStringLiteral("Find &Next"));
+    findNextAction->setShortcut(QKeySequence::FindNext); // F3
+    connect(findNextAction, &QAction::triggered, this, [this]() { runFind(true, false); });
+    QAction *findPrevAction = editMenu->addAction(QStringLiteral("Find Pre&vious"));
+    findPrevAction->setShortcut(QKeySequence::FindPrevious); // Shift+F3
+    connect(findPrevAction, &QAction::triggered, this, [this]() { runFind(false, false); });
 
     QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
     QMenu *wrapMenu = viewMenu->addMenu(QStringLiteral("Line &Wrap"));
@@ -159,13 +203,17 @@ void MainWindow::teardownDocument()
     if (m_view) {
         // Persist the header layout before dropping the view (SPEC.md §5).
         QSettings().setValue(QLatin1String(kColumnStateKey), m_view->saveColumnState());
+        m_centralLayout->removeWidget(m_view);
+        delete m_view; // no longer setCentralWidget-owned; the container persists
     }
-    setCentralWidget(nullptr); // deletes m_view
     m_view = nullptr;
     delete m_model;
     m_model = nullptr;
     m_documents.clear();
     m_activeIndex = -1;
+
+    // Unbind the panes from the now-gone document (invariant #7).
+    emit activeDocumentChanged(nullptr);
 
     if (m_copyAction)
         m_copyAction->setEnabled(false);
@@ -263,7 +311,8 @@ void MainWindow::buildViewAndIndex(const QString &path)
     m_model = new LogModel(active);
     m_view = new LogView(active, m_model);
     m_view->setWrapMode(m_wrapMode);
-    setCentralWidget(m_view);
+    m_centralLayout->insertWidget(0, m_view); // above the Find bar
+    m_view->setFocus();
 
     // Column layout persistence (SPEC.md §5): restore the saved header state.
     const QByteArray colState = QSettings().value(QLatin1String(kColumnStateKey)).toByteArray();
@@ -287,6 +336,10 @@ void MainWindow::buildViewAndIndex(const QString &path)
     m_cancelAction->setEnabled(true);
 
     setWindowTitle(QStringLiteral("loftail — %1").arg(QFileInfo(path).fileName()));
+
+    // Bind the filter pane to the new document (invariant #7). Its discovered
+    // subsystem/thread lists fill in as indexing progresses (refreshed on finish).
+    emit activeDocumentChanged(active);
     updateStatus();
 
     m_controller->start();
@@ -367,11 +420,86 @@ void MainWindow::onIndexFinished(bool cancelled)
 {
     m_progressBar->setVisible(false);
     m_cancelAction->setEnabled(false);
+    // The full subsystem/thread value sets are known now, so fill the pane's
+    // auto-discovered lists (SPEC.md §6) and re-run any active filter over the
+    // completed index.
+    if (m_filterPane)
+        m_filterPane->refreshDiscoveredLists();
+    if (activeDocument() && activeDocument()->filters().anyActive())
+        applyActiveFilters();
     if (m_view)
         m_view->scrollToEnd(); // open at the file's end, following (SPEC.md §3)
     updateStatus();
     if (cancelled)
         m_statusLabel->setText(m_statusLabel->text() + QStringLiteral("  (indexing cancelled)"));
+}
+
+void MainWindow::applyActiveFilters()
+{
+    Document *doc = activeDocument();
+    if (!doc || !m_model)
+        return;
+    // A filtered set is a wholesale row remap, so reset the model around the
+    // recompute: the view/header/selection refresh over the new visible set and
+    // LogView rebuilds its line geometry (invariant #6). The predicate chain inside
+    // applyFilters runs integer axes first, message text last (invariant #4).
+    m_model->beginFilterReset();
+    doc->applyFilters();
+    m_model->endFilterReset();
+    if (m_view) {
+        m_view->updateGeometry();
+        m_view->viewport()->update();
+    }
+    updateStatus();
+}
+
+void MainWindow::runFind(bool forward, bool fromStart)
+{
+    if (!m_view || !m_model || !m_findBar)
+        return;
+    const QString pattern = m_findBar->pattern();
+    if (pattern.isEmpty()) {
+        m_findBar->setStatus(QString());
+        return;
+    }
+
+    // Find over the message column of the CURRENTLY-VISIBLE rows (the filtered
+    // subset when a filter is active), reusing the filter's text matcher (SPEC.md
+    // §5). Changes no filter state — it only moves the selection.
+    TextMatcher matcher;
+    matcher.set(pattern, m_findBar->regex(),
+                m_findBar->caseSensitive() ? Qt::CaseSensitive : Qt::CaseInsensitive);
+    if (!matcher.isValid()) {
+        m_findBar->setStatus(QStringLiteral("bad regex"));
+        return;
+    }
+
+    const int count = m_model->rowCount();
+    if (count == 0) {
+        m_findBar->setStatus(QStringLiteral("no records"));
+        return;
+    }
+
+    // Search every visible column's text so Find matches anything on screen, but
+    // fall back to a message-only scan when the format defines no columns.
+    const int cols = m_model->columnCount();
+    auto rowMatches = [this, &matcher, cols](int row) {
+        if (cols == 0)
+            return matcher.matches(m_model->cellText(row, 0));
+        for (int c = 0; c < cols; ++c)
+            if (matcher.matches(m_model->cellText(row, c)))
+                return true;
+        return false;
+    };
+
+    const int from = fromStart ? -1 : m_view->currentRecord();
+    const int hit = Find::search(count, from, forward, /*wrap=*/true, rowMatches);
+    if (hit < 0) {
+        m_findBar->setStatus(QStringLiteral("no match"));
+        return;
+    }
+    m_view->setCurrentRecord(hit);
+    m_findBar->setStatus(QString()); // keep focus in the bar for repeated Enter/F3
 }
 
 void MainWindow::updateStatus()
@@ -381,9 +509,19 @@ void MainWindow::updateStatus()
         m_statusLabel->setText(QStringLiteral("No file open"));
         return;
     }
-    m_statusLabel->setText(QStringLiteral("%1  |  %2 records")
-                               .arg(QFileInfo(doc->path()).fileName())
-                               .arg(doc->index().records.size()));
+    const int total = doc->index().records.size();
+    // Filtered/total counts (SPEC.md §5, §6): show the shown-vs-total pair only
+    // when a filter narrows the view, otherwise a plain record count.
+    if (doc->filters().anyActive()) {
+        m_statusLabel->setText(QStringLiteral("%1  |  %2 of %3 records shown")
+                                   .arg(QFileInfo(doc->path()).fileName())
+                                   .arg(doc->filtered().recordCount())
+                                   .arg(total));
+    } else {
+        m_statusLabel->setText(QStringLiteral("%1  |  %2 records")
+                                   .arg(QFileInfo(doc->path()).fileName())
+                                   .arg(total));
+    }
 }
 
 void MainWindow::showColumnMenu(const QPoint &pos)

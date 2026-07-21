@@ -5,8 +5,10 @@
 #include <QTemporaryFile>
 
 #include "Document.h"
+#include "Filter.h"
 #include "LogModel.h"
 #include "LogView.h"
+#include "Priority.h"
 #include "Record.h"
 #include "RecordIndex.h"
 
@@ -77,6 +79,7 @@ private slots:
     void switchingToExactKeepsEstimationCache();
     void alwaysOnUnreachableFromExactPath();
     void alwaysOnPaintRefinesWhileScrolling();
+    void filterRestrictsVisibleSetAndGeometry();
 };
 
 void TestLogView::wrapOffMappingMatchesBase()
@@ -303,6 +306,65 @@ void TestLogView::alwaysOnPaintRefinesWhileScrolling()
     QVERIFY(g.measuredBlockCount() >= 2);
     // Fully measured blocks make their portion of the mapping exact.
     QCOMPARE(g.totalLines(), g.firstLineOfRecord(doc.index().records.size()));
+}
+
+// A filter narrows the visible set: the model presents only visible rows and the
+// view's line-unit geometry runs over the FILTERED subset (M4, invariant #6). The
+// model reset that wraps the recompute is what the UI drives on a filter change.
+void TestLogView::filterRestrictsVisibleSetAndGeometry()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 10:00:00,000 [main] INFO  net.socket - a\n"   // 0 hidden
+        "2026-07-21 10:00:01,000 [main] WARN  net.socket - b\n"   // 1 shown
+        "2026-07-21 10:00:02,000 [main] ERROR net.socket - c\n"   // 2 shown
+        "2026-07-21 10:00:03,000 [main] DEBUG net.socket - d\n"   // 3 hidden
+        "2026-07-21 10:00:04,000 [main] FATAL net.socket - e\n")); // 4 shown
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 5);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+    QCOMPARE(model.rowCount(), 5); // unfiltered: identity
+
+    // Apply priority >= WARN via the model-reset path the UI uses.
+    doc.filters().priorityEnabled = true;
+    doc.filters().minPriority = Priority::Warn;
+    model.beginFilterReset();
+    doc.applyFilters();
+    model.endFilterReset();
+
+    // The model now presents only the 3 visible rows, in order.
+    QCOMPARE(model.rowCount(), 3);
+    const int prioCol = 2; // Time, Thread, Priority, Subsystem, Message
+    QCOMPARE(model.cellText(0, prioCol), QStringLiteral("WARN"));
+    QCOMPARE(model.cellText(1, prioCol), QStringLiteral("ERROR"));
+    QCOMPARE(model.cellText(2, prioCol), QStringLiteral("FATAL"));
+
+    // The view's geometry runs over the FILTERED index: total lines == the visible
+    // rows' display lines, and the last scroll line resolves to the last view row.
+    const RecordIndex &geo = doc.filtered().geometry();
+    QCOMPARE(geo.records.size(), 3);
+    QCOMPARE(LogView::totalScrollLines(geo, -1, 0), geo.totalLines());
+    QCOMPARE(LogView::recordAtScrollLine(geo, -1, 0, 0), 0);
+    QCOMPARE(LogView::recordAtScrollLine(geo, -1, 0, geo.totalLines() - 1), 2);
+
+    // Navigation stays inside the filtered set.
+    view.setCurrentRecord(99);
+    QCOMPARE(view.currentRecord(), 2); // clamped to the last visible row
+
+    // Clearing the filter restores the identity view.
+    doc.filters() = FilterSet{};
+    model.beginFilterReset();
+    doc.applyFilters();
+    model.endFilterReset();
+    QCOMPARE(model.rowCount(), 5);
 }
 
 int main(int argc, char *argv[])

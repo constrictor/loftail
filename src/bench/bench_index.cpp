@@ -9,15 +9,19 @@
 // Usage: bench_index <file> "<pattern>"
 #include "Decoder.h"
 #include "Document.h"
+#include "Filter.h"
 #include "Indexer.h"
 #include "LogModel.h"
 #include "LogSource.h"
+#include "Priority.h"
 #include "RecordIndex.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QRandomGenerator>
 #include <QTextStream>
+
+#include <functional>
 
 using namespace loftail;
 
@@ -108,6 +112,61 @@ int main(int argc, char *argv[])
     out << "paint frame   : " << msPerFrame << " ms/frame (" << rowsPerFrame << " rows x "
         << columns << " cols)\n";
     out << "               ~" << fps << " fps   (target >= 60 => < 16.6 ms/frame)\n";
+
+    out << "----\n";
+
+    // --- filter apply (M4, §11: toggling a filter on 1M records < 100 ms) --------
+    // The recompute is the whole cost of a toggle: the visible vector + the compact
+    // index's prefix-sum rebuild. Integer axes have a fast path; the message-text
+    // axis has none (it decodes per surviving record), so it is measured explicitly.
+    auto timeFilter = [&](const char *label, const std::function<void(FilterSet &)> &cfg) {
+        doc.filters() = FilterSet{};
+        cfg(doc.filters());
+        QElapsedTimer t;
+        t.start();
+        doc.applyFilters();
+        const double ms = double(t.nsecsElapsed()) / 1e6;
+        out << label << " : " << ms << " ms  -> " << doc.filtered().recordCount()
+            << " / " << records << " visible   (target < 100)\n";
+    };
+
+    timeFilter("priority >= WARN (integer)", [](FilterSet &f) {
+        f.priorityEnabled = true;
+        f.minPriority = Priority::Warn;
+    });
+    timeFilter("text substring 'timeout'", [](FilterSet &f) {
+        f.text.enabled = true;
+        f.text.matcher.set(QStringLiteral("timeout"), false, Qt::CaseInsensitive);
+    });
+    timeFilter("text regex 'time.*30s'", [](FilterSet &f) {
+        f.text.enabled = true;
+        f.text.matcher.set(QStringLiteral("time.*30s"), true, Qt::CaseInsensitive);
+    });
+
+    // Repaint over the filtered set: resolve a scroll line in the FILTERED geometry
+    // and pull the visible cells, the same work a frame does after a filter change.
+    {
+        doc.filters() = FilterSet{};
+        doc.filters().text.enabled = true;
+        doc.filters().text.matcher.set(QStringLiteral("timeout"), false, Qt::CaseInsensitive);
+        doc.applyFilters();
+        const RecordIndex &geo = doc.filtered().geometry();
+        const qint64 vlines = geo.totalLines();
+        if (vlines > 0) {
+            timer.restart();
+            quint64 cs = 0;
+            for (int fr = 0; fr < frames; ++fr) {
+                const qint64 topLine = qint64(rng->bounded(quint32(vlines)));
+                int r = geo.recordAtLine(topLine);
+                for (int row = 0; row < rowsPerFrame && r < geo.records.size(); ++row, ++r)
+                    for (int c = 0; c < columns; ++c)
+                        cs += quint64(model.cellText(r, c).size());
+            }
+            const double msFrame = double(timer.nsecsElapsed()) / 1e6 / frames;
+            out << "filtered paint : " << msFrame << " ms/frame   (target < 16.6)\n";
+            charSink += cs;
+        }
+    }
 
     Q_UNUSED(sink);
     Q_UNUSED(charSink);

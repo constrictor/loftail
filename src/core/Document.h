@@ -3,6 +3,8 @@
 #include "CompileError.h"
 #include "Decoder.h"
 #include "Encoding.h"
+#include "Filter.h"
+#include "FilteredIndex.h"
 #include "LogFormat.h"
 #include "RecordIndex.h"
 
@@ -104,6 +106,27 @@ public:
     const RecordIndex &index() const { return m_index; }
     RecordIndex &index() { return m_index; }
 
+    // Filtering (M4, SPEC.md §6). The FilterSet is the per-file filter state
+    // (invariant #7); the FilteredIndex is the visible subset the view scrolls over
+    // (invariant #6). Mutate filters() then call applyFilters() to recompute the
+    // subset. The UI wraps that in a model reset so the view/selection refresh.
+    FilterSet &filters() { return m_filters; }
+    const FilterSet &filters() const { return m_filters; }
+    const FilteredIndex &filtered() const { return m_filtered; }
+
+    // Recompute the visible subset from the current filters over the current index.
+    // Runs the predicate chain with integer axes first and message-text last
+    // (invariant #4): a message is decoded ONLY for records the integer axes let
+    // through. An all-inactive filter set leaves the FilteredIndex as an identity
+    // view (no subset materialized). A single linear pass; §11 repaint budget.
+    void applyFilters();
+
+    // Decode one record's message text through the Decoder (invariant #8, no raw
+    // byte scans) — the message field when the pattern defines one, else the whole
+    // record so text filtering still works on plain-text/unparsed logs (SPEC.md §6).
+    // This is the message-text axis's decode; it runs last in the chain.
+    QString messageText(const Record &rec) const;
+
     const QTimeZone &sourceZone() const { return m_sourceZone; }
     const QTimeZone &displayZone() const { return m_displayZone; }
     Encoding requestedEncoding() const { return m_requestedEncoding; }
@@ -125,6 +148,8 @@ private:
     LogFormat                  m_format;
     Decoder                    m_decoder;
     RecordIndex                m_index;
+    FilterSet                  m_filters;
+    FilteredIndex              m_filtered;
     QTimeZone                  m_sourceZone;
     QTimeZone                  m_displayZone;
     CompileError               m_formatError;

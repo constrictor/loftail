@@ -14,6 +14,7 @@ class QAction;
 class QLabel;
 class QMenu;
 class QProgressBar;
+class QVBoxLayout;
 QT_END_NAMESPACE
 
 namespace loftail {
@@ -21,6 +22,8 @@ namespace loftail {
 class Document;
 class LogModel;
 class IndexController;
+class FilterPane;
+class FindBar;
 
 // The application's top-level window. M2b brings the open-file UI (dialog,
 // drag-and-drop, recent files), the production LogView, and worker-thread indexing
@@ -41,6 +44,12 @@ public:
     // to call repeatedly; it replaces the open document.
     void openFile(const QString &path, const QString &pattern = QString());
 
+signals:
+    // Panes bind to the active document by signal, not by construction (invariant
+    // #7, ARCHITECTURE.md §12.3). Emitted with the newly-active Document (or
+    // nullptr when the last one closes).
+    void activeDocumentChanged(Document *document);
+
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
@@ -52,6 +61,12 @@ private slots:
     void onIndexProgress(qint64 done, qint64 total);
     void onIndexFinished(bool cancelled);
     void showColumnMenu(const QPoint &pos);
+    // Recompute the visible subset from the active document's filters and refresh
+    // the view + status counts (M4). Wrapped in a model reset.
+    void applyActiveFilters();
+    // Walk the visible rows for the Find bar's query and move the selection
+    // (SPEC.md §5); changes no filter state.
+    void runFind(bool forward, bool fromStart);
 
 private:
     void buildMenus();
@@ -88,6 +103,10 @@ private:
     QAction *m_formatAction = nullptr;
     QLabel       *m_statusLabel = nullptr;
     QProgressBar *m_progressBar = nullptr;
+
+    FilterPane  *m_filterPane = nullptr; // M4 filters side pane
+    FindBar     *m_findBar = nullptr;    // M4 find bar
+    QVBoxLayout *m_centralLayout = nullptr; // holds [LogView, FindBar]
 
     QString m_defaultPattern;
     // The format choice for the active document (SPEC.md §4). Held here as UI

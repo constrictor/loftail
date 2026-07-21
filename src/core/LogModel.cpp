@@ -19,7 +19,9 @@ int LogModel::rowCount(const QModelIndex &parent) const
 {
     if (parent.isValid() || !m_document)
         return 0;
-    return m_document->index().records.size();
+    // Rows are the VISIBLE records: identity over the index when no filter is
+    // active, the filtered subset otherwise (M4, invariant #6).
+    return m_document->filtered().recordCount();
 }
 
 int LogModel::columnCount(const QModelIndex &parent) const
@@ -36,10 +38,17 @@ QString LogModel::cellText(int row, int column) const
 
     const RecordIndex &idx = m_document->index();
     const LogFormat &format = m_document->format();
-    if (row < 0 || row >= idx.records.size() || column < 0 || column >= format.fields.size())
+    if (column < 0 || column >= format.fields.size())
         return QString();
 
-    const Record &rec = idx.records.at(row);
+    // `row` is a VIEW row: map it to the source record ordinal (identity when no
+    // filter is active). The intern tables and byte reads all key off the source
+    // index; only the row addressing goes through the filtered mapping (M4).
+    const int srcRow = m_document->filtered().sourceRow(row);
+    if (srcRow < 0 || srcRow >= idx.records.size())
+        return QString();
+
+    const Record &rec = idx.records.at(srcRow);
     const Field &field = format.fields.at(column);
 
     switch (field.role) {
@@ -91,6 +100,16 @@ QString LogModel::cellText(int row, int column) const
             value += QLatin1Char('\n') + rest;
     }
     return value;
+}
+
+void LogModel::beginFilterReset()
+{
+    beginResetModel();
+}
+
+void LogModel::endFilterReset()
+{
+    endResetModel();
 }
 
 void LogModel::beginAppendRows(int count)

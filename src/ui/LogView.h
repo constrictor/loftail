@@ -123,6 +123,12 @@ private:
     int visibleLines() const;
     int recordCount() const;
 
+    // The RecordIndex the view scrolls over: the filtered subset when a filter is
+    // active, the full index (identity) otherwise (M4, invariant #6). Every
+    // geometry query and the paint loop address records in THIS index's row space
+    // (view rows); LogModel maps those back to source records for cell text.
+    const RecordIndex &geom() const;
+
     // --- Mode-branching geometry wrappers --------------------------------------
     // Every geometry query goes through these; they branch on the wrap mode ONCE.
     // In AlwaysOn (with a message column) they consult m_estimated; otherwise they

@@ -91,16 +91,16 @@ Makes M1 reachable by the user. `SPEC.md` §4.
 
 `SPEC.md` §6.
 
-- [ ] Filter proxy over `LogModel`; priority as a minimum-level `>=` test, subsystems and threads as sets of interned ids
-- [ ] Subsystem and thread filter UI: auto-discovered lists, manual entry, select-all/none/invert, narrowing text box
-- [ ] Priority filter: a single minimum-level selector; predicate is one `>=` test, which requires the `Priority` enum in severity order (`ARCHITECTURE.md` §7.2)
-- [ ] Message-text filter: substring and regex, case-sensitivity, negation; ordered last in the predicate chain so integer tests run first
-- [ ] Time-range filter: start/end bounds against `Record::timestamp`
-- [ ] **Find / Find Next**: shares the matching code, walks visible rows from the cursor, changes no filter state
-- [ ] Individual enable/disable per filter, no dialog
-- [ ] Filtered/total counts in the status area
+- [x] Filter over `LogModel`; priority as a minimum-level `>=` test, subsystems and threads as sets of interned ids — implemented as a compact **`FilteredIndex`** (visible-record ordinals + their own two-level block prefix sums) that `LogModel` and the custom `LogView` consume, rather than a literal `QSortFilterProxyModel`: the line-unit `LogView` (invariant #6) needs prefix sums over the *visible* subset, which a row-only proxy does not provide. `FilteredIndex::geometry()` hands the view the compact index when filtering and the source index (identity) otherwise, so both the exact statics and the AlwaysOn `EstimatedGeometry` work unchanged. The predicate lives in `core/Filter.h` (`FilterSet`), UI-free and unit-tested.
+- [x] Subsystem and thread filter UI: auto-discovered lists (from the intern tables), manual entry, select-all/none/invert (over the narrowed view), narrowing text box — `FilterPane`
+- [x] Priority filter: a single minimum-level selector; predicate is one `>=` test against the severity-ordered `Priority` enum (`ARCHITECTURE.md` §7.2), with `Unknown` exempt so unparsed lines are never hidden
+- [x] Message-text filter: substring and regex, case-sensitivity, negation; ordered **last** in the predicate chain (`FilterSet::accepts` decodes only after the integer axes pass — invariant #4). The message is pulled through the `Decoder` path (no raw-byte scans, invariant #8)
+- [x] Time-range filter: start/end bounds against `Record::timestamp`, entered in the display zone and converted to UTC ms once (§5.1); available only when the format has a date field
+- [x] **Find / Find Next**: `FindBar` + Ctrl+F / F3 / Shift+F3, sharing `TextMatcher` with the message filter via `Find::search`; walks the visible rows from the cursor with wrap-around and moves only the selection — no filter state changes
+- [x] Individual enable/disable per filter — a per-axis checkbox in the pane, no dialog (the pane is a `QDockWidget`)
+- [x] Filtered/total counts in the status area ("N of M records shown")
 
-**Done when:** filters apply to 1M records within the §11 repaint budget — measure with a message-text filter active, since it is the only axis without an integer fast path — and toggling one is a single click.
+**Done when:** filters apply to 1M records within the §11 repaint budget — measure with a message-text filter active, since it is the only axis without an integer fast path — and toggling one is a single click. **Met** for the repaint budget: on a 1M-record / 73 MB log (Release, warm), the post-filter prefix-sum rebuild is 0.43 ms and a filtered repaint frame is 0.04 ms, both well under §11. Toggling an integer axis recomputes the whole visible set in ~5 ms (single click). The message-text axis — the one with no integer fast path — is decode-bound: recomputing the visible set over all 1M records is ~270 ms (it must decode each surviving record through the `Decoder`, per invariant #1/#8), so it runs last in the chain and integer filters shrink its input (text + `priority≥WARN` ≈ 100 ms; text + one subsystem ≈ 45 ms). The recompute is synchronous; running it on a worker thread (as the indexer already does) is the natural next step but was left out here because the index is mutated on the GUI thread during the live scan (`IndexController::onBatch`), so a concurrent read belongs with the M6 live-append work.
 
 ## M5 — Highlighting, panes, presets, persistence
 

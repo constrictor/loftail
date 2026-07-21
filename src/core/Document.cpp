@@ -11,7 +11,14 @@
 
 namespace loftail {
 
-Document::Document() = default;
+Document::Document()
+{
+    // The FilteredIndex is a view over m_index; its address is stable for the life
+    // of the Document (a member), so binding once here is enough even though
+    // m_index's contents are reassigned on each prepare()/open().
+    m_filtered.setSource(&m_index);
+}
+
 Document::~Document() = default;
 
 QTimeZone Document::inferSourceZone(const LogFormat &format)
@@ -32,6 +39,7 @@ bool Document::prepare(const QString &path,
     m_lastError.clear();
     m_formatError = CompileError{};
     m_index = RecordIndex();
+    m_filtered.clear(); // the previous subset indexed records that no longer exist
     m_format = LogFormat(); // empty == plain text until the provider succeeds
 
     m_source = openLogSource(path);
@@ -98,6 +106,72 @@ bool Document::open(const QString &path,
 {
     ManualFormatProvider provider(pattern.toString());
     return open(path, provider, requestedEncoding, sourceZone, displayZone);
+}
+
+QString Document::messageText(const Record &rec) const
+{
+    if (!m_source)
+        return QString();
+    const QByteArrayView bytes = m_source->bytes(rec.offset, rec.length);
+    if (bytes.isEmpty())
+        return QString();
+
+    bool hadNl = false;
+    const qsizetype firstEnd = m_decoder.lineEnd(bytes, 0, &hadNl);
+
+    // No message field (plain-text / unparsed record): match against the whole
+    // decoded record so a text filter still works when the pattern defines no %m
+    // (SPEC.md §6). Byte range only — invariant #8 keeps this off raw newline scans.
+    if (m_format.msgGroup <= 0) {
+        QString whole = m_decoder.decode(bytes);
+        while (whole.endsWith(QLatin1Char('\n')) || whole.endsWith(QLatin1Char('\r')))
+            whole.chop(1);
+        return whole;
+    }
+
+    const qsizetype firstContentLen = firstEnd - (hadNl ? m_decoder.unitSize() : 0);
+    const QString firstLine =
+        m_decoder.decodeLine(bytes.sliced(0, qMax<qsizetype>(0, firstContentLen)));
+
+    // The message is the first line's tail past the record-start prefix (§4:
+    // recordStartRe matches exactly up to the message field). Matching that shorter,
+    // capture-free prefix — instead of the full-record recordRe with all its groups
+    // — is markedly cheaper on the text-filter hot path, which runs once per record
+    // that survives the integer axes (invariant #4). matchView avoids an extra
+    // QString copy of the subject.
+    const QRegularExpressionMatch sm = m_format.recordStartRe.matchView(firstLine);
+    QString value = sm.hasMatch() ? firstLine.sliced(sm.capturedEnd()) : QString();
+
+    // The message spans continuation lines (invariant #2): append the rest so a
+    // multi-line record's full text is searchable, matching what data() shows.
+    if (firstEnd < bytes.size()) {
+        QString rest = m_decoder.decode(bytes.sliced(firstEnd));
+        while (rest.endsWith(QLatin1Char('\n')) || rest.endsWith(QLatin1Char('\r')))
+            rest.chop(1);
+        if (!rest.isEmpty())
+            value += QLatin1Char('\n') + rest;
+    }
+    return value;
+}
+
+void Document::applyFilters()
+{
+    if (!m_filters.anyActive()) {
+        m_filtered.clear(); // identity view — nothing to materialize
+        return;
+    }
+
+    const int n = m_index.records.size();
+    QVector<qint32> visible;
+    visible.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        const Record &r = m_index.records.at(i);
+        // Integer axes first; the message decode below is reached ONLY for records
+        // that pass them AND when the text axis is active (invariant #4).
+        if (m_filters.accepts(r, [this, &r] { return messageText(r); }))
+            visible.append(i);
+    }
+    m_filtered.setVisible(std::move(visible));
 }
 
 void Document::reparseTimestamps(const QTimeZone &sourceZone)

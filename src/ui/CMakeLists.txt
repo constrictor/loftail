@@ -8,6 +8,11 @@ add_library(loftail_ui STATIC
     # M3 — the Log Format dialog
     LogFormatDialog.cpp
     LogFormatDialog.h
+    # M4 — the Filters side pane and the Find bar
+    FilterPane.cpp
+    FilterPane.h
+    FindBar.cpp
+    FindBar.h
 )
 
 target_link_libraries(loftail_ui PUBLIC

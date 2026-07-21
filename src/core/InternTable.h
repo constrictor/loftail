@@ -43,6 +43,21 @@ public:
         return id < static_cast<quint32>(m_names.size()) ? m_names.at(id) : QString();
     }
 
+    // Resolve a name to its id WITHOUT interning it (const, unlike intern()). Used
+    // by the filter pane to turn checked subsystem/thread names into the quint32
+    // id sets the predicate compares (invariant #4). A name not yet seen in the
+    // file has no id: `*found` is set false and 0 (the empty-string id) returned,
+    // so a manually-entered-but-absent value simply matches nothing until it
+    // appears. `found` may be null.
+    quint32 idOf(const QString &s, bool *found = nullptr) const
+    {
+        auto it = m_ids.constFind(s);
+        const bool has = it != m_ids.constEnd();
+        if (found)
+            *found = has;
+        return has ? it.value() : 0;
+    }
+
     int count() const { return m_names.size(); }
     const QVector<QString> &names() const { return m_names; }
 

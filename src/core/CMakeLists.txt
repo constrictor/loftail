@@ -34,6 +34,11 @@ add_library(loftail_core STATIC
     Document.h
     LogModel.cpp
     LogModel.h
+    # M4 — filtering: the filter set + predicate chain (integers first, text last),
+    # the visible-subset FilteredIndex, and the shared text matcher / Find helper.
+    Filter.cpp
+    Filter.h
+    FilteredIndex.h
     # M2b — worker-thread indexing controller (QtCore only, no Widgets)
     IndexController.cpp
     IndexController.h

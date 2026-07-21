@@ -51,6 +51,13 @@ foreach(unit formatprovider formatpreview documentzone)
     add_test(NAME tst_${unit} COMMAND tst_${unit})
 endforeach()
 
+# M4 — filtering core: the predicate chain (integers before text), each axis, the
+# FilteredIndex geometry over the visible subset, Document::applyFilters end to end,
+# and the Find walk. Core-only, GUILESS (a temp file + QCoreApplication).
+qt_add_executable(tst_filter tst_filter.cpp)
+target_link_libraries(tst_filter PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_filter COMMAND tst_filter)
+
 # M2b — the production LogView. Links the UI layer; the geometry mapping and
 # clipboard builders are pure, and the header-state round-trip needs QWidget, so
 # the test runs under an offscreen QApplication (forced in its own main()).
