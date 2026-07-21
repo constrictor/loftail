@@ -97,13 +97,18 @@ jobs:
           path: dist/*.zip
 
   macos:
-    # Qt 6.4.2's macOS package references the legacy AGL framework, which was
-    # removed from the macOS 15 SDK that macos-latest now uses (linking fails
-    # with "framework 'AGL' not found"). macos-13 ships an SDK that still has
-    # AGL and pairs with this Qt version.
+    # Qt 6.4.2's macOS package hard-links the legacy AGL framework, which newer
+    # macOS SDKs removed ("framework 'AGL' not found"). Use the Intel macos-13
+    # runner and pin Xcode 14.3.1 (macOS 13.3 SDK), which still ships AGL, so
+    # the reference Qt 6.4 links.
     runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select Xcode 14.3.1 (SDK that still ships AGL)
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "14.3.1"
 
       - name: Install Qt 6
         uses: jurplel/install-qt-action@v4
