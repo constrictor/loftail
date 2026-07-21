@@ -41,6 +41,10 @@ jobs:
         run: packaging/linux/build-appimage.sh Release
 
       - name: Smoke-test the AppImage (no dev Qt env)
+        env:
+          # CI runners are headless (no X display); the AppImage bundles the
+          # offscreen QPA plugin so QApplication can start without one.
+          QT_QPA_PLATFORM: offscreen
         run: |
           APPIMG=$(ls dist/loftail-*-x86_64.AppImage | head -n1)
           chmod +x "$APPIMG"
