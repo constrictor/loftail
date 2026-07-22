@@ -7,6 +7,7 @@
 #include <QString>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 QT_BEGIN_NAMESPACE
@@ -26,6 +27,7 @@ class LiveController;
 class FilterPane;
 class HighlighterPane;
 class PresetPane;
+class RunPane;
 class FindBar;
 
 // The application's top-level window. M2b brings the open-file UI (dialog,
@@ -77,6 +79,13 @@ private slots:
     // recolors rows in place, so no model reset — just a viewport update.
     void applyActiveHighlighters();
 
+    // Run selection (SPEC.md §3a). The run-start pattern changed in the Run pane:
+    // store it in the format (persist it), reconfigure the document, and re-apply.
+    void onRunStartChanged(const QString &pattern, bool regex, bool caseSensitive);
+    // A run was chosen in the Run pane (-1 == all runs): restrict the view and set
+    // follow state (follow only when viewing the newest run or all runs).
+    void onRunSelected(int runIndex);
+
 private:
     void buildMenus();
     void refreshRecentFilesMenu();
@@ -126,6 +135,7 @@ private:
     FilterPane      *m_filterPane = nullptr;      // M4 filters side pane
     HighlighterPane *m_highlighterPane = nullptr; // M5 highlighters side pane
     PresetPane      *m_presetPane = nullptr;      // M5 presets side pane
+    RunPane         *m_runPane = nullptr;         // run selection side pane (§3a)
     FindBar         *m_findBar = nullptr;         // M4 find bar
     QVBoxLayout     *m_centralLayout = nullptr;   // holds [LogView, placeholder, FindBar]
     QLabel          *m_placeholder = nullptr;     // shown when no file / last file missing
@@ -137,6 +147,18 @@ private:
     // filters, or highlighters (invariant #3).
     FormatSettings m_currentSettings;
     LogView::WrapMode m_wrapMode = LogView::WrapMode::Off;
+
+    // A run selection to re-resolve once the (async) index finishes, set only by
+    // restoreSession(). Runs are detected after indexing, so the saved run identity
+    // (by start offset/timestamp, not ordinal) is re-resolved in onIndexFinished;
+    // consumed there. Absent for a normal open, which defaults to the newest run.
+    struct PendingRunRestore
+    {
+        bool   all = false;
+        qint64 startOffset = -1;
+        qint64 startTimestamp = 0;
+    };
+    std::optional<PendingRunRestore> m_pendingRunRestore;
 };
 
 } // namespace loftail

@@ -87,12 +87,35 @@ struct FormatSettings
     ZoneChoice sourceZone;   // Default == infer from the pattern's date specifier
     ZoneChoice displayZone;  // Default == as written in the file (follows source)
 
+    // Run splitting (SPEC.md §3a): the run-start regexp that divides the file into
+    // app runs. Not part of the log FORMAT (nothing in PatternCompiler reads it), but
+    // persisted with the same per-file lifecycle as the format, so it rides in here
+    // through the FormatCache and the session. Empty pattern == no run splitting.
+    QString    runStartPattern;
+    bool       runStartIsRegex = false;
+    bool       runStartCaseSensitive = false;
+
     bool operator==(const FormatSettings &o) const
     {
         return pattern == o.pattern && encoding == o.encoding
-            && sourceZone == o.sourceZone && displayZone == o.displayZone;
+            && sourceZone == o.sourceZone && displayZone == o.displayZone
+            && runStartPattern == o.runStartPattern
+            && runStartIsRegex == o.runStartIsRegex
+            && runStartCaseSensitive == o.runStartCaseSensitive;
     }
     bool operator!=(const FormatSettings &o) const { return !(*this == o); }
+
+    // The run-start axis alone changed (pattern/format identical). MainWindow uses
+    // this to pick the CHEAP change-cost path: re-detect runs + re-apply the view,
+    // never an encoding rescan or a timestamp reparse.
+    bool sameFormatDifferentRun(const FormatSettings &o) const
+    {
+        return pattern == o.pattern && encoding == o.encoding
+            && sourceZone == o.sourceZone && displayZone == o.displayZone
+            && (runStartPattern != o.runStartPattern
+                || runStartIsRegex != o.runStartIsRegex
+                || runStartCaseSensitive != o.runStartCaseSensitive);
+    }
 };
 
 } // namespace loftail

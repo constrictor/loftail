@@ -89,6 +89,14 @@ if(NOT WIN32)
     add_test(NAME tst_tail COMMAND tst_tail)
 endif()
 
+# Run selection — a run-start regexp splits a file into runs; detection, subset
+# restriction + sourceRow mapping, composition with filters, and the live cases
+# (append inside the last run, a new run freezing the watched run, an earlier run
+# untouched, rescan re-detect). Core-only, GUILESS (LiveController::checkNow()).
+qt_add_executable(tst_runselect tst_runselect.cpp)
+target_link_libraries(tst_runselect PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_runselect COMMAND tst_runselect)
+
 # M6 — live smoke: the REAL QFileSystemWatcher + poll path under a running event
 # loop (a background timer appends "like another process"; the model must grow with
 # no manual poke). Core-only, GUILESS.

@@ -18,6 +18,9 @@ add_library(loftail_ui STATIC
     HighlighterPane.h
     PresetPane.cpp
     PresetPane.h
+    # Run selection side pane (a run-start regexp splits the file into runs)
+    RunPane.cpp
+    RunPane.h
 )
 
 target_link_libraries(loftail_ui PUBLIC

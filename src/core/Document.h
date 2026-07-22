@@ -11,7 +11,9 @@
 
 #include <QString>
 #include <QTimeZone>
+#include <QVector>
 
+#include <limits>
 #include <memory>
 
 namespace loftail {
@@ -124,7 +126,66 @@ public:
     // (invariant #4): a message is decoded ONLY for records the integer axes let
     // through. An all-inactive filter set leaves the FilteredIndex as an identity
     // view (no subset materialized). A single linear pass; §11 repaint budget.
+    // With a run selected (see below) the pass ALSO restricts to that run's
+    // byte-offset interval, composing the run bound with the filter predicate.
     void applyFilters();
+
+    // Run selection (SPEC.md §3a). A log file often concatenates several app runs;
+    // a user-supplied "run-start" regexp splits it into runs and the user views one
+    // at a time. A run is a contiguous record range expressed as a half-open
+    // byte-offset interval [startOffset, endOffset) over Record::offset — stable
+    // across appends, and fed to the SAME FilteredIndex view as filtering (a run is
+    // just an extra integer bound, not a second view layer). Detection matches the
+    // regexp against each record's WHOLE first decoded line (not just the message).
+    struct Run
+    {
+        int     startRecord = 0;                        // ordinal of the run's first record
+        qint64  startOffset = 0;                        // that record's byte offset (interval start)
+        qint64  startTimestamp = Record::kNoTimestamp;  // for labelling + persist re-resolve
+        QString firstLine;                              // the matched line, for the run label
+        bool    isPreamble = false;                     // records before the first marker
+    };
+
+    // Configure the run-start matcher (whole-line match, invariant #8 via the
+    // Decoder), re-detect runs over the current index, and select the newest run.
+    // An empty pattern disables run splitting (the whole file is one view again).
+    void setRunStart(const QString &pattern, bool regex, Qt::CaseSensitivity cs);
+
+    // Rebuild the run list from the current index using the configured matcher.
+    // Call after indexing finishes and after a rescan (the index just changed).
+    // Preserves the current selection ordinal (clamped); the caller then picks a
+    // selection policy (selectNewestRun / selectRunByStart).
+    void detectRuns();
+
+    // Incrementally fold newly-appended records [oldRecordCount, size) into the run
+    // list during live tail. Appending a new run-start marker makes the previously
+    // last run's end become finite automatically (the next marker's offset), so a
+    // watched last run freezes at the boundary and the new run appears in the list
+    // (the "stay on current run" behaviour). Returns true when the run list changed.
+    bool updateRunsAfterAppend(int oldRecordCount);
+
+    // Select which run restricts the view: an index into runs(), or -1 for "all
+    // runs" (no restriction). Recomputes the cached view interval. The caller
+    // re-applies via the model-reset path (applyFilters wrapped in a model reset).
+    void selectRun(int index);
+    void selectNewestRun() { selectRun(m_runs.isEmpty() ? -1 : int(m_runs.size()) - 1); }
+    // Re-resolve a persisted selection to an ordinal by start offset, then timestamp,
+    // else fall back to the newest run (offsets/ordinals shift across sessions).
+    void selectRunByStart(qint64 startOffset, qint64 startTimestamp);
+
+    const QVector<Run> &runs() const { return m_runs; }
+    int  selectedRun() const { return m_selectedRun; }
+    // Records in run i: derived so the last run's count tracks live appends.
+    int  runRecordCount(int i) const;
+    // True when a run currently narrows the view (drives subset materialization and
+    // the live-append branch, exactly like FilterSet::anyActive()).
+    bool viewRestricted() const { return m_viewRestricted; }
+    const TextMatcher &runStartMatcher() const { return m_runStartMatcher; }
+
+    // The full in-view predicate: the run byte-offset bound (cheapest, first) AND
+    // the filter chain. Used by BOTH applyFilters() and the live-append path so run
+    // restriction applies identically on initial load and on tail.
+    bool acceptsInView(const Record &r) const;
 
     // Highlighting (M5, SPEC.md §7). The HighlighterSet is the per-file highlight
     // state (invariant #7): an ordered rule list, first-match-wins, each rule
@@ -170,6 +231,14 @@ public:
     static QTimeZone inferSourceZone(const LogFormat &format);
 
 private:
+    // Recompute the cached [m_viewStart, m_viewEnd) byte interval and m_viewRestricted
+    // from the current run selection. Called after any run-list or selection change.
+    void recomputeViewBounds();
+    // The whole first decoded physical line of a record (the run-start match target).
+    // Mirrors the first-line decode in messageText() but returns the full line, not
+    // the message tail; byte-range decode only (invariant #8).
+    QString recordFirstLine(const Record &rec) const;
+
     QString                    m_path;
     QString                    m_lastError;
     std::unique_ptr<LogSource> m_source;
@@ -184,6 +253,16 @@ private:
     CompileError               m_formatError;
     Encoding                   m_requestedEncoding = Encoding::Auto;
     bool                       m_following = true;
+
+    // Run selection state. m_runs holds start markers (ascending by offset); the
+    // selected run's byte interval is cached in m_viewStart/m_viewEnd.
+    QVector<Run> m_runs;
+    int          m_selectedRun = -1;   // index into m_runs, or -1 == all runs
+    TextMatcher  m_runStartMatcher;
+    bool         m_runStartActive = false;
+    bool         m_viewRestricted = false;
+    qint64       m_viewStart = std::numeric_limits<qint64>::min();
+    qint64       m_viewEnd   = std::numeric_limits<qint64>::max();
 };
 
 } // namespace loftail

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FormatSettings.h"
+#include "Record.h"
 
 #include <QByteArray>
 #include <QJsonObject>
@@ -29,10 +30,20 @@ namespace loftail {
 struct SessionDocument
 {
     QString        path;
-    FormatSettings format;       // pattern / encoding / source+display zones (§4)
+    FormatSettings format;       // pattern / encoding / source+display zones + run-start (§4, §3a)
     QByteArray     columnState;  // QHeaderView state: order, sizes, hidden (§5)
     QJsonObject    filters;      // FilterPane portable state (names, not ids)
     QJsonObject    highlighters; // { rules: [...] } — names + palette indices (§8)
+
+    // Run selection (SPEC.md §3a). The run-start PATTERN rides in `format`. This
+    // records WHICH run was viewed, by a STABLE key (start byte offset, with the
+    // start timestamp as a fallback hint) rather than the ordinal, which shifts as
+    // the file grows. runAll == the explicit "all runs" view; otherwise a
+    // selectedRunStartOffset >= 0 names a specific run; the default (nothing saved)
+    // re-resolves to the newest run.
+    bool   runAll = false;
+    qint64 selectedRunStartOffset = -1;
+    qint64 selectedRunStartTimestamp = Record::kNoTimestamp;
 };
 
 struct Session

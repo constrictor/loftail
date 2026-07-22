@@ -55,6 +55,17 @@ Session SessionStore::load(QSettings &settings)
             ZoneChoice::fromString(settings.value(QStringLiteral("sourceZone")).toString());
         d.format.displayZone =
             ZoneChoice::fromString(settings.value(QStringLiteral("displayZone")).toString());
+        d.format.runStartPattern =
+            settings.value(QStringLiteral("runStartPattern")).toString();
+        d.format.runStartIsRegex = settings.value(QStringLiteral("runStartRegex")).toBool();
+        d.format.runStartCaseSensitive = settings.value(QStringLiteral("runStartCase")).toBool();
+        d.runAll = settings.value(QStringLiteral("runAll"), false).toBool();
+        d.selectedRunStartOffset =
+            settings.value(QStringLiteral("selectedRunOffset"), qint64(-1)).toLongLong();
+        d.selectedRunStartTimestamp = settings
+                                          .value(QStringLiteral("selectedRunTs"),
+                                                 qint64(Record::kNoTimestamp))
+                                          .toLongLong();
         d.columnState = settings.value(QStringLiteral("columnState")).toByteArray();
         d.filters = stringToJson(settings.value(QStringLiteral("filters")).toString());
         d.highlighters =
@@ -89,6 +100,12 @@ void SessionStore::save(QSettings &settings, const Session &session)
         settings.setValue(QStringLiteral("encoding"), uint(d.format.encoding));
         settings.setValue(QStringLiteral("sourceZone"), d.format.sourceZone.toString());
         settings.setValue(QStringLiteral("displayZone"), d.format.displayZone.toString());
+        settings.setValue(QStringLiteral("runStartPattern"), d.format.runStartPattern);
+        settings.setValue(QStringLiteral("runStartRegex"), d.format.runStartIsRegex);
+        settings.setValue(QStringLiteral("runStartCase"), d.format.runStartCaseSensitive);
+        settings.setValue(QStringLiteral("runAll"), d.runAll);
+        settings.setValue(QStringLiteral("selectedRunOffset"), d.selectedRunStartOffset);
+        settings.setValue(QStringLiteral("selectedRunTs"), d.selectedRunStartTimestamp);
         settings.setValue(QStringLiteral("columnState"), d.columnState);
         settings.setValue(QStringLiteral("filters"), jsonToString(d.filters));
         settings.setValue(QStringLiteral("highlighters"), jsonToString(d.highlighters));

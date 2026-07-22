@@ -6,10 +6,15 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 
+#include <QComboBox>
+#include <QLineEdit>
+#include <QPushButton>
+
 #include "FilterPane.h"
 #include "HighlighterPane.h"
 #include "LogView.h"
 #include "MainWindow.h"
+#include "RunPane.h"
 
 using namespace loftail;
 
@@ -59,6 +64,7 @@ private slots:
     void initTestCase();
     void roundTripRestoresFileFiltersHighlighters();
     void missingLastFileIsGraceful();
+    void runSelectionThroughUiAndPersists();
 };
 
 void TestSessionGui::initTestCase()
@@ -135,6 +141,71 @@ void TestSessionGui::missingLastFileIsGraceful()
     QTest::qWait(100);
     QVERIFY(w.findChild<LogView *>() == nullptr); // empty view, no file, no dialog
     w.close();
+}
+
+void TestSessionGui::runSelectionThroughUiAndPersists()
+{
+    // Drive the real Run pane through MainWindow: type a run-start regexp, Apply, and
+    // confirm the run list populates and the newest run is selected — then relaunch
+    // and confirm the run-start pattern was remembered per-file (§3a). Self-contained
+    // (its own file), and last, so it doesn't disturb the session-pointing tests.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("multi.log"));
+    {
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        for (int r = 0; r < 3; ++r) {
+            f.write(QStringLiteral("2026-07-21 10:0%1:00,000 [main] INFO  app - RUN START %1\n")
+                        .arg(r).toUtf8());
+            f.write(QStringLiteral("2026-07-21 10:0%1:01,000 [work] INFO  svc - work\n")
+                        .arg(r).toUtf8());
+        }
+        f.close();
+    }
+
+    // --- Round 1: open, type the pattern, apply -----------------------------
+    {
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        w.openFile(path);
+        QTRY_VERIFY(w.findChild<LogView *>() != nullptr);
+        QTest::qWait(300); // let indexing finish
+
+        auto *rp = w.findChild<RunPane *>();
+        QVERIFY(rp);
+        auto *edit = rp->findChild<QLineEdit *>();
+        auto *apply = rp->findChild<QPushButton *>();
+        auto *combo = rp->findChild<QComboBox *>();
+        QVERIFY(edit && apply && combo);
+
+        edit->setText(QStringLiteral("RUN START"));
+        apply->click();
+        QTest::qWait(50);
+
+        QCOMPARE(combo->count(), 4);        // "All runs" + 3 detected runs
+        QCOMPARE(combo->currentIndex(), 3); // newest selected by default
+
+        w.close(); // saves the session incl. the run-start pattern + selection
+    }
+
+    // --- Round 2: relaunch, the pattern is remembered per-file --------------
+    {
+        MainWindow w;
+        w.show();
+        QTRY_VERIFY(w.findChild<LogView *>() != nullptr);
+        QTest::qWait(300);
+
+        auto *rp = w.findChild<RunPane *>();
+        QVERIFY(rp);
+        auto *edit = rp->findChild<QLineEdit *>();
+        auto *combo = rp->findChild<QComboBox *>();
+        QVERIFY(edit && combo);
+        QCOMPARE(edit->text(), QStringLiteral("RUN START")); // restored
+        QCOMPARE(combo->count(), 4);                         // runs re-detected
+        w.close();
+    }
 }
 
 int main(int argc, char *argv[])

@@ -9,6 +9,8 @@
 
 #include <QRegularExpression>
 
+#include <limits>
+
 namespace loftail {
 
 Document::Document()
@@ -41,6 +43,15 @@ bool Document::prepare(const QString &path,
     m_index = RecordIndex();
     m_filtered.clear(); // the previous subset indexed records that no longer exist
     m_format = LogFormat(); // empty == plain text until the provider succeeds
+
+    // Run selection is per-file; a fresh prepare() starts with no runs. The caller
+    // re-applies the file's remembered run-start pattern via setRunStart() after
+    // this returns (and after indexing, detectRuns() rebuilds the list).
+    m_runs.clear();
+    m_selectedRun = -1;
+    m_runStartActive = false;
+    m_runStartMatcher = TextMatcher();
+    recomputeViewBounds();
 
     m_source = openLogSource(path);
     if (!m_source) {
@@ -120,12 +131,19 @@ bool Document::rescan()
     if (!m_source) {
         m_index = RecordIndex();
         m_index.rebuildBlockSums();
+        m_runs.clear();
+        m_selectedRun = -1;
+        recomputeViewBounds();
         m_lastError = QStringLiteral("Cannot reopen file: %1").arg(m_path);
         return false;
     }
 
     Indexer indexer(m_format, m_decoder, m_sourceZone);
     m_index = indexer.index(*m_source);
+    // The index was rebuilt from fresh content (rotation/truncation): re-detect runs
+    // and default to the newest (matches the follow-tail-on-rescan behaviour).
+    detectRuns();
+    selectNewestRun();
     return true;
 }
 
@@ -178,7 +196,7 @@ QString Document::messageText(const Record &rec) const
 
 void Document::applyFilters()
 {
-    if (!m_filters.anyActive()) {
+    if (!m_viewRestricted && !m_filters.anyActive()) {
         m_filtered.clear(); // identity view — nothing to materialize
         return;
     }
@@ -188,12 +206,171 @@ void Document::applyFilters()
     visible.reserve(n);
     for (int i = 0; i < n; ++i) {
         const Record &r = m_index.records.at(i);
-        // Integer axes first; the message decode below is reached ONLY for records
-        // that pass them AND when the text axis is active (invariant #4).
-        if (m_filters.accepts(r, [this, &r] { return messageText(r); }))
+        // Run byte-offset bound first (cheapest), then integer axes, then the message
+        // decode — reached ONLY for records the earlier tests let through AND when
+        // the text axis is active (invariant #4). See acceptsInView().
+        if (acceptsInView(r))
             visible.append(i);
     }
     m_filtered.setVisible(std::move(visible));
+}
+
+bool Document::acceptsInView(const Record &r) const
+{
+    if (m_viewRestricted && (r.offset < m_viewStart || r.offset >= m_viewEnd))
+        return false;
+    return m_filters.accepts(r, [this, &r] { return messageText(r); });
+}
+
+QString Document::recordFirstLine(const Record &rec) const
+{
+    if (!m_source)
+        return QString();
+    const QByteArrayView bytes = m_source->bytes(rec.offset, rec.length);
+    if (bytes.isEmpty())
+        return QString();
+
+    // The run-start regexp matches the WHOLE first line (timestamp, thread, priority,
+    // logger, message), not the message tail — so decode the first physical line in
+    // full. Byte range only; the Decoder owns line boundaries (invariant #8).
+    bool hadNl = false;
+    const qsizetype firstEnd = m_decoder.lineEnd(bytes, 0, &hadNl);
+    const qsizetype firstContentLen = firstEnd - (hadNl ? m_decoder.unitSize() : 0);
+    return m_decoder.decodeLine(bytes.sliced(0, qMax<qsizetype>(0, firstContentLen)));
+}
+
+void Document::recomputeViewBounds()
+{
+    m_viewRestricted = false;
+    m_viewStart = std::numeric_limits<qint64>::min();
+    m_viewEnd = std::numeric_limits<qint64>::max();
+    if (!m_runStartActive || m_selectedRun < 0 || m_selectedRun >= m_runs.size())
+        return; // no run splitting, or "all runs" selected
+
+    m_viewStart = m_runs.at(m_selectedRun).startOffset;
+    // The run ends where the NEXT run begins; the last run runs to EOF (and beyond,
+    // so appended records still belong to it — the "watching the last run" case).
+    m_viewEnd = (m_selectedRun + 1 < m_runs.size())
+                    ? m_runs.at(m_selectedRun + 1).startOffset
+                    : std::numeric_limits<qint64>::max();
+    m_viewRestricted = true;
+}
+
+void Document::setRunStart(const QString &pattern, bool regex, Qt::CaseSensitivity cs)
+{
+    m_runStartMatcher.set(pattern, regex, cs);
+    m_runStartActive = !pattern.isEmpty();
+    detectRuns();
+    selectNewestRun();
+}
+
+void Document::detectRuns()
+{
+    m_runs.clear();
+    if (!m_runStartActive || m_runStartMatcher.isEmpty() || !m_runStartMatcher.isValid()) {
+        recomputeViewBounds();
+        return;
+    }
+
+    auto makeRun = [this](int startRecord, bool preamble) {
+        const Record &r = m_index.records.at(startRecord);
+        Run run;
+        run.startRecord = startRecord;
+        run.startOffset = r.offset;
+        run.startTimestamp = r.timestamp;
+        run.firstLine = recordFirstLine(r);
+        run.isPreamble = preamble;
+        return run;
+    };
+
+    const int n = m_index.records.size();
+    int firstMarker = -1;
+    for (int i = 0; i < n; ++i) {
+        if (m_runStartMatcher.matches(recordFirstLine(m_index.records.at(i)))) {
+            if (firstMarker < 0) {
+                firstMarker = i;
+                // Records before the first marker are a leading "preamble" run so no
+                // content is unreachable and "all runs" == the whole file.
+                if (i > 0)
+                    m_runs.append(makeRun(0, /*preamble=*/true));
+            }
+            m_runs.append(makeRun(i, /*preamble=*/false));
+        }
+    }
+
+    if (m_selectedRun >= m_runs.size())
+        m_selectedRun = m_runs.isEmpty() ? -1 : int(m_runs.size()) - 1;
+    recomputeViewBounds();
+}
+
+bool Document::updateRunsAfterAppend(int oldRecordCount)
+{
+    if (!m_runStartActive || m_runStartMatcher.isEmpty() || !m_runStartMatcher.isValid())
+        return false;
+
+    const int n = m_index.records.size();
+    bool changed = false;
+    for (int i = qMax(0, oldRecordCount); i < n; ++i) {
+        const Record &r = m_index.records.at(i);
+        if (!m_runStartMatcher.matches(recordFirstLine(r)))
+            continue;
+        // A first marker appearing only now: the records before it form a preamble.
+        if (m_runs.isEmpty() && i > 0) {
+            const Record &r0 = m_index.records.at(0);
+            Run pre;
+            pre.startRecord = 0;
+            pre.startOffset = r0.offset;
+            pre.startTimestamp = r0.timestamp;
+            pre.firstLine = recordFirstLine(r0);
+            pre.isPreamble = true;
+            m_runs.append(pre);
+        }
+        Run run;
+        run.startRecord = i;
+        run.startOffset = r.offset;
+        run.startTimestamp = r.timestamp;
+        run.firstLine = recordFirstLine(r);
+        m_runs.append(run);
+        changed = true;
+    }
+    if (changed)
+        recomputeViewBounds(); // the selected last run's end may now be finite
+    return changed;
+}
+
+void Document::selectRun(int index)
+{
+    m_selectedRun = (index >= 0 && index < m_runs.size()) ? index : -1;
+    recomputeViewBounds();
+}
+
+void Document::selectRunByStart(qint64 startOffset, qint64 startTimestamp)
+{
+    int best = -1;
+    for (int i = 0; i < m_runs.size(); ++i) {
+        if (m_runs.at(i).startOffset == startOffset) {
+            best = i;
+            break;
+        }
+    }
+    if (best < 0 && startTimestamp != Record::kNoTimestamp) {
+        for (int i = 0; i < m_runs.size(); ++i) {
+            if (m_runs.at(i).startTimestamp == startTimestamp) {
+                best = i;
+                break;
+            }
+        }
+    }
+    selectRun(best >= 0 ? best : (m_runs.isEmpty() ? -1 : int(m_runs.size()) - 1));
+}
+
+int Document::runRecordCount(int i) const
+{
+    if (i < 0 || i >= m_runs.size())
+        return 0;
+    const int end = (i + 1 < m_runs.size()) ? m_runs.at(i + 1).startRecord
+                                            : int(m_index.records.size());
+    return end - m_runs.at(i).startRecord;
 }
 
 void Document::reparseTimestamps(const QTimeZone &sourceZone)

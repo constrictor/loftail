@@ -227,6 +227,16 @@ The estimation machinery is only reachable in *always on* mode — the other two
 
 **Threading:** indexing runs on a worker thread and reports progress incrementally so the view populates during the scan rather than after it. The model is updated on the GUI thread in batches (via queued signals) — batching matters, since per-record signals on a fast scan will drown the event loop. Indexing must be cancellable.
 
+### 7.3 Run selection
+
+A log file often concatenates several application runs (`SPEC.md` §3, Runs). Rather than a second view layer, a selected run is modelled as **one more bound composed into the existing filtered view**:
+
+- A run is a contiguous record range expressed as a half-open **byte-offset interval `[startOffset, endOffset)` over `Record::offset`**. Offsets never shift under append (records keep their offsets), so the last run's `endOffset` is `INT64_MAX` and appended records fall into it automatically — the "watching the last run" case needs no special code.
+- **Detection reuses the text matcher** (the one behind message filtering and Find) against each record's **whole first decoded line** — the same shape as `recordStartRe`, and going through the `Decoder` so it is encoding-correct (invariant #8). Runs are stored on the `Document` as start markers; a run's `endOffset` and record count are derived from the next marker, so a new marker appended live *retroactively* bounds the previously last run with no mutation of existing entries. Records before the first marker form a leading "preamble" run so nothing is unreachable.
+- **`Document::acceptsInView()`** combines the run bound (checked first, cheapest) with `FilterSet::accepts()`. Both `applyFilters()` and the live-append path call it, so the run restriction is applied identically on the initial pass and on tail — the run range is *not* a `FilterSet` axis (its match target differs, and keeping it on the `Document` avoids the two panes clobbering one shared struct). The visible subset it produces is the ordinary `FilteredIndex` (§7.1), so scrolling/geometry/highlight/Find are unchanged.
+- **Live:** the appended tail is scanned for new markers *before* candidate admission, so a new run's records are rejected by the (now-bounded) selected run rather than admitted and later removed — the view freezes at the boundary and the new run appears in the pane to switch to (`SPEC.md` §3). Rotation/truncation re-detects over the fresh index and defaults to the newest run.
+- **Persistence:** the run-start pattern lives in `FormatSettings` (per-file, like the format); the session records *which* run by its start offset/timestamp (a stable key, re-resolved to an ordinal after re-indexing), never the ordinal.
+
 ## 8. Persistence
 
 - `QSettings` for window geometry, `QMainWindow::saveState()` output, column layout, active filters/highlighters, and last file. Follow state is **not** persisted: every file opens at its end, following (`SPEC.md` §3), so there is nothing to restore.

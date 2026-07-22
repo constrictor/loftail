@@ -45,6 +45,16 @@ It runs on Windows, macOS, and Linux.
 - If the file is rotated or truncated by the writing application, loftail detects this and reloads rather than showing stale or corrupt data. This happens silently — no notice is shown.
 - Because loftail always holds the file open for reading, it must never prevent the writing application from appending to, rotating, or truncating it. Observing a log must not disturb the process producing it.
 
+### Runs
+
+A single log file often contains the output of several application runs, one after another. Rather than scroll to find where one run ends and the next begins, the user can name where a run starts and then view one run at a time.
+
+- **A run-start pattern.** In the **Runs** side pane the user supplies a regular expression (or a plain substring) that marks the first line of each run — matched against the **whole log line**, so it can key off a startup banner, a specific subsystem, or any other field. The file is split into runs at every matching line; anything before the first match is kept as a leading "before first run" segment so nothing is unreachable.
+- **Viewing one run.** The pane lists the detected runs, each labelled by its start time and first line. Selecting one restricts the entire view — scrolling, filtering, highlighting, find — to just that run's portion of the file; the rest is hidden. An **All runs** choice removes the restriction and shows the whole file again. When a pattern is first applied, the **newest** run is shown, since that is usually the one being worked on.
+- **Runs compose with filters and highlighters.** The run restriction narrows *which* records are in view; filters and highlighters then apply within it, exactly as they do to the whole file.
+- **Live files keep working.** While tailing the newest run, if the application restarts and writes a new run into the same file, the view stays on the run being watched and the new run simply appears in the list to switch to — the view is never yanked to a different run. Selecting an earlier, finished run detaches follow so its history stays put while the file keeps growing.
+- **Remembered per file.** The run-start pattern is remembered for a file the same way its format is, and the session restores which run was being viewed. A file with no run-start pattern behaves exactly as before — one continuous view.
+
 ## 4. Log format configuration
 
 Because a log file does not describe its own layout, loftail needs to be told the `ConversionPattern` the writing application used.
@@ -132,7 +142,7 @@ Highlighting colors matching records without removing anything, for spotting eve
 
 ## 8. Side panes
 
-Filters, highlighters, and presets are each presented in a side pane, so they are visible and toggleable without opening dialogs.
+Filters, highlighters, presets, and runs (§3) are each presented in a side pane, so they are visible and toggleable without opening dialogs.
 
 - Panes can be shown/hidden, resized, moved to either side, floated as separate windows, or tabbed together.
 - Pane layout is part of the remembered session (§10).
@@ -153,11 +163,12 @@ On relaunch, loftail restores:
 
 - The last opened file — reopened at its end and following, like any open (§3), so follow state is never a remembered choice
 - The log format in use
+- The run-start pattern and which run was being viewed (§3)
 - Active filters and highlighters, including which were enabled
 - Saved presets
 - Window geometry, pane layout, and column layout
 
-**Scoping**, which matters for the eventual multi-file support: the log format, active filters, active highlighters, and column layout are remembered **per file**, so returning to a given log restores how you were reading *that* log. Presets and window/pane layout are global, shared across all files. This way, when several files can be open at once, each keeps its own working state without further redesign.
+**Scoping**, which matters for the eventual multi-file support: the log format, the run-start pattern, active filters, active highlighters, and column layout are remembered **per file**, so returning to a given log restores how you were reading *that* log. Presets and window/pane layout are global, shared across all files. This way, when several files can be open at once, each keeps its own working state without further redesign.
 
 **Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is keyed by file, so instances viewing different logs never conflict. For genuinely global state — window layout, and which file to restore on next launch — **the last instance to close wins**.
 

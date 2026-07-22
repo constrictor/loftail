@@ -167,7 +167,7 @@ void LiveController::doRescan()
         // The intern tables were rebuilt, so rebind highlight rules to the new ids
         // and re-materialize the visible subset if a filter is active.
         m_document->resolveHighlighters();
-        if (m_document->filters().anyActive())
+        if (m_document->filters().anyActive() || m_document->viewRestricted())
             m_document->applyFilters();
     }
     m_model->endFilterReset();
@@ -231,6 +231,11 @@ void LiveController::ingestAppended()
         // view's geometry refresh — signal it explicitly.
         if (provisionalChanged)
             m_model->notifyRowChanged(base);
+
+        // Not restricted here (an active run would materialize the filtered view), so
+        // this only grows the run LIST for the pane; ordering vs the rows above is
+        // irrelevant since nothing is being excluded.
+        m_document->updateRunsAfterAppend(oldCount);
     } else {
         // ---- Filtered: extend the visible subset in place (invariant #1) --------
         // First update the SOURCE index so message/highlight decode and a later
@@ -241,6 +246,12 @@ void LiveController::ingestAppended()
         for (int j = firstTailNew; j < tail.size(); ++j)
             idx.records.append(tail[j]);
         idx.extendBlockSums(provisionalChanged ? base : oldCount);
+
+        // Fold new records into the run list BEFORE evaluating candidates: a new
+        // run-start marker makes the selected (previously last) run's end finite, so
+        // acceptsInView() below rejects the new-run records and the view freezes at
+        // the boundary — no already-admitted rows to remove ("stay on current run").
+        m_document->updateRunsAfterAppend(oldCount);
 
         // If the provisional record changed and was visible, drop its (last) view
         // row so it can be re-evaluated against the filter along with the new tail.
@@ -263,11 +274,10 @@ void LiveController::ingestAppended()
         for (int j = candidateStart; j < tail.size(); ++j) {
             const int srcRow = base + j;
             const Record &rec = idx.records.at(srcRow);
-            if (m_document->filters().accepts(rec, [this, &rec] {
-                    return m_document->messageText(rec);
-                })) {
+            // Same predicate as the initial pass (run bound + filters), so appended
+            // records enter the view exactly as a one-shot scan would place them.
+            if (m_document->acceptsInView(rec))
                 passing.append(srcRow);
-            }
         }
 
         if (!passing.isEmpty()) {

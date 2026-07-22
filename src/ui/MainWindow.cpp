@@ -17,6 +17,7 @@
 #include "LogSource.h"
 #include "ManualFormatProvider.h"
 #include "PresetPane.h"
+#include "RunPane.h"
 #include "SessionStore.h"
 
 #include <QAction>
@@ -106,10 +107,22 @@ MainWindow::MainWindow(QWidget *parent)
     presetDock->setWidget(m_presetPane);
     addDockWidget(Qt::RightDockWidgetArea, presetDock);
 
-    // Tab the three panes together by default so they share the right edge; the
-    // user can pull any out, and the arrangement is part of the saved session.
+    // Run selection pane (§3a): a run-start regexp splits the file into runs and the
+    // user views one at a time. Binds to the active document by signal like the rest.
+    m_runPane = new RunPane(this);
+    auto *runDock = new QDockWidget(QStringLiteral("Runs"), this);
+    runDock->setObjectName(QStringLiteral("runsDock"));
+    runDock->setWidget(m_runPane);
+    addDockWidget(Qt::RightDockWidgetArea, runDock);
+    connect(this, &MainWindow::activeDocumentChanged, m_runPane, &RunPane::setDocument);
+    connect(m_runPane, &RunPane::runStartChanged, this, &MainWindow::onRunStartChanged);
+    connect(m_runPane, &RunPane::runSelected, this, &MainWindow::onRunSelected);
+
+    // Tab the panes together by default so they share the right edge; the user can
+    // pull any out, and the arrangement is part of the saved session.
     tabifyDockWidget(filterDock, highlightDock);
     tabifyDockWidget(highlightDock, presetDock);
+    tabifyDockWidget(presetDock, runDock);
     filterDock->raise();
 
     buildMenus();
@@ -288,6 +301,11 @@ void MainWindow::teardownDocument()
 
 void MainWindow::openFile(const QString &path, const QString &pattern)
 {
+    // An interactive/programmatic open defaults its run selection to the newest run;
+    // only session restore carries a persisted selection (cleared here so a stale one
+    // never leaks into this open).
+    m_pendingRunRestore.reset();
+
     // Per-file recall (SPEC.md §4): a file already configured reopens with its
     // saved format and no prompt. A never-seen file gets the supplied (or default)
     // pattern, and the dialog is offered when that pattern does not match.
@@ -421,6 +439,13 @@ void MainWindow::buildViewAndIndex(const QString &path)
 
     setWindowTitle(QStringLiteral("loftail — %1").arg(QFileInfo(path).fileName()));
 
+    // Configure the run-start matcher from the (remembered) format before binding the
+    // panes, so the Run pane shows the pattern. Runs are detected once indexing
+    // finishes (the index is empty here); see onIndexFinished (§3a).
+    active->setRunStart(m_currentSettings.runStartPattern, m_currentSettings.runStartIsRegex,
+                        m_currentSettings.runStartCaseSensitive ? Qt::CaseSensitive
+                                                                : Qt::CaseInsensitive);
+
     // Bind the filter pane to the new document (invariant #7). Its discovered
     // subsystem/thread lists fill in as indexing progresses (refreshed on finish).
     emit activeDocumentChanged(active);
@@ -440,8 +465,15 @@ void MainWindow::showFormatDialog()
         ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
 
     LogFormatDialog dlg(QFileInfo(doc->path()).fileName(), sample, m_currentSettings, this);
-    if (dlg.exec() == QDialog::Accepted)
-        applySettings(dlg.settings());
+    if (dlg.exec() == QDialog::Accepted) {
+        // The dialog does not edit the run-start axis; carry it through unchanged so
+        // accepting a format change never clears the run-start pattern (§3a).
+        FormatSettings s = dlg.settings();
+        s.runStartPattern = m_currentSettings.runStartPattern;
+        s.runStartIsRegex = m_currentSettings.runStartIsRegex;
+        s.runStartCaseSensitive = m_currentSettings.runStartCaseSensitive;
+        applySettings(s);
+    }
 }
 
 void MainWindow::applySettings(const FormatSettings &newSettings)
@@ -449,6 +481,10 @@ void MainWindow::applySettings(const FormatSettings &newSettings)
     Document *doc = activeDocument();
     if (!doc)
         return;
+
+    // A format change re-indexes (or reparses) but does not carry a persisted run
+    // selection; the newest run is the default afterwards.
+    m_pendingRunRestore.reset();
 
     // Copy the path: a rescan tears the Document down, so `doc` must not be read
     // after openWithSettings() runs.
@@ -513,9 +549,25 @@ void MainWindow::onIndexFinished(bool cancelled)
     // naming subsystems discovered late in the scan take effect (SPEC.md §6, §7).
     if (m_highlighterPane)
         m_highlighterPane->refreshDiscoveredLists();
-    if (activeDocument()) {
-        activeDocument()->resolveHighlighters();
-        if (activeDocument()->filters().anyActive())
+    if (Document *active = activeDocument()) {
+        active->resolveHighlighters();
+        // Runs are detected now that the full index exists (§3a). Restore the
+        // persisted selection if this open came from session restore, else default
+        // to the newest run (decision: open a live log on its current run).
+        active->detectRuns();
+        if (m_pendingRunRestore) {
+            if (m_pendingRunRestore->all)
+                active->selectRun(-1);
+            else
+                active->selectRunByStart(m_pendingRunRestore->startOffset,
+                                         m_pendingRunRestore->startTimestamp);
+            m_pendingRunRestore.reset();
+        } else {
+            active->selectNewestRun();
+        }
+        if (m_runPane)
+            m_runPane->refresh();
+        if (active->filters().anyActive() || active->viewRestricted())
             applyActiveFilters();
     }
     if (m_view) {
@@ -539,6 +591,10 @@ void MainWindow::onIndexFinished(bool cancelled)
                 m_filterPane->refreshDiscoveredLists();
             if (m_highlighterPane)
                 m_highlighterPane->refreshDiscoveredLists();
+            // A new run may have begun in the appended data (§3a): reflect it in the
+            // Run pane. The Document already folded it into its run list during ingest.
+            if (m_runPane)
+                m_runPane->refresh();
             updateStatus();
         });
         connect(m_live, &LiveController::rescanned, this, [this]() {
@@ -548,6 +604,8 @@ void MainWindow::onIndexFinished(bool cancelled)
                 m_filterPane->refreshDiscoveredLists();
             if (m_highlighterPane)
                 m_highlighterPane->refreshDiscoveredLists();
+            if (m_runPane)
+                m_runPane->refresh();
             if (m_view && m_view->following())
                 m_view->followTail();
             updateStatus();
@@ -585,6 +643,52 @@ void MainWindow::applyActiveHighlighters()
     doc->resolveHighlighters();
     if (m_view)
         m_view->viewport()->update();
+}
+
+void MainWindow::onRunStartChanged(const QString &pattern, bool regex, bool caseSensitive)
+{
+    Document *doc = activeDocument();
+    if (!doc)
+        return;
+
+    // The run-start pattern is part of the per-file format (persisted like it, §3a).
+    m_currentSettings.runStartPattern = pattern;
+    m_currentSettings.runStartIsRegex = regex;
+    m_currentSettings.runStartCaseSensitive = caseSensitive;
+    persistFormat(doc->path(), m_currentSettings);
+
+    // Reconfigure + re-detect over the existing index (no rescan — offsets are
+    // unchanged, invariant #3), defaulting to the newest run, then re-apply the view.
+    doc->setRunStart(pattern, regex, caseSensitive ? Qt::CaseSensitive : Qt::CaseInsensitive);
+    if (m_runPane)
+        m_runPane->refresh();
+    applyActiveFilters();
+    if (m_view && m_view->following())
+        m_view->followTail();
+}
+
+void MainWindow::onRunSelected(int runIndex)
+{
+    Document *doc = activeDocument();
+    if (!doc)
+        return;
+
+    doc->selectRun(runIndex);
+    applyActiveFilters();
+    if (m_runPane)
+        m_runPane->refresh();
+
+    // Follow only makes sense for the live tail: the newest run (or "all runs") jumps
+    // to the end and keeps following; an earlier, finished run scrolls to its start,
+    // which detaches follow so the history stays put while the file grows (§3a).
+    if (m_view) {
+        const int newest = doc->runs().isEmpty() ? -1 : int(doc->runs().size()) - 1;
+        const bool isLive = runIndex < 0 || runIndex == newest;
+        if (isLive)
+            m_view->followTail();
+        else
+            m_view->setCurrentRecord(0); // top of the (filtered) run; detaches follow
+    }
 }
 
 void MainWindow::updateModelTheme()
@@ -773,6 +877,21 @@ void MainWindow::saveSession()
         d.columnState = m_view->saveColumnState();
         d.filters = m_filterPane ? m_filterPane->saveState() : QJsonObject();
         d.highlighters = m_highlighterPane ? m_highlighterPane->saveState() : QJsonObject();
+
+        // Run selection (§3a). The run-start pattern rides in d.format; here we save
+        // WHICH run was viewed by its stable start offset/timestamp (not the ordinal,
+        // which shifts as the file grows). selectedRun() == -1 means "all runs" when a
+        // pattern is set, otherwise nothing meaningful (restore falls back to newest).
+        const int sel = doc->selectedRun();
+        if (sel >= 0 && sel < doc->runs().size()) {
+            d.runAll = false;
+            d.selectedRunStartOffset = doc->runs().at(sel).startOffset;
+            d.selectedRunStartTimestamp = doc->runs().at(sel).startTimestamp;
+        } else {
+            d.runAll = !m_currentSettings.runStartPattern.isEmpty();
+            d.selectedRunStartOffset = -1;
+        }
+
         session.documents.append(d);
         session.activeDocument = 0;
     }
@@ -803,6 +922,13 @@ void MainWindow::restoreSession()
             QStringLiteral("The last opened file is no longer available:\n%1").arg(d->path));
         m_statusLabel->setText(QStringLiteral("Last file unavailable: %1").arg(info.fileName()));
         return;
+    }
+
+    // Stash the persisted run selection so onIndexFinished re-resolves it once runs
+    // are detected (offsets/ordinals settle only after the async index completes, §3a).
+    if (!d->format.runStartPattern.isEmpty()) {
+        m_pendingRunRestore = PendingRunRestore{d->runAll, d->selectedRunStartOffset,
+                                                d->selectedRunStartTimestamp};
     }
 
     // Reopen with the saved format (no prompt), then reapply the saved per-file

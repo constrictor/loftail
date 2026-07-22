@@ -22,6 +22,9 @@ FormatSettings readAt(QSettings &settings)
     s.encoding    = static_cast<Encoding>(settings.value(QStringLiteral("encoding")).toUInt());
     s.sourceZone  = ZoneChoice::fromString(settings.value(QStringLiteral("sourceZone")).toString());
     s.displayZone = ZoneChoice::fromString(settings.value(QStringLiteral("displayZone")).toString());
+    s.runStartPattern       = settings.value(QStringLiteral("runStartPattern")).toString();
+    s.runStartIsRegex       = settings.value(QStringLiteral("runStartRegex")).toBool();
+    s.runStartCaseSensitive = settings.value(QStringLiteral("runStartCase")).toBool();
     return s;
 }
 
@@ -88,6 +91,9 @@ void FormatCache::save(QSettings &settings, const QString &path, const FormatSet
         settings.setValue(QStringLiteral("encoding"), uint(e.settings.encoding));
         settings.setValue(QStringLiteral("sourceZone"), e.settings.sourceZone.toString());
         settings.setValue(QStringLiteral("displayZone"), e.settings.displayZone.toString());
+        settings.setValue(QStringLiteral("runStartPattern"), e.settings.runStartPattern);
+        settings.setValue(QStringLiteral("runStartRegex"), e.settings.runStartIsRegex);
+        settings.setValue(QStringLiteral("runStartCase"), e.settings.runStartCaseSensitive);
     }
     settings.endArray();
     settings.sync();
