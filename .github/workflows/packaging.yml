@@ -62,6 +62,10 @@ jobs:
     # the MSVC path -- an unconditional use no compile flag can restore. VS 2022
     # still provides stdext, so the reference Qt 6.4 compiles there.
     runs-on: windows-2022
+    # A GUI app that pops a modal dialog (e.g. a --version MessageBox, or a
+    # missing-DLL error) would otherwise hang the runner until the 6h default.
+    # Cap the whole job so any such hang fails fast.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -97,7 +101,22 @@ jobs:
       - name: Smoke-test the portable build (uses bundled Qt only)
         shell: pwsh
         run: |
-          & dist\loftail-portable\loftail.exe --version
+          # Run with a hard timeout and capture output, so a regression that pops
+          # a modal dialog (the GUI-subsystem --version MessageBox trap) fails the
+          # step in seconds instead of blocking until the job timeout.
+          $exe = "dist\loftail-portable\loftail.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "--version" -NoNewWindow -PassThru `
+                 -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+          if (-not $p.WaitForExit(30000)) {
+            $p.Kill()
+            Write-Error "loftail.exe --version did not exit within 30s (modal dialog / hang)"
+            exit 1
+          }
+          Get-Content out.txt, err.txt
+          if ($p.ExitCode -ne 0) {
+            Write-Error "loftail.exe --version exited with code $($p.ExitCode)"
+            exit 1
+          }
 
       - uses: actions/upload-artifact@v4
         with:

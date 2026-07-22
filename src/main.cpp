@@ -5,8 +5,34 @@
 #include "MainWindow.h"
 #include "Version.h"
 
+#if defined(Q_OS_WIN)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#  include <cstdio>
+#endif
+
 int main(int argc, char *argv[])
 {
+#if defined(Q_OS_WIN)
+    // loftail is a GUI-subsystem executable, so it has no console of its own. On
+    // Windows QCommandLineParser prints --version/--help (and parse errors) by
+    // popping a modal MessageBox when it sees no console — which blocks forever in
+    // an unattended run (CI, scripts). Attach to the launching terminal, if there
+    // is one, and point the CRT streams at it so that output goes to the console
+    // and process() can print-and-exit like it does on Linux/macOS. A GUI launch
+    // (double-click, no parent console) hits neither branch and is unaffected.
+    if (::AttachConsole(ATTACH_PARENT_PROCESS)) {
+        FILE *stream = nullptr;
+        freopen_s(&stream, "CONOUT$", "w", stdout);
+        freopen_s(&stream, "CONOUT$", "w", stderr);
+    }
+#endif
+
     QApplication app(argc, argv);
 
     // Organization/application names must be set before any QSettings is
