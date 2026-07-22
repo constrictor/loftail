@@ -74,7 +74,10 @@ void TestPresetStore::atomicWriteLeavesOldFileOnBadPath()
 
     // Writing to an impossible location fails WITHOUT leaving a partial file and
     // without disturbing the good file that already exists (temp-file+rename, §8.1).
-    const QString bad = QStringLiteral("/proc/nonexistent-dir/\0/x.json");
+    // The bad path nests under `good.json`, an existing REGULAR file: creating that
+    // parent "directory" is impossible on every platform. (Avoid an embedded-NUL or
+    // /proc path here — the NUL crashes QFileInfo on Windows and /proc is Linux-only.)
+    const QString bad = path + QStringLiteral("/x.json");
     QVERIFY(!AtomicJson::write(bad, QJsonDocument(first)));
 
     bool ok = false;

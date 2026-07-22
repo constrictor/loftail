@@ -78,9 +78,16 @@ endforeach()
 # M6 — the tail harness: append (incl. a multi-line record split across writes),
 # truncate, rotate, and filtered/highlighted append, all driven synchronously via
 # LiveController::checkNow() against a real temp file. Core-only, GUILESS.
-qt_add_executable(tst_tail tst_tail.cpp)
-target_link_libraries(tst_tail PRIVATE loftail_core Qt6::Test)
-add_test(NAME tst_tail COMMAND tst_tail)
+#
+# POSIX-only: the harness relies on mmap seeing appended bytes and on renaming an
+# open file (rotation), plus stat-based path identity. Windows uses BufferedLogSource
+# and pathIdentity() there is still a stub (LogSourceFactory.cpp) — its rotation/
+# file-sharing semantics differ and must be exercised separately (not done yet).
+if(NOT WIN32)
+    qt_add_executable(tst_tail tst_tail.cpp)
+    target_link_libraries(tst_tail PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_tail COMMAND tst_tail)
+endif()
 
 # M6 — live smoke: the REAL QFileSystemWatcher + poll path under a running event
 # loop (a background timer appends "like another process"; the model must grow with
