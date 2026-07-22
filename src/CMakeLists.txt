@@ -23,9 +23,11 @@ target_link_libraries(loftail PRIVATE
 # tools (linuxdeploy / windeployqt / macdeployqt) run against. See
 # packaging/README.md for how each artifact is built and clean-machine-verified.
 #
-# File association is deliberately NOT registered by the application on any
-# platform. If a distribution wants loftail to own .log files, that belongs to
-# the installer/packager (PLAN.md M7), not here.
+# File association is a soft/capability declaration only (the .desktop MimeType /
+# Info.plist LSHandlerRank=Alternate carried by the packaging assets): loftail
+# offers itself under "Open With" but never claims the DEFAULT handler. Making it
+# the default stays an installer/packager/user action (PLAN.md M7). This install
+# step just places the .desktop file; it registers nothing.
 
 set(LOFTAIL_DESKTOP_FILE "${CMAKE_SOURCE_DIR}/packaging/linux/loftail.desktop")
 set(LOFTAIL_ICON_FILE    "${CMAKE_SOURCE_DIR}/packaging/linux/loftail.svg")

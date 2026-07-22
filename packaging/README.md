@@ -29,18 +29,35 @@ loftail [options] [file]
 No file argument opens an empty window (session restore may still reopen the
 last file).
 
-## File association — deliberately not in the app
+## File association — soft (capability), never the default
 
-loftail never registers itself as the handler for `.log` (or any) files, on any
-platform. This is a deliberate decision (PLAN.md M7): if a distribution wants
-loftail to open logs from the file manager, that association belongs in the
-**installer/packager**, not the application. Accordingly:
+loftail advertises that it **can** open `.log` files, so it appears in the OS
+"Open With" list — but it never registers itself as the **default** handler for
+`.log` (or any) files, on any platform. These are two independent layers, and the
+app only ever touches the first:
 
-- the Linux `.desktop` file carries **no** `MimeType=` key,
-- the macOS `Info.plist` carries **no** `CFBundleDocumentTypes`,
-- the Windows script builds a portable zip and registers nothing.
+| | Declared by the app | Effect |
+| --- | --- | --- |
+| **Capability ("soft")** | Linux `MimeType=text/x-log;` · macOS `LSHandlerRank=Alternate` | listed under "Open With" |
+| **Default ("hard")** | *not* in the app — `xdg-mime default`, `duti`, or the user picking "always open with" | opens on double-click |
 
-An installer (NSIS/MSI/`.deb`) is the place to add associations if wanted.
+Declaring the capability never steals the existing default (`less`, a text editor,
+etc.); becoming the default stays a user/installer decision (PLAN.md M7).
+Accordingly:
+
+- the Linux `.desktop` file declares `MimeType=text/x-log;` — the freedesktop type
+  `*.log` resolves to (a subclass of `text/plain`), scoped so loftail does **not**
+  volunteer for every text file. It takes effect only once XDG desktop integration
+  installs the `.desktop` file (`appimaged` / AppImageLauncher / a distro package);
+  a bare AppImage run from `~/Downloads` registers nothing.
+- the macOS `Info.plist` declares a `CFBundleDocumentTypes` entry for the `log`
+  extension with `CFBundleTypeRole=Viewer` and `LSHandlerRank=Alternate` (the
+  "Open With, not default" rank).
+- the Windows portable zip still registers nothing; associations there belong in an
+  MSI/NSIS installer if wanted.
+
+An installer (NSIS/MSI/`.deb`) — or the user — is still the place to make loftail
+the **default** handler if wanted.
 
 ## Linux — AppImage (reference environment: Ubuntu 24.04)
 

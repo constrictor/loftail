@@ -8,9 +8,18 @@ Icon=loftail
 Terminal=false
 Categories=Development;Utility;TextTools;
 Keywords=log;log4cplus;tail;viewer;debug;
-# NOTE: MimeType / file-association registration is deliberately omitted here.
-# Per PLAN.md M7, the application does not claim file associations; if a
-# distribution wants loftail to open .log files from the file manager, that
-# is the installer's/packager's decision and belongs in the packaging layer,
-# not in the application.
+# Soft (capability) file association only. Declaring MimeType makes loftail appear
+# in the file manager's "Open With" list for .log files — it does NOT make loftail
+# the default handler. Becoming the default is a separate, explicit action
+# (`xdg-mime default loftail.desktop text/x-log`, or the user choosing "always open
+# with"), which the application never performs on its own — per PLAN.md M7 that
+# stays an installer/packager/user decision.
+#   - text/x-log is the freedesktop shared-mime-info type that *.log resolves to
+#     (a subclass of text/plain). Scoped to it, NOT text/plain, so loftail does not
+#     volunteer for every text file.
+#   - This entry only takes effect once XDG desktop integration installs the
+#     .desktop file (appimaged / AppImageLauncher / a distro package, which also
+#     rewrites Exec= to the AppImage's real path). A bare AppImage run from
+#     ~/Downloads registers nothing on its own.
+MimeType=text/x-log;
 StartupWMClass=loftail

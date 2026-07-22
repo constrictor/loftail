@@ -171,4 +171,4 @@ These are things loftail will **not** do — as distinct from features deferred 
 - Read log formats from other logging frameworks (the format is configurable, so some will happen to work; none are supported)
 - Aggregate several files into a single merged, time-ordered view — distinct from simply opening several files (which *is* planned; see `FUTURE.md`), and not planned at all
 - Provide charts, statistics, or alerting
-- Install itself as the system handler for `.log` files — file association is an installer concern, not an application one
+- Install itself as the **default** system handler for `.log` files — loftail advertises that it *can* open them (so it appears in the OS "Open With" list), but claiming the default handler is a user/installer concern, not something the application does

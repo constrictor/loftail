@@ -5,9 +5,14 @@
   Info.plist template for the macOS .app bundle. CMake substitutes the
   MACOSX_BUNDLE_* @VARS@ from src/CMakeLists.txt at configure time.
 
-  Deliberately NO CFBundleDocumentTypes / UTI declarations: loftail does not
-  register itself as the handler for .log files. File association, if wanted,
-  is the installer's concern (PLAN.md M7).
+  CFBundleDocumentTypes below is a SOFT (capability) association only, the macOS
+  analog of the Linux .desktop MimeType= key: LSHandlerRank=Alternate makes loftail
+  offer itself in Finder's "Open With" for .log files WITHOUT claiming the default
+  handler. Role=Viewer matches "strictly a reader" (SPEC.md — loftail never edits).
+  Claiming the default stays a user/installer decision (PLAN.md M7); the app never
+  does it. Scoped to the "log" extension so loftail does not volunteer for every
+  plain-text file. (A precise imported-UTI declaration can replace the extension
+  match when the macOS bundle is actually exercised — it is unverified today.)
 -->
 <plist version="1.0">
 <dict>
@@ -33,5 +38,20 @@
     <string>11.0</string>
     <key>NSHumanReadableCopyright</key>
     <string>loftail</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Log File</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>log</string>
+            </array>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+    </array>
 </dict>
 </plist>
