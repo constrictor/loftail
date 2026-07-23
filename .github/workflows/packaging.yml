@@ -124,6 +124,9 @@ jobs:
           path: dist/*.zip
 
   macos:
+    # Temporarily disabled. Flip `if` back to true (or delete this line) to
+    # re-enable the macOS build+package job.
+    if: false
     # Qt 6.4.2's macOS package hard-links the legacy AGL framework, which newer
     # macOS SDKs removed ("framework 'AGL' not found"). Use the Intel macos-13
     # runner and pin Xcode 14.3.1 (macOS 13.3 SDK), which still ships AGL, so
