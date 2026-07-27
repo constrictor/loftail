@@ -2,6 +2,9 @@
 add_library(loftail_ui STATIC
     MainWindow.cpp
     MainWindow.h
+    # The fixed-pitch font shared by the record view and the format preview
+    Fonts.cpp
+    Fonts.h
     # M2b — the production custom record view
     LogView.cpp
     LogView.h

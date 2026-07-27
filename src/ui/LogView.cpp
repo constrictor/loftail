@@ -2,6 +2,7 @@
 
 #include "Decoder.h"
 #include "Document.h"
+#include "Fonts.h"
 #include "LogFormat.h"
 #include "LogModel.h"
 #include "LogSource.h"
@@ -34,6 +35,14 @@ int defaultColumnWidth(FieldRole role)
     case FieldRole::FileName:   return 140;
     case FieldRole::LineNumber: return 60;
     case FieldRole::Method:     return 140;
+    case FieldRole::Location:   return 200;
+    case FieldRole::ThreadName: return 120;
+    case FieldRole::ProcessId:  return 70;
+    case FieldRole::Hostname:   return 140;
+    case FieldRole::Elapsed:    return 90;
+    case FieldRole::Ndc:        return 140;
+    case FieldRole::Mdc:        return 160;
+    case FieldRole::EnvVar:     return 120;
     case FieldRole::Message:    return 1600; // wide: wrap-off scrolls sideways (§5)
     }
     return 120;
@@ -116,9 +125,10 @@ QString LogView::columnsToTsv(const QVector<QVector<QString>> &rows)
 LogView::LogView(const Document *document, LogModel *model, QWidget *parent)
     : QAbstractScrollArea(parent), m_document(document), m_model(model)
 {
-    QFont f(QStringLiteral("monospace"));
-    f.setStyleHint(QFont::TypeWriter);
-    setFont(f);
+    // Every column, and the header, render in the same fixed-pitch font: cells
+    // line up vertically, and the estimated-geometry path's character-count model
+    // stays valid (invariant #6, ARCHITECTURE.md §7.1.1).
+    setFont(monospaceFont());
     setFocusPolicy(Qt::StrongFocus);
     viewport()->setFocusProxy(this);
 

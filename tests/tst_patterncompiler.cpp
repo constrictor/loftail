@@ -60,6 +60,12 @@ private slots:
     // --- field order, role groups, names ---------------------------------------
     void fieldOrderAndGroups();
 
+    // --- the context specifiers: %x %X %E %h %H %i %r %T %l %b, and %c{N} ------
+    void contextSpecifiers_data();
+    void contextSpecifiers();
+    void braceArguments();
+    void emptyContextStillMatches();
+
     void emptyPattern();
 };
 
@@ -236,10 +242,13 @@ void TestPatternCompiler::impliedZone_data()
     QTest::addColumn<QString>("pattern");
     QTest::addColumn<int>("zone"); // Qt::TimeSpec
 
-    QTest::newRow("%d local")        << "%d{%H:%M:%S} %m%n" << int(Qt::LocalTime);
-    QTest::newRow("%D utc")          << "%D{%H:%M:%S} %m%n" << int(Qt::UTC);
-    QTest::newRow("%d bare local")   << "%d %m%n" << int(Qt::LocalTime);
-    QTest::newRow("%D bare utc")     << "%D %m%n" << int(Qt::UTC);
+    // log4cplus's layout.h: "%d — the date of the logging event in UTC",
+    // "%D — the date of the logging event in local time". The mapping reads
+    // backwards, which is exactly why it is pinned here.
+    QTest::newRow("%d utc")          << "%d{%H:%M:%S} %m%n" << int(Qt::UTC);
+    QTest::newRow("%D local")        << "%D{%H:%M:%S} %m%n" << int(Qt::LocalTime);
+    QTest::newRow("%d bare utc")     << "%d %m%n" << int(Qt::UTC);
+    QTest::newRow("%D bare local")   << "%D %m%n" << int(Qt::LocalTime);
 }
 
 void TestPatternCompiler::impliedZone()
@@ -280,6 +289,109 @@ void TestPatternCompiler::errors_data()
         << "%d{%H:%M:%} %m" << int(CompileError::Code::DanglingPercentInDate) << 9;
 }
 
+// Every remaining log4cplus conversion specifier, one row each: the specifier is
+// wrapped in a minimal pattern, a line laid out that way is matched, and the value
+// the specifier's own column captured is checked. `role` guards against a
+// specifier being wired to the wrong column.
+void TestPatternCompiler::contextSpecifiers_data()
+{
+    QTest::addColumn<QString>("pattern");
+    QTest::addColumn<QString>("line");
+    QTest::addColumn<QString>("value");
+    QTest::addColumn<int>("role");
+    QTest::addColumn<QString>("name");
+
+    QTest::newRow("%x NDC")
+        << "[%x] %m" << "[request-42] hello" << "request-42"
+        << int(FieldRole::Ndc) << "NDC";
+    QTest::newRow("%x NDC with spaces")
+        << "[%x] %m" << "[login user=bob] hello" << "login user=bob"
+        << int(FieldRole::Ndc) << "NDC";
+    QTest::newRow("%X whole MDC map")
+        << "{%X} %m" << "{k=v, j=w} hello" << "k=v, j=w"
+        << int(FieldRole::Mdc) << "MDC";
+    QTest::newRow("%X{key} one MDC entry")
+        << "[%X{user}] %m" << "[bob] hello" << "bob"
+        << int(FieldRole::Mdc) << "MDC[user]";
+    QTest::newRow("%E{VAR} environment variable")
+        << "[%E{HOME}] %m" << "[/home/bob] hello" << "/home/bob"
+        << int(FieldRole::EnvVar) << "Env[HOME]";
+    QTest::newRow("%h hostname")
+        << "%h %m" << "buildbox hello" << "buildbox"
+        << int(FieldRole::Hostname) << "Host";
+    QTest::newRow("%H fully-qualified hostname")
+        << "%H %m" << "buildbox.example.com hello" << "buildbox.example.com"
+        << int(FieldRole::Hostname) << "Host";
+    QTest::newRow("%i process id")
+        << "%i %m" << "31337 hello" << "31337"
+        << int(FieldRole::ProcessId) << "PID";
+    QTest::newRow("%r milliseconds since start")
+        << "%r %m" << "1904 hello" << "1904"
+        << int(FieldRole::Elapsed) << "Elapsed";
+    QTest::newRow("%T thread name")
+        << "[%T] %m" << "[worker-3] hello" << "worker-3"
+        << int(FieldRole::ThreadName) << "Thread name";
+    QTest::newRow("%l location")
+        << "%l %m" << "Conn.cpp:42 hello" << "Conn.cpp:42"
+        << int(FieldRole::Location) << "Location";
+    QTest::newRow("%b file basename")
+        << "%b %m" << "Conn.cpp hello" << "Conn.cpp"
+        << int(FieldRole::FileName) << "File";
+}
+
+void TestPatternCompiler::contextSpecifiers()
+{
+    QFETCH(QString, pattern);
+    QFETCH(QString, line);
+    QFETCH(QString, value);
+    QFETCH(int, role);
+    QFETCH(QString, name);
+
+    const LogFormat fmt = compileOk(pattern);
+    QCOMPARE(fmt.fields.size(), 2); // the specifier under test, then %m
+    QCOMPARE(int(fmt.fields[0].role), role);
+    QCOMPARE(fmt.fields[0].name, name);
+
+    const QRegularExpressionMatch m = fmt.recordRe.match(line);
+    QVERIFY2(m.hasMatch(), qPrintable(fmt.recordRe.pattern()));
+    QCOMPARE(m.captured(fmt.fields[0].group), value);
+    QCOMPARE(m.captured(fmt.msgGroup), QStringLiteral("hello"));
+}
+
+// A specifier's {argument} must be consumed rather than compiled as literal text —
+// "%c{2}" against a line reading "b.c" contains no "{2}" to match.
+void TestPatternCompiler::braceArguments()
+{
+    const LogFormat fmt = compileOk(QStringLiteral("%c{2} %m"));
+    QCOMPARE(fmt.fields.size(), 2);
+    QCOMPARE(int(fmt.fields[0].role), int(FieldRole::Logger));
+    QCOMPARE(fmt.fields[0].name, QStringLiteral("Subsystem")); // the count does not rename it
+
+    const QRegularExpressionMatch m = fmt.recordRe.match(QStringLiteral("b.c hello"));
+    QVERIFY2(m.hasMatch(), qPrintable(fmt.recordRe.pattern()));
+    QCOMPARE(m.captured(fmt.loggerGroup), QStringLiteral("b.c"));
+
+    // An unclosed brace is a structured error pointing at the '{'.
+    auto bad = PatternCompiler::compile(QStringLiteral("%X{user %m"));
+    QVERIFY2(!bad, "expected an unterminated-brace error");
+    QCOMPARE(int(bad.error().code), int(CompileError::Code::UnterminatedBrace));
+    QCOMPARE(bad.error().offset, 2);
+}
+
+// NDC and MDC are empty whenever the application pushed no context, which collapses
+// the field to nothing between its separators. `\S+` (what every other field uses)
+// cannot match that, which is why the context specifiers compile to a lazy `.*?`.
+void TestPatternCompiler::emptyContextStillMatches()
+{
+    const LogFormat fmt = compileOk(QStringLiteral("[%x] %p - %m"));
+
+    const QRegularExpressionMatch m = fmt.recordRe.match(QStringLiteral("[] INFO - opened"));
+    QVERIFY2(m.hasMatch(), qPrintable(fmt.recordRe.pattern()));
+    QCOMPARE(m.captured(fmt.fields[0].group), QString());
+    QCOMPARE(m.captured(fmt.prioGroup), QStringLiteral("INFO"));
+    QCOMPARE(m.captured(fmt.msgGroup), QStringLiteral("opened"));
+}
+
 void TestPatternCompiler::errors()
 {
     QFETCH(QString, pattern);
@@ -291,6 +403,11 @@ void TestPatternCompiler::errors()
     QCOMPARE(int(result.error().code), code);
     QCOMPARE(result.error().offset, offset);
     QVERIFY(!result.error().message.isEmpty());
+    // The message is shown verbatim in the Log Format dialog, so it must name the
+    // specifier the way the user typed it. QString::arg() has no "%%" escape, and a
+    // format string that tries to use one leaks a doubled percent into the dialog.
+    QVERIFY2(!result.error().message.contains(QStringLiteral("%%")),
+             qPrintable(result.error().message));
 }
 
 // ---------------------------------------------------------------------------

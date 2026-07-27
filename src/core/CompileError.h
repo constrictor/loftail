@@ -19,6 +19,7 @@ struct CompileError
         DanglingPercent,        // a '%' with no specifier after it (possibly after a modifier)
         UnknownSpecifier,       // a '%X' where X is not a recognized conversion character
         UnterminatedDateBrace,  // '%d{' or '%D{' with no closing '}'
+        UnterminatedBrace,      // '%c{', '%X{' or '%E{' with no closing '}'
         UnsupportedDateCode,    // a code inside %d{...} outside the supported strftime subset
         DanglingPercentInDate,  // a '%' at the very end of a %d{...} inner format
         InvalidRegex,           // the generated regex failed to compile (should not happen)

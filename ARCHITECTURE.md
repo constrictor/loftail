@@ -66,6 +66,13 @@ public:
 
 Must handle the modifiers that appear in real configs: left/right padding (`%-5p`), truncation (`%.30c`), combined width and precision (`%20.30m`), literal `%%`, and `%d{...}` with a strftime-style inner format translated to its own sub-regex.
 
+**The specifier set is closed and matches log4cplus's `PatternLayout`** (`include/log4cplus/layout.h`): an unrecognized specifier is a `CompileError`, not a silently ignored column, so a pattern from a different logging library fails loudly. Two consequences of covering the whole set:
+
+- **Not every specifier earns a `Record` field.** Only date, priority, logger, thread, and message are stored at index time; `%F %L %M %l %T %i %h %H %r %x %X %E %b` compile to ordinary capture groups and are re-extracted from the record's first line inside `data()` when their column is painted. This keeps `Record` at 32 bytes (invariant #1) — a pattern with ten specifiers costs no more index memory than one with five.
+- **The context specifiers need a different sub-regex.** `%x` (NDC), `%X` (MDC), and `%E` (environment variable) carry arbitrary application text: it may contain spaces, and it is *empty* whenever no context was pushed, which collapses `[%x]` to `[]` in the output. `\S+` — correct for every other field — matches neither case, so these three compile to a lazy `.*?` bounded by the literal that follows them. The trade is ambiguity when two free-text fields sit adjacent with no separator; the lazy quantifier makes that degrade to the shortest match instead of swallowing the following fields.
+
+Specifier arguments (`%c{2}`, `%X{key}`, `%E{VAR}`) are consumed even where they change nothing about the regex — `%c{2}` still matches one whitespace-free token — because leaving the braces in the literal stream would compile `{2}` into text the log line does not contain. `%X{key}` and `%E{VAR}` name their column after the key.
+
 **`PatternCompiler` is pure:** string in, `LogFormat` or a structured error out. No I/O, no Qt GUI types. It is the most testable unit in the project and should be built and covered first.
 
 **Key indirection:** no component downstream of the parser ever sees the pattern string. Views, filters, and highlighters consume only `LogFormat::fields` and the role indices. This is what makes autodetection (§9) a drop-in.
@@ -117,7 +124,7 @@ Comparison, sorting, filtering, and any future multi-file merge therefore operat
 
 **Changing the source zone requires reparsing timestamps** — but only timestamps, not a full reindex: record boundaries and byte offsets are unaffected, so it is a pass over the existing index. Changing the display zone is free, a repaint.
 
-`PatternCompiler` reports which zone the date specifier implies, since log4cplus distinguishes local-time and UTC date specifiers. That is what the *Infer from pattern* default consumes. Treat the inference as a hint that the user can override, not ground truth — the pattern reveals the specifier, not how the producing application was actually configured.
+`PatternCompiler` reports which zone the date specifier implies, since log4cplus distinguishes local-time and UTC date specifiers: **`%d` is UTC and `%D` is local time**, per `log4cplus/layout.h`. The mapping reads backwards — the lowercase, more common specifier is the *UTC* one — and loftail had it inverted until 2026-07-28, silently shifting every `%d`/`%D` timestamp by the local UTC offset. `tst_patterncompiler`'s `impliedZone` rows pin it. That is what the *Infer from pattern* default consumes. Treat the inference as a hint that the user can override, not ground truth — the pattern reveals the specifier, not how the producing application was actually configured.
 
 Parse eagerly **only** what filtering needs — priority and logger. Everything else (timestamp, thread, message text) is parsed lazily in `QAbstractTableModel::data()` from the mapped bytes. Storing parsed strings per record is the single most likely way to make this application unusable on large files.
 
@@ -203,7 +210,7 @@ Hence two geometry modes behind one interface:
 
 **Estimated mode** (wrap always on):
 
-- Exploit the fixed-pitch font — wrapped height needs **no text shaping**, only a character count: `ceil(charsInLine / viewportCols)`. That reduces the problem from measuring text to counting characters.
+- Exploit the fixed-pitch font — wrapped height needs **no text shaping**, only a character count: `ceil(charsInLine / viewportCols)`. That reduces the problem from measuring text to counting characters. The font is not incidental to styling: `monospaceFont()` (`src/ui/Fonts.h`) takes the family the platform designates as fixed-width and applies it to the whole view, header included, so every column shares one uniform advance. Anything that gives a column a proportional font invalidates this estimate.
 - Measure exactly the blocks that have been visited; estimate the rest from a running average of characters-per-record observed so far.
 - The scrollbar is therefore approximate and **refines as the user scrolls**, which `SPEC.md` §5 states plainly rather than hiding. Scroll position and navigation stay exact; only the thumb geometry is estimated.
 - Cache measured block heights keyed by viewport column count; a resize invalidates the cache, and recomputation is debounced so a drag-resize measures once at the end rather than per frame.

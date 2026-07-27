@@ -71,6 +71,14 @@ QString LogModel::cellText(int row, int column) const
     case FieldRole::FileName:
     case FieldRole::LineNumber:
     case FieldRole::Method:
+    case FieldRole::Location:
+    case FieldRole::ThreadName:
+    case FieldRole::ProcessId:
+    case FieldRole::Hostname:
+    case FieldRole::Elapsed:
+    case FieldRole::Ndc:
+    case FieldRole::Mdc:
+    case FieldRole::EnvVar:
         break; // decoded lazily below
     }
 

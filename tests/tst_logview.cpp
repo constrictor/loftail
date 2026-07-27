@@ -77,6 +77,7 @@ private slots:
     void selectedRecordWrapPatchesGeometry();
     void flattenAndTsvBuilders();
     void columnStateRoundTrips();
+    void everyColumnRendersFixedPitch();
     void alwaysOnMeasuresAndRefines();
     void switchingToExactKeepsEstimationCache();
     void alwaysOnUnreachableFromExactPath();
@@ -178,6 +179,40 @@ void TestLogView::columnStateRoundTrips()
     QVERIFY(v2.header()->isSectionHidden(2));
     QCOMPARE(v2.header()->logicalIndex(0), 4); // Message moved to the front
     QCOMPARE(v2.header()->visualIndex(4), 0);
+}
+
+// Every column renders in a fixed-pitch font, header included. This is load-bearing
+// for the estimated-geometry path, which models a wrapped record's height as
+// ceil(chars / cols) instead of shaping text (ARCHITECTURE.md §7.1.1), and it is
+// what makes columns line up vertically.
+void TestLogView::everyColumnRendersFixedPitch()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, "2026-07-21 14:32:05,123 [main] INFO  net.socket - a\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+
+    // QFontInfo reports the font actually resolved, not the one requested, so this
+    // fails if the family falls back to a proportional face.
+    QVERIFY(QFontInfo(view.font()).fixedPitch());
+    // Cells are painted on the viewport and headings by the header view; both must
+    // inherit the same font rather than the proportional application default.
+    QVERIFY(QFontInfo(view.viewport()->font()).fixedPitch());
+    QVERIFY(QFontInfo(view.header()->font()).fixedPitch());
+    QCOMPARE(view.header()->font().family(), view.font().family());
+
+    // A fixed-pitch font is only useful to the geometry model if the advance really
+    // is uniform: narrow and wide characters must measure the same.
+    const QFontMetrics fm(view.font());
+    QCOMPARE(fm.horizontalAdvance(QStringLiteral("iiiiiiiiii")),
+             fm.horizontalAdvance(QStringLiteral("WWWWWWWWWW")));
 }
 
 // AlwaysOn engages the estimated geometry: measuring the visible block records

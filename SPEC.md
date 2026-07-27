@@ -59,8 +59,20 @@ A single log file often contains the output of several application runs, one aft
 
 Because a log file does not describe its own layout, loftail needs to be told the `ConversionPattern` the writing application used.
 
-- A **Log Format** dialog accepts the pattern string and shows a **live preview**: sample lines from the current file, split into the fields loftail would extract. This makes a wrong pattern immediately obvious rather than failing silently.
+- A **Log Format** dialog accepts the pattern string and shows a **live preview**: sample lines from the current file, split into the fields loftail would extract, in the same fixed-width font the record table uses. This makes a wrong pattern immediately obvious rather than failing silently.
 - The dialog reports which fields were found. If **priority** or **subsystem** is absent from the pattern, loftail warns that filtering on the missing axis will be unavailable.
+
+- **Every conversion specifier log4cplus's `PatternLayout` defines is accepted**, each becoming its own column:
+
+  | | | | |
+  | --- | --- | --- | --- |
+  | `%d{…}` / `%D{…}` — timestamp | `%p` — priority | `%c{N}` — subsystem | `%m` — message |
+  | `%t` — thread id | `%T` — thread name | `%i` — process id | `%r` — ms since start |
+  | `%F` — file | `%b` — file basename | `%L` — line | `%l` — file:line |
+  | `%M` — function | `%h` / `%H` — hostname | `%x` — NDC | `%X{key}` — MDC |
+  | `%E{VAR}` — environment variable | `%n` — line separator | `%%` — literal percent | |
+
+  Padding and truncation modifiers (`%-5p`, `%.30c`, `%20.30m`) are understood on any of them. A specifier outside this set is rejected with the position of the offending character, rather than being ignored — a pattern written for a different logging library should fail visibly, not produce a table with a column silently missing.
 - If a pattern matches poorly, the file still opens: unparsed lines are shown as plain text rather than being hidden or dropped. The user is never left staring at an empty window because of a format mistake.
 - **Cancelling the dialog cancels the open.** When the dialog is shown because loftail could not parse a file it was asked to open, dismissing it (Cancel or Esc) abandons that open entirely — no file is opened, and whatever was already on screen stays there. Cancelling means "not like that", so loftail does not fall back to opening the file as a wall of unparsed plain text.
 - The chosen format is remembered per file, so a file already configured opens correctly without asking again. It is remembered per file only — a newly opened file is never assumed to share another's format.
@@ -99,6 +111,8 @@ Format autodetection — guessing the pattern on open — is planned for a later
 - Records are displayed as a table, one row per record, with a column per field in the configured format (timestamp, priority, subsystem, message, and any others the pattern defines).
 
 - Columns can be resized, reordered, and individually hidden. Column layout is remembered.
+
+- **The table renders in a fixed-width font — every column, and the header.** Logs are column-aligned text written by machines; a proportional font destroys the alignment inside a message and makes timestamps and levels ragged from row to row. The font is the one the desktop designates as fixed-width, at the usual UI text size.
 
 - **Multi-line records are shown in full, in place.** A record whose message spans several lines occupies a correspondingly taller row in the table — the entire text is visible without expanding, selecting, or opening a detail pane. Row heights therefore vary throughout the table.
 

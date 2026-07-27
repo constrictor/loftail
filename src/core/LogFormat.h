@@ -16,9 +16,22 @@ enum class FieldRole {
     Logger,      // %c   (the "subsystem" in SPEC terms)
     Thread,      // %t
     Message,     // %m
-    FileName,    // %F
+    FileName,    // %F, and %b (the basename form of the same thing)
     LineNumber,  // %L
     Method,      // %M
+
+    // The remaining log4cplus conversion specifiers. These are display-only
+    // columns: nothing is stored for them on Record (invariant #1 keeps it at 32
+    // bytes), so they are re-extracted from the record's first line inside
+    // data(), exactly like %F/%L/%M already are.
+    Location,    // %l   ("%F:%L")
+    ThreadName,  // %T
+    ProcessId,   // %i
+    Hostname,    // %h / %H
+    Elapsed,     // %r   (milliseconds since program start)
+    Ndc,         // %x   (nested diagnostic context)
+    Mdc,         // %X   (mapped diagnostic context; whole map, or %X{key})
+    EnvVar,      // %E{VAR}
 };
 
 // One extracted column, in pattern order. Drives the column headers in the view.
@@ -59,7 +72,7 @@ struct LogFormat
     int msgGroup = -1;
 
     DateFormat impliedDateFormat;      // how to parse %d text; isValid=false when the pattern has no date
-    Qt::TimeSpec impliedZone = Qt::LocalTime;  // %d implies local, %D implies UTC (§5.1); meaningful only when dateGroup != -1
+    Qt::TimeSpec impliedZone = Qt::LocalTime;  // %d implies UTC, %D implies local (§5.1); meaningful only when dateGroup != -1
 };
 
 } // namespace loftail

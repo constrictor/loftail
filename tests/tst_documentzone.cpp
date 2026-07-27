@@ -33,7 +33,44 @@ private slots:
     void displayZoneDoesNotTouchTimestamps();
     void reparseIsNoOpWithoutDateField();
     void badPatternOpensAsPlainText();
+    void inferredSourceZoneFollowsTheDateSpecifier();
 };
+
+// With no explicit source zone, Document infers one from the date specifier. This
+// is the layer where getting %d/%D backwards is user-visible: the indexed instant
+// moves by the local UTC offset while every displayed field looks plausible. Per
+// log4cplus's layout.h, %d writes UTC and %D writes local time.
+//
+// Note this test degenerates where the machine's zone IS UTC (common on CI), since
+// both branches then expect the same instant. tst_patterncompiler's impliedZone
+// rows compare Qt::UTC against Qt::LocalTime directly and hold the line there.
+void TestDocumentZone::inferredSourceZoneFollowsTheDateSpecifier()
+{
+    const QByteArray line = "2026-07-21 12:00:00,000 [main] INFO  app - a\n";
+    const QDateTime wall(QDate(2026, 7, 21), QTime(12, 0, 0));
+
+    QTemporaryFile utcFile;
+    QVERIFY(writeLog(utcFile, line));
+    Document utcDoc;
+    QVERIFY2(utcDoc.open(utcFile.fileName(),
+                         QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                         Encoding::Utf8), // no source zone => inferred
+             qPrintable(utcDoc.lastError()));
+    QCOMPARE(utcDoc.sourceZone(), QTimeZone::utc());
+    QCOMPARE(utcDoc.index().records.at(0).timestamp,
+             QDateTime(wall.date(), wall.time(), QTimeZone::utc()).toMSecsSinceEpoch());
+
+    QTemporaryFile localFile;
+    QVERIFY(writeLog(localFile, line));
+    Document localDoc;
+    QVERIFY2(localDoc.open(localFile.fileName(),
+                           QStringLiteral("%D{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                           Encoding::Utf8),
+             qPrintable(localDoc.lastError()));
+    QCOMPARE(localDoc.sourceZone(), QTimeZone::systemTimeZone());
+    QCOMPARE(localDoc.index().records.at(0).timestamp,
+             QDateTime(wall.date(), wall.time(), QTimeZone::systemTimeZone()).toMSecsSinceEpoch());
+}
 
 void TestDocumentZone::reparseShiftsTimestampsOnly()
 {

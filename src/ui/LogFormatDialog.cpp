@@ -1,6 +1,7 @@
 #include "LogFormatDialog.h"
 
 #include "Decoder.h"
+#include "Fonts.h"
 #include "FormatDetector.h"
 #include "FormatPreview.h"
 #include "PatternCompiler.h"
@@ -141,6 +142,13 @@ void LogFormatDialog::buildUi(const QString &fileName)
     // --- Live preview ------------------------------------------------------
     outer->addWidget(new QLabel(QStringLiteral("Preview (sample lines split into fields):"), this));
     m_previewTable = new QTableWidget(this);
+    // Same fixed-pitch font as the record view, so the preview shows the sample
+    // lines the way the table will render them (and column contents line up).
+    m_previewTable->setFont(monospaceFont());
+    // One line per sample record, as in the record table: a fixed-width font is
+    // wider than the UI default, and wrapped cells would turn the preview into a
+    // ragged block instead of aligned columns.
+    m_previewTable->setWordWrap(false);
     m_previewTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_previewTable->setSelectionMode(QAbstractItemView::NoSelection);
     m_previewTable->horizontalHeader()->setStretchLastSection(true);
@@ -266,6 +274,11 @@ void LogFormatDialog::refresh()
                 m_previewTable->setItem(r, c, new QTableWidgetItem(QString()));
         }
     }
+
+    // Fit the fixed-width columns to their contents (the sample is ~20 rows, so this
+    // is cheap); Message keeps the remaining width via stretchLastSection.
+    m_previewTable->resizeColumnsToContents();
+    m_previewTable->resizeRowsToContents();
 
     if (pv.totalCount == 0)
         m_matchLabel->setText(QStringLiteral("No sample lines to preview."));

@@ -25,7 +25,7 @@ Document::~Document() = default;
 
 QTimeZone Document::inferSourceZone(const LogFormat &format)
 {
-    // %D implies UTC, %d implies local (§5.1). Meaningful only when there is a
+    // %d implies UTC, %D implies local (§5.1). Meaningful only when there is a
     // date field; without one the zone is unused.
     if (format.impliedZone == Qt::UTC)
         return QTimeZone::utc();

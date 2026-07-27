@@ -227,7 +227,7 @@ public:
     bool rescan();
 
     // The zone inferred from a compiled format's date specifier (§5.1): UTC for a
-    // %D pattern, the system zone otherwise. A hint the user may override.
+    // %d pattern, the system zone otherwise. A hint the user may override.
     static QTimeZone inferSourceZone(const LogFormat &format);
 
 private:

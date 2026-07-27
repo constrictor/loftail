@@ -14,11 +14,18 @@ namespace loftail {
 // and covered first (ARCHITECTURE.md §3, PLAN.md M1).
 //
 // Supported specifiers:
-//   %d{fmt} / %D{fmt}   date; %d implies local time, %D implies UTC (§5.1).
-//                       Braces optional; a default format is used when omitted.
-//   %p  priority   %c  logger (subsystem)   %t  thread
-//   %m  message    %F  file name   %L  line number   %M  method   %n  newline
+//   %d{fmt} / %D{fmt}   date; %d implies UTC, %D implies local time (§5.1) — that
+//                       is log4cplus's mapping, not a typo. Braces optional; a
+//                       default format is used when omitted.
+//   %p  priority   %c{N}  logger (subsystem)   %t  thread id   %T  thread name
+//   %m  message    %F  file name   %b  file basename   %L  line number
+//   %l  file:line  %M  method   %i  process id   %r  ms since program start
+//   %h  hostname   %H  fully-qualified hostname   %n  newline
+//   %x  NDC        %X / %X{key}  MDC      %E{VAR}  environment variable
 //   %%  a literal percent sign
+//
+// That is the whole set log4cplus's PatternLayout defines; anything else is a
+// CompileError rather than a silently dropped column.
 //
 // Supported modifiers, in log4cplus order  %[-][minWidth][.maxWidth]X :
 //   -         left-justify (default is right-justify)
