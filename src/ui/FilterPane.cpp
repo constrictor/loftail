@@ -67,6 +67,11 @@ void FilterPane::buildUi()
         auto *box = new QGroupBox(QStringLiteral("Priority"), content);
         auto *v = new QVBoxLayout(box);
         m_priorityEnable = new QCheckBox(QStringLiteral("Filter by minimum priority"), box);
+        // On by default (SPEC.md §6). Off, the combo below it was inert — changing
+        // the minimum level did nothing until the box was also ticked, which reads
+        // as a broken control. At the default TRACE the axis hides nothing, and
+        // applyToDocument() collapses that no-op state so it costs nothing either.
+        m_priorityEnable->setChecked(true);
         v->addWidget(m_priorityEnable);
         auto *row = new QHBoxLayout;
         row->addWidget(new QLabel(QStringLiteral("Minimum:"), box));
@@ -85,6 +90,7 @@ void FilterPane::buildUi()
         auto *box = new QGroupBox(QStringLiteral("Subsystem"), content);
         auto *v = new QVBoxLayout(box);
         m_loggerEnable = new QCheckBox(QStringLiteral("Filter by subsystem"), box);
+        m_loggerEnable->setChecked(true); // as for priority: unticking a subsystem acts at once
         v->addWidget(m_loggerEnable);
         m_loggerNarrow = new QLineEdit(box);
         m_loggerNarrow->setPlaceholderText(QStringLiteral("Narrow list..."));
@@ -245,6 +251,12 @@ void FilterPane::setDocument(Document *document)
     m_document = document;
     m_loggerManualNames.clear();
     m_threadManualNames.clear();
+    // "Seen" is knowledge about THIS file's discovered values, so it dies with the
+    // binding. Carrying it across a rebind would be actively harmful: the lists are
+    // cleared here, so on the next population every remembered name would count as
+    // already-seen-but-not-checked and the new file would open fully filtered out.
+    m_loggerSeen.clear();
+    m_threadSeen.clear();
 
     const bool hasDoc = document != nullptr;
     const bool hasThread = hasDoc && document->format().threadGroup > 0;
@@ -300,8 +312,8 @@ void FilterPane::refreshDiscoveredLists()
     loggers.append(m_loggerManualNames.values());
     threads.append(m_threadManualNames.values());
 
-    populateList(m_loggerList, loggers, loggerChecked, m_loggerManualNames);
-    populateList(m_threadList, threads, threadChecked, m_threadManualNames);
+    populateList(m_loggerList, loggers, loggerChecked, m_loggerManualNames, m_loggerSeen);
+    populateList(m_threadList, threads, threadChecked, m_threadManualNames, m_threadSeen);
     narrowList(m_loggerList, m_loggerNarrow ? m_loggerNarrow->text() : QString());
     narrowList(m_threadList, m_threadNarrow ? m_threadNarrow->text() : QString());
 
@@ -364,7 +376,9 @@ void FilterPane::restoreState(const QJsonObject &o)
 {
     m_populating = true;
 
-    m_priorityEnable->setChecked(o.value(QStringLiteral("priorityEnabled")).toBool(false));
+    // Absent key => the new default (on), matching a freshly-built pane; a state
+    // written by this version always carries the key explicitly either way.
+    m_priorityEnable->setChecked(o.value(QStringLiteral("priorityEnabled")).toBool(true));
     m_priorityCombo->setCurrentIndex(
         qMax(0, o.value(QStringLiteral("minPriorityIndex")).toInt(0)));
 
@@ -372,7 +386,7 @@ void FilterPane::restoreState(const QJsonObject &o)
     // survive discovery timing: at restore the intern lists are usually still empty
     // (indexing just started), and manual names are always re-inserted and checked,
     // then merged with the discovered set when the scan completes (SPEC.md §6, §10).
-    m_loggerEnable->setChecked(o.value(QStringLiteral("loggerEnabled")).toBool(false));
+    m_loggerEnable->setChecked(o.value(QStringLiteral("loggerEnabled")).toBool(true));
     m_loggerManualNames = arrayToNames(o.value(QStringLiteral("loggerChecked")).toArray());
 
     m_threadEnable->setChecked(o.value(QStringLiteral("threadEnabled")).toBool(false));
@@ -408,7 +422,8 @@ void FilterPane::restoreState(const QJsonObject &o)
 // ---------------------------------------------------------------------------
 
 void FilterPane::populateList(QListWidget *list, const QStringList &names,
-                              const QSet<QString> &checked, const QSet<QString> &manual)
+                              const QSet<QString> &checked, const QSet<QString> &manual,
+                              QSet<QString> &seen)
 {
     if (!list)
         return;
@@ -416,25 +431,38 @@ void FilterPane::populateList(QListWidget *list, const QStringList &names,
     list->clear();
     // De-duplicate and drop the empty-string id (id 0, the "field absent" sentinel).
     QStringList sorted;
-    QSet<QString> seen;
+    QSet<QString> dedup;
     for (const QString &n : names) {
-        if (n.isEmpty() || seen.contains(n))
+        if (n.isEmpty() || dedup.contains(n))
             continue;
-        seen.insert(n);
+        dedup.insert(n);
         sorted.append(n);
     }
     sorted.sort(Qt::CaseInsensitive);
-    // On the very first population (no prior checked state) default everything
-    // checked, so an untouched-but-enabled axis shows all discovered values rather
-    // than hiding the whole file.
-    const bool firstFill = checked.isEmpty();
+    // A name the pane has never shown before is checked; one it has shown keeps
+    // whatever state it had. The distinction matters because the axis is enabled by
+    // default (SPEC.md §6) and subsystems are discovered *as the file is scanned* —
+    // without it, every subsystem that first appears after the initial population
+    // would arrive unchecked and its records would vanish from an untouched view.
+    // "Never shown" also covers the very first population, where everything is new.
     for (const QString &n : sorted) {
         auto *item = new QListWidgetItem(n, list);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        const bool on = firstFill || checked.contains(n) || manual.contains(n);
+        const bool on = !seen.contains(n) || checked.contains(n) || manual.contains(n);
+        seen.insert(n);
         item->setCheckState(on ? Qt::Checked : Qt::Unchecked);
     }
     m_populating = false;
+}
+
+bool FilterPane::allChecked(const QListWidget *list)
+{
+    if (!list)
+        return true;
+    for (int i = 0; i < list->count(); ++i)
+        if (list->item(i)->checkState() != Qt::Checked)
+            return false;
+    return true; // an empty list excludes nothing
 }
 
 QSet<QString> FilterPane::checkedNames(const QListWidget *list) const
@@ -497,23 +525,32 @@ void FilterPane::applyToDocument()
     FilterSet fs;
 
     // Priority: single minimum level (§7.2).
-    fs.priorityEnabled = m_priorityEnable->isChecked();
+    //
+    // Both metadata axes are enabled by default (SPEC.md §6), which would otherwise
+    // put every file behind an active FilterSet and cost a materialized compact
+    // index for no benefit. So an axis whose selection excludes NOTHING is written
+    // as inactive: the checkbox stays ticked and responds instantly to the first
+    // real narrowing, while FilteredIndex keeps its allocation-free identity path
+    // (ARCHITECTURE.md §7.2). Both collapses are exact — TRACE is the lowest
+    // selectable minimum, and an all-ticked list admits every id.
     constexpr int kPriorityCount = int(sizeof(kPriorityByIndex) / sizeof(kPriorityByIndex[0]));
     const int pi = qBound(0, m_priorityCombo->currentIndex(), kPriorityCount - 1);
     fs.minPriority = kPriorityByIndex[pi];
+    fs.priorityEnabled = m_priorityEnable->isChecked() && fs.minPriority != kPriorityByIndex[0];
 
     // Subsystem / thread: resolve checked NAMES to interned ids (invariant #4). A
     // manually-entered name not yet in the file resolves to nothing and matches no
     // record until it appears.
     const RecordIndex &idx = m_document->index();
-    fs.loggerEnabled = m_loggerEnable->isChecked();
+    fs.loggerEnabled = m_loggerEnable->isChecked() && !allChecked(m_loggerList);
     for (const QString &name : checkedNames(m_loggerList)) {
         bool found = false;
         const quint32 id = idx.loggers.idOf(name, &found);
         if (found)
             fs.loggerIds.insert(id);
     }
-    fs.threadEnabled = m_threadEnable->isChecked() && m_document->format().threadGroup > 0;
+    fs.threadEnabled = m_threadEnable->isChecked() && !allChecked(m_threadList)
+                       && m_document->format().threadGroup > 0;
     for (const QString &name : checkedNames(m_threadList)) {
         bool found = false;
         const quint32 id = idx.threads.idOf(name, &found);

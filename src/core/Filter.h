@@ -115,9 +115,14 @@ struct FilterSet
         if (priorityEnabled && r.priorityEnum() != Priority::Unknown
             && r.priorityEnum() < minPriority)
             return false;
-        if (loggerEnabled && !loggerIds.contains(r.loggerId))
+        // Id 0 is InternTable's "field absent" sentinel — an unparsed plain-text
+        // record, or one whose pattern has no %c/%t. Exempt, for the same reason
+        // Unknown priority is: a record that never had the field must not be hidden
+        // by a filter ON that field, or enabling the subsystem axis would silently
+        // swallow every plain-text line (SPEC.md §4 promises they stay visible).
+        if (loggerEnabled && r.loggerId != 0 && !loggerIds.contains(r.loggerId))
             return false;
-        if (threadEnabled && !threadIds.contains(r.threadId))
+        if (threadEnabled && r.threadId != 0 && !threadIds.contains(r.threadId))
             return false;
         if (timeEnabled && r.timestamp != Record::kNoTimestamp
             && (r.timestamp < startMs || r.timestamp > endMs))

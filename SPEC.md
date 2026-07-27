@@ -136,8 +136,10 @@ Format autodetection — guessing the pattern on open — is planned for a later
 
 Filtering removes non-matching records from the view. The underlying file is never modified.
 
-- **By subsystem.** The subsystem list is discovered automatically from the file as it is scanned, so the user picks from what is actually present rather than typing from memory. Subsystems can also be entered manually — useful when following a file that has not yet emitted a given subsystem.
+- **By subsystem.** The subsystem list is discovered automatically from the file as it is scanned, so the user picks from what is actually present rather than typing from memory. Subsystems can also be entered manually — useful when following a file that has not yet emitted a given subsystem. Every discovered subsystem starts selected, including ones that first appear later in the scan.
 - **By priority.** A single **minimum level** is chosen (TRACE…FATAL); records below it are hidden. Selecting WARN, for example, shows WARN, ERROR, and FATAL. The default is TRACE, which shows everything.
+- **The subsystem and priority axes are enabled by default**, selecting everything. Unticking a subsystem or raising the minimum level therefore takes effect on the first click. The two axes that need a value typed before they can mean anything — message text and time range — stay disabled until the user turns them on, as does the thread axis.
+- **A record that lacks a field is never hidden by a filter on that field.** An unparsed plain-text line has no subsystem, no thread, and no priority; filtering by subsystem must not make it disappear, since §4 promises those lines stay visible.
 - **By thread.** Like subsystems, the thread list is discovered from the file as it is scanned. Available only when the log format includes a thread field.
 - **By message text.** Substring or regular-expression match against the message, with a case-sensitivity option. Unlike the other axes this cannot offer a pick-list, so it is a text box. A negation option (*hide* matching records) is included, since excluding known noise is as common as isolating a signal.
 - **By time range.** A start and/or end bound, entered in the display time zone (§4); records outside the range are hidden. Available only when the log format includes a timestamp field.

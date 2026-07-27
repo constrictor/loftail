@@ -68,8 +68,15 @@ private:
 
     // Repopulate one checkable list from `names`, preserving prior checked state for
     // names still present and any manually-added names.
+    // `seen` accumulates every name this list has ever shown: a name missing from
+    // it is newly discovered and starts checked, so an enabled-by-default axis does
+    // not hide subsystems that appear later in the scan.
     void populateList(QListWidget *list, const QStringList &names,
-                      const QSet<QString> &checked, const QSet<QString> &manual);
+                      const QSet<QString> &checked, const QSet<QString> &manual,
+                      QSet<QString> &seen);
+    // True when every entry is ticked, i.e. the axis selects everything and so
+    // narrows nothing. An empty list counts as all-checked.
+    static bool allChecked(const QListWidget *list);
     QSet<QString> checkedNames(const QListWidget *list) const;
     void setAllChecked(QListWidget *list, bool checked);
     void invertChecked(QListWidget *list);
@@ -88,6 +95,7 @@ private:
     QListWidget *m_loggerList = nullptr;
     QLineEdit   *m_loggerManual = nullptr;
     QSet<QString> m_loggerManualNames; // manually-added subsystems (may be absent)
+    QSet<QString> m_loggerSeen;        // every subsystem name ever listed
 
     // Thread
     QCheckBox   *m_threadEnable = nullptr;
@@ -95,6 +103,7 @@ private:
     QListWidget *m_threadList = nullptr;
     QLineEdit   *m_threadManual = nullptr;
     QSet<QString> m_threadManualNames;
+    QSet<QString> m_threadSeen;
 
     // Message text
     QCheckBox *m_textEnable = nullptr;

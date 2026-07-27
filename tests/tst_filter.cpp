@@ -45,6 +45,7 @@ private slots:
     void priorityMinLevel();
     void unknownNeverHiddenByPriority();
     void loggerAndThreadSets();
+    void absentLoggerOrThreadNeverHidden();
     void timeRange();
     void textSubstringRegexCaseNegate();
     void integersEvaluatedBeforeText();
@@ -96,6 +97,27 @@ void TestFilter::loggerAndThreadSets()
 }
 
 // --- time range -------------------------------------------------------------
+
+// Id 0 is InternTable's "field absent" sentinel: an unparsed plain-text line, or a
+// pattern with no %c/%t. Such a record must survive a filter on that field, exactly
+// as Priority::Unknown survives a minimum level — otherwise enabling the subsystem
+// axis (on by default, SPEC.md §6) hides every plain-text line, contradicting §4's
+// promise that they stay visible.
+void TestFilter::absentLoggerOrThreadNeverHidden()
+{
+    FilterSet fs;
+    fs.loggerEnabled = true;
+    fs.loggerIds = {2, 5};
+    fs.threadEnabled = true;
+    fs.threadIds = {7};
+
+    QVERIFY(fs.acceptsIntegerAxes(rec(Priority::Info, 0, 7, 0)));  // no subsystem
+    QVERIFY(fs.acceptsIntegerAxes(rec(Priority::Info, 2, 0, 0)));  // no thread
+    QVERIFY(fs.acceptsIntegerAxes(rec(Priority::Unknown, 0, 0, 0))); // wholly unparsed
+
+    // An id that IS present and simply unselected is still hidden.
+    QVERIFY(!fs.acceptsIntegerAxes(rec(Priority::Info, 3, 7, 0)));
+}
 
 void TestFilter::timeRange()
 {

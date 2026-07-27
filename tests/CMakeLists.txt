@@ -112,6 +112,15 @@ target_link_libraries(tst_logview PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_logview COMMAND tst_logview)
 set_tests_properties(tst_logview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# The Filters pane's defaults: the subsystem and priority axes ship enabled
+# (SPEC.md §6), which is only safe if an all-inclusive axis stays inactive, later
+# discoveries arrive checked, and a rebind forgets the previous file's names.
+# Links the UI layer, runs offscreen.
+qt_add_executable(tst_filterpane tst_filterpane.cpp)
+target_link_libraries(tst_filterpane PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_filterpane COMMAND tst_filterpane)
+set_tests_properties(tst_filterpane PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # M5 — full session round-trip through the real MainWindow (open a file, set
 # filters + highlighters, quit, relaunch, confirm restored) and graceful handling
 # of a missing last file. Drives two MainWindow instances under an isolated config
