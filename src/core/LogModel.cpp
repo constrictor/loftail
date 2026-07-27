@@ -90,7 +90,17 @@ QString LogModel::cellText(int row, int column) const
     const QString firstLine = dec.decodeLine(bytes.sliced(0, qMax<qsizetype>(0, firstContentLen)));
 
     const QRegularExpressionMatch m = format.recordRe.match(firstLine);
-    QString value = (field.group > 0 && m.hasMatch()) ? m.captured(field.group) : QString();
+    QString value;
+    if (m.hasMatch()) {
+        value = field.group > 0 ? m.captured(field.group) : QString();
+    } else if (field.role == FieldRole::Message) {
+        // Unparsed record (the plain-text fallback, SPEC.md §4): the pattern
+        // matched nothing, so no field was extracted and the raw line IS the
+        // message. Without this the row renders entirely blank, and a wholly
+        // non-matching pattern yields a table of empty rows whose scrollbar
+        // still says the file has content.
+        value = firstLine;
+    }
 
     // The message spans continuation lines (invariant #2): append the remaining
     // physical lines, if any, so multi-line records show their full text.

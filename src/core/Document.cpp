@@ -180,7 +180,9 @@ QString Document::messageText(const Record &rec) const
     // so match() shares its data (COW) with no deep copy; the QStringView-taking
     // matchView() is Qt 6.5+ only and the target minimum is 6.4 (ARCHITECTURE.md §1).
     const QRegularExpressionMatch sm = m_format.recordStartRe.match(firstLine);
-    QString value = sm.hasMatch() ? firstLine.sliced(sm.capturedEnd()) : QString();
+    // No match means an unparsed record (§4): the whole line is its text, which is
+    // what data() shows, so the text filter must search the same thing.
+    QString value = sm.hasMatch() ? firstLine.sliced(sm.capturedEnd()) : firstLine;
 
     // The message spans continuation lines (invariant #2): append the rest so a
     // multi-line record's full text is searchable, matching what data() shows.

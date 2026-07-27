@@ -32,6 +32,7 @@ private slots:
     void columnsAndRows();
     void lazyFieldsAreCorrect();
     void multiLineMessageJoined();
+    void unparsedRecordShowsRawLine();
 };
 
 void TestLogModel::columnsAndRows()
@@ -94,6 +95,35 @@ void TestLogModel::multiLineMessageJoined()
     QVERIFY(msg.startsWith(QStringLiteral("Exception:")));
     QVERIFY(msg.contains(QStringLiteral("at foo()")));
     QVERIFY(msg.contains(QStringLiteral("at bar()")));
+}
+
+// The plain-text fallback (SPEC.md §4): when the pattern does not match a line,
+// the indexer emits one Unparsed record per line, and the Message column must
+// carry the whole raw line. Otherwise the view is a table of blank rows — the
+// record count (and the scrollbar) says there is content while nothing renders.
+void TestLogModel::unparsedRecordShowsRawLine()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "03/12/26 11:50:47 DEBUG Vms::App [] - log4cplus config:\n"
+        "log4cplus.threadPoolSize=1\n"));
+
+    Document doc;
+    // A pattern that matches neither line (ISO date vs. the file's %m/%d/%y).
+    QVERIFY2(doc.open(file.fileName(), QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc(), QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    QCOMPARE(model.rowCount(), 2);
+    auto cell = [&](int r, int c) { return model.data(model.index(r, c)).toString(); };
+
+    QCOMPARE(cell(0, 4), QStringLiteral("03/12/26 11:50:47 DEBUG Vms::App [] - log4cplus config:"));
+    QCOMPARE(cell(1, 4), QStringLiteral("log4cplus.threadPoolSize=1"));
+    // No field parsed out of an unmatched line: the other columns stay empty.
+    QCOMPARE(cell(0, 0), QString());
+    QCOMPARE(cell(0, 1), QString());
+    QCOMPARE(cell(0, 3), QString());
 }
 
 QTEST_GUILESS_MAIN(TestLogModel)
