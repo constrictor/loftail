@@ -62,6 +62,7 @@ Because a log file does not describe its own layout, loftail needs to be told th
 - A **Log Format** dialog accepts the pattern string and shows a **live preview**: sample lines from the current file, split into the fields loftail would extract. This makes a wrong pattern immediately obvious rather than failing silently.
 - The dialog reports which fields were found. If **priority** or **subsystem** is absent from the pattern, loftail warns that filtering on the missing axis will be unavailable.
 - If a pattern matches poorly, the file still opens: unparsed lines are shown as plain text rather than being hidden or dropped. The user is never left staring at an empty window because of a format mistake.
+- **Cancelling the dialog cancels the open.** When the dialog is shown because loftail could not parse a file it was asked to open, dismissing it (Cancel or Esc) abandons that open entirely — no file is opened, and whatever was already on screen stays there. Cancelling means "not like that", so loftail does not fall back to opening the file as a wall of unparsed plain text.
 - The chosen format is remembered per file, so a file already configured opens correctly without asking again. It is remembered per file only — a newly opened file is never assumed to share another's format.
 
 ### Character encoding

@@ -120,3 +120,11 @@ qt_add_executable(tst_sessiongui tst_sessiongui.cpp)
 target_link_libraries(tst_sessiongui PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_sessiongui COMMAND tst_sessiongui)
 set_tests_properties(tst_sessiongui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# M3 — the open flow around the Log Format dialog: Esc cancels the open (SPEC.md
+# §4) and an accepted pattern opens the file. Drives the real MainWindow and
+# dismisses the modal dialog from a timer; UI layer, offscreen, isolated config.
+qt_add_executable(tst_openflow tst_openflow.cpp)
+target_link_libraries(tst_openflow PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_openflow COMMAND tst_openflow)
+set_tests_properties(tst_openflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

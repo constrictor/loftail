@@ -41,6 +41,8 @@
 #include <QStatusBar>
 #include <QVBoxLayout>
 
+#include <utility>
+
 namespace loftail {
 
 namespace {
@@ -303,8 +305,8 @@ void MainWindow::openFile(const QString &path, const QString &pattern)
 {
     // An interactive/programmatic open defaults its run selection to the newest run;
     // only session restore carries a persisted selection (cleared here so a stale one
-    // never leaks into this open).
-    m_pendingRunRestore.reset();
+    // never leaks into this open, and put back below if the open does not happen).
+    auto savedRunRestore = std::exchange(m_pendingRunRestore, std::nullopt);
 
     // Per-file recall (SPEC.md §4): a file already configured reopens with its
     // saved format and no prompt. A never-seen file gets the supplied (or default)
@@ -323,20 +325,22 @@ void MainWindow::openFile(const QString &path, const QString &pattern)
     // line) is taken as the user's intent — a wrong one opens as plain text
     // without a blocking prompt, which also keeps headless/scripted opens safe.
     const bool promptIfNoMatch = !cached && pattern.isEmpty();
-    openWithSettings(path, settings, promptIfNoMatch);
+    if (!openWithSettings(path, settings, promptIfNoMatch))
+        m_pendingRunRestore = std::move(savedRunRestore); // nothing changed hands
 }
 
-void MainWindow::openWithSettings(const QString &path, FormatSettings settings, bool promptIfNoMatch)
+bool MainWindow::openWithSettings(const QString &path, FormatSettings settings, bool promptIfNoMatch)
 {
-    teardownDocument();
-
+    // Prepare the candidate document and settle its format BEFORE touching the
+    // document currently on screen: cancelling the format dialog aborts the open
+    // entirely (SPEC.md §4), and an aborted open must leave the open file alone.
     auto doc = std::make_unique<Document>();
     ManualFormatProvider provider(settings.pattern);
     if (!doc->prepare(path, provider, settings.encoding,
                       settings.sourceZone.toZone(), settings.displayZone.toZone())) {
         m_statusLabel->setText(QStringLiteral("Cannot open %1: %2")
                                    .arg(QFileInfo(path).fileName(), doc->lastError()));
-        return;
+        return false;
     }
 
     // Decide whether to remember this format on close of the flow. A cached open, a
@@ -374,14 +378,22 @@ void MainWindow::openWithSettings(const QString &path, FormatSettings settings, 
                                   settings.sourceZone.toZone(), settings.displayZone.toZone())) {
                     m_statusLabel->setText(QStringLiteral("Cannot open %1: %2")
                                                .arg(QFileInfo(path).fileName(), doc->lastError()));
-                    return;
+                    return false;
                 }
                 persist = true;
             } else {
-                persist = false; // declined: open as plain text, do not remember
+                // Cancelled. The only format we have is one the user just refused
+                // to confirm, and opening with it would show a wall of unparsed
+                // plain text — so abort the open instead (SPEC.md §4). Whatever
+                // was already open stays open, untouched.
+                m_statusLabel->setText(QStringLiteral("Open cancelled: %1")
+                                           .arg(QFileInfo(path).fileName()));
+                return false;
             }
         }
     }
+
+    teardownDocument();
 
     m_currentSettings = settings;
     m_documents.push_back(std::move(doc));
@@ -392,6 +404,7 @@ void MainWindow::openWithSettings(const QString &path, FormatSettings settings, 
     if (persist)
         persistFormat(path, settings);
     rememberRecentFile(path);
+    return true;
 }
 
 void MainWindow::buildViewAndIndex(const QString &path)

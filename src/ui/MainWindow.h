@@ -104,7 +104,10 @@ private:
     // Open `path` under `settings`. When `promptIfNoMatch` and the pattern matches
     // no sample record, the Log Format dialog is offered first (SPEC.md §4). Builds
     // the model/view, starts indexing, and persists the format on a good result.
-    void openWithSettings(const QString &path, FormatSettings settings, bool promptIfNoMatch);
+    // Returns false when the open did not happen — a source that cannot be opened,
+    // or a format dialog the user cancelled. On false the previously open document
+    // (if any) is left untouched.
+    bool openWithSettings(const QString &path, FormatSettings settings, bool promptIfNoMatch);
     // Build the model + view + controller for the active document and start the scan.
     void buildViewAndIndex(const QString &path);
     // Apply a new format to the ALREADY-OPEN document, choosing the change-cost:
