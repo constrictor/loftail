@@ -22,6 +22,11 @@ private slots:
     void libraryPicksExactCandidate_millisThread();
     void libraryPicksExactCandidate_plainDate();
     void libraryPicksExactCandidate_timeOnly();
+    void libraryPicksSlashDateWithNdc();
+    void slashDateGeneralizesAcrossSeconds();
+    void slashDateDayFirstIsInferred();
+    void unknownDateShapeIsNotMemorized();
+    void inferenceRecoversNdcAfterLogger();
     void thresholdRejectsGarbage();
     void inferenceRecoversNonLibraryLayout();
     void providerReturnsFormatForKnownPattern();
@@ -102,6 +107,129 @@ void TestFormatDetector::libraryPicksExactCandidate_timeOnly()
     const DetectionResult r = FormatDetector::detect(view(sample), dec);
     QVERIFY(r.detected);
     QCOMPARE(r.pattern, QStringLiteral("%d{%H:%M:%S} %-5p %c - %m%n"));
+    QCOMPARE(matchRate(r.format, sample, dec), 1.0);
+}
+
+// The shape log4cplus emits from its %D{%m/%d/%y %H:%M:%S} default, NDC and all —
+// the layout of every real sample this was developed against.
+void TestFormatDetector::libraryPicksSlashDateWithNdc()
+{
+    QStringList lines;
+    for (int i = 0; i < 40; ++i) {
+        lines << QStringLiteral("07/27/26 21:59:%1 DEBUG Vms::App [] - service %2 started")
+                     .arg(i % 60, 2, 10, QLatin1Char('0'))
+                     .arg(i);
+    }
+    const QByteArray sample = makeSample(lines);
+    const Decoder dec = Decoder::detect(view(sample), Encoding::Auto);
+
+    const DetectionResult r = FormatDetector::detect(view(sample), dec);
+    QVERIFY2(r.detected, "a stock log4cplus %D{%m/%d/%y} log must be detected");
+    QCOMPARE(int(r.source), int(DetectionResult::Source::Library));
+    QCOMPARE(r.pattern, QStringLiteral("%D{%m/%d/%y %H:%M:%S} %-5p %c [%x] - %m%n"));
+    QCOMPARE(matchRate(r.format, sample, dec), 1.0);
+    // %D is log4cplus's LOCAL-time specifier (ARCHITECTURE.md §5.1).
+    QCOMPARE(int(r.format.impliedZone), int(Qt::LocalTime));
+    // The NDC is a field of its own, not the head of the message.
+    QVERIFY(r.pattern.contains(QStringLiteral("[%x]")));
+}
+
+// The regression this suite exists for: a slash date must compile to a %d{...}
+// SPECIFIER, never to the sample's own digits as literal text. A memorized pattern
+// scores a perfect 1.0 over a head-of-file sample whose records share one second,
+// so match rate alone cannot catch it — assert the generalization directly, and
+// assert it indexes every record rather than only that first second's worth.
+void TestFormatDetector::slashDateGeneralizesAcrossSeconds()
+{
+    // The first 12 records share a second, exactly as a real startup burst does.
+    QStringList lines;
+    for (int i = 0; i < 12; ++i)
+        lines << QStringLiteral("03/12/26 11:50:47 DEBUG Vms::App [] - startup step %1").arg(i);
+    for (int i = 0; i < 48; ++i) {
+        lines << QStringLiteral("03/12/26 11:5%1:%2 INFO  Vms::Media [] - frame %3")
+                     .arg(1 + i / 10).arg(i % 60, 2, 10, QLatin1Char('0')).arg(i);
+    }
+    const QByteArray sample = makeSample(lines);
+    const Decoder dec = Decoder::detect(view(sample), Encoding::Auto);
+
+    const DetectionResult r = FormatDetector::detect(view(sample), dec);
+    QVERIFY(r.detected);
+    QVERIFY2(!r.pattern.contains(QStringLiteral("11:50:47")),
+             qPrintable(QStringLiteral("pattern memorized a sample timestamp: ") + r.pattern));
+    QVERIFY(r.pattern.contains(QStringLiteral("%H:%M:%S")));
+    // Every record parses — not just the twelve sharing the leading second.
+    const PreviewResult pv = FormatPreview::build(r.format, view(sample), dec, 200);
+    QCOMPARE(pv.totalCount, 60);
+    QCOMPARE(pv.matchedCount, 60);
+}
+
+// 27/07/26 cannot be month-first, and nothing but the data says so.
+void TestFormatDetector::slashDateDayFirstIsInferred()
+{
+    QStringList lines;
+    for (int i = 0; i < 30; ++i) {
+        lines << QStringLiteral("27/07/26 08:%1:00 WARN  Vms::Net [] - retry %2")
+                     .arg(i % 60, 2, 10, QLatin1Char('0'))
+                     .arg(i);
+    }
+    const QByteArray sample = makeSample(lines);
+    const Decoder dec = Decoder::detect(view(sample), Encoding::Auto);
+
+    const DetectionResult r = FormatDetector::detect(view(sample), dec);
+    QVERIFY(r.detected);
+    QVERIFY2(r.pattern.contains(QStringLiteral("%d/%m/%y")),
+             qPrintable(QStringLiteral("expected a day-first date in: ") + r.pattern));
+    QCOMPARE(matchRate(r.format, sample, dec), 1.0);
+    // Sanity: the same layout with an unambiguous month-first date stays month-first.
+    QStringList us;
+    for (int i = 0; i < 30; ++i) {
+        us << QStringLiteral("07/27/26 08:%1:00 WARN  Vms::Net [] - retry %2")
+                  .arg(i % 60, 2, 10, QLatin1Char('0'))
+                  .arg(i);
+    }
+    const QByteArray usSample = makeSample(us);
+    const Decoder usDec = Decoder::detect(view(usSample), Encoding::Auto);
+    const DetectionResult usr = FormatDetector::detect(view(usSample), usDec);
+    QVERIFY(usr.detected);
+    QVERIFY(usr.pattern.contains(QStringLiteral("%m/%d/%y")));
+}
+
+// A date shape no rule recognizes must NOT be copied through as literal digits.
+// Falling through to manual entry is the correct outcome; a confidently wrong
+// pattern that indexes one second of the file is not.
+void TestFormatDetector::unknownDateShapeIsNotMemorized()
+{
+    QStringList lines;
+    for (int i = 0; i < 40; ++i)
+        lines << QStringLiteral("2026.07.21_10:22:33 INFO Vms::App - message %1").arg(i);
+    const QByteArray sample = makeSample(lines);
+    const Decoder dec = Decoder::detect(view(sample), Encoding::Auto);
+
+    const DetectionResult r = FormatDetector::detect(view(sample), dec);
+    QVERIFY2(!r.detected, qPrintable(QStringLiteral("memorized an unknown date shape as: ")
+                                     + r.pattern));
+    QVERIFY(r.pattern.isEmpty());
+}
+
+// A bracketed run between the logger and the message is an NDC, and inference must
+// offer it — including for a layout the library does not carry.
+void TestFormatDetector::inferenceRecoversNdcAfterLogger()
+{
+    QStringList lines;
+    for (int i = 0; i < 30; ++i) {
+        lines << QStringLiteral("2026-07-21 10:22:%1 WARN com.acme.Widget [ctx-%2] | event %3")
+                     .arg(i % 60, 2, 10, QLatin1Char('0'))
+                     .arg(i % 4)
+                     .arg(i);
+    }
+    const QByteArray sample = makeSample(lines);
+    const Decoder dec = Decoder::detect(view(sample), Encoding::Auto);
+
+    const DetectionResult r = FormatDetector::detect(view(sample), dec);
+    QVERIFY(r.detected);
+    QCOMPARE(int(r.source), int(DetectionResult::Source::Inference));
+    QVERIFY2(r.pattern.contains(QStringLiteral("[%x]")),
+             qPrintable(QStringLiteral("NDC not recovered from: ") + r.pattern));
     QCOMPARE(matchRate(r.format, sample, dec), 1.0);
 }
 

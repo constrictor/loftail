@@ -120,6 +120,41 @@ QString escapeLiteral(const QString &text)
     return out;
 }
 
+// Which way round a slash-separated numeric date reads. Text alone cannot tell
+// whether "03/12/26" is 12 March or 3 December, so the order is inferred once over
+// the whole sample (a component above 12 can only be a day) and defaults to
+// month-first — the convention log4cplus's own %D{%m/%d/%y} produces.
+enum class DateOrder
+{
+    MonthFirst,
+    DayFirst,
+};
+
+DateOrder inferDateOrder(const QStringList &lines)
+{
+    static const QRegularExpression re(QStringLiteral("^(\\d{2})/(\\d{2})/\\d{2,4}[ T]"));
+    for (const QString &line : lines) {
+        const auto m = re.match(line);
+        if (!m.hasMatch())
+            continue;
+        if (m.capturedView(1).toInt() > 12)
+            return DateOrder::DayFirst;   // a first component past 12 can only be a day
+        if (m.capturedView(2).toInt() > 12)
+            return DateOrder::MonthFirst; // ...and likewise a second one
+    }
+    return DateOrder::MonthFirst;
+}
+
+// Rewrite a candidate's slash-date specifier to the order inferred from the file.
+// Only a %d{...}/%D{...} body can contain "%m/%d/", so the replacement cannot
+// disturb literal text.
+QString applyDateOrder(QString pattern, DateOrder order)
+{
+    if (order == DateOrder::DayFirst)
+        pattern.replace(QStringLiteral("%m/%d/"), QStringLiteral("%d/%m/"));
+    return pattern;
+}
+
 // Try to recognize a date/time run at the start of `s`. Returns the consumed
 // length and the %d{...} specifier that reproduces it, or {0, ""} on no match.
 struct DateMatch
@@ -128,7 +163,7 @@ struct DateMatch
     QString spec;
 };
 
-DateMatch matchLeadingDate(const QString &s)
+DateMatch matchLeadingDate(const QString &s, DateOrder order)
 {
     // Ordered longest-first so the fullest date shape wins.
     // 1) yyyy-MM-dd<sep>HH:MM:SS<msep>mmm
@@ -154,7 +189,28 @@ DateMatch matchLeadingDate(const QString &s)
                     QStringLiteral("%d{%Y-%m-%d%1%H:%M:%S}").arg(dsep)};
         }
     }
-    // 3) HH:MM:SS<msep>mmm (time only, with millis)
+    // 3) MM/dd/yy(yy)<sep>HH:MM:SS[<msep>mmm] — the shape log4cplus's %D{%m/%d/%y}
+    //    default emits. Year width and the optional millis are captured rather than
+    //    spelled out as four near-identical alternatives; (?!\d) keeps the 2-digit
+    //    year from swallowing the first half of a 4-digit one.
+    {
+        static const QRegularExpression re(QStringLiteral(
+            "^\\d{2}/\\d{2}/(\\d{4}|\\d{2})(?!\\d)([ T])\\d{2}:\\d{2}:\\d{2}(?:([.,])\\d{3})?"));
+        const auto m = re.match(s);
+        if (m.hasMatch()) {
+            const QString year = m.capturedLength(1) == 4 ? QStringLiteral("%Y")
+                                                          : QStringLiteral("%y");
+            const QString dmy = order == DateOrder::DayFirst
+                                    ? QStringLiteral("%d/%m/") + year
+                                    : QStringLiteral("%m/%d/") + year;
+            const QString dsep = m.captured(2);
+            QString spec = QStringLiteral("%d{%1%2%H:%M:%S").arg(dmy, dsep);
+            if (m.hasCaptured(3))
+                spec += QStringLiteral("%1%q").arg(m.captured(3));
+            return {int(m.capturedLength(0)), spec + QStringLiteral("}")};
+        }
+    }
+    // 4) HH:MM:SS<msep>mmm (time only, with millis)
     {
         static const QRegularExpression re(
             QStringLiteral("^(\\d{2}:\\d{2}:\\d{2})([.,])(\\d{3})"));
@@ -164,7 +220,7 @@ DateMatch matchLeadingDate(const QString &s)
             return {int(m.capturedLength(0)), QStringLiteral("%d{%H:%M:%S%1%q}").arg(msep)};
         }
     }
-    // 4) HH:MM:SS (time only)
+    // 5) HH:MM:SS (time only)
     {
         static const QRegularExpression re(QStringLiteral("^(\\d{2}:\\d{2}:\\d{2})"));
         const auto m = re.match(s);
@@ -174,23 +230,37 @@ DateMatch matchLeadingDate(const QString &s)
     return {};
 }
 
-// Build the pattern text for everything left of the priority: an optional leading
-// date, then literal separators with any bracketed run turned into a %t thread.
-QString buildLeft(const QString &left)
+// Everything left of the priority: an optional leading date, then literal
+// separators with any bracketed run turned into a %t thread. `memorizedDigits`
+// reports that a multi-digit run reached the pattern as LITERAL text, which means
+// the date shape went unrecognized and the sample's own digits got baked in.
+struct LeftPart
 {
-    const DateMatch dm = matchLeadingDate(left);
-    QString out = dm.spec;
+    QString pattern;
+    bool    memorizedDigits = false;
+};
+
+LeftPart buildLeft(const QString &left, DateOrder order)
+{
+    const DateMatch dm = matchLeadingDate(left, order);
+    LeftPart out;
+    out.pattern = dm.spec;
+    int digitRun = 0;
     int c = dm.length;
     while (c < left.size()) {
         if (left[c] == QLatin1Char('[')) {
             const int close = left.indexOf(QLatin1Char(']'), c);
             if (close > c) {
-                out += QStringLiteral("[%t]");
+                out.pattern += QStringLiteral("[%t]");
+                digitRun = 0;
                 c = close + 1;
                 continue;
             }
         }
-        out += escapeLiteral(QString(left[c]));
+        digitRun = left[c].isDigit() ? digitRun + 1 : 0;
+        if (digitRun >= 2)
+            out.memorizedDigits = true;
+        out.pattern += escapeLiteral(QString(left[c]));
         ++c;
     }
     return out;
@@ -201,7 +271,8 @@ QString buildLeft(const QString &left)
 // priority, one where the message follows the priority directly. Scoring decides
 // between them (and against the library). Returns empty when the line carries no
 // recognizable priority token.
-QStringList synthesizeFromLine(const QString &line, const QRegularExpression &prioRe)
+QStringList synthesizeFromLine(const QString &line, const QRegularExpression &prioRe,
+                               DateOrder order)
 {
     const auto pm = prioRe.match(line);
     if (!pm.hasMatch())
@@ -212,56 +283,90 @@ QStringList synthesizeFromLine(const QString &line, const QRegularExpression &pr
     const QString left = line.left(ps);   // includes the separator before the priority
     const QString right = line.mid(pe);   // includes the separator after the priority
 
-    const QString leftPat = buildLeft(left);
-    if (leftPat.isEmpty())
+    const LeftPart leftPart = buildLeft(left, order);
+    if (leftPart.pattern.isEmpty())
         return {}; // no date and nothing before the priority — too little to anchor on
+
+    // A pattern that carries the sample's own digits is not a format, it is a
+    // memory of one line: it matches only the records sharing that timestamp. It
+    // cannot be caught downstream, because scoring runs over the HEAD of the file
+    // where every record may share one second — a memorized pattern scores a
+    // perfect 1.0 there and then indexes almost nothing. Refuse to synthesize it;
+    // an unrecognized date shape must fall through to manual entry instead.
+    if (leftPart.memorizedDigits)
+        return {};
+    const QString leftPat = leftPart.pattern;
+
+    // Consume a run of whitespace from `right` starting at `c`, returning it.
+    const auto takeSpace = [&right](int &c) {
+        QString s;
+        while (c < right.size() && right[c].isSpace()) { s += right[c]; ++c; }
+        return s;
+    };
+    // Consume a bracketed run at `c` (if any), returning the specifier to emit.
+    const auto takeBracketed = [&right](int &c, QLatin1String spec) {
+        if (c < right.size() && right[c] == QLatin1Char('[')) {
+            const int close = right.indexOf(QLatin1Char(']'), c);
+            if (close > c) {
+                c = close + 1;
+                return QStringLiteral("[") + spec + QStringLiteral("]");
+            }
+        }
+        return QString();
+    };
 
     QStringList out;
 
     // Variant B: message immediately after the priority (%p ... %m).
     {
         int c = 0;
-        QString sep;
-        while (c < right.size() && right[c].isSpace()) { sep += right[c]; ++c; }
+        const QString sep = takeSpace(c);
         if (c < right.size()) // there is a message body
             out << leftPat + QStringLiteral("%p") + escapeLiteral(sep) + QStringLiteral("%m%n");
     }
 
     // Variant A: a logger token, then the message (%p %c <sep> %m), with an
-    // optional bracketed thread right after the priority.
-    {
+    // optional bracketed thread right after the priority. Emitted twice — with and
+    // without an NDC between the logger and the message — because a bracketed run
+    // there is ambiguous: it is %x in a log4cplus "%c [%x] - %m" layout and plain
+    // message text in a log that happens to open its messages with a bracket.
+    // Scoring separates them, and on a tie the NDC variant wins for having more
+    // fields, which is the right call when both parse the file.
+    for (const bool withNdc : {false, true}) {
         int c = 0;
-        QString sep1;
-        while (c < right.size() && right[c].isSpace()) { sep1 += right[c]; ++c; }
-
-        QString threadPart;
-        if (c < right.size() && right[c] == QLatin1Char('[')) {
-            const int close = right.indexOf(QLatin1Char(']'), c);
-            if (close > c) {
-                threadPart = QStringLiteral("[%t]");
-                c = close + 1;
-            }
-        }
-        QString sep1b;
-        while (c < right.size() && right[c].isSpace()) { sep1b += right[c]; ++c; }
+        const QString sep1 = takeSpace(c);
+        const QString threadPart = takeBracketed(c, QLatin1String("%t"));
+        const QString sep1b = takeSpace(c);
 
         const int ls = c;
         while (c < right.size() && !right[c].isSpace())
             ++c;
-        const bool haveLogger = c > ls;
+        if (c == ls)
+            continue; // no logger token
+
+        QString ndcPart;
+        QString sepNdc;
+        if (withNdc) {
+            const int save = c;
+            sepNdc = takeSpace(c);
+            ndcPart = takeBracketed(c, QLatin1String("%x"));
+            if (ndcPart.isEmpty()) {
+                c = save; // nothing bracketed here — this variant duplicates the other
+                continue;
+            }
+        }
 
         QString sep2;
         while (c < right.size() && (right[c].isSpace() || isSeparatorPunct(right[c]))) {
             sep2 += right[c];
             ++c;
         }
-        const bool haveMessage = c < right.size();
+        if (c >= right.size())
+            continue; // no message body
 
-        if (haveLogger && haveMessage) {
-            out << leftPat + QStringLiteral("%p") + escapeLiteral(sep1) + threadPart
-                       + escapeLiteral(sep1b) + QStringLiteral("%c") + escapeLiteral(sep2)
-                       + QStringLiteral("%m%n");
-        }
+        out << leftPat + QStringLiteral("%p") + escapeLiteral(sep1) + threadPart
+                   + escapeLiteral(sep1b) + QStringLiteral("%c") + escapeLiteral(sepNdc)
+                   + ndcPart + escapeLiteral(sep2) + QStringLiteral("%m%n");
     }
 
     return out;
@@ -286,6 +391,20 @@ QStringList FormatDetector::candidateLibrary()
         QStringLiteral("%d{%Y-%m-%d %H:%M:%S} %-5p %c - %m%n"),
         QStringLiteral("%d{%Y-%m-%d %H:%M:%S} %p %c - %m%n"),
         QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c %m%n"),
+        QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} %-5p %c [%x] - %m%n"),
+        QStringLiteral("%d{%Y-%m-%d %H:%M:%S} %-5p %c [%x] - %m%n"),
+        // Slash-dated styles. log4cplus's own %D{%m/%d/%y %H:%M:%S} is the usual
+        // source of these, so they lead with %D — which, counter-intuitively, is
+        // the LOCAL-time specifier (%d is UTC; see PatternCompiler). The %m/%d
+        // order here is only a default: detect() rewrites it per file when the
+        // sample proves the dates are day-first.
+        QStringLiteral("%D{%m/%d/%y %H:%M:%S} %-5p %c [%x] - %m%n"),
+        QStringLiteral("%D{%m/%d/%y %H:%M:%S} [%t] %-5p %c - %m%n"),
+        QStringLiteral("%D{%m/%d/%y %H:%M:%S} %-5p %c - %m%n"),
+        QStringLiteral("%D{%m/%d/%y %H:%M:%S,%q} %-5p %c [%x] - %m%n"),
+        QStringLiteral("%D{%m/%d/%Y %H:%M:%S} %-5p %c [%x] - %m%n"),
+        QStringLiteral("%D{%m/%d/%Y %H:%M:%S} %-5p %c - %m%n"),
+        QStringLiteral("%d{%m/%d/%y %H:%M:%S} %-5p %c - %m%n"),
         QStringLiteral("%d{%H:%M:%S,%q} [%t] %-5p %c - %m%n"),
         QStringLiteral("%d{%H:%M:%S} %-5p %c - %m%n"),
         QStringLiteral("%d [%t] %-5p %c - %m%n"),
@@ -299,10 +418,15 @@ DetectionResult FormatDetector::detect(QByteArrayView sample, const Decoder &dec
     if (sample.isEmpty())
         return result;
 
+    // Both layers need the decoded head of the file: layer 1 to settle whether the
+    // file's slash dates read month-first or day-first, layer 2 to infer from.
+    const QStringList lines = decodeLines(sample, decoder, kInferenceLines);
+    const DateOrder order = inferDateOrder(lines);
+
     // --- Layer 1: candidate library, scored by match rate ---------------------
     Scored best;
-    for (const QString &pattern : candidateLibrary()) {
-        const Scored s = scoreCandidate(pattern, sample, decoder);
+    for (const QString &entry : candidateLibrary()) {
+        const Scored s = scoreCandidate(applyDateOrder(entry, order), sample, decoder);
         if (s.valid && (!best.valid || better(s, best)))
             best = s;
     }
@@ -317,12 +441,11 @@ DetectionResult FormatDetector::detect(QByteArrayView sample, const Decoder &dec
 
     // --- Layer 2: structural inference off the priority anchor -----------------
     const QRegularExpression prioRe = priorityTokenRe();
-    const QStringList lines = decodeLines(sample, decoder, kInferenceLines);
 
     QStringList seen;                 // preserve first-seen order for stable ties
     QSet<QString> dedupe;
     for (const QString &line : lines) {
-        for (const QString &cand : synthesizeFromLine(line, prioRe)) {
+        for (const QString &cand : synthesizeFromLine(line, prioRe, order)) {
             if (!dedupe.contains(cand)) {
                 dedupe.insert(cand);
                 seen << cand;

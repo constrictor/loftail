@@ -160,6 +160,12 @@ void LogFormatDialog::buildUi(const QString &fileName)
 
     // --- Buttons -----------------------------------------------------------
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    // The platform theme labels standard buttons in the DESKTOP's language, which
+    // on a non-English desktop leaves a dialog that is English everywhere else
+    // reading half-translated. loftail ships no translations, so state the text
+    // explicitly and keep one language on screen.
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("OK"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Cancel"));
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     outer->addWidget(buttons);

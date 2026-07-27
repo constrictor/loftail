@@ -280,8 +280,13 @@ class IFormatProvider {
 The first release ships `ManualFormatProvider` (reads the user's pattern from settings). A later release adds `DetectingFormatProvider`, which falls through three layers, cheapest first:
 
 1. **Candidate scoring.** A library of known patterns — log4cplus defaults plus common house styles. Compile each, run over the first ~200 records, score by match rate. Resolves the common case in milliseconds with no inference.
-2. **Structural inference.** Tokenize a sample; find positionally stable fields. The strongest anchor is priority: `TRACE|DEBUG|INFO|WARN|ERROR|FATAL` is a closed six-word vocabulary, so a token column drawn from it is near-certainly `%p`. A leading date-shaped run is `%d`; a dotted identifier adjacent to the priority is `%c`; the remainder is `%m`. Synthesize a pattern string and hand it to the same `PatternCompiler`.
+2. **Structural inference.** Tokenize a sample; find positionally stable fields. The strongest anchor is priority: `TRACE|DEBUG|INFO|WARN|ERROR|FATAL` is a closed six-word vocabulary, so a token column drawn from it is near-certainly `%p`. A leading date-shaped run is `%d`; a dotted identifier adjacent to the priority is `%c`; a bracketed run between the logger and the message is `%x`; the remainder is `%m`. Synthesize a pattern string and hand it to the same `PatternCompiler`.
 3. **Give up** and fall back to the manual dialog.
+
+Two constraints on layer 2, both learned the hard way:
+
+- **A synthesized pattern may never carry a multi-digit literal.** If the date shape is not recognized, the sample's own digits get copied through as literal text, producing a pattern that matches only the records sharing that timestamp. Match rate cannot detect this: scoring runs over the head of the file, where a startup burst routinely puts every sampled record in the same second, so the memorized pattern scores 1.0 and then indexes a handful of records out of a million. Refuse to synthesize it and let layer 3 ask the user.
+- **Slash dates need an order decision.** `03/12/26` is 12 March or 3 December and nothing in the text says which. The order is inferred once over the sample — a component above 12 can only be a day — and defaults to month-first, which is what log4cplus's `%D{%m/%d/%y}` produces. Getting this wrong is silent: both orders compile to the same regex and score identically, and only the parsed `Record::timestamp` differs (§5.1).
 
 Detection produces a *pattern string*, never a bespoke parser — it reuses the entire P1 path. It also requires no new UI: it pre-fills the existing Log Format dialog for confirmation, which is the second reason to build the manual path first.
 

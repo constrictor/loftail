@@ -44,10 +44,22 @@ struct DetectionResult
 //   2. Structural inference. When no library candidate clears the bar, the closed
 //      priority vocabulary (TRACE|DEBUG|INFO|WARN|ERROR|FATAL — Priority.h) is used
 //      as an anchor: a token drawn from that six-word set is almost certainly %p.
-//      A leading date-shaped run is %d, a token after the priority is %c, the
-//      remainder is %m; separators are reconstructed verbatim from the sample.
-//      The synthesized pattern is scored the same way and accepted only if it too
-//      clears the threshold.
+//      A leading date-shaped run is %d, a token after the priority is %c, a
+//      bracketed run between the two is %x, the remainder is %m; separators are
+//      reconstructed verbatim from the sample. The synthesized pattern is scored
+//      the same way and accepted only if it too clears the threshold.
+//
+//      Inference NEVER copies a multi-digit run into the pattern as literal text.
+//      Such a pattern is a memory of one line, not a format: it matches only the
+//      records sharing that timestamp, and match rate cannot catch it, because the
+//      sample is the head of the file — where a startup burst may put every record
+//      in the same second and score it a perfect 1.0. An unrecognized date shape
+//      therefore falls through to layer 3, which is the honest answer.
+//
+//      Slash-separated dates are ambiguous (03/12/26 is either 12 March or 3
+//      December) and text alone cannot settle it, so the order is inferred once
+//      over the sample — a component above 12 can only be a day — and defaults to
+//      the month-first convention log4cplus's own %D{%m/%d/%y} emits.
 //
 // Detection always produces a PATTERN STRING fed back through PatternCompiler —
 // never a bespoke parser (ARCHITECTURE.md §9). It pre-fills the existing dialog for
