@@ -144,16 +144,16 @@ Time-range filter bounds (§6) are always entered as wall clock in the display t
 
 - A status area shows total record count, the count after filtering, the current file, and whether it is currently receiving new records. It describes the **active** view; a file being scanned in another tab shows its progress in that tab's own label instead.
 
-## 5a. Tabs, splits, and windows
+## 5a. Tabs and the document area
 
-Open files and side panes share one arrangement, and any of them can be moved anywhere in it.
+**The logs occupy the centre of the window and the side panes surround them; the two never mix.** Every open file is a tab in that central area, and no gesture can drag a log out of it or a pane into it. Panes rearrange freely among themselves (§8) — that flexibility is theirs alone, so the place the user reads a log is always in the same place.
 
-- **Every open file is a tab.** A tab can be dragged into a side-by-side or stacked split, into another tab group, or out of the window entirely to float as a separate window — and dragged back. Side panes (§8) move by exactly the same gestures and can share a tab group or a split with a log.
-- **A file can be opened in more than one view.** *New View* opens a second, independently scrolled view onto the log already being read, so one can be pinned to a point in the history while the other keeps tailing. It starts as a copy of the view it was made from and diverges from there.
+- **Every open file is a tab.** Tabs can be reordered by dragging them along the tab bar, and each carries a close button. A tab cannot be torn off, split, or floated into a window of its own.
+- **A file can be opened in more than one view.** *New View* opens a second, independently scrolled view onto the log already being read, so one can be pinned to a point in the history while the other keeps tailing. It starts as a copy of the view it was made from and diverges from there. Tabs of the same file are numbered in the order they appear on the tab bar.
   - **Shared** between views of one file: the records themselves, the log format, the timestamp display mode, active filters, active highlighters, and the selected run. Filtering in one view filters both — the panes edit the *file*, not the view.
   - **Private** to each view: scroll position, selection, wrap mode, column layout, follow state, and the Find bar.
 - **Closing a tab closes that view.** The file itself closes when its last view does; closing every tab leaves the empty view of §3.
-- The whole arrangement — which files are open, how many views each has, and where every tab, split and floating window sits — is part of the remembered session (§10).
+- The whole arrangement — which files are open, how many views each has, and the order of the tabs — is part of the remembered session (§10).
 
 ## 6. Filtering
 
@@ -184,7 +184,9 @@ Highlighting colors matching records without removing anything, for spotting eve
 
 Filters, highlighters, presets, and runs (§3) are each presented in a side pane, so they are visible and toggleable without opening dialogs.
 
-- Panes can be shown/hidden, resized, moved to either side, floated as separate windows, or tabbed together — and, since panes and open files share one arrangement (§5a), tabbed or split against a log as well. A closed pane is brought back from the View menu.
+- Panes can be shown/hidden, resized, moved to either side, or tabbed together. They arrange themselves *around* the log area and never inside it (§5a): a pane cannot be tabbed next to a log, and dragging one can never displace the file being read. A closed pane is brought back from the View menu.
+- **Dragging a pane moves that pane**, not the group it is tabbed with, and a pane can be dropped on the left or right side only — not as a strip above or below the log.
+- **Panes can also be floated as separate windows, where the platform supports it.** Under Wayland they stay docked: the compositor does not let an application follow the pointer outside its window or place a window under the cursor, so a torn-off pane could not be dragged or positioned — it would strand mid-drag rather than float. The same machine under XWayland does allow it.
 - **There is one of each pane, and it follows the active view.** With several logs open, the panes always show and edit whichever one is being read; moving to another log rebinds them to that log's filters and highlighters, and moving between two views of the *same* log changes nothing, because those views share them.
 - Pane layout is part of the remembered session (§10).
 - Enabling and disabling an individual filter or highlighter is a single click within its pane — no dialog.
@@ -208,9 +210,9 @@ On relaunch, loftail restores:
 - Active filters and highlighters per file, including which were enabled
 - Every view: how many views each file had, each one's column layout and wrap mode, and which view was active
 - Saved presets
-- Window geometry and the whole arrangement of tabs, splits, floating windows and panes (§5a)
+- Window geometry, the order of the tabs, and the arrangement of the side panes (§5a, §8)
 
-**Scoping:** the log format, the timestamp display mode, the run-start pattern, active filters, active highlighters, and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a split showing wide messages and one showing just timestamps each keep their shape. Presets and the window/pane layout are global.
+**Scoping:** the log format, the timestamp display mode, the run-start pattern, active filters, active highlighters, and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a second view showing wide messages and one showing just timestamps each keep their shape. Presets and the window/pane layout are global.
 
 **Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is keyed by file, so instances viewing different logs never conflict. For genuinely global state — window layout, and which files to restore on next launch — **the last instance to close wins**.
 

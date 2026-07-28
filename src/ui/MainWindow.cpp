@@ -24,7 +24,6 @@
 
 #include <QAction>
 #include <QActionGroup>
-#include <QApplication>
 #include <QCloseEvent>
 #include <QDockWidget>
 #include <QDragEnterEvent>
@@ -32,6 +31,7 @@
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QLabel>
@@ -41,7 +41,11 @@
 #include <QProgressBar>
 #include <QScrollBar>
 #include <QSettings>
+#include <QSignalBlocker>
+#include <QStackedWidget>
 #include <QStatusBar>
+#include <QTabBar>
+#include <QTabWidget>
 #include <QVBoxLayout>
 
 #include <utility>
@@ -54,6 +58,25 @@ namespace {
 constexpr auto kDefaultPattern = "%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n";
 constexpr int  kMaxRecentFiles = 10;
 constexpr auto kRecentFilesKey = "recentFiles";
+
+// May a pane be torn off into a window of its own?
+//
+// Not under Wayland. Dragging a dock out is a two-part trick: keep receiving pointer
+// motion after the pointer has left the widget, and place the resulting window under
+// the cursor. Wayland grants neither — a client cannot grab the pointer (the plugin
+// says so out loud: "This plugin supports grabbing the mouse only for popup
+// windows"), and it cannot position its own top-level windows. What Wayland does
+// give is an IMPLICIT grab for as long as a button is held, delivered to the surface
+// that received the press — which is why a drag that stays inside the main window
+// works, and a tear-off, which moves the dock to a NEW surface mid-drag, loses the
+// rest of the gesture and leaves the pane wedged mid-drag.
+//
+// So on Wayland panes move and close but do not float. The test is the QPA platform,
+// not the OS: the same machine under XWayland (`QT_QPA_PLATFORM=xcb`) can do both.
+bool panesMayFloat()
+{
+    return QGuiApplication::platformName() != QLatin1String("wayland");
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -63,16 +86,21 @@ MainWindow::MainWindow(QWidget *parent)
     resize(1100, 720);
     setAcceptDrops(true);
 
-    // The whole window is a dock layout: open files and the side panes are all dock
-    // widgets, so either can be dragged into a tab group, split against the other, or
-    // pulled out into a floating window (SPEC.md §8).
+    // Docking applies to the SIDE PANES ONLY (ARCHITECTURE.md §12.2): panes tab and
+    // split among themselves along the edges, while open files are tabs in the
+    // central document well below and take no part in it. A real central widget is
+    // what keeps the two apart — Qt's dock areas cannot encroach on it, so no pane
+    // can be dropped into the document area and no log can be dragged out into the
+    // panes'.
     //
-    // Two Qt constraints govern this and are easy to break:
-    //   * dock options must be set BEFORE any dock widget is added;
-    //   * GroupedDragging misbehaves for docks that restrict their allowed areas, so
-    //     no dock here may call setAllowedAreas().
+    // Deliberately WITHOUT GroupedDragging: it makes a drag on any dock's title bar
+    // move that dock's whole tab group, so pulling the Filters pane out took the
+    // other three with it. Its purpose is dragging a whole group on purpose, which
+    // is not worth making the ordinary single-pane drag do something else.
+    //
+    // Dock options must be set BEFORE any dock widget is added.
     setDockOptions(QMainWindow::AnimatedDocks | QMainWindow::AllowNestedDocks
-                   | QMainWindow::AllowTabbedDocks | QMainWindow::GroupedDragging);
+                   | QMainWindow::AllowTabbedDocks);
     setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
 
     m_progressBar = new QProgressBar(this);
@@ -82,50 +110,56 @@ MainWindow::MainWindow(QWidget *parent)
     statusBar()->addWidget(m_statusLabel, 1);
     statusBar()->addPermanentWidget(m_progressBar);
 
-    // The empty state. Open files live in dock widgets, so the central widget holds
-    // nothing but this notice; hiding it collapses the centre to zero and lets the
-    // document docks fill the window.
+    // The document well: every open file is a page here (SPEC.md §5a). Movable so
+    // tabs can be reordered, closable so a tab carries its own close button; NOT a
+    // dock, so it can be neither a drag source nor a drop target for the panes.
+    m_tabs = new QTabWidget(this);
+    m_tabs->setObjectName(QStringLiteral("documentTabs")); // findChild, for tests
+    m_tabs->setDocumentMode(true);
+    m_tabs->setMovable(true);
+    m_tabs->setTabsClosable(true);
+    m_tabs->tabBar()->setUsesScrollButtons(true);
+    m_tabs->tabBar()->setElideMode(Qt::ElideMiddle);
+    connect(m_tabs, &QTabWidget::currentChanged, this, &MainWindow::onCurrentTabChanged);
+    connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::closeViewAt);
+    connect(m_tabs->tabBar(), &QTabBar::tabMoved, this, &MainWindow::onTabMoved);
+
+    // The empty state shares the centre with the tabs, rather than sitting behind an
+    // empty tab frame; updateEmptyState() swaps between them.
     m_placeholder = new QLabel(QStringLiteral("No file open. Open a log file to begin."), this);
     m_placeholder->setAlignment(Qt::AlignCenter);
     m_placeholder->setWordWrap(true);
-    setCentralWidget(m_placeholder);
+
+    m_centre = new QStackedWidget(this);
+    m_centre->addWidget(m_placeholder);
+    m_centre->addWidget(m_tabs);
+    setCentralWidget(m_centre);
 
     // Three side panes (SPEC.md §8): filters, highlighters, presets. Each binds to
     // the active document by signal (invariant #7 / §12.3), never a fixed Document.
     m_filterPane = new FilterPane(this);
-    auto *filterDock = new QDockWidget(QStringLiteral("Filters"), this);
-    filterDock->setObjectName(QStringLiteral("filtersDock"));
-    filterDock->setWidget(m_filterPane);
-    addDockWidget(Qt::RightDockWidgetArea, filterDock);
-    m_paneDocks.append(filterDock);
+    QDockWidget *filterDock = addPaneDock(m_filterPane, QStringLiteral("filtersDock"),
+                                          QStringLiteral("Filters"));
     connect(this, &MainWindow::activeDocumentChanged, m_filterPane, &FilterPane::setDocument);
     connect(m_filterPane, &FilterPane::filtersChanged, this, &MainWindow::applyActiveFilters);
 
     m_highlighterPane = new HighlighterPane(this);
-    auto *highlightDock = new QDockWidget(QStringLiteral("Highlighters"), this);
-    highlightDock->setObjectName(QStringLiteral("highlightersDock"));
-    highlightDock->setWidget(m_highlighterPane);
-    addDockWidget(Qt::RightDockWidgetArea, highlightDock);
-    m_paneDocks.append(highlightDock);
+    QDockWidget *highlightDock = addPaneDock(m_highlighterPane,
+                                             QStringLiteral("highlightersDock"),
+                                             QStringLiteral("Highlighters"));
     connect(this, &MainWindow::activeDocumentChanged, m_highlighterPane, &HighlighterPane::setDocument);
     connect(m_highlighterPane, &HighlighterPane::highlightersChanged,
             this, &MainWindow::applyActiveHighlighters);
 
     m_presetPane = new PresetPane(m_filterPane, m_highlighterPane, this);
-    auto *presetDock = new QDockWidget(QStringLiteral("Presets"), this);
-    presetDock->setObjectName(QStringLiteral("presetsDock"));
-    presetDock->setWidget(m_presetPane);
-    addDockWidget(Qt::RightDockWidgetArea, presetDock);
-    m_paneDocks.append(presetDock);
+    QDockWidget *presetDock = addPaneDock(m_presetPane, QStringLiteral("presetsDock"),
+                                          QStringLiteral("Presets"));
 
     // Run selection pane (§3a): a run-start regexp splits the file into runs and the
     // user views one at a time. Binds to the active document by signal like the rest.
     m_runPane = new RunPane(this);
-    auto *runDock = new QDockWidget(QStringLiteral("Runs"), this);
-    runDock->setObjectName(QStringLiteral("runsDock"));
-    runDock->setWidget(m_runPane);
-    addDockWidget(Qt::RightDockWidgetArea, runDock);
-    m_paneDocks.append(runDock);
+    QDockWidget *runDock = addPaneDock(m_runPane, QStringLiteral("runsDock"),
+                                       QStringLiteral("Runs"));
     connect(this, &MainWindow::activeDocumentChanged, m_runPane, &RunPane::setDocument);
     connect(m_runPane, &RunPane::runStartChanged, this, &MainWindow::onRunStartChanged);
     connect(m_runPane, &RunPane::runSelected, this, &MainWindow::onRunSelected);
@@ -139,10 +173,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     buildMenus();
 
-    // Which document is active follows the keyboard focus (invariant #7): the panes
-    // rebind to whichever file the user is reading.
-    connect(qApp, &QApplication::focusChanged, this, &MainWindow::onFocusChanged);
-
     // Restore the previous working state last, once every pane dock exists with its
     // object name (restoreState keys off those) — SPEC.md §10.
     restoreSession();
@@ -150,10 +180,6 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
-    // Destroying the views moves the keyboard focus, which would call back into a
-    // half-destroyed MainWindow. QObject's own disconnect happens in ~QObject, i.e.
-    // AFTER this body, so the application-wide connection must be dropped by hand.
-    disconnect(qApp, nullptr, this, nullptr);
     closeAllDocuments();
 }
 
@@ -309,96 +335,79 @@ void MainWindow::refreshWindowMenu()
         return;
     m_windowMenu->addSeparator();
     for (DocumentView *view : std::as_const(m_views)) {
-        QDockWidget *dock = dockOf(view);
-        QAction *a = m_windowMenu->addAction(dock ? dock->windowTitle() : QString());
+        const int index = m_tabs->indexOf(view);
+        QAction *a = m_windowMenu->addAction(index >= 0 ? m_tabs->tabText(index) : QString());
         a->setCheckable(true);
         a->setChecked(view == m_activeView);
-        connect(a, &QAction::triggered, this, [this, view]() {
-            if (QDockWidget *d = dockOf(view))
-                d->raise();
-            setActiveView(view);
-            view->logView()->setFocus();
-        });
+        connect(a, &QAction::triggered, this, [this, view]() { showView(view); });
     }
 }
 
 void MainWindow::cycleView(int delta)
 {
-    if (m_views.size() < 2)
+    const int size = m_tabs->count();
+    if (size < 2)
         return;
-    const int current = m_views.indexOf(m_activeView);
-    const int size = m_views.size();
-    const int next = ((current < 0 ? 0 : current) + delta % size + size) % size;
-    DocumentView *view = m_views.at(next);
-    if (QDockWidget *dock = dockOf(view))
-        dock->raise();
-    setActiveView(view);
-    view->logView()->setFocus();
+    const int current = qMax(0, m_tabs->currentIndex());
+    m_tabs->setCurrentIndex(((current + delta % size) + size) % size);
+    if (m_activeView)
+        m_activeView->logView()->setFocus();
 }
 
-// --- Document docks --------------------------------------------------------
+// --- Side panes ------------------------------------------------------------
 
-QDockWidget *MainWindow::dockOf(DocumentView *view)
+QDockWidget *MainWindow::addPaneDock(QWidget *pane, const QString &objectName,
+                                     const QString &title)
 {
-    return view ? qobject_cast<QDockWidget *>(view->parentWidget()) : nullptr;
-}
+    auto *dock = new QDockWidget(title, this);
+    dock->setObjectName(objectName); // restoreState() keys off this
+    dock->setWidget(pane);
+    // Left or right only. SPEC.md §8 offers a pane "on either side", and a pane
+    // dropped as a full-width strip above or below the log is a drag people make by
+    // accident, not on purpose. (Restricting areas used to be forbidden here because
+    // it broke GroupedDragging; that option is gone.)
+    dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
 
-QDockWidget *MainWindow::addViewDock(DocumentView *view, const QString &dockName)
-{
-    view->setDockName(dockName);
+    QDockWidget::DockWidgetFeatures features =
+        QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable;
+    if (panesMayFloat())
+        features |= QDockWidget::DockWidgetFloatable;
+    dock->setFeatures(features);
 
-    auto *dock = new QDockWidget(this);
-    dock->setObjectName(dockName);
-    dock->setWindowTitle(QFileInfo(view->context()->doc->path()).fileName());
-    dock->setToolTip(view->context()->doc->path());
-    // The close button destroys the dock and, with it, the view. Deleting on close
-    // rather than from inside the close event is what keeps a dock being dragged or
-    // floated from being deleted underneath Qt.
-    dock->setAttribute(Qt::WA_DeleteOnClose);
-    // Deliberately NO setAllowedAreas(): a dock that restricts its areas breaks
-    // GroupedDragging, and an open file must be draggable anywhere.
-    dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable
-                      | QDockWidget::DockWidgetFloatable);
-    dock->setWidget(view);
-
-    // If the saved layout has a slot under this object name — a tab group, a split,
-    // a floating window — the dock goes straight back into it. restoreState() leaves
-    // such slots as placeholders for docks that do not exist yet, and this is the
-    // documented way to claim one. It must be tried BEFORE any addDockWidget(): a
-    // dock already placed in the layout no longer matches its placeholder.
-    //
-    // It returns false for a dock the saved layout never knew (a newly opened file,
-    // a brand-new view, or a first run), and then the default placement applies:
-    // documents share the left area, the panes sit on the right, and a further file
-    // joins the existing ones as a tab, to be dragged out into a split if wanted.
-    if (!restoreDockWidget(dock)) {
-        addDockWidget(Qt::LeftDockWidgetArea, dock);
-        if (!m_views.isEmpty()) {
-            if (QDockWidget *previous = dockOf(m_views.last()))
-                tabifyDockWidget(previous, dock);
-        }
-    }
-    m_views.append(view);
-
-    // Raising a tab does not necessarily move focus, so track visibility too.
-    connect(dock, &QDockWidget::visibilityChanged, this, [this, view](bool visible) {
-        if (visible)
-            setActiveView(view);
-    });
-    connect(view, &QObject::destroyed, this, &MainWindow::onViewDestroyed);
-
-    // First run only: the panes' size hints would otherwise claim about half the
-    // window. A restored session brings its own proportions.
-    if (!m_layoutRestored && m_contexts.size() == 1 && !m_paneDocks.isEmpty()) {
-        m_layoutRestored = true;
-        resizeDocks({dock, m_paneDocks.first()}, {width() * 2 / 3, width() / 3}, Qt::Horizontal);
-    }
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+    m_paneDocks.append(dock);
     return dock;
+}
+
+// --- Document tabs ---------------------------------------------------------
+
+void MainWindow::onCurrentTabChanged(int index)
+{
+    // The current page IS the active view; there is no other way to be looking at a
+    // log. A -1 (the last tab just closed) makes the window file-less, which
+    // setActiveView handles by unbinding the panes.
+    setActiveView(qobject_cast<DocumentView *>(m_tabs->widget(index)));
+}
+
+void MainWindow::onTabMoved(int from, int to)
+{
+    // m_views is the session's view order and Ctrl+Tab's walk order, so a dragged
+    // tab has to move with it.
+    if (from < 0 || from >= m_views.size() || to < 0 || to >= m_views.size())
+        return;
+    m_views.move(from, to);
+    // Two views of one file are numbered by tab position, so moving a tab renumbers
+    // its file's — and only a file with several views can be affected.
+    for (auto &ctx : m_contexts) {
+        if (ctx->views.size() > 1)
+            updateTabTitles(ctx.get());
+    }
 }
 
 void MainWindow::updateEmptyState()
 {
-    m_placeholder->setVisible(m_views.isEmpty());
+    m_centre->setCurrentWidget(m_views.isEmpty() ? static_cast<QWidget *>(m_placeholder)
+                                                 : static_cast<QWidget *>(m_tabs));
 }
 
 void MainWindow::onViewDestroyed(QObject *obj)
@@ -414,35 +423,39 @@ void MainWindow::onViewDestroyed(QObject *obj)
     // A file with no views left is closed: its index, workers and model go with it.
     std::erase_if(m_contexts, [](const auto &ctx) { return ctx->views.isEmpty(); });
 
+    // A file down to its last view is a plain name again, not "name [1]".
+    for (auto &ctx : m_contexts)
+        updateTabTitles(ctx.get());
+
     updateEmptyState();
     if (m_activeView)
         return;
 
-    if (!m_views.isEmpty()) {
-        setActiveView(m_views.last());
-    } else {
-        // Nothing left open: unbind the panes (invariant #7) and disable the
-        // per-file actions, exactly as closing the only file used to do.
+    // Removing the tab already moved the current page, and with it the active view;
+    // reaching here with none means the last tab went. Unbind the panes (invariant
+    // #7) and disable the per-file actions.
+    if (m_views.isEmpty()) {
         emit activeDocumentChanged(nullptr);
         updateActionStates();
         updateStatus();
     }
 }
 
-void MainWindow::closeActiveView()
+void MainWindow::closeViewAt(int index)
 {
-    if (QDockWidget *dock = dockOf(m_activeView))
-        dock->close(); // WA_DeleteOnClose -> onViewDestroyed
+    auto *view = qobject_cast<DocumentView *>(m_tabs->widget(index));
+    if (!view)
+        return;
+    // Out of the tab widget first: that moves the current page (and so the active
+    // view) to a surviving tab while this one is still whole. Deleting it then runs
+    // onViewDestroyed, which reaps the file if this was its last view.
+    m_tabs->removeTab(index);
+    delete view;
 }
 
-void MainWindow::onFocusChanged(QWidget *, QWidget *now)
+void MainWindow::closeActiveView()
 {
-    for (QWidget *w = now; w; w = w->parentWidget()) {
-        if (auto *view = qobject_cast<DocumentView *>(w)) {
-            setActiveView(view);
-            return;
-        }
-    }
+    closeViewAt(m_tabs->currentIndex());
 }
 
 // --- Active view / document ------------------------------------------------
@@ -579,9 +592,15 @@ void MainWindow::closeAllDocuments()
     const QVector<DocumentView *> views = m_views;
     m_views.clear();
     m_activeView = nullptr;
+    // Empty the tab bar before deleting anything: removing tabs one at a time would
+    // walk the current page through every surviving view on the way down.
+    {
+        const QSignalBlocker block(m_tabs);
+        m_tabs->clear(); // removes the pages; ownership returns to us
+    }
     for (DocumentView *view : views) {
         disconnect(view, &QObject::destroyed, this, &MainWindow::onViewDestroyed);
-        delete dockOf(view); // the dock owns the view
+        delete view;
     }
 
     // Only now the contexts: a view references its context's model and Document,
@@ -687,9 +706,7 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     // An open ADDS a file: several logs are open at once, each in its own tab
     // (SPEC.md §3). Reopening a file already open just raises its view.
     if (DocumentView *existing = viewOfPath(path)) {
-        setActiveView(existing);
-        if (QDockWidget *dock = dockOf(existing))
-            dock->raise();
+        showView(existing);
         return true;
     }
 
@@ -707,7 +724,7 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     return true;
 }
 
-DocumentView *MainWindow::createView(DocumentContext *ctx, const QString &dockName)
+DocumentView *MainWindow::createView(DocumentContext *ctx)
 {
     auto *view = new DocumentView(ctx);
     ctx->views.append(view);
@@ -725,20 +742,30 @@ DocumentView *MainWindow::createView(DocumentContext *ctx, const QString &dockNa
     connect(logView->header(), &QWidget::customContextMenuRequested,
             this, &MainWindow::showColumnMenu);
 
-    addViewDock(view, dockName);
+    // Into the bookkeeping BEFORE the tab bar: adding the first tab makes it current
+    // at once, and the active-view handling that fires from it reads m_views.
+    m_views.append(view);
+    connect(view, &QObject::destroyed, this, &MainWindow::onViewDestroyed);
+    m_tabs->addTab(view, QString()); // titled by updateTabTitles below
+
+    // First run only: the panes' size hints would otherwise claim about half the
+    // window. A restored session brings its own proportions.
+    if (!m_layoutRestored && m_contexts.size() == 1 && !m_paneDocks.isEmpty()) {
+        m_layoutRestored = true;
+        resizeDocks({m_paneDocks.first()}, {width() / 3}, Qt::Horizontal);
+    }
+
     updateEmptyState();
-    updateDockTitles(ctx); // numbers the tabs when a file has several views
+    updateTabTitles(ctx); // numbers the tabs when a file has several views
     return view;
 }
 
 void MainWindow::showView(DocumentView *view)
 {
-    // tabifyDockWidget leaves the PREVIOUS tab raised, so without this the status bar
-    // and panes would describe a tab that is not on top.
-    if (QDockWidget *dock = dockOf(view)) {
-        dock->show();
-        dock->raise();
-    }
+    // Adding a tab does not raise it, so without this the status bar and panes would
+    // describe a tab that is not on top.
+    if (m_tabs->indexOf(view) >= 0)
+        m_tabs->setCurrentWidget(view); // -> onCurrentTabChanged -> setActiveView
     setActiveView(view);
     view->logView()->setFocus();
 }
@@ -753,7 +780,7 @@ void MainWindow::newViewOfActiveDocument()
     // and diverges as the user scrolls, selects, wraps or resizes columns. Everything
     // else — index, filters, highlighters, run selection, live tail — is shared.
     LogView *source = m_activeView->logView();
-    DocumentView *view = createView(ctx, DocumentView::makeDockName());
+    DocumentView *view = createView(ctx);
     LogView *fresh = view->logView();
     fresh->setWrapMode(source->wrapMode());
     fresh->restoreColumnState(source->saveColumnState());
@@ -793,8 +820,8 @@ DocumentContext *MainWindow::prepareContext(const SessionDocument &d)
         HighlighterSet::fromJson(d.highlighters.value(QStringLiteral("rules")).toArray());
 
     // The model and the controller only. Views are created by the caller, which is
-    // what lets session restore give each one its SAVED dock name; and indexing is
-    // not started, so every dock exists before any worker runs.
+    // what lets session restore rebuild a file's several views in their saved tab
+    // order; and indexing is not started, so every tab exists before any worker runs.
     buildContext(ctx);
     return ctx;
 }
@@ -830,7 +857,7 @@ void MainWindow::buildViewAndIndex(DocumentContext *ctx)
 
     // Column layout is per VIEW and lives in the session (SPEC.md §5). A newly
     // opened file starts on the format's own default columns.
-    DocumentView *view = createView(ctx, DocumentView::makeDockName());
+    DocumentView *view = createView(ctx);
 
     // Show the file just opened and make it active, which binds the panes to its
     // Document (invariant #7). Their discovered subsystem/thread lists fill in as
@@ -923,20 +950,30 @@ void MainWindow::persistFormat(const QString &path, const FormatSettings &s)
     FormatCache::save(store, path, s);
 }
 
-void MainWindow::updateDockTitles(DocumentContext *ctx)
+void MainWindow::updateTabTitles(DocumentContext *ctx)
 {
     // A background file's scan has no claim on the status bar, so its progress shows
     // in its own tab title instead.
-    const QString name = QFileInfo(ctx->doc->path()).fileName();
+    QString name = QFileInfo(ctx->doc->path()).fileName();
+    name.replace(u'&', QLatin1String("&&")); // the tab bar reads '&' as a mnemonic
     const QString base = ctx->indexing
         ? QStringLiteral("%1 — indexing %2%").arg(name).arg(ctx->progressPercent)
         : name;
     // Several views onto one file are numbered, so two identically-named tabs are
-    // still tellable apart.
-    const bool numbered = ctx->views.size() > 1;
-    for (int i = 0; i < ctx->views.size(); ++i) {
-        if (QDockWidget *dock = dockOf(ctx->views.at(i)))
-            dock->setWindowTitle(numbered ? QStringLiteral("%1 [%2]").arg(base).arg(i + 1) : base);
+    // still tellable apart. The numbering runs left to right along the tab bar, not
+    // in creation order, so a dragged tab does not end up as [2] left of [1].
+    QVector<int> indices;
+    indices.reserve(ctx->views.size());
+    for (DocumentView *view : std::as_const(ctx->views)) {
+        if (const int index = m_tabs->indexOf(view); index >= 0)
+            indices.append(index);
+    }
+    std::sort(indices.begin(), indices.end());
+    const bool numbered = indices.size() > 1;
+    for (int i = 0; i < indices.size(); ++i) {
+        m_tabs->setTabText(indices.at(i),
+                           numbered ? QStringLiteral("%1 [%2]").arg(base).arg(i + 1) : base);
+        m_tabs->setTabToolTip(indices.at(i), ctx->doc->path());
     }
 }
 
@@ -944,7 +981,7 @@ void MainWindow::onIndexProgress(DocumentContext *ctx, qint64 done, qint64 total
 {
     if (total > 0)
         ctx->progressPercent = int((done * 100) / total);
-    updateDockTitles(ctx);
+    updateTabTitles(ctx);
     if (ctx == activeContext()) {
         m_progressBar->setValue(ctx->progressPercent);
         updateStatus();
@@ -955,7 +992,7 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
 {
     Document *doc = ctx->doc.get();
     ctx->indexing = false;
-    updateDockTitles(ctx);
+    updateTabTitles(ctx);
     const bool isActive = ctx == activeContext();
     if (isActive) {
         m_progressBar->setVisible(false);
@@ -1396,9 +1433,10 @@ void MainWindow::saveSession()
 
     Session session;
     session.geometry = saveGeometry();
-    // The whole dock layout: tab groups, splits and floating windows, for the panes
-    // AND for every open file (SPEC.md §8, §10). Must be taken while the docks still
-    // exist, i.e. before any teardown.
+    // The pane layout: which panes are open, where, and how they are tabbed, split or
+    // floated (SPEC.md §8, §10). Only the panes are docks, so this blob no longer
+    // describes the open files — those are the `views` array below. Must be taken
+    // while the docks still exist, i.e. before any teardown.
     session.windowState = saveState();
 
     // Every open file goes into the documents array; every view into the views array,
@@ -1434,10 +1472,11 @@ void MainWindow::saveSession()
         session.documents.append(d);
     }
 
+    // m_views is kept in tab order, so saving it in order is what puts the tabs back
+    // left to right — including after the user has dragged them around.
     for (DocumentView *view : std::as_const(m_views)) {
         SessionView v;
         v.documentIndex = documentIndex.value(view->context(), 0);
-        v.dockName = view->dockName();
         v.columnState = view->logView()->saveColumnState();
         v.wrapMode = int(view->logView()->wrapMode());
         session.views.append(v);
@@ -1456,22 +1495,32 @@ void MainWindow::restoreSession()
     if (!session.geometry.isEmpty())
         restoreGeometry(session.geometry);
 
-    // The dock layout goes back FIRST, while only the pane docks exist. Docks named
-    // in the saved state but not yet created become placeholders, and each document
-    // dock claims its own slot below via restoreDockWidget() — the documented way to
-    // place a dock created after restoreState().
+    // The pane layout goes back while only the pane docks exist — which is all of
+    // them now that the documents are tabs, so there is nothing left to place
+    // afterwards.
     if (!session.windowState.isEmpty()) {
         restoreState(session.windowState);
         m_layoutRestored = true;
+        // A layout saved where panes could float — another platform, or this one
+        // before the pane got wedged mid-drag — must not bring back a window this
+        // platform cannot place. Pull any such pane back into the dock area.
+        if (!panesMayFloat()) {
+            for (QDockWidget *dock : std::as_const(m_paneDocks)) {
+                if (dock->isFloating())
+                    dock->setFloating(false);
+            }
+        }
     }
 
-    // Rebuild the files and their views in the saved order. Opening is split: the
-    // synchronous half (open the source, compile the format, build the model and the
-    // dock) runs for everything first, so every dock exists before any of them starts
-    // indexing on a worker thread.
+    // Rebuild the files and their views in the saved order, which is the saved TAB
+    // order. Opening is split: the synchronous half (open the source, compile the
+    // format, build the model and the tab) runs for everything first, so every tab
+    // exists before any of them starts indexing on a worker thread.
     QStringList missing;
     QHash<int, DocumentContext *> byDocument;
-    for (const SessionView &sv : session.views) {
+    DocumentView *toActivate = nullptr;
+    for (int i = 0; i < session.views.size(); ++i) {
+        const SessionView &sv = session.views.at(i);
         const SessionDocument *d = session.documentFor(sv);
         if (!d || d->path.isEmpty())
             continue;
@@ -1479,8 +1528,7 @@ void MainWindow::restoreSession()
         DocumentContext *ctx = byDocument.value(sv.documentIndex, nullptr);
         if (!ctx) {
             // A missing/unreadable file must not error every launch (SPEC.md §10):
-            // skip it with an inline notice, no dialog. Its dock never appears, which
-            // restoreState() tolerates.
+            // skip it with an inline notice, no dialog. Its tab simply never appears.
             const QFileInfo info(d->path);
             if (!info.exists() || !info.isReadable()) {
                 if (!missing.contains(d->path))
@@ -1493,14 +1541,16 @@ void MainWindow::restoreSession()
             byDocument.insert(sv.documentIndex, ctx);
         }
 
-        // Every saved view is created here, under its OWN saved dock name — including
-        // the file's first, which is why prepareContext() makes none.
-        DocumentView *view = createView(ctx, sv.dockName);
-        // createView() has already put the dock back in its saved slot, keying off
-        // the dock name set above (or fallen back to the default placement).
+        // Every saved view is created here — including the file's first, which is why
+        // prepareContext() makes none.
+        DocumentView *view = createView(ctx);
         view->logView()->setWrapMode(static_cast<LogView::WrapMode>(sv.wrapMode));
         if (!sv.columnState.isEmpty())
             view->logView()->restoreColumnState(sv.columnState);
+        // Which view was active is a saved INDEX, and skipped files shift every index
+        // after them — so resolve it here, against the views actually created.
+        if (i == session.activeView)
+            toActivate = view;
     }
 
     if (!missing.isEmpty()) {
@@ -1515,16 +1565,6 @@ void MainWindow::restoreSession()
 
     // Activate the saved view, which binds the panes to its file, then start every
     // scan. Indexing goes last so worker batches never race the layout settling.
-    const SessionView *activeSaved = session.active();
-    DocumentView *toActivate = nullptr;
-    if (activeSaved) {
-        for (DocumentView *view : std::as_const(m_views)) {
-            if (view->dockName() == activeSaved->dockName) {
-                toActivate = view;
-                break;
-            }
-        }
-    }
     showView(toActivate ? toActivate : m_views.first());
 
     for (auto &ctx : m_contexts) {

@@ -24,7 +24,7 @@
 Both can render a virtualized table over a lazy model; `QTableView` and Qt Quick `TableView` are comparable there. The decision rests on three things Widgets provides that QML would require building:
 
 1. **Cross-row text selection and copy.** `QTableView` gives rubber-band and shift-click range selection natively. QML has no cross-delegate text selection — it would mean hand-rolling hit-testing, selection anchors, and clipboard serialization. For a log viewer, selecting a span of records and copying them is a primary interaction, not a nicety.
-2. **Dockable panes.** `SPEC.md` §8 describes `QDockWidget` almost exactly: show/hide, move, float, tab. QML has no docking framework; `SplitView` gives fixed panes only.
+2. **Dockable panes.** `SPEC.md` §8 describes `QDockWidget` almost exactly: show/hide, move, float, tab — and a `QMainWindow` central widget keeps them out of the document area for free (§12.2). QML has no docking framework; `SplitView` gives fixed panes only.
 3. **Layout persistence.** `QMainWindow::saveState()`/`restoreState()` covers most of `SPEC.md` §10 in a few lines. QML would need bespoke serialization of every pane property.
 
 Secondary: Widgets renders cells via `QStyledItemDelegate::paint()` without instantiating a QObject per visible cell, which is lighter for a dense fast-scrolling table; and Widgets picks up native platform styling on all three targets.
@@ -254,7 +254,7 @@ A log file often concatenates several application runs (`SPEC.md` §3, Runs). Ra
 
 ## 8. Persistence
 
-- `QSettings` for window geometry, `QMainWindow::saveState()` output, the open files and the views onto them, per-view column layout and wrap mode, and per-file filters/highlighters. Follow state is **not** persisted: every file opens at its end, following (`SPEC.md` §3), so there is nothing to restore. The schema is at version 2; see §12.3 for its shape, the dock-name scheme it depends on, and the restore ordering.
+- `QSettings` for window geometry, `QMainWindow::saveState()` output (the pane layout), the open files and the views onto them in tab order, per-view column layout and wrap mode, and per-file filters/highlighters. Follow state is **not** persisted: every file opens at its end, following (`SPEC.md` §3), so there is nothing to restore. The schema is at version 3; see §12.3 for its shape, the two migrations, and the restore ordering.
 - Presets as JSON under `QStandardPaths::AppConfigLocation` — a discrete file format, since `SPEC.md` §9 proposes export/import.
 - Per-file format cache, keyed by canonical path, so a configured file reopens without prompting. Per file only — no directory-level fallback; a new file is never assumed to share a sibling's format.
 - Schema version field in both settings and preset files from day one; migrating unversioned user data later is unpleasant.
@@ -316,9 +316,9 @@ Provisional, to be validated against a real log early rather than assumed:
 - Live tail appends visible within ~200 ms of a write.
 - Rebuilding block prefix sums after a filter change: < 20 ms per million records.
 
-## 12. Multiple documents: contexts, views, and the dock shell
+## 12. Multiple documents: contexts, views, and the window shell
 
-Several logs are open at once as tabs, draggable into splits and floating windows, and one log may be open in several views (`SPEC.md` §5a). This section was previously a list of accommodations for a deferred feature; it now describes the implementation those accommodations bought — the four constraints below (§12.1–12.4) held, and the work was additive.
+Several logs are open at once as tabs in a central document well, and one log may be open in several views (`SPEC.md` §5a). This section was previously a list of accommodations for a deferred feature; it now describes the implementation those accommodations bought — the four constraints below (§12.1–12.4) held, and the work was additive.
 
 ### 12.1 Three scopes, and what belongs in each
 
@@ -338,46 +338,48 @@ The load-bearing distinction is that a *file* and a *view onto it* are different
 
 **The timestamp display mode is per file, despite being chosen from a per-view widget.** Its control is the timestamp column header's context menu (`SPEC.md` §4) and the header is per view, but the mode itself sits in `FormatSettings` beside the source zone it replaced. Per view would mean the shared `LogModel` could no longer format the Date column — it carries no view state — pushing that formatting into `LogView` for one setting's sake. The menu is built once, owned by the window, and its checkmark is refreshed from the active context by `updateActionStates()`, the same shape as the per-view `m_followAction`.
 
-### 12.2 The dock shell
+### 12.2 The window shell: a document well, and docks around it
 
-The window has **no visible central widget**: open files and side panes are all `QDockWidget`s, and the dock areas divide the whole window. That is what makes a log draggable into a split, a tab group, or a floating window with no bespoke drag machinery — Qt's own dock dragging does it. Three constraints come with it:
+The window is a **central `QTabWidget` holding the open files**, with the four side panes as the only `QDockWidget`s. The separation is the point (`SPEC.md` §5a): Qt's dock areas cannot encroach on a main window's central widget, so a pane can never be dropped into the document area and a log can never be dragged out into the panes' — no bespoke drag policing, just the one structural fact.
 
-- `setDockOptions(AnimatedDocks | AllowNestedDocks | AllowTabbedDocks | GroupedDragging)` must be set **before any dock widget is added**. `GroupedDragging` is what drags a whole tab group.
-- **No dock may call `setAllowedAreas()`.** `GroupedDragging` misbehaves for docks that restrict where they can go.
-- The central widget is the "no file open" notice, hidden while anything is open — a hidden central widget collapses to zero and lets the docks fill the window.
+- `setDockOptions(AnimatedDocks | AllowNestedDocks | AllowTabbedDocks)` must be set **before any dock widget is added**. It governs the panes alone.
+- **No `GroupedDragging`.** It makes a drag on any dock's title bar move that dock's entire tab group — and the panes ship tabbed together, so pulling Filters out took the other three with it. Dropping it also lifts the old ban on `setAllowedAreas()` (which `GroupedDragging` mishandled), so panes are now restricted to the left and right areas, matching `SPEC.md` §8 and removing the accidental full-width strip above or below the log.
+- **Panes do not float under Wayland** (`panesMayFloat()`, keyed on the QPA platform name, not the OS). Tearing a dock off needs two things Wayland withholds from clients: pointer motion after the pointer has left the widget, and the ability to place a top-level window under the cursor. Qt says the first part out loud mid-drag — *"This plugin supports grabbing the mouse only for popup windows"*. What Wayland does provide is an **implicit** grab for the duration of a button press, delivered to the surface that received the press; a drag that stays inside the main window therefore works, while a tear-off moves the dock to a new surface mid-gesture and loses the rest of it, stranding the pane. `restoreSession()` also un-floats any pane a saved layout brings back floating, so a session written elsewhere (or before a wedged drag) cannot resurrect an unplaceable window.
+- The central widget is a `QStackedWidget` over the tabs and the "no file open" notice, so an empty window shows the notice rather than an empty tab frame.
+- A file name is `&`-escaped before it becomes tab text: `QTabBar` reads `&` as a mnemonic.
+- Two views of one file are numbered by **tab position**, not creation order, so a dragged tab never ends up labelled `[2]` to the left of `[1]`. `QTabBar::tabMoved` renumbers.
 
-The accepted trade-off versus a third-party docking framework (KDDockWidgets, Qt-ADS): nothing structurally prevents a pane from being tabbed next to a log, as Visual Studio's separate "document well" would. Neither library is packaged for the reference build environment (Ubuntu 24.04, `CLAUDE.md`), and vendoring one would mean rebuilding the packaging story on three platforms to buy a constraint we do not need.
+**This was originally the opposite decision**, and the reversal is the interesting part. Open files were `QDockWidget`s too, which bought drag-to-split, tab groups and floating logs for free from Qt's dock dragging. It was rejected in use: with one arrangement shared by panes and logs, ordinary pane dragging could tab a Filters pane on top of the log being read, or wedge a log into the strip along the edge. The flexibility was real, and worth less than knowing where the log is. What the earlier notes recorded as an accepted trade-off versus a third-party docking framework (KDDockWidgets, Qt-ADS) — "nothing structurally prevents a pane from being tabbed next to a log, as Visual Studio's separate document well would" — turned out to be the whole problem, and a plain central `QTabWidget` buys the document well without vendoring either library into a three-platform packaging story.
 
-**Which view is active follows keyboard focus.** `QApplication::focusChanged` is walked up to the enclosing `DocumentView`; dock `visibilityChanged` covers a tab raised without taking focus. `activeDocumentChanged` is emitted only when the underlying **`Document`** changes, so moving between two views of one file does not rebind the panes — which would otherwise reset the Filters pane's discovered-value state for no reason.
+The cost is deliberate: **logs no longer split, tear off, or float.** Two views of one file still scroll independently, but side by side is not available; if it is wanted back, it belongs in a splitter *inside* the document area, never by returning the logs to the dock layout.
+
+**Which view is active is which tab is current.** `QTabWidget::currentChanged` is the single signal for it — the earlier `QApplication::focusChanged` walk existed because a raised dock did not necessarily take focus, and a non-current tab page cannot be focused at all. `activeDocumentChanged` is emitted only when the underlying **`Document`** changes, so moving between two views of one file does not rebind the panes — which would otherwise reset the Filters pane's discovered-value state for no reason.
 
 **The Filters pane needs an explicit hand-off.** `HighlighterPane` hydrates from the `Document` it binds to (and syncs rules back on every edit), so it needs nothing. `FilterPane`'s widget state is *not* derivable from a `FilterSet`, so the window stashes it into the outgoing `DocumentContext` and restores it into the pane on the way in; an empty stash means "the defaults", which is what a newly opened file gets.
 
-### 12.3 Session schema v2, and the restore ordering
+### 12.3 Session schema v3, and the restore ordering
 
 ```json
-{ "schemaVersion": 2,
+{ "schemaVersion": 3,
   "geometry": "...", "windowState": "...",
   "documents": [ { "path": "...", "format": "...", "timeDisplay": "utc", "filters": {}, "highlighters": {}, "runAll": false } ],
-  "views":     [ { "document": 0, "dockName": "docView-<uuid>", "columnState": "...", "wrapMode": 0 } ],
+  "views":     [ { "document": 0, "columnState": "...", "wrapMode": 0 } ],
   "activeView": 0 }
 ```
 
-Two arrays, matching the two scopes: N files, and N views pointing back at them. `windowState` is `QMainWindow::saveState()` and carries the entire arrangement — tabs, splits, floating windows, panes.
+Two arrays, matching the two scopes: N files, and N views pointing back at them. **The `views` array is in tab order**, which is all the layout an open file has now; `windowState` is `QMainWindow::saveState()` and carries the pane arrangement alone.
 
-**Dock object names are UUIDs, generated once per view and persisted.** `restoreState()` matches saved layout slots to docks by object name, so the name must be stable across sessions. Ordinals would shift when files are closed in a different order than they were saved, silently landing a view in another view's slot.
+**Restore order:**
 
-**Restore order** — the subtle part, since document docks do not exist when `restoreState()` runs:
+1. `restoreGeometry()`, then `restoreState()`. Every dock — i.e. every pane — already exists, so nothing is left to place afterwards.
+2. For each saved view, in order: build its file's `DocumentContext` if this is its first view (`Document::prepare()` — the fast, synchronous half of an open), then create the view, which appends its tab. Appending in saved order *is* restoring the layout.
+3. Activate the saved view, then start every indexing worker. Indexing goes last so worker batches never race the layout settling.
 
-1. `restoreGeometry()`, then `restoreState()`. Only the pane docks exist; slots naming document docks become placeholders.
-2. For each saved view, in order: build its file's `DocumentContext` if this is its first view (`Document::prepare()` — the fast, synchronous half of an open), then create the view under its **saved** dock name.
-3. Creating a dock tries `restoreDockWidget()` **before** any `addDockWidget()`: that claims the placeholder from step 1. A dock already placed in the layout no longer matches its placeholder, so the order is not optional. A `false` return (a newly opened file, a new view, a first run) falls back to the default placement — left area, tabbed onto the previous log.
-4. Activate the saved view, then start every indexing worker. Indexing goes last so worker batches never race the layout settling.
+`activeView` is an **index into the saved array**, resolved during step 2 rather than afterwards: a skipped file shifts every index after it, so the view it names has to be recognised as it is created. A file that has gone missing is skipped with an inline notice and no dialog (`SPEC.md` §10); its tab simply never appears, and if it held the active view the first surviving tab takes over.
 
-A file that has gone missing is skipped with an inline notice and no dialog (`SPEC.md` §10); its dock simply never appears, which `restoreState()` tolerates.
+**v1 and v2 are migrated, not discarded** — v1 as one document with one synthesized view carrying the column state that used to live on the document; v2 as-is, minus the per-view `dockName` that tab order replaced. Both `windowState` blobs are deliberately **dropped**: v1's describes a window laid out nothing like this one, and v2's records the *collapsed* central widget of the all-docks shell, which would restore the document well at zero width — a silent failure that reads as the tabs having vanished.
 
-**v1 is migrated, not discarded** — one document, one synthesized view, carrying the column state that used to live on the document. Its `windowState` is deliberately **dropped**: that blob describes a window with a central widget and no document docks, and feeding it to the dock-only shell yields a mangled layout with no diagnostic.
-
-**`timeDisplay` was added *within* v2, not as a v3.** It is one additive key in the existing shape, read with the legacy `displayZone` key as a fallback (the `"local"`/`"utc"` spellings are shared deliberately), so a v2 store round-trips through either build. The v1→v2 bump was earned by structural change — a new array, a field moved between scopes, a renamed key, a dropped blob — and none of that applies. Bumping anyway would also discard every existing session, since `load()` accepts only `kSchemaVersion` and 1.
+**`timeDisplay` was added *within* v2, not as a version of its own.** It is one additive key in the existing shape, read with the legacy `displayZone` key as a fallback (the `"local"`/`"utc"` spellings are shared deliberately), so such a store round-trips through either build. A bump is earned by structural change — a new array, a field moved between scopes, a renamed key, a dropped blob — as v1→v2 was and v2→v3 was; and it costs every session whose version `load()` does not list.
 
 ### 12.4 The constraints that made this additive
 
@@ -386,4 +388,4 @@ For the record, since they still bind:
 1. **A `Document` owns all per-file state.** Nothing outside it may hold per-file state; `DocumentContext` holds the *machinery* around one file, not the file's state.
 2. **No singletons or globals for file state.** No `currentFile()` accessor, no static index. This is the constraint most easily violated by accident and the most painful to unwind.
 3. **Panes bind to the active document by signal, not by construction.** A pane built against a fixed `Document&` works fine with one file and has to be torn apart for two.
-4. **The settings schema stores arrays.** It held a one-element `documents` array from day one, which is why v2 could add `views` beside it instead of restructuring.
+4. **The settings schema stores arrays.** It held a one-element `documents` array from day one, which is why v2 could add `views` beside it instead of restructuring — and why v3 could drop the window-layout coupling from `views` without touching either scope.

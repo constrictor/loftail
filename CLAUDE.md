@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **M0–M8 complete, 2026-07-28.** The application is functional on Linux: it opens and indexes a log, filters and highlights it, tails it live, splits it into runs, restores its session, and autodetects a format. Directory layout is `src/core/` (UI-free, links QtCore only), `src/ui/` (Qt Widgets), and `tests/`; the commands below work and all CTest cases pass.
 
-**In progress: M9 — multiple documents, tabs and splits.** Several logs open at once as draggable, splittable, floatable tabs. See `PLAN.md` M9.
+**In progress: M9 — multiple documents and tabs.** Several logs open at once as tabs in a central document area; the side panes are the only dock widgets and cannot be dragged into it (`ARCHITECTURE.md` §12.2). See `PLAN.md` M9.
 
 **Outstanding regardless of milestone:** Windows and macOS builds and runtime behavior are still unverified (`PLAN.md` M6/M7), including the stubbed Windows `BufferedLogSource` share-mode open and `pathIdentity()`.
 

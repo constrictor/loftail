@@ -32,10 +32,10 @@ Session SessionStore::load(QSettings &settings)
     settings.beginGroup(QLatin1String(kGroup));
 
     // A schema version from the future (or an absent one) yields an empty session
-    // rather than a half-read one — a clean first launch (§8). Version 1 is read and
-    // migrated; anything else is discarded.
+    // rather than a half-read one — a clean first launch (§8). Versions 1 and 2 are
+    // read and migrated; anything else is discarded.
     const int version = settings.value(QLatin1String(kSchema), 0).toInt();
-    if (version != kSchemaVersion && version != 1) {
+    if (version != kSchemaVersion && version != 1 && version != 2) {
         settings.endGroup();
         return session;
     }
@@ -43,10 +43,11 @@ Session SessionStore::load(QSettings &settings)
 
     session.schemaVersion = kSchemaVersion;
     session.geometry = settings.value(QLatin1String(kGeometry)).toByteArray();
-    // A v1 windowState describes a window with a central widget and no document
-    // docks; restoring it into the dock-only shell would mangle the layout. Geometry
-    // (position and size) is still good, so only the dock layout is dropped.
-    if (!v1)
+    // Only a current windowState is usable: a v1 blob describes a different window
+    // entirely, and a v2 one records the collapsed central widget of the all-docks
+    // shell, which would squeeze the document well to zero. Geometry (position and
+    // size) is still good, so only the pane layout is dropped.
+    if (version == kSchemaVersion)
         session.windowState = settings.value(QLatin1String(kWindowState)).toByteArray();
 
     const int n = settings.beginReadArray(QLatin1String(kDocuments));
@@ -83,12 +84,10 @@ Session SessionStore::load(QSettings &settings)
         session.documents.append(d);
 
         // v1 had exactly one view per document, with the column state on the
-        // document. Synthesize that view; its dock name is fresh, which is harmless
-        // because the v1 windowState it would have matched is being dropped anyway.
+        // document. Synthesize that view.
         if (v1) {
             SessionView v;
             v.documentIndex = i;
-            v.dockName = QStringLiteral("docView-migrated-%1").arg(i);
             v.columnState = settings.value(QStringLiteral("columnState")).toByteArray();
             session.views.append(v);
         }
@@ -103,9 +102,10 @@ Session SessionStore::load(QSettings &settings)
         session.views.reserve(viewCount);
         for (int i = 0; i < viewCount; ++i) {
             settings.setArrayIndex(i);
+            // A v2 view also carried a `dockName`; the tab order it used to
+            // disambiguate is now just this array's order, so it is read past.
             SessionView v;
             v.documentIndex = settings.value(QStringLiteral("document"), 0).toInt();
-            v.dockName = settings.value(QStringLiteral("dockName")).toString();
             v.columnState = settings.value(QStringLiteral("columnState")).toByteArray();
             v.wrapMode = settings.value(QStringLiteral("wrapMode"), 0).toInt();
             session.views.append(v);
@@ -157,7 +157,6 @@ void SessionStore::save(QSettings &settings, const Session &session)
         settings.setArrayIndex(i);
         const SessionView &v = session.views.at(i);
         settings.setValue(QStringLiteral("document"), v.documentIndex);
-        settings.setValue(QStringLiteral("dockName"), v.dockName);
         settings.setValue(QStringLiteral("columnState"), v.columnState);
         settings.setValue(QStringLiteral("wrapMode"), v.wrapMode);
     }

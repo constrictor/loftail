@@ -21,8 +21,8 @@ class FindBar;
 // the same log — scroll position, selection, wrap mode, column layout, follow
 // state — lives in the LogView; everything shared lives in the DocumentContext.
 //
-// The widget reports focus so the window can track which view is active and
-// rebind the side panes to its Document (invariant #7).
+// One of these is a page in the window's document well; the window tracks which
+// tab is current and rebinds the side panes to its Document (invariant #7).
 class DocumentView : public QWidget
 {
     Q_OBJECT
@@ -36,14 +36,6 @@ public:
     LogView *logView() const { return m_logView; }
     FindBar *findBar() const { return m_findBar; }
 
-    // The objectName of the QDockWidget hosting this view. Generated once per view
-    // and persisted with the session, because restoreState()/restoreDockWidget()
-    // match saved layout slots to docks by object name.
-    const QString &dockName() const { return m_dockName; }
-    void setDockName(const QString &name) { m_dockName = name; }
-    // A fresh, never-reused dock object name.
-    static QString makeDockName();
-
     // Show the Find bar and focus its text field (Ctrl+F).
     void activateFind();
 
@@ -56,7 +48,6 @@ private:
     LogView         *m_logView = nullptr;
     FindBar         *m_findBar = nullptr;
     QVBoxLayout     *m_layout = nullptr;
-    QString          m_dockName;
 };
 
 } // namespace loftail

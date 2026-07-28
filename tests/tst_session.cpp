@@ -9,10 +9,10 @@
 
 using namespace loftail;
 
-// Session persistence (SPEC.md §10, ARCHITECTURE.md §12). Schema v2 has two arrays:
-// `documents` (one per open file) and `views` (one per view, pointing back at its
-// file), because one file may be open in several views. Core-only (a QSettings ini in
-// a temp dir).
+// Session persistence (SPEC.md §10, ARCHITECTURE.md §12). Schema v3 has two arrays:
+// `documents` (one per open file) and `views` (one per view, in tab order, pointing
+// back at its file), because one file may be open in several views. Core-only (a
+// QSettings ini in a temp dir).
 class TestSession : public QObject
 {
     Q_OBJECT
@@ -28,6 +28,7 @@ private slots:
     void severalViewsOnOneDocument();
     void viewsShrinkWithoutStaleTail();
     void v1SessionMigrates();
+    void v2SessionMigratesWithoutItsWindowState();
     void legacyDisplayZoneKeyMigrates();
 };
 
@@ -61,7 +62,6 @@ void TestSession::documentsArrayRoundTrip()
 
     SessionView v;
     v.documentIndex = 0;
-    v.dockName = QStringLiteral("docView-abc");
     v.columnState = QByteArrayLiteral("COLS");
     v.wrapMode = 2;
     in.views = {v};
@@ -86,11 +86,10 @@ void TestSession::documentsArrayRoundTrip()
     QCOMPARE(int(od.format.timeDisplay), int(TimeDisplay::RunSeconds));
     QCOMPARE(od.filters.value(QStringLiteral("priorityEnabled")).toBool(), true);
 
-    // The view's own state: dock identity, columns and wrap mode (§5).
+    // The view's own state: which file it shows, its columns and its wrap mode (§5).
     QCOMPARE(out.views.size(), 1);
     const SessionView &ov = out.views.first();
     QCOMPARE(ov.documentIndex, 0);
-    QCOMPARE(ov.dockName, QStringLiteral("docView-abc"));
     QCOMPARE(ov.columnState, QByteArrayLiteral("COLS"));
     QCOMPARE(ov.wrapMode, 2);
     QCOMPARE(out.documentFor(ov)->path, d.path);
@@ -105,7 +104,7 @@ void TestSession::emptyOnFirstLaunch()
     QSettings s(dir.filePath(QStringLiteral("s.ini")), QSettings::IniFormat);
     const Session out = SessionStore::load(s);
     QVERIFY(!out.hasDocuments());
-    QVERIFY(out.active() == nullptr);
+    QVERIFY(out.views.isEmpty());
 }
 
 void TestSession::unknownSchemaYieldsEmpty()
@@ -173,10 +172,8 @@ void TestSession::perFileScopingSurvivesMultipleDocuments()
     in.documents = {a, b};
     SessionView va;
     va.documentIndex = 0;
-    va.dockName = QStringLiteral("docView-a");
     SessionView vb;
     vb.documentIndex = 1;
-    vb.dockName = QStringLiteral("docView-b");
     in.views = {va, vb};
     {
         QSettings s(ini, QSettings::IniFormat);
@@ -188,7 +185,8 @@ void TestSession::perFileScopingSurvivesMultipleDocuments()
     QCOMPARE(out.documents.size(), 2);
     QCOMPARE(out.documents.at(0).format.pattern, QStringLiteral("A%n"));
     QCOMPARE(out.documents.at(1).format.pattern, QStringLiteral("B%n"));
-    QCOMPARE(out.documentFor(*out.active())->path, QStringLiteral("/b.log"));
+    // activeView indexes the views array, and that view names its own file.
+    QCOMPARE(out.documentFor(out.views.at(out.activeView))->path, QStringLiteral("/b.log"));
 }
 
 void TestSession::severalViewsOnOneDocument()
@@ -204,12 +202,10 @@ void TestSession::severalViewsOnOneDocument()
     in.documents = {d};
     SessionView first;
     first.documentIndex = 0;
-    first.dockName = QStringLiteral("docView-1");
     first.columnState = QByteArrayLiteral("WIDE");
     first.wrapMode = 0;
     SessionView second;
     second.documentIndex = 0;
-    second.dockName = QStringLiteral("docView-2");
     second.columnState = QByteArrayLiteral("NARROW");
     second.wrapMode = 2;
     in.views = {first, second};
@@ -227,7 +223,7 @@ void TestSession::severalViewsOnOneDocument()
     QCOMPARE(out.views.at(0).columnState, QByteArrayLiteral("WIDE"));
     QCOMPARE(out.views.at(1).columnState, QByteArrayLiteral("NARROW"));
     QCOMPARE(out.views.at(1).wrapMode, 2);
-    QCOMPARE(out.active()->dockName, QStringLiteral("docView-2"));
+    QCOMPARE(out.activeView, 1);
 }
 
 void TestSession::viewsShrinkWithoutStaleTail()
@@ -242,9 +238,9 @@ void TestSession::viewsShrinkWithoutStaleTail()
     d.path = QStringLiteral("/a.log");
     two.documents = {d};
     SessionView v1;
-    v1.dockName = QStringLiteral("docView-1");
+    v1.columnState = QByteArrayLiteral("FIRST");
     SessionView v2;
-    v2.dockName = QStringLiteral("docView-2");
+    v2.columnState = QByteArrayLiteral("SECOND");
     two.views = {v1, v2};
     {
         QSettings s(ini, QSettings::IniFormat);
@@ -261,14 +257,14 @@ void TestSession::viewsShrinkWithoutStaleTail()
     QSettings s(ini, QSettings::IniFormat);
     const Session out = SessionStore::load(s);
     QCOMPARE(out.views.size(), 1);
-    QCOMPARE(out.views.first().dockName, QStringLiteral("docView-1"));
+    QCOMPARE(out.views.first().columnState, QByteArrayLiteral("FIRST"));
 }
 
 void TestSession::v1SessionMigrates()
 {
-    // A session written by the pre-tabs release must still open the user's file
+    // A session written by the single-file release must still open the user's file
     // rather than being silently discarded. Its windowState is deliberately dropped:
-    // it describes a window with a central widget and no document docks.
+    // it describes a window laid out nothing like this one.
     QTemporaryDir dir;
     const QString ini = dir.filePath(QStringLiteral("s.ini"));
     {
@@ -299,7 +295,54 @@ void TestSession::v1SessionMigrates()
     QCOMPARE(out.views.size(), 1);
     QCOMPARE(out.views.first().documentIndex, 0);
     QCOMPARE(out.views.first().columnState, QByteArrayLiteral("OLDCOLS"));
-    QVERIFY(!out.views.first().dockName.isEmpty());
+}
+
+void TestSession::v2SessionMigratesWithoutItsWindowState()
+{
+    // v2 was the all-docks shell, where open files were dock widgets and the central
+    // widget was collapsed to nothing. Its files and per-view state still restore;
+    // its windowState must NOT, or the document well would come back zero-sized —
+    // a silent failure that looks like the tabs having vanished.
+    QTemporaryDir dir;
+    const QString ini = dir.filePath(QStringLiteral("s.ini"));
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        s.beginGroup(QStringLiteral("session"));
+        s.setValue(QStringLiteral("schemaVersion"), 2);
+        s.setValue(QStringLiteral("geometry"), QByteArrayLiteral("GEOM"));
+        s.setValue(QStringLiteral("windowState"), QByteArrayLiteral("DOCKSTATE"));
+        s.setValue(QStringLiteral("activeView"), 1);
+        s.beginWriteArray(QStringLiteral("documents"), 1);
+        s.setArrayIndex(0);
+        s.setValue(QStringLiteral("path"), QStringLiteral("/logs/two.log"));
+        s.setValue(QStringLiteral("pattern"), QStringLiteral("%m%n"));
+        s.endArray();
+        s.beginWriteArray(QStringLiteral("views"), 2);
+        s.setArrayIndex(0);
+        s.setValue(QStringLiteral("document"), 0);
+        s.setValue(QStringLiteral("dockName"), QStringLiteral("docView-old-1"));
+        s.setValue(QStringLiteral("columnState"), QByteArrayLiteral("WIDE"));
+        s.setArrayIndex(1);
+        s.setValue(QStringLiteral("document"), 0);
+        s.setValue(QStringLiteral("dockName"), QStringLiteral("docView-old-2"));
+        s.setValue(QStringLiteral("wrapMode"), 2);
+        s.endArray();
+        s.endGroup();
+        s.sync();
+    }
+
+    QSettings s(ini, QSettings::IniFormat);
+    const Session out = SessionStore::load(s);
+    QCOMPARE(out.schemaVersion, SessionStore::kSchemaVersion);
+    QCOMPARE(out.geometry, QByteArrayLiteral("GEOM"));
+    QVERIFY(out.windowState.isEmpty()); // the v2 dock layout is NOT carried over
+    QCOMPARE(out.documents.size(), 1);
+    // Both views come back, in their saved order — which is now the tab order; the
+    // dockName each carried is simply read past.
+    QCOMPARE(out.views.size(), 2);
+    QCOMPARE(out.views.at(0).columnState, QByteArrayLiteral("WIDE"));
+    QCOMPARE(out.views.at(1).wrapMode, 2);
+    QCOMPARE(out.activeView, 1);
 }
 
 void TestSession::legacyDisplayZoneKeyMigrates()
@@ -327,10 +370,10 @@ void TestSession::legacyDisplayZoneKeyMigrates()
     QCOMPARE(out.documents.size(), 1);
     QCOMPARE(int(out.documents.first().format.timeDisplay), int(TimeDisplay::Utc));
 
-    // Adding the key did NOT bump the schema: it is additive within v2 and readable
-    // both ways, and a bump would discard every existing session (load() accepts
-    // only kSchemaVersion and 1).
-    QCOMPARE(SessionStore::kSchemaVersion, 2);
+    // Adding `timeDisplay` did NOT bump the schema — it is additive and readable both
+    // ways — so the legacy key is still honoured at the CURRENT version, not only at
+    // the one it was written under. (v3 was earned by the move from dock widgets to
+    // tabs; see v2SessionMigratesWithoutItsWindowState.)
 
     // The legacy spellings that meant "as written" for display land on AsWritten.
     for (const QString &legacy : {QStringLiteral("default"), QStringLiteral("offset:7200")}) {

@@ -147,13 +147,13 @@ target_link_libraries(tst_multidoc PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_multidoc COMMAND tst_multidoc)
 set_tests_properties(tst_multidoc PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-# M9 — the dock layout itself round-trips: tabs, splits and floating windows come
-# back where they were, each view keeping its own column layout and wrap mode.
+# M9 — the tab arrangement itself round-trips: the same tabs come back in the same
+# order, each view keeping its own column layout and wrap mode.
 # Two MainWindow instances over one isolated settings store, offscreen.
-qt_add_executable(tst_docksession tst_docksession.cpp)
-target_link_libraries(tst_docksession PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
-add_test(NAME tst_docksession COMMAND tst_docksession)
-set_tests_properties(tst_docksession PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+qt_add_executable(tst_tabsession tst_tabsession.cpp)
+target_link_libraries(tst_tabsession PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_tabsession COMMAND tst_tabsession)
+set_tests_properties(tst_tabsession PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # --- Console subsystem on Windows ------------------------------------------
 #

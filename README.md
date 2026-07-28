@@ -27,8 +27,8 @@ loftail does **not** link log4cplus. It reads log files as text and has no compi
 | 🪄 **Filters that scale** | Subsystem, minimum priority, thread, time range, message regex — OR within an axis, AND across axes. Each toggleable without deleting it. |
 | 🎨 **Highlighting** | Ordered rules recolor background and/or text from a curated palette defined once for light themes and once for dark, so highlights stay legible in both. |
 | 🧭 **Runs** | Give a regex that marks the start of an application run, and view one run at a time — scrolling, filtering, and find all restricted to it. |
-| 🗂️ **Tabs and splits** | Several logs open at once. Drag a tab into a split, another tab group, or out to its own window — and open a second view onto one log to pin the history while the other keeps tailing. |
-| 💾 **Session restore** | Every open file, its format, run selection, filters and highlighters; each view's column layout and wrap mode; presets, window geometry and the whole tab/split arrangement — all come back. |
+| 🗂️ **Tabs** | Several logs open at once, as reorderable tabs in a document area the side panes can never invade — and a second view onto one log pins the history while the other keeps tailing. |
+| 💾 **Session restore** | Every open file, its format, run selection, filters and highlighters; each view's column layout and wrap mode; presets, window geometry, the tab order and the pane layout — all come back. |
 | 📐 **Multi-line records** | A record whose message spans lines occupies a taller row and is shown in full, in place. Oversized records cap at 100 lines and expand on request. |
 | 🔎 **Find** | Regex or plain, case options, wrap-around — distinct from filtering; it moves the cursor and hides nothing. |
 | 🌍 **Encodings & zones** | Auto-detected encoding (incl. the UTF-16 a `wchar_t` build writes on Windows), forceable. Timestamps are real points in time, with configurable source and display zones. |

@@ -18,6 +18,8 @@ class QDockWidget;
 class QLabel;
 class QMenu;
 class QProgressBar;
+class QStackedWidget;
+class QTabWidget;
 QT_END_NAMESPACE
 
 namespace loftail {
@@ -34,6 +36,11 @@ class RunPane;
 // The application's top-level window. Per-file state lives in Document and the
 // machinery around it in DocumentContext; the window holds the context vector and
 // a pointer to the ACTIVE VIEW, never a "current file" global (invariant #7).
+//
+// The window is a DOCUMENT WELL plus docked panes: open files are tabs in the
+// central QTabWidget and cannot be dragged out of it; the side panes are the only
+// QDockWidgets, so a pane can never land in a document tab group, nor a log in the
+// panes' (ARCHITECTURE.md §12.2).
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -105,7 +112,7 @@ private:
     void updateModelTheme(); // push the light/dark cue into the model (highlighting)
 
     // Retitle a file's tabs, folding in its indexing progress.
-    void updateDockTitles(DocumentContext *ctx);
+    void updateTabTitles(DocumentContext *ctx);
 
     // Indexing progress/completion for ONE file. Taken per context rather than as a
     // plain slot because a background file keeps scanning while another is active.
@@ -135,12 +142,12 @@ private:
     // An interactive open: buildContext plus one view, shown, with the scan started.
     void buildViewAndIndex(DocumentContext *ctx);
     // Session restore's half of an open: build a context from a saved document with
-    // NO views (the caller creates each one under its saved dock name) and no scan.
-    // Returns nullptr if the file cannot be opened.
+    // NO views (the caller creates one per saved view) and no scan. Returns nullptr
+    // if the file cannot be opened.
     DocumentContext *prepareContext(const SessionDocument &d);
-    // Build one view onto `ctx`, wire it up, and dock it. Used both for a file's
+    // Build one view onto `ctx`, wire it up, and add its tab. Used both for a file's
     // first view and for further views onto the same file.
-    DocumentView *createView(DocumentContext *ctx, const QString &dockName);
+    DocumentView *createView(DocumentContext *ctx);
     // Raise `view`'s tab, make it active, and focus its table.
     void showView(DocumentView *view);
     // Window ▸ New View: a second, independently-scrolled view onto the active file.
@@ -155,28 +162,28 @@ private:
     void closeAllDocuments();
     // Close the active view's tab; the file itself closes with its last view.
     void closeActiveView();
-    // A view is being destroyed (its dock was closed, or the window is going down):
-    // drop it from the bookkeeping, reap its file if that was its last view, and
-    // move the active view somewhere sensible.
+    // Close the view in tab `index` (its close button, or Ctrl+W).
+    void closeViewAt(int index);
+    // A view is being destroyed (its tab was closed, or the window is going down):
+    // drop it from the bookkeeping and reap its file if that was its last view.
     void onViewDestroyed(QObject *obj);
-    // Track which view the user is in. Focus can land on any descendant (the table,
-    // the Find bar's line edit), so the walk goes up to the enclosing DocumentView.
-    void onFocusChanged(QWidget *old, QWidget *now);
+    // The tab bar moved to another page: that page IS the active view.
+    void onCurrentTabChanged(int index);
+    // The user dragged a tab: keep m_views in tab order, which is the order the
+    // session stores and Ctrl+Tab walks.
+    void onTabMoved(int from, int to);
     // The view showing `path`, or nullptr — reopening an open file raises it.
     DocumentView *viewOfPath(const QString &path) const;
     // Rebuild the Window menu's list of open views.
     void refreshWindowMenu();
-    // Move the active view one tab forward (or back) through m_views.
+    // Move the active view one tab forward (or back).
     void cycleView(int delta);
 
-    // Wrap `view` in a dock widget and add it to the window. `dockName` is the
-    // QDockWidget objectName, which restoreState()/restoreDockWidget() key off, so
-    // it is generated once per view and persisted with the session.
-    QDockWidget *addViewDock(DocumentView *view, const QString &dockName);
-    // The dock hosting `view` (its parent), or nullptr.
-    static QDockWidget *dockOf(DocumentView *view);
-    // Show the "no file open" notice when there are no documents, hide it otherwise
-    // (a hidden central widget collapses so the docks fill the window).
+    // Wrap a side pane in its dock, with the areas and features every pane shares,
+    // and add it to the right-hand area. Returns the dock, for tabifying.
+    QDockWidget *addPaneDock(QWidget *pane, const QString &objectName, const QString &title);
+    // Show the "no file open" notice when there are no documents and the tabs
+    // otherwise; the two share the central widget through a stack.
     void updateEmptyState();
 
     // Make `view` the active one: repoint the status bar, title and per-file
@@ -196,8 +203,9 @@ private:
     LogModel        *activeModel() const;
 
     std::vector<std::unique_ptr<DocumentContext>> m_contexts;
-    // Every open view, in creation order — which is also the order the session
-    // stores them in, and the order Ctrl+Tab walks.
+    // Every open view, in TAB order — which is also the order the session stores
+    // them in, and the order Ctrl+Tab walks. Kept in step with the tab bar, which
+    // the user can reorder by dragging.
     QVector<DocumentView *> m_views;
     DocumentView *m_activeView = nullptr;
 
@@ -223,11 +231,14 @@ private:
     PresetPane      *m_presetPane = nullptr;      // M5 presets side pane
     RunPane         *m_runPane = nullptr;         // run selection side pane (§3a)
     QVector<QDockWidget *> m_paneDocks;           // the four above, for View ▸ Panes
-    // The central widget, and nothing else: open files live in dock widgets, so the
-    // centre only carries the "no file open" notice and is hidden when one is.
-    QLabel *m_placeholder = nullptr;
 
-    // True once a saved dock layout has been applied (or once first-run proportions
+    // The centre of the window: the document well. The tabs and the "no file open"
+    // notice take turns in the stack, so the centre is never an empty tab frame.
+    QStackedWidget *m_centre = nullptr;
+    QTabWidget     *m_tabs = nullptr;
+    QLabel         *m_placeholder = nullptr;
+
+    // True once a saved pane layout has been applied (or once first-run proportions
     // have been chosen), so the first-open sizing never overrides a restored layout.
     bool m_layoutRestored = false;
 

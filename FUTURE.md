@@ -13,7 +13,15 @@ Delivered in M8 and specified in `SPEC.md` §4: an unrecognized file's `Conversi
 
 ## ~~Multiple open files~~ — shipped
 
-Delivered in M9 and specified in `SPEC.md` §5a: several logs open at once as tabs, draggable into splits, tab groups and floating windows, with a second view onto one file available. The four accommodations this file used to list (a `Document` owning all per-file state, no "current file" global, panes binding by signal, a `documents` array in the settings schema) did their job — the work was additive, as intended. See `ARCHITECTURE.md` §12 for the implemented design.
+Delivered in M9 and specified in `SPEC.md` §5a: several logs open at once as tabs in a central document area, with a second view onto one file available. The four accommodations this file used to list (a `Document` owning all per-file state, no "current file" global, panes binding by signal, a `documents` array in the settings schema) did their job — the work was additive, as intended. See `ARCHITECTURE.md` §12 for the implemented design.
+
+Logs first shipped as dock widgets, which made them draggable into splits and floating windows; that was withdrawn because it put panes and logs in one shared arrangement, where an ordinary pane drag could land the Filters pane on top of the log being read. Side-by-side logs are worth having back — see below.
+
+## Two logs side by side
+
+Compare two logs, or two points in one log, without alt-tabbing: split the document area so two tabs are visible at once, vertically or horizontally.
+
+**Already accommodated:** per-view state is entirely inside `DocumentView`/`LogView` (scroll, selection, wrap, columns, follow), several views onto one file already work, and the session stores views as an ordered array — so this is a layout change, not a state change. It belongs *inside* the document area (a splitter of tab groups, the shape every IDE uses), never by returning logs to the dock layout: what makes the current arrangement predictable is that the panes cannot reach into the document area, and that must survive. The session schema would gain a description of the split, which is why the `views` array is ordered rather than keyed by a layout blob.
 
 ## Compressed logs
 
@@ -39,4 +47,4 @@ Mark records of interest and jump between them, so a spot found once can be retu
 
 - `SPEC.md` — what has shipped. When a feature here ships, its user-visible behavior moves into `SPEC.md` and its entry here is struck through, as "Multiple open files" now is.
 - `ARCHITECTURE.md` — the accommodations referenced above are implemented, not deferred.
-- `PLAN.md` — milestone M8 implemented format autodetection and M9 multiple open files. The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.
+- `PLAN.md` — milestone M8 implemented format autodetection and M9 multiple open files (including the move from dock widgets to a document area). The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.
