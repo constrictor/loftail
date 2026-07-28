@@ -89,6 +89,16 @@ private:
     void applyFiltersFor(DocumentContext *ctx);
 
     void buildMenus();
+    // The exclusive timestamp-display group offered on the Date column's header menu
+    // (SPEC.md §4). Built once and owned by the window; showColumnMenu borrows it,
+    // because that menu is stack-allocated per invocation.
+    void buildTimeDisplayMenu();
+    // Apply a mode to the ACTIVE file, routed through applySettings so it persists
+    // exactly like a dialog change would.
+    void setTimeDisplay(TimeDisplay mode);
+    // Point the checkmark at the active file's mode. The mode is per file, so this
+    // runs on every active-document change as well as on every menu popup.
+    void updateTimeDisplayActions();
     void refreshRecentFilesMenu();
     void rememberRecentFile(const QString &path);
     void updateStatus();
@@ -201,6 +211,10 @@ private:
     QAction *m_copyColumnsAction = nullptr;
     QAction *m_formatAction = nullptr;
     QAction *m_followAction = nullptr; // View ▸ Follow Tail (return-to-bottom, M6)
+    // The timestamp-column header submenu and its five exclusive actions, indexed by
+    // TimeDisplay. Owned by the window (see buildTimeDisplayMenu).
+    QMenu   *m_timeDisplayMenu = nullptr;
+    QAction *m_timeDisplayActions[5] = {};
     QLabel       *m_statusLabel = nullptr;
     QProgressBar *m_progressBar = nullptr;
 

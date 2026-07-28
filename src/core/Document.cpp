@@ -9,6 +9,7 @@
 
 #include <QRegularExpression>
 
+#include <algorithm>
 #include <limits>
 
 namespace loftail {
@@ -32,11 +33,31 @@ QTimeZone Document::inferSourceZone(const LogFormat &format)
     return QTimeZone::systemTimeZone();
 }
 
+void Document::recomputeDisplayZone()
+{
+    switch (m_timeDisplay) {
+    case TimeDisplay::LocalTime:
+        m_displayZone = QTimeZone::systemTimeZone();
+        return;
+    case TimeDisplay::Utc:
+        m_displayZone = QTimeZone::utc();
+        return;
+    // "As written" performs no conversion at all, i.e. it renders in the zone the
+    // text was parsed in. The two seconds modes are zone-free and land here too;
+    // the Date column ignores the result, and the other consumers (run labels,
+    // filter bounds) get the file's own wall clock, which is the sane fallback.
+    case TimeDisplay::AsWritten:
+    case TimeDisplay::EpochSeconds:
+    case TimeDisplay::RunSeconds:
+        break;
+    }
+    m_displayZone = m_sourceZone;
+}
+
 bool Document::prepare(const QString &path,
                        IFormatProvider &provider,
                        Encoding requestedEncoding,
-                       const QTimeZone &sourceZone,
-                       const QTimeZone &displayZone)
+                       const QTimeZone &sourceZone)
 {
     m_lastError.clear();
     m_formatError = CompileError{};
@@ -52,6 +73,7 @@ bool Document::prepare(const QString &path,
     m_runStartActive = false;
     m_runStartMatcher = TextMatcher();
     recomputeViewBounds();
+    invalidateTimeBaselines();
 
     m_source = openLogSource(path);
     if (!m_source) {
@@ -80,7 +102,7 @@ bool Document::prepare(const QString &path,
     }
 
     m_sourceZone = sourceZone.isValid() ? sourceZone : inferSourceZone(m_format);
-    m_displayZone = displayZone.isValid() ? displayZone : m_sourceZone;
+    recomputeDisplayZone(); // "as written" tracks whatever source zone just settled
     m_index.rebuildBlockSums(); // empty index has a valid (zero) total
     return true;
 }
@@ -88,10 +110,9 @@ bool Document::prepare(const QString &path,
 bool Document::open(const QString &path,
                     IFormatProvider &provider,
                     Encoding requestedEncoding,
-                    const QTimeZone &sourceZone,
-                    const QTimeZone &displayZone)
+                    const QTimeZone &sourceZone)
 {
-    if (!prepare(path, provider, requestedEncoding, sourceZone, displayZone))
+    if (!prepare(path, provider, requestedEncoding, sourceZone))
         return false;
 
     Indexer indexer(m_format, m_decoder, m_sourceZone);
@@ -102,21 +123,19 @@ bool Document::open(const QString &path,
 bool Document::prepare(const QString &path,
                        QStringView pattern,
                        Encoding requestedEncoding,
-                       const QTimeZone &sourceZone,
-                       const QTimeZone &displayZone)
+                       const QTimeZone &sourceZone)
 {
     ManualFormatProvider provider(pattern.toString());
-    return prepare(path, provider, requestedEncoding, sourceZone, displayZone);
+    return prepare(path, provider, requestedEncoding, sourceZone);
 }
 
 bool Document::open(const QString &path,
                     QStringView pattern,
                     Encoding requestedEncoding,
-                    const QTimeZone &sourceZone,
-                    const QTimeZone &displayZone)
+                    const QTimeZone &sourceZone)
 {
     ManualFormatProvider provider(pattern.toString());
-    return open(path, provider, requestedEncoding, sourceZone, displayZone);
+    return open(path, provider, requestedEncoding, sourceZone);
 }
 
 bool Document::rescan()
@@ -127,6 +146,7 @@ bool Document::rescan()
     // FilteredIndex is bound to &m_index (a stable member), so reassigning the
     // index's contents keeps that binding valid; we only clear its active subset.
     m_filtered.clear();
+    invalidateTimeBaselines(); // every record is about to be replaced
     m_source = openLogSource(m_path);
     if (!m_source) {
         m_index = RecordIndex();
@@ -269,6 +289,7 @@ void Document::setRunStart(const QString &pattern, bool regex, Qt::CaseSensitivi
 void Document::detectRuns()
 {
     m_runs.clear();
+    invalidateTimeBaselines(); // the run partition is being rebuilt underneath them
     if (!m_runStartActive || m_runStartMatcher.isEmpty() || !m_runStartMatcher.isValid()) {
         recomputeViewBounds();
         return;
@@ -366,6 +387,68 @@ void Document::selectRunByStart(qint64 startOffset, qint64 startTimestamp)
     selectRun(best >= 0 ? best : (m_runs.isEmpty() ? -1 : int(m_runs.size()) - 1));
 }
 
+void Document::invalidateTimeBaselines() const
+{
+    m_runBase.clear();
+    m_fileBase = Baseline();
+    m_runHint = -1;
+}
+
+qint64 Document::resolveBaseline(Baseline &b, int from, int end) const
+{
+    if (b.ts != Record::kNoTimestamp)
+        return b.ts; // resolved once; only an invalidation can change it
+    if (b.scanned < 0)
+        b.scanned = from;
+    // Records are only ever APPENDED within a run, so resume where the last attempt
+    // gave up: a leading stretch of unparsed lines is walked once in total, not once
+    // per painted cell.
+    for (; b.scanned < end; ++b.scanned) {
+        const qint64 ts = m_index.records.at(b.scanned).timestamp;
+        if (ts != Record::kNoTimestamp) {
+            b.ts = ts;
+            return ts;
+        }
+    }
+    return Record::kNoTimestamp;
+}
+
+qint64 Document::runBaseTimestamp(int sourceRow) const
+{
+    const int n = int(m_index.records.size());
+    if (sourceRow < 0 || sourceRow >= n)
+        return Record::kNoTimestamp;
+
+    // No run splitting configured: the whole file counts as one run, so the mode
+    // stays usable and reads as elapsed time from the log's first record.
+    if (m_runs.isEmpty())
+        return resolveBaseline(m_fileBase, 0, n);
+
+    if (m_runBase.size() != m_runs.size())
+        m_runBase.resize(m_runs.size()); // grows on append; existing memos survive
+
+    const auto endOf = [this, n](int k) {
+        return (k + 1 < m_runs.size()) ? m_runs.at(k + 1).startRecord : n;
+    };
+
+    // Try the one-entry hint first: LogView paints a contiguous row range, so
+    // consecutive cells almost always land in the run the previous cell did and skip
+    // the search entirely.
+    int i = m_runHint;
+    if (i < 0 || i >= m_runs.size()
+        || sourceRow < m_runs.at(i).startRecord || sourceRow >= endOf(i)) {
+        // Runs ascend by startRecord: take the last one starting at or before the row.
+        const auto it = std::upper_bound(m_runs.cbegin(), m_runs.cend(), sourceRow,
+                                         [](int row, const Run &r) { return row < r.startRecord; });
+        i = int(it - m_runs.cbegin()) - 1;
+        if (i < 0)
+            return Record::kNoTimestamp; // before the first run; detectRuns() always
+                                         // emits a preamble, so this is unreachable
+        m_runHint = i;
+    }
+    return resolveBaseline(m_runBase[i], m_runs.at(i).startRecord, endOf(i));
+}
+
 int Document::runRecordCount(int i) const
 {
     if (i < 0 || i >= m_runs.size())
@@ -378,6 +461,8 @@ int Document::runRecordCount(int i) const
 void Document::reparseTimestamps(const QTimeZone &sourceZone)
 {
     m_sourceZone = sourceZone.isValid() ? sourceZone : inferSourceZone(m_format);
+    recomputeDisplayZone();    // "as written" follows the source zone
+    invalidateTimeBaselines(); // every timestamp is about to be rewritten
 
     // No date field, or nothing to read: the source zone is inert (§5.1).
     if (m_format.dateGroup <= 0 || !m_source)

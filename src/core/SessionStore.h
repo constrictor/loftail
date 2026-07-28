@@ -95,6 +95,14 @@ public:
     // its windowState: that blob was produced by a window with a central widget and
     // no document docks, and feeding it to the dock-only shell yields a mangled
     // layout with no diagnostic.
+    //
+    // `timeDisplay` was added WITHIN v2 rather than bumping to 3: it is one additive
+    // key in the existing shape, read with the legacy `displayZone` key as a fallback
+    // (SessionStore.cpp), so a store written by either build round-trips. The v1->v2
+    // bump was earned by structural change — a new array, a field moved between
+    // scopes, a renamed key, a dropped blob — and none of that applies here. Bumping
+    // anyway would also discard every existing session, since load() accepts only
+    // kSchemaVersion and 1.
     static constexpr int kSchemaVersion = 2;
 
     // Read the whole session (empty documents when nothing was saved, or when the

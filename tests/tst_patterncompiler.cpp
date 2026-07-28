@@ -195,13 +195,15 @@ void TestPatternCompiler::dateTranslation_data()
     QTest::addColumn<QString>("inner");     // the strftime format inside %d{...}
     QTest::addColumn<QString>("sample");    // a date rendered by that format
     QTest::addColumn<QString>("qtFormat");  // expected translated Qt format
+    QTest::addColumn<bool>("hasMillis");    // %q seen — drives the seconds display modes
 
-    QTest::newRow("iso")       << "%Y-%m-%d %H:%M:%S" << "2026-07-21 14:32:05" << "yyyy-MM-dd HH:mm:ss";
-    QTest::newRow("iso ms")    << "%Y-%m-%d %H:%M:%S,%q" << "2026-07-21 14:32:05,123" << "yyyy-MM-dd HH:mm:ss,zzz";
-    QTest::newRow("compact")   << "%Y%m%d" << "20260721" << "yyyyMMdd";
-    QTest::newRow("time only") << "%H:%M:%S" << "14:32:05" << "HH:mm:ss";
-    QTest::newRow("12h am/pm") << "%y/%m/%d %I:%M %p" << "26/07/21 02:32 PM" << "yy/MM/dd hh:mm AP";
-    QTest::newRow("literal %") << "%H%%%M" << "14%32" << "HH%mm";
+    QTest::newRow("iso")       << "%Y-%m-%d %H:%M:%S" << "2026-07-21 14:32:05" << "yyyy-MM-dd HH:mm:ss" << false;
+    QTest::newRow("iso ms")    << "%Y-%m-%d %H:%M:%S,%q" << "2026-07-21 14:32:05,123" << "yyyy-MM-dd HH:mm:ss,zzz" << true;
+    QTest::newRow("compact")   << "%Y%m%d" << "20260721" << "yyyyMMdd" << false;
+    QTest::newRow("time only") << "%H:%M:%S" << "14:32:05" << "HH:mm:ss" << false;
+    QTest::newRow("12h am/pm") << "%y/%m/%d %I:%M %p" << "26/07/21 02:32 PM" << "yy/MM/dd hh:mm AP" << false;
+    QTest::newRow("literal %") << "%H%%%M" << "14%32" << "HH%mm" << false;
+    QTest::newRow("ms only")   << "%q" << "123" << "zzz" << true;
 }
 
 void TestPatternCompiler::dateTranslation()
@@ -209,12 +211,14 @@ void TestPatternCompiler::dateTranslation()
     QFETCH(QString, inner);
     QFETCH(QString, sample);
     QFETCH(QString, qtFormat);
+    QFETCH(bool, hasMillis);
 
     const QString pattern = QStringLiteral("%d{") + inner + QStringLiteral("} %m%n");
     const LogFormat fmt = compileOk(pattern);
 
     QCOMPARE(fmt.impliedDateFormat.qtFormat, qtFormat);
     QCOMPARE(fmt.impliedDateFormat.strftime, inner);
+    QCOMPARE(fmt.impliedDateFormat.hasMillis, hasMillis);
     QVERIFY(fmt.impliedDateFormat.isValid);
 
     // The generated sub-regex must match text the format actually produces.
@@ -231,6 +235,9 @@ void TestPatternCompiler::defaultDateFormat()
     const LogFormat fmt = compileOk(QStringLiteral("%d %m%n"));
     QCOMPARE(fmt.impliedDateFormat.qtFormat, QStringLiteral("yyyy-MM-dd HH:mm:ss"));
     QVERIFY(fmt.impliedDateFormat.isValid);
+    // The braceless default carries no %q, so the seconds display modes must render
+    // bare integers for it rather than a fabricated ".000" on every row.
+    QVERIFY(!fmt.impliedDateFormat.hasMillis);
 
     const QRegularExpressionMatch m = fmt.recordRe.match(QStringLiteral("2026-07-21 14:32:05 hello"));
     QVERIFY(m.hasMatch());

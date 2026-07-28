@@ -292,7 +292,7 @@ void TestFilter::documentApplyFiltersEndToEnd()
     Document doc;
     QVERIFY2(doc.open(file.fileName(),
                       QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
-                      Encoding::Utf8, QTimeZone::utc(), QTimeZone::utc()),
+                      Encoding::Utf8, QTimeZone::utc()),
              qPrintable(doc.lastError()));
     QCOMPARE(doc.index().records.size(), 4);
 
@@ -384,7 +384,7 @@ void TestFilter::findChangesNoFilterState()
     Document doc;
     QVERIFY2(doc.open(file.fileName(),
                       QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
-                      Encoding::Utf8, QTimeZone::utc(), QTimeZone::utc()),
+                      Encoding::Utf8, QTimeZone::utc()),
              qPrintable(doc.lastError()));
 
     // A filter is active and must be untouched by a Find walk.

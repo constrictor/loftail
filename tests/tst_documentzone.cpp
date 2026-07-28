@@ -30,7 +30,8 @@ private:
 private slots:
     void reparseShiftsTimestampsOnly();
     void reparseLeavesStructureUnchanged();
-    void displayZoneDoesNotTouchTimestamps();
+    void timeDisplayDoesNotTouchTimestamps();
+    void derivedDisplayZoneFollowsMode();
     void reparseIsNoOpWithoutDateField();
     void badPatternOpensAsPlainText();
     void inferredSourceZoneFollowsTheDateSpecifier();
@@ -127,7 +128,7 @@ void TestDocumentZone::reparseLeavesStructureUnchanged()
     QCOMPARE(doc.index().records.at(0).lineCount, lines0); // multi-line span intact
 }
 
-void TestDocumentZone::displayZoneDoesNotTouchTimestamps()
+void TestDocumentZone::timeDisplayDoesNotTouchTimestamps()
 {
     QTemporaryFile file;
     QVERIFY(writeLog(file,
@@ -135,13 +136,53 @@ void TestDocumentZone::displayZoneDoesNotTouchTimestamps()
 
     Document doc;
     QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kPattern),
-                      Encoding::Utf8, QTimeZone::utc(), QTimeZone::utc()),
+                      Encoding::Utf8, QTimeZone::utc()),
              qPrintable(doc.lastError()));
 
+    // Storage stays UTC ms whatever the display mode (invariant #10) — including the
+    // seconds modes, which convert nothing at all.
     const qint64 before = doc.index().records.at(0).timestamp;
-    doc.setDisplayZone(QTimeZone(9 * 3600)); // Tokyo display; storage stays UTC ms
-    QCOMPARE(doc.index().records.at(0).timestamp, before);
-    QCOMPARE(doc.displayZone(), QTimeZone(9 * 3600));
+    for (TimeDisplay mode : {TimeDisplay::Utc, TimeDisplay::LocalTime,
+                             TimeDisplay::EpochSeconds, TimeDisplay::RunSeconds,
+                             TimeDisplay::AsWritten}) {
+        doc.setTimeDisplay(mode);
+        QCOMPARE(doc.timeDisplay(), mode);
+        QCOMPARE(doc.index().records.at(0).timestamp, before);
+    }
+}
+
+void TestDocumentZone::derivedDisplayZoneFollowsMode()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 12:00:00,000 [main] INFO  app - a\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kPattern),
+                      Encoding::Utf8, QTimeZone(2 * 3600)),
+             qPrintable(doc.lastError()));
+
+    doc.setTimeDisplay(TimeDisplay::Utc);
+    QCOMPARE(doc.displayZone(), QTimeZone::utc());
+    doc.setTimeDisplay(TimeDisplay::LocalTime);
+    QCOMPARE(doc.displayZone(), QTimeZone::systemTimeZone());
+
+    // "As written" and both seconds modes derive to the SOURCE zone — no conversion.
+    for (TimeDisplay mode : {TimeDisplay::AsWritten, TimeDisplay::EpochSeconds,
+                             TimeDisplay::RunSeconds}) {
+        doc.setTimeDisplay(mode);
+        QCOMPARE(doc.displayZone(), QTimeZone(2 * 3600));
+    }
+
+    // A source-zone reparse must carry the derived zone with it, or "as written"
+    // would keep formatting in the zone the file was last parsed under.
+    doc.setTimeDisplay(TimeDisplay::AsWritten);
+    doc.reparseTimestamps(QTimeZone(-5 * 3600));
+    QCOMPARE(doc.displayZone(), QTimeZone(-5 * 3600));
+    // ...while an explicit zone mode is unmoved by the same reparse.
+    doc.setTimeDisplay(TimeDisplay::Utc);
+    doc.reparseTimestamps(QTimeZone(7 * 3600));
+    QCOMPARE(doc.displayZone(), QTimeZone::utc());
 }
 
 void TestDocumentZone::reparseIsNoOpWithoutDateField()

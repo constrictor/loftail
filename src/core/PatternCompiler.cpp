@@ -99,7 +99,8 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
         case u'M': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("mm"); break;
         case u'S': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("ss"); break;
         case u'p': re += QStringLiteral("[AP]M"); qt += QStringLiteral("AP"); break;
-        case u'q': re += QStringLiteral("\\d{3}"); qt += QStringLiteral("zzz"); break; // log4cplus milliseconds
+        case u'q': re += QStringLiteral("\\d{3}"); qt += QStringLiteral("zzz");
+                   result.format.hasMillis = true; break; // log4cplus milliseconds
         case u'%': re += QRegularExpression::escape(QStringLiteral("%")); qt += QLatin1Char('%'); break;
         default:
             return Expected<DateTranslation, CompileError>::makeError(

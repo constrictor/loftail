@@ -292,6 +292,26 @@ void FilterPane::setDocument(Document *document)
     }
 }
 
+void FilterPane::refreshTimeBounds()
+{
+    // The editors show display-zone wall clock, and applyToDocument() reinterprets
+    // whatever they hold in the CURRENT display zone. So when the zone moves under
+    // them the shown text must be re-rendered from the stored UTC ms, or the same
+    // digits would silently come to name a different instant — the bounds would
+    // shift by the zone offset on the next apply. Preserve the instant, not the text.
+    if (!m_document || !m_timeStart || !m_timeEnd)
+        return;
+    const FilterSet &fs = m_document->filters();
+    if (!fs.timeEnabled)
+        return; // nothing bound yet; setDocument() seeds the span instead
+
+    m_populating = true;
+    const QTimeZone dz = m_document->displayZone();
+    m_timeStart->setDateTime(QDateTime::fromMSecsSinceEpoch(fs.startMs, dz));
+    m_timeEnd->setDateTime(QDateTime::fromMSecsSinceEpoch(fs.endMs, dz));
+    m_populating = false;
+}
+
 void FilterPane::refreshDiscoveredLists()
 {
     if (!m_document) {

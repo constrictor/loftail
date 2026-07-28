@@ -3,6 +3,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QDockWidget>
+#include <QHeaderView>
 #include <QFile>
 #include <QSettings>
 #include <QSignalSpy>
@@ -10,6 +11,7 @@
 
 #include "Document.h"
 #include "FilterPane.h"
+#include "LogModel.h"
 #include "LogView.h"
 #include "MainWindow.h"
 
@@ -96,7 +98,36 @@ private slots:
     void closingATabLeavesTheOtherFileOpen();
     void fileClosesWithItsLastViewOnly();
     void closingEverythingUnbindsThePanes();
+
+    // Timestamp display modes (SPEC.md §4). The mode is per FILE and the menu lives
+    // on the timestamp column's header, so scope and persistence are the things a
+    // window-level test can pin that the core-level rendering tests cannot.
+    void timestampModeIsPerFileNotPerView();
+    void timestampModeSharedAcrossViewsOfOneFile();
+    void timestampModeSurvivesRestart();
 };
+
+namespace {
+// The model behind a view. LogView hands its LogModel to the QHeaderView, which is
+// the only public route back to it.
+LogModel *modelOf(LogView *view)
+{
+    return view ? qobject_cast<LogModel *>(view->header()->model()) : nullptr;
+}
+
+// Which timestamp mode the menu currently shows as chosen, by objectName.
+QString checkedTimeDisplay(const MainWindow &w)
+{
+    for (const char *name : {"timeDisplayAsWrittenAction", "timeDisplayLocalAction",
+                             "timeDisplayUtcAction", "timeDisplaySecondsAction",
+                             "timeDisplayRunSecondsAction"}) {
+        QAction *a = w.findChild<QAction *>(QLatin1String(name));
+        if (a && a->isChecked())
+            return QLatin1String(name);
+    }
+    return QString();
+}
+} // namespace
 
 void TestMultiDoc::initTestCase()
 {
@@ -111,6 +142,10 @@ void TestMultiDoc::init()
 {
     QSettings s;
     s.remove(QStringLiteral("session"));
+    // The per-file format cache is keyed by path and outlives a window, so a
+    // timestamp mode chosen in one case would otherwise reappear in the next one
+    // that opens the same file.
+    s.remove(QStringLiteral("formatCache"));
     s.sync();
 }
 
@@ -252,6 +287,93 @@ void TestMultiDoc::closingEverythingUnbindsThePanes()
     auto *fp = w.findChild<FilterPane *>();
     QVERIFY(fp);
     QVERIFY(!fp->isEnabled()); // FilterPane::setDocument(nullptr) disables it
+}
+
+void TestMultiDoc::timestampModeIsPerFileNotPerView()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    waitUntilIndexed(w);
+
+    QCOMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplayAsWrittenAction"));
+    trigger(w, "timeDisplayUtcAction");
+    QCOMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplayUtcAction"));
+
+    // A second FILE carries its own mode; choosing one for a.log must not leak.
+    w.openFile(m_b);
+    QTRY_COMPARE(w.findChildren<LogView *>().size(), 2);
+    waitUntilIndexed(w);
+    QCOMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplayAsWrittenAction"));
+    trigger(w, "timeDisplayRunSecondsAction");
+
+    // Back to a.log: its own choice is intact and the checkmark follows the tab.
+    w.openFile(m_a); // already open, so this raises it
+    QTRY_COMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplayUtcAction"));
+    w.openFile(m_b);
+    QTRY_COMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplayRunSecondsAction"));
+}
+
+void TestMultiDoc::timestampModeSharedAcrossViewsOfOneFile()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    waitUntilIndexed(w);
+
+    trigger(w, "newViewAction");
+    QCOMPARE(w.findChildren<LogView *>().size(), 2);
+
+    const QList<LogView *> views = w.findChildren<LogView *>();
+    LogModel *m0 = modelOf(views.at(0));
+    LogModel *m1 = modelOf(views.at(1));
+    QVERIFY(m0);
+    // One LogModel backs all of a file's views (ARCHITECTURE.md §12.1), which is
+    // exactly why the mode cannot be per view.
+    QCOMPARE(m0, m1);
+
+    const QString before = m0->data(m0->index(0, 0)).toString();
+    QCOMPARE(before, QStringLiteral("2026-07-21 10:00:00,000"));
+
+    trigger(w, "timeDisplaySecondsAction");
+    const QString after = m0->data(m0->index(0, 0)).toString();
+    QVERIFY(after != before);
+    // The file's pattern has %q, so seconds render with milliseconds.
+    QVERIFY2(after.endsWith(QStringLiteral(".000")), qPrintable(after));
+    // Both views render identically — there is only one model to render from.
+    QCOMPARE(m1->data(m1->index(0, 0)).toString(), after);
+}
+
+void TestMultiDoc::timestampModeSurvivesRestart()
+{
+    {
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        w.openFile(m_a);
+        QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+        waitUntilIndexed(w);
+        trigger(w, "timeDisplayRunSecondsAction");
+        w.close(); // saves the session
+    }
+
+    // The mode rides the same persistence path the Log Format dialog uses, so a
+    // relaunch restores it along with the rest of the file's format.
+    MainWindow w;
+    w.show();
+    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    waitUntilIndexed(w);
+    QCOMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplayRunSecondsAction"));
+
+    LogModel *m = modelOf(w.findChildren<LogView *>().at(0));
+    QVERIFY(m);
+    QCOMPARE(m->data(m->index(0, 0)).toString(), QStringLiteral("0.000"));
+
+    w.close();
 }
 
 int main(int argc, char *argv[])

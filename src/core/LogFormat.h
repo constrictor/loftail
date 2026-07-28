@@ -51,6 +51,14 @@ struct DateFormat
     QString strftime;  // the inner format as written, or the default when braces were omitted
     QString qtFormat;  // translated to QDateTime::fromString() form, e.g. "yyyy-MM-dd HH:mm:ss"
     bool isValid = false;
+
+    // The %d carries milliseconds (log4cplus %q, translated to "zzz"). DECLARED by
+    // the compiler rather than sniffed back out of qtFormat: the compiler knows
+    // exactly when it emitted a ms field, whereas a string search re-derives that at
+    // a distance and would start lying the moment another code maps to "zzz".
+    // Consumed by the seconds display modes, which render s.mmm only when it is set
+    // — ".000" on every row of a file whose format has no ms invents precision.
+    bool hasMillis = false;
 };
 
 // The compiled form of a ConversionPattern. String in (the pattern),

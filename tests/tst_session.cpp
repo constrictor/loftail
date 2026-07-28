@@ -28,6 +28,7 @@ private slots:
     void severalViewsOnOneDocument();
     void viewsShrinkWithoutStaleTail();
     void v1SessionMigrates();
+    void legacyDisplayZoneKeyMigrates();
 };
 
 void TestSession::documentsArrayRoundTrip()
@@ -45,7 +46,7 @@ void TestSession::documentsArrayRoundTrip()
     d.format.pattern = QStringLiteral("%d [%t] %-5p %c - %m%n");
     d.format.encoding = Encoding::Utf16LE;
     d.format.sourceZone.kind = ZoneChoice::Kind::Utc;
-    d.format.displayZone.kind = ZoneChoice::Kind::Local;
+    d.format.timeDisplay = TimeDisplay::RunSeconds;
     QJsonObject filters;
     filters.insert(QStringLiteral("priorityEnabled"), true);
     d.filters = filters;
@@ -82,7 +83,7 @@ void TestSession::documentsArrayRoundTrip()
     QCOMPARE(od.format.pattern, d.format.pattern);
     QCOMPARE(int(od.format.encoding), int(Encoding::Utf16LE));
     QCOMPARE(int(od.format.sourceZone.kind), int(ZoneChoice::Kind::Utc));
-    QCOMPARE(int(od.format.displayZone.kind), int(ZoneChoice::Kind::Local));
+    QCOMPARE(int(od.format.timeDisplay), int(TimeDisplay::RunSeconds));
     QCOMPARE(od.filters.value(QStringLiteral("priorityEnabled")).toBool(), true);
 
     // The view's own state: dock identity, columns and wrap mode (§5).
@@ -299,6 +300,54 @@ void TestSession::v1SessionMigrates()
     QCOMPARE(out.views.first().documentIndex, 0);
     QCOMPARE(out.views.first().columnState, QByteArrayLiteral("OLDCOLS"));
     QVERIFY(!out.views.first().dockName.isEmpty());
+}
+
+void TestSession::legacyDisplayZoneKeyMigrates()
+{
+    // The display axis was a ZoneChoice under the key "displayZone" until the
+    // timestamp header menu subsumed it (SPEC.md §4). A session written back then
+    // must keep the user's UTC choice rather than silently reverting to "as written".
+    QTemporaryDir dir;
+    const QString ini = dir.filePath(QStringLiteral("s.ini"));
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        s.beginGroup(QStringLiteral("session"));
+        s.setValue(QStringLiteral("schemaVersion"), SessionStore::kSchemaVersion);
+        s.beginWriteArray(QStringLiteral("documents"), 1);
+        s.setArrayIndex(0);
+        s.setValue(QStringLiteral("path"), QStringLiteral("/logs/old.log"));
+        s.setValue(QStringLiteral("displayZone"), QStringLiteral("utc")); // and no timeDisplay
+        s.endArray();
+        s.endGroup();
+        s.sync();
+    }
+
+    QSettings s(ini, QSettings::IniFormat);
+    const Session out = SessionStore::load(s);
+    QCOMPARE(out.documents.size(), 1);
+    QCOMPARE(int(out.documents.first().format.timeDisplay), int(TimeDisplay::Utc));
+
+    // Adding the key did NOT bump the schema: it is additive within v2 and readable
+    // both ways, and a bump would discard every existing session (load() accepts
+    // only kSchemaVersion and 1).
+    QCOMPARE(SessionStore::kSchemaVersion, 2);
+
+    // The legacy spellings that meant "as written" for display land on AsWritten.
+    for (const QString &legacy : {QStringLiteral("default"), QStringLiteral("offset:7200")}) {
+        {
+            QSettings w(ini, QSettings::IniFormat);
+            w.beginGroup(QStringLiteral("session"));
+            w.beginWriteArray(QStringLiteral("documents"), 1);
+            w.setArrayIndex(0);
+            w.setValue(QStringLiteral("displayZone"), legacy);
+            w.endArray();
+            w.endGroup();
+            w.sync();
+        }
+        QSettings r(ini, QSettings::IniFormat);
+        QCOMPARE(int(SessionStore::load(r).documents.first().format.timeDisplay),
+                 int(TimeDisplay::AsWritten));
+    }
 }
 
 void TestSession::runSelectionRoundTrip()

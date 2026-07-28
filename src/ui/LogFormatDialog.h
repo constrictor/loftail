@@ -17,9 +17,13 @@ QT_END_NAMESPACE
 namespace loftail {
 
 // The Log Format dialog (SPEC.md §4, PLAN.md M3). It edits a FormatSettings — the
-// ConversionPattern, the encoding, and the source/display time zones — and shows a
-// LIVE PREVIEW of the current file's sample lines split into the fields the pattern
+// ConversionPattern, the encoding, and the source time zone — and shows a LIVE
+// PREVIEW of the current file's sample lines split into the fields the pattern
 // would extract, so a wrong pattern is obvious rather than failing silently.
+//
+// It does NOT edit FormatSettings::timeDisplay: the timestamp column's header
+// context menu is the sole control for that (SPEC.md §4). The dialog carries the
+// incoming value through untouched so editing a pattern cannot reset it.
 //
 // It compiles the pattern via PatternCompiler for immediate feedback: a compile
 // error is shown inline against its offset, and a warning appears when %p or %c is
@@ -59,9 +63,12 @@ private:
     QLabel       *m_detectedLabel = nullptr;
     QComboBox    *m_sourceZoneCombo = nullptr;
     QSpinBox     *m_offsetSpin = nullptr;
-    QComboBox    *m_displayZoneCombo = nullptr;
     QTableWidget *m_previewTable = nullptr;
     QLabel       *m_matchLabel = nullptr;
+
+    // Not edited here; seeded in and handed back out by settings() so a trip through
+    // this dialog leaves the header menu's choice alone.
+    TimeDisplay   m_timeDisplay = TimeDisplay::AsWritten;
 };
 
 } // namespace loftail

@@ -132,12 +132,9 @@ void LogFormatDialog::buildUi(const QString &fileName)
     });
     connect(m_offsetSpin, qOverload<int>(&QSpinBox::valueChanged), this, &LogFormatDialog::refresh);
 
-    // --- Display time zone -------------------------------------------------
-    m_displayZoneCombo = new QComboBox(this);
-    m_displayZoneCombo->addItem(QStringLiteral("As written in the file")); // Default
-    m_displayZoneCombo->addItem(QStringLiteral("Local time"));             // Local
-    m_displayZoneCombo->addItem(QStringLiteral("UTC"));                    // Utc
-    form->addRow(QStringLiteral("&Display time zone:"), m_displayZoneCombo);
+    // There is deliberately no display-zone control here: how timestamps are SHOWN
+    // is chosen from the timestamp column's header context menu, which offers the
+    // zone modes alongside the two seconds modes (SPEC.md §4).
 
     // --- Live preview ------------------------------------------------------
     outer->addWidget(new QLabel(QStringLiteral("Preview (sample lines split into fields):"), this));
@@ -181,11 +178,10 @@ void LogFormatDialog::seed(const FormatSettings &initial)
         m_offsetSpin->setValue(initial.sourceZone.offsetSeconds / 60);
     m_offsetSpin->setVisible(initial.sourceZone.kind == ZoneChoice::Kind::FixedOffset);
 
-    // Display zone: FixedOffset is not offered here, so Default/Local/Utc map 1:1.
-    const int di = (initial.displayZone.kind == ZoneChoice::Kind::Local) ? 1
-                 : (initial.displayZone.kind == ZoneChoice::Kind::Utc)   ? 2
-                                                                         : 0;
-    m_displayZoneCombo->setCurrentIndex(di);
+    // Not edited by this dialog (the header menu owns it), but it must survive the
+    // round trip: settings() builds a fresh FormatSettings, so without this a pattern
+    // edit would silently reset the user's timestamp mode to the default.
+    m_timeDisplay = initial.timeDisplay;
 }
 
 Encoding LogFormatDialog::currentEncoding() const
@@ -204,11 +200,7 @@ FormatSettings LogFormatDialog::settings() const
     if (s.sourceZone.kind == ZoneChoice::Kind::FixedOffset)
         s.sourceZone.offsetSeconds = m_offsetSpin->value() * 60;
 
-    switch (m_displayZoneCombo->currentIndex()) {
-    case 1:  s.displayZone.kind = ZoneChoice::Kind::Local; break;
-    case 2:  s.displayZone.kind = ZoneChoice::Kind::Utc;   break;
-    default: s.displayZone.kind = ZoneChoice::Kind::Default; break;
-    }
+    s.timeDisplay = m_timeDisplay; // carried through untouched; see seed()
     return s;
 }
 

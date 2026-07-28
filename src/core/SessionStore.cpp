@@ -60,8 +60,12 @@ Session SessionStore::load(QSettings &settings)
             static_cast<Encoding>(settings.value(QStringLiteral("encoding")).toUInt());
         d.format.sourceZone =
             ZoneChoice::fromString(settings.value(QStringLiteral("sourceZone")).toString());
-        d.format.displayZone =
-            ZoneChoice::fromString(settings.value(QStringLiteral("displayZone")).toString());
+        // Legacy-key fallback: the display axis was a ZoneChoice under "displayZone"
+        // until the header menu subsumed it. See FormatCache::readAt for the full
+        // reasoning; the vocabularies overlap on "local"/"utc" by design.
+        const QString mode = settings.value(QStringLiteral("timeDisplay")).toString();
+        d.format.timeDisplay = timeDisplayFromString(
+            mode.isEmpty() ? settings.value(QStringLiteral("displayZone")).toString() : mode);
         d.format.runStartPattern =
             settings.value(QStringLiteral("runStartPattern")).toString();
         d.format.runStartIsRegex = settings.value(QStringLiteral("runStartRegex")).toBool();
@@ -136,7 +140,7 @@ void SessionStore::save(QSettings &settings, const Session &session)
         settings.setValue(QStringLiteral("pattern"), d.format.pattern);
         settings.setValue(QStringLiteral("encoding"), uint(d.format.encoding));
         settings.setValue(QStringLiteral("sourceZone"), d.format.sourceZone.toString());
-        settings.setValue(QStringLiteral("displayZone"), d.format.displayZone.toString());
+        settings.setValue(QStringLiteral("timeDisplay"), timeDisplayToString(d.format.timeDisplay));
         settings.setValue(QStringLiteral("runStartPattern"), d.format.runStartPattern);
         settings.setValue(QStringLiteral("runStartRegex"), d.format.runStartIsRegex);
         settings.setValue(QStringLiteral("runStartCase"), d.format.runStartCaseSensitive);

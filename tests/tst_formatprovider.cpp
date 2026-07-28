@@ -25,6 +25,7 @@ private slots:
     void cacheMissReturnsNullopt();
     void cacheKeyedPerFileNoDirectoryFallback();
     void zoneChoiceStringRoundTrip();
+    void cacheLegacyDisplayZoneKeyMigrates();
 };
 
 void TestFormatProvider::manualProviderCompilesGoodPattern()
@@ -64,7 +65,7 @@ void TestFormatProvider::cacheRoundTrip()
     in.encoding = Encoding::Utf16LE;
     in.sourceZone.kind = ZoneChoice::Kind::FixedOffset;
     in.sourceZone.offsetSeconds = 2 * 3600;
-    in.displayZone.kind = ZoneChoice::Kind::Utc;
+    in.timeDisplay = TimeDisplay::RunSeconds;
 
     FormatCache::save(store, logFile.fileName(), in);
 
@@ -74,8 +75,35 @@ void TestFormatProvider::cacheRoundTrip()
     QCOMPARE(int(out->encoding), int(Encoding::Utf16LE));
     QCOMPARE(int(out->sourceZone.kind), int(ZoneChoice::Kind::FixedOffset));
     QCOMPARE(out->sourceZone.offsetSeconds, 2 * 3600);
-    QCOMPARE(int(out->displayZone.kind), int(ZoneChoice::Kind::Utc));
+    QCOMPARE(int(out->timeDisplay), int(TimeDisplay::RunSeconds));
     QCOMPARE(*out, in);
+}
+
+void TestFormatProvider::cacheLegacyDisplayZoneKeyMigrates()
+{
+    // A cache entry written before the timestamp header menu subsumed the display
+    // zone stores a ZoneChoice string under "displayZone" and no "timeDisplay".
+    // Reading it must preserve the user's choice, not reset it to the default.
+    QTemporaryFile logFile;
+    QVERIFY(logFile.open());
+    QTemporaryDir settingsDir;
+    const QString ini = settingsDir.filePath(QStringLiteral("s.ini"));
+    const QString key = FormatCache::canonicalKey(logFile.fileName());
+    {
+        QSettings store(ini, QSettings::IniFormat);
+        store.beginWriteArray(QStringLiteral("formatCache"), 1);
+        store.setArrayIndex(0);
+        store.setValue(QStringLiteral("path"), key);
+        store.setValue(QStringLiteral("pattern"), QStringLiteral("%d %m%n"));
+        store.setValue(QStringLiteral("displayZone"), QStringLiteral("local"));
+        store.endArray();
+        store.sync();
+    }
+
+    QSettings store(ini, QSettings::IniFormat);
+    const auto out = FormatCache::load(store, logFile.fileName());
+    QVERIFY(out.has_value());
+    QCOMPARE(int(out->timeDisplay), int(TimeDisplay::LocalTime));
 }
 
 void TestFormatProvider::cacheReplacesEntry()

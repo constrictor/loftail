@@ -12,6 +12,36 @@
 
 namespace loftail {
 
+namespace {
+
+// Seconds rendering for the two numeric display modes (SPEC.md §4). Integer
+// seconds when the file's own %d carries no milliseconds, s.mmm when it does —
+// see DateFormat::hasMillis.
+//
+// Signed throughout: RunSeconds goes negative for a record that precedes its run's
+// baseline (an out-of-order or back-dated line), and epoch seconds are negative for
+// a pre-1970 log.
+QString formatSeconds(qint64 ms, bool withMillis)
+{
+    if (!withMillis) {
+        // Floor, not C++ truncate-toward-zero, so the column stays monotonic across
+        // zero: -0.5 s and +0.5 s must not both render as "0".
+        qint64 s = ms / 1000;
+        if (ms % 1000 != 0 && ms < 0)
+            --s;
+        return QString::number(s);
+    }
+    const bool neg = ms < 0;
+    // Negate through unsigned so INT64_MIN cannot overflow. kNoTimestamp is guarded
+    // by the caller, but a corrupt delta must not be UB on the paint path.
+    const quint64 mag = neg ? (quint64(-(ms + 1)) + 1) : quint64(ms);
+    return (neg ? QStringLiteral("-") : QString())
+         + QString::number(mag / 1000) + QLatin1Char('.')
+         + QStringLiteral("%1").arg(mag % 1000, 3, 10, QLatin1Char('0'));
+}
+
+} // namespace
+
 LogModel::LogModel(const Document *document, QObject *parent)
     : QAbstractTableModel(parent), m_document(document)
 {
@@ -54,13 +84,27 @@ QString LogModel::cellText(int row, int column) const
     const Field &field = format.fields.at(column);
 
     switch (field.role) {
-    case FieldRole::Date:
+    case FieldRole::Date: {
         if (rec.timestamp == Record::kNoTimestamp)
-            return QString();
+            return QString(); // an unparsed line, or a format with no %d
+        const TimeDisplay mode = m_document->timeDisplay();
+        if (mode == TimeDisplay::EpochSeconds || mode == TimeDisplay::RunSeconds) {
+            // Zone-free (§5.1): Record::timestamp is already UTC epoch ms
+            // (invariant #10), so seconds need no "out" conversion at all.
+            qint64 base = 0;
+            if (mode == TimeDisplay::RunSeconds) {
+                base = m_document->runBaseTimestamp(srcRow);
+                if (base == Record::kNoTimestamp)
+                    base = rec.timestamp; // unreachable: this record IS timestamped,
+                                          // so its run has at least one such record
+            }
+            return formatSeconds(rec.timestamp - base, format.impliedDateFormat.hasMillis);
+        }
         // The single "out" zone conversion (§5.1): interpret the UTC ms in the
-        // display zone when formatting.
+        // display zone, rendered in the file's OWN date format.
         return QDateTime::fromMSecsSinceEpoch(rec.timestamp, m_document->displayZone())
             .toString(format.impliedDateFormat.qtFormat);
+    }
     case FieldRole::Priority:
         return priorityName(rec.priorityEnum());
     case FieldRole::Logger:

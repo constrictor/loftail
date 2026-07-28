@@ -8,6 +8,7 @@
 #include "Highlight.h"
 #include "LogFormat.h"
 #include "RecordIndex.h"
+#include "TimeDisplay.h"
 
 #include <QString>
 #include <QTimeZone>
@@ -49,26 +50,27 @@ public:
     // holds only the compiled LogFormat (invariant #3).
     //
     // `requestedEncoding` defaults to Auto (the persisted default is the user's
-    // choice, including Auto — §6.1). An invalid `sourceZone`/`displayZone` means
-    // "infer": the source zone comes from the pattern's date specifier (§5.1) and
-    // the display zone defaults to the source zone ("as written").
+    // choice, including Auto — §6.1). An invalid `sourceZone` means "infer": the
+    // source zone comes from the pattern's date specifier (§5.1).
+    //
+    // There is deliberately no display argument here. Display is a pure "out"
+    // concern with no bearing on indexing (§5.1), so it is set separately via
+    // setTimeDisplay() and defaults to "as written".
     bool open(const QString &path,
               IFormatProvider &provider,
               Encoding requestedEncoding = Encoding::Auto,
-              const QTimeZone &sourceZone = QTimeZone(),
-              const QTimeZone &displayZone = QTimeZone());
+              const QTimeZone &sourceZone = QTimeZone());
 
     // Everything open() does EXCEPT running the indexer: open the source, obtain
-    // the format, resolve the encoding, and settle the source/display zones,
-    // leaving the index empty. This is the split M2b needs to drive indexing on a
-    // worker thread — the controller calls prepare() on the GUI thread (fast), then
+    // the format, resolve the encoding, and settle the source zone, leaving the
+    // index empty. This is the split M2b needs to drive indexing on a worker
+    // thread — the controller calls prepare() on the GUI thread (fast), then
     // streams records into index() from a background scan. Returns false only on an
     // unopenable file (see open() for the bad-pattern semantics).
     bool prepare(const QString &path,
                  IFormatProvider &provider,
                  Encoding requestedEncoding = Encoding::Auto,
-                 const QTimeZone &sourceZone = QTimeZone(),
-                 const QTimeZone &displayZone = QTimeZone());
+                 const QTimeZone &sourceZone = QTimeZone());
 
     // Convenience overloads that build a ManualFormatProvider from a pattern
     // string. They keep the pattern confined to the provider (invariant #3) while
@@ -76,13 +78,11 @@ public:
     bool open(const QString &path,
               QStringView pattern,
               Encoding requestedEncoding = Encoding::Auto,
-              const QTimeZone &sourceZone = QTimeZone(),
-              const QTimeZone &displayZone = QTimeZone());
+              const QTimeZone &sourceZone = QTimeZone());
     bool prepare(const QString &path,
                  QStringView pattern,
                  Encoding requestedEncoding = Encoding::Auto,
-                 const QTimeZone &sourceZone = QTimeZone(),
-                 const QTimeZone &displayZone = QTimeZone());
+                 const QTimeZone &sourceZone = QTimeZone());
 
     // Re-derive Record::timestamp for every record under a new SOURCE zone WITHOUT
     // a rescan (§5.1, invariant #10): record boundaries and byte offsets are
@@ -91,9 +91,11 @@ public:
     // format has no date field. An invalid `sourceZone` re-infers from the pattern.
     void reparseTimestamps(const QTimeZone &sourceZone);
 
-    // Change the DISPLAY zone. This is free (§5.1): the view reformats timestamps
-    // from the stored UTC ms on its next repaint. Nothing is re-derived.
-    void setDisplayZone(const QTimeZone &displayZone) { m_displayZone = displayZone; }
+    // How the timestamp column renders (SPEC.md §4, TimeDisplay.h). Per FILE, so
+    // every view of the log agrees. This is free (§5.1): the view reformats from the
+    // stored UTC ms on its next repaint and nothing is re-derived.
+    void setTimeDisplay(TimeDisplay mode) { m_timeDisplay = mode; recomputeDisplayZone(); }
+    TimeDisplay timeDisplay() const { return m_timeDisplay; }
 
     // The compile outcome of the last prepare(). isError() when the pattern was
     // empty or uncompilable — the file opened as plain text (SPEC.md §4); the
@@ -173,6 +175,24 @@ public:
     // else fall back to the newest run (offsets/ordinals shift across sessions).
     void selectRunByStart(qint64 startOffset, qint64 startTimestamp);
 
+    // The baseline instant for TimeDisplay::RunSeconds — "seconds since this
+    // record's run started" (SPEC.md §4) — for the record at source ordinal
+    // `sourceRow`. Three behaviours worth knowing:
+    //
+    //  * With no run-start pattern configured the whole file counts as ONE run, so
+    //    the baseline is the file's first record and the mode always works.
+    //  * A run whose own first record is unparsed (a banner line that does not match
+    //    the record pattern carries kNoTimestamp) falls FORWARD to the first
+    //    timestamped record inside that run, so the first *logged* record reads
+    //    0.000 rather than a garbage delta. This is why Run::startTimestamp, which
+    //    is already stored, is not sufficient on its own.
+    //  * kNoTimestamp comes back only when the run holds no timestamped record at
+    //    all — in which case the caller's own record has none either and never asks.
+    //
+    // On the PAINT path (once per rendered Date cell), so it is O(log runs) with a
+    // one-entry hint and a per-run memo — never a scan.
+    qint64 runBaseTimestamp(int sourceRow) const;
+
     const QVector<Run> &runs() const { return m_runs; }
     int  selectedRun() const { return m_selectedRun; }
     // Records in run i: derived so the last run's count tracks live appends.
@@ -208,6 +228,13 @@ public:
     QString messageText(const Record &rec) const;
 
     const QTimeZone &sourceZone() const { return m_sourceZone; }
+
+    // The zone the timestamp column formats in, DERIVED from timeDisplay() and the
+    // source zone (§5.1). Cached rather than computed per call because
+    // LogModel::cellText reads it once per painted Date cell and
+    // QTimeZone::systemTimeZone() is not free. Meaningless — and unread by the Date
+    // column — in the two seconds modes, where it derives to the source zone so the
+    // other consumers (run labels, filter bounds) keep showing a sane wall clock.
     const QTimeZone &displayZone() const { return m_displayZone; }
     Encoding requestedEncoding() const { return m_requestedEncoding; }
     Encoding resolvedEncoding() const { return m_decoder.resolvedEncoding(); }
@@ -231,9 +258,26 @@ public:
     static QTimeZone inferSourceZone(const LogFormat &format);
 
 private:
+    // A memoised RunSeconds baseline. `ts` is the resolved instant once found;
+    // `scanned` is a resume cursor so a run of leading unparsed records is walked
+    // once in total rather than once per painted cell.
+    struct Baseline
+    {
+        qint64 ts = Record::kNoTimestamp;
+        int    scanned = -1;
+    };
+
     // Recompute the cached [m_viewStart, m_viewEnd) byte interval and m_viewRestricted
     // from the current run selection. Called after any run-list or selection change.
     void recomputeViewBounds();
+    // Derive m_displayZone from m_timeDisplay and m_sourceZone (§5.1). Call after
+    // either changes.
+    void recomputeDisplayZone();
+    // Drop every memoised RunSeconds baseline. Call whenever the run partition or
+    // the timestamps themselves change under it.
+    void invalidateTimeBaselines() const;
+    // First timestamped record in [from, end), resuming from b's cursor.
+    qint64 resolveBaseline(Baseline &b, int from, int end) const;
     // The whole first decoded physical line of a record (the run-start match target).
     // Mirrors the first-line decode in messageText() but returns the full line, not
     // the message tail; byte-range decode only (invariant #8).
@@ -249,7 +293,8 @@ private:
     FilteredIndex              m_filtered;
     HighlighterSet             m_highlighters;
     QTimeZone                  m_sourceZone;
-    QTimeZone                  m_displayZone;
+    QTimeZone                  m_displayZone;   // derived; see recomputeDisplayZone()
+    TimeDisplay                m_timeDisplay = TimeDisplay::AsWritten;
     CompileError               m_formatError;
     Encoding                   m_requestedEncoding = Encoding::Auto;
 
@@ -262,6 +307,15 @@ private:
     bool         m_viewRestricted = false;
     qint64       m_viewStart = std::numeric_limits<qint64>::min();
     qint64       m_viewEnd   = std::numeric_limits<qint64>::max();
+
+    // RunSeconds baselines, memoised because runBaseTimestamp() is on the paint
+    // path. Mutable because resolving one is a pure derivation of the existing index
+    // behind a const accessor. Single-threaded by construction: IndexController
+    // delivers worker batches into index() over a queued connection on the GUI
+    // thread, so nothing here can race a paint.
+    mutable QVector<Baseline> m_runBase;    // parallel to m_runs
+    mutable Baseline          m_fileBase;   // the no-run-pattern whole-file baseline
+    mutable int               m_runHint = -1;
 };
 
 } // namespace loftail

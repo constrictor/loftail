@@ -33,7 +33,26 @@ private slots:
     void lazyFieldsAreCorrect();
     void multiLineMessageJoined();
     void unparsedRecordShowsRawLine();
+
+    // Timestamp display modes (SPEC.md §4). The Date column is the one cell whose
+    // text depends on more than its own Record, so each mode gets its own case.
+    void timeDisplayAsWrittenMatchesFile();
+    void timeDisplayUtcAndLocal();
+    void timeDisplayEpochSecondsWithAndWithoutMillis();
+    void timeDisplayRunSecondsWithoutRunPattern();
+    void timeDisplayRunSecondsRebasesPerRun();
+    void timeDisplayRunSecondsSkipsUnparsedRunStart();
+    void timeDisplayLeavesUnparsedCellEmpty();
+    void timeDisplayRunSecondsSurvivesReparse();
 };
+
+namespace {
+// The pattern every timestamp-display case uses: ISO date WITH log4cplus %q, so
+// DateFormat::hasMillis is set and the seconds modes render s.mmm.
+constexpr auto kMsPattern = "%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n";
+// The same without %q — the case that must render BARE integer seconds.
+constexpr auto kNoMsPattern = "%d{%Y-%m-%d %H:%M:%S} [%t] %-5p %c - %m%n";
+} // namespace
 
 void TestLogModel::columnsAndRows()
 {
@@ -63,7 +82,7 @@ void TestLogModel::lazyFieldsAreCorrect()
 
     Document doc;
     QVERIFY2(doc.open(file.fileName(), QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
-                      Encoding::Utf8, QTimeZone::utc(), QTimeZone::utc()),
+                      Encoding::Utf8, QTimeZone::utc()),
              qPrintable(doc.lastError()));
 
     LogModel model(&doc);
@@ -111,7 +130,7 @@ void TestLogModel::unparsedRecordShowsRawLine()
     Document doc;
     // A pattern that matches neither line (ISO date vs. the file's %m/%d/%y).
     QVERIFY2(doc.open(file.fileName(), QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
-                      Encoding::Utf8, QTimeZone::utc(), QTimeZone::utc()),
+                      Encoding::Utf8, QTimeZone::utc()),
              qPrintable(doc.lastError()));
 
     LogModel model(&doc);
@@ -124,6 +143,233 @@ void TestLogModel::unparsedRecordShowsRawLine()
     QCOMPARE(cell(0, 0), QString());
     QCOMPARE(cell(0, 1), QString());
     QCOMPARE(cell(0, 3), QString());
+}
+
+// --- Timestamp display modes (SPEC.md §4) ----------------------------------
+
+void TestLogModel::timeDisplayAsWrittenMatchesFile()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 14:32:05,123 [main] INFO  app - a\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kMsPattern),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(int(doc.timeDisplay()), int(TimeDisplay::AsWritten)); // the default
+
+    // The whole point of the default: the cell reads exactly as the file does, so
+    // cross-checking against raw log text in an editor needs no mental arithmetic.
+    LogModel model(&doc);
+    QCOMPARE(model.data(model.index(0, 0)).toString(),
+             QStringLiteral("2026-07-21 14:32:05,123"));
+}
+
+void TestLogModel::timeDisplayUtcAndLocal()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 14:32:05,123 [main] INFO  app - a\n"));
+
+    Document doc;
+    // Source zone UTC+2: the text names 14:32:05 local-to-the-file, i.e. 12:32:05Z.
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kMsPattern),
+                      Encoding::Utf8, QTimeZone(2 * 3600)),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    auto cell = [&]() { return model.data(model.index(0, 0)).toString(); };
+    const qint64 stored = doc.index().records.at(0).timestamp;
+
+    doc.setTimeDisplay(TimeDisplay::AsWritten);
+    QCOMPARE(cell(), QStringLiteral("2026-07-21 14:32:05,123"));
+
+    doc.setTimeDisplay(TimeDisplay::Utc);
+    QCOMPARE(cell(), QStringLiteral("2026-07-21 12:32:05,123"));
+
+    doc.setTimeDisplay(TimeDisplay::LocalTime);
+    QCOMPARE(cell(),
+             QDateTime::fromMSecsSinceEpoch(stored, QTimeZone::systemTimeZone())
+                 .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss,zzz")));
+
+    // Storage never moved through any of that (invariant #10).
+    QCOMPARE(doc.index().records.at(0).timestamp, stored);
+}
+
+void TestLogModel::timeDisplayEpochSecondsWithAndWithoutMillis()
+{
+    const QDateTime t(QDate(2026, 7, 21), QTime(14, 32, 5, 123), QTimeZone::utc());
+    const qint64 epochMs = t.toMSecsSinceEpoch();
+
+    {
+        QTemporaryFile file;
+        QVERIFY(writeLog(file, "2026-07-21 14:32:05,123 [main] INFO  app - a\n"));
+        Document doc;
+        QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kMsPattern),
+                          Encoding::Utf8, QTimeZone::utc()),
+                 qPrintable(doc.lastError()));
+        doc.setTimeDisplay(TimeDisplay::EpochSeconds);
+
+        LogModel model(&doc);
+        QCOMPARE(model.data(model.index(0, 0)).toString(),
+                 QStringLiteral("%1.123").arg(epochMs / 1000));
+    }
+
+    {
+        // No %q in the pattern: the file carries no sub-second precision, so the
+        // cell must NOT read ".000" — that would invent precision the log lacks.
+        QTemporaryFile file;
+        QVERIFY(writeLog(file, "2026-07-21 14:32:05 [main] INFO  app - a\n"));
+        Document doc;
+        QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kNoMsPattern),
+                          Encoding::Utf8, QTimeZone::utc()),
+                 qPrintable(doc.lastError()));
+        QVERIFY(!doc.format().impliedDateFormat.hasMillis);
+        doc.setTimeDisplay(TimeDisplay::EpochSeconds);
+
+        LogModel model(&doc);
+        QCOMPARE(model.data(model.index(0, 0)).toString(),
+                 QString::number(epochMs / 1000));
+    }
+}
+
+void TestLogModel::timeDisplayRunSecondsWithoutRunPattern()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 14:32:05,000 [main] INFO  app - a\n"
+        "2026-07-21 14:32:06,250 [main] INFO  app - b\n"
+        "2026-07-21 14:32:07,000 [main] INFO  app - c\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kMsPattern),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QVERIFY(doc.runs().isEmpty()); // no run-start pattern configured
+    doc.setTimeDisplay(TimeDisplay::RunSeconds);
+
+    // With no run splitting the whole file counts as one run, so the mode still
+    // works and reads as elapsed time from the log's first record.
+    LogModel model(&doc);
+    auto cell = [&](int r) { return model.data(model.index(r, 0)).toString(); };
+    QCOMPARE(cell(0), QStringLiteral("0.000"));
+    QCOMPARE(cell(1), QStringLiteral("1.250"));
+    QCOMPARE(cell(2), QStringLiteral("2.000"));
+}
+
+void TestLogModel::timeDisplayRunSecondsRebasesPerRun()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 14:32:05,000 [main] INFO  app - starting up\n"
+        "2026-07-21 14:32:06,500 [main] INFO  app - work\n"
+        "2026-07-21 15:00:00,000 [main] INFO  app - starting up\n"
+        "2026-07-21 15:00:02,250 [main] INFO  app - work\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kMsPattern),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    doc.setRunStart(QStringLiteral("starting up"), /*regex=*/false, Qt::CaseSensitive);
+    doc.selectRun(-1); // show all runs, so every record is a row
+    QCOMPARE(doc.runs().size(), 2);
+    doc.setTimeDisplay(TimeDisplay::RunSeconds);
+
+    // The counter restarts at each run boundary — not a whole-file delta, which for
+    // the third record would have read 1675.000.
+    LogModel model(&doc);
+    auto cell = [&](int r) { return model.data(model.index(r, 0)).toString(); };
+    QCOMPARE(cell(0), QStringLiteral("0.000"));
+    QCOMPARE(cell(1), QStringLiteral("1.500"));
+    QCOMPARE(cell(2), QStringLiteral("0.000"));
+    QCOMPARE(cell(3), QStringLiteral("2.250"));
+}
+
+void TestLogModel::timeDisplayRunSecondsSkipsUnparsedRunStart()
+{
+    // The run marker's own record carries no timestamp. Note it must still START a
+    // record to be seen by run detection at all (invariant #2 makes a non-matching
+    // line a continuation of the record above it, invisible to detectRuns) — so the
+    // reachable shape is a line that is structurally well-formed but whose date is
+    // not a real one: month 13, a corrupt or clock-glitched line.
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 14:32:05,000 [main] INFO  app - tail of the previous run\n"
+        "2026-13-45 00:00:00,000 [main] INFO  app - Application starting\n"
+        "2026-07-21 15:00:00,000 [main] INFO  app - first real line\n"
+        "2026-07-21 15:00:01,750 [main] INFO  app - second\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kMsPattern),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    doc.setRunStart(QStringLiteral("Application starting"), /*regex=*/false, Qt::CaseSensitive);
+    doc.selectRun(-1);
+    QCOMPARE(doc.runs().size(), 2); // a preamble plus the marked run
+    QCOMPARE(doc.runs().at(1).startTimestamp, qint64(Record::kNoTimestamp));
+    doc.setTimeDisplay(TimeDisplay::RunSeconds);
+
+    LogModel model(&doc);
+    auto cell = [&](int r) { return model.data(model.index(r, 0)).toString(); };
+    QCOMPARE(cell(0), QStringLiteral("0.000")); // the preamble bases on itself
+    QCOMPARE(cell(1), QString());               // the marker has no timestamp at all
+    // The baseline falls FORWARD to the run's first timestamped record, so the first
+    // logged line reads 0.000 rather than a delta against the previous run.
+    QCOMPARE(cell(2), QStringLiteral("0.000"));
+    QCOMPARE(cell(3), QStringLiteral("1.750"));
+}
+
+void TestLogModel::timeDisplayLeavesUnparsedCellEmpty()
+{
+    // A second RECORD with no timestamp: structurally well-formed, but month 13 is
+    // not a date. (A wholly non-matching line would be folded into record 0 as a
+    // continuation instead — invariant #2.)
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 14:32:05,000 [main] INFO  app - parsed\n"
+        "2026-13-45 00:00:00,000 [main] INFO  app - not a real date\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kMsPattern),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.at(1).timestamp, qint64(Record::kNoTimestamp));
+
+    // The kNoTimestamp guard comes before the mode switch, so no mode can turn a
+    // missing timestamp into a number (0, the epoch, or otherwise).
+    LogModel model(&doc);
+    for (TimeDisplay mode : {TimeDisplay::AsWritten, TimeDisplay::LocalTime,
+                             TimeDisplay::Utc, TimeDisplay::EpochSeconds,
+                             TimeDisplay::RunSeconds}) {
+        doc.setTimeDisplay(mode);
+        QCOMPARE(model.data(model.index(1, 0)).toString(), QString());
+    }
+}
+
+void TestLogModel::timeDisplayRunSecondsSurvivesReparse()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 14:32:05,000 [main] INFO  app - a\n"
+        "2026-07-21 14:32:06,250 [main] INFO  app - b\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kMsPattern),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    doc.setTimeDisplay(TimeDisplay::RunSeconds);
+
+    LogModel model(&doc);
+    auto cell = [&](int r) { return model.data(model.index(r, 0)).toString(); };
+    QCOMPARE(cell(1), QStringLiteral("1.250"));
+
+    // A source-zone change shifts every timestamp uniformly, so the DELTAS are
+    // unchanged — but only if the memoised baselines were invalidated. Without that
+    // the second row would be measured against a baseline from the old zone.
+    doc.reparseTimestamps(QTimeZone(2 * 3600));
+    QCOMPARE(cell(0), QStringLiteral("0.000"));
+    QCOMPARE(cell(1), QStringLiteral("1.250"));
 }
 
 QTEST_GUILESS_MAIN(TestLogModel)

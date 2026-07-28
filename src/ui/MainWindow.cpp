@@ -252,6 +252,8 @@ void MainWindow::buildMenus()
     connect(wrapAll, &QAction::triggered, this,
             [setWrap]() { setWrap(LogView::WrapMode::AlwaysOn); });
 
+    buildTimeDisplayMenu();
+
     // Return-to-bottom / follow control (SPEC.md §3, M6). Checked reflects whether
     // the view is currently following; triggering it re-attaches and jumps to the end.
     viewMenu->addSeparator();
@@ -541,6 +543,8 @@ void MainWindow::updateActionStates()
         // checkbox tracks that view's own follow state.
         m_followAction->setChecked(hasFile ? m_activeView->logView()->following() : true);
     }
+    // The timestamp mode is per FILE, so the checkmark has to follow the active tab.
+    updateTimeDisplayActions();
     if (m_cancelAction)
         m_cancelAction->setEnabled(hasFile && ctx->indexing);
     if (m_progressBar) {
@@ -623,12 +627,12 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     // entirely (SPEC.md §4), and an aborted open must leave the open file alone.
     auto doc = std::make_unique<Document>();
     ManualFormatProvider provider(settings.pattern);
-    if (!doc->prepare(path, provider, settings.encoding,
-                      settings.sourceZone.toZone(), settings.displayZone.toZone())) {
+    if (!doc->prepare(path, provider, settings.encoding, settings.sourceZone.toZone())) {
         m_statusLabel->setText(QStringLiteral("Cannot open %1: %2")
                                    .arg(QFileInfo(path).fileName(), doc->lastError()));
         return false;
     }
+    doc->setTimeDisplay(settings.timeDisplay);
 
     // Decide whether to remember this format on close of the flow. A cached open, a
     // dialog the user accepted, or a default that actually matched are all worth
@@ -661,12 +665,12 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
             if (dlg.exec() == QDialog::Accepted) {
                 settings = dlg.settings();
                 ManualFormatProvider chosen(settings.pattern);
-                if (!doc->prepare(path, chosen, settings.encoding,
-                                  settings.sourceZone.toZone(), settings.displayZone.toZone())) {
+                if (!doc->prepare(path, chosen, settings.encoding, settings.sourceZone.toZone())) {
                     m_statusLabel->setText(QStringLiteral("Cannot open %1: %2")
                                                .arg(QFileInfo(path).fileName(), doc->lastError()));
                     return false;
                 }
+                doc->setTimeDisplay(settings.timeDisplay);
                 persist = true;
             } else {
                 // Cancelled. The only format we have is one the user just refused
@@ -767,10 +771,9 @@ DocumentContext *MainWindow::prepareContext(const SessionDocument &d)
 {
     auto doc = std::make_unique<Document>();
     ManualFormatProvider provider(d.format.pattern);
-    if (!doc->prepare(d.path, provider, d.format.encoding, d.format.sourceZone.toZone(),
-                      d.format.displayZone.toZone())) {
+    if (!doc->prepare(d.path, provider, d.format.encoding, d.format.sourceZone.toZone()))
         return nullptr;
-    }
+    doc->setTimeDisplay(d.format.timeDisplay);
 
     auto owned = std::make_unique<DocumentContext>();
     DocumentContext *ctx = owned.get();
@@ -866,10 +869,6 @@ void MainWindow::applySettings(const FormatSettings &newSettings)
         return;
     Document *doc = ctx->doc.get();
 
-    // A format change re-indexes (or reparses) but does not carry a persisted run
-    // selection; the newest run is the default afterwards.
-    ctx->pendingRunRestore.reset();
-
     // Copy the path: a rescan tears the Document down, so `doc` and `ctx` must not
     // be read after openWithSettings() runs.
     const QString path = doc->path();
@@ -877,7 +876,13 @@ void MainWindow::applySettings(const FormatSettings &newSettings)
     const bool patternChanged  = newSettings.pattern != old.pattern;
     const bool encodingChanged = newSettings.encoding != old.encoding;
     const bool sourceChanged   = newSettings.sourceZone != old.sourceZone;
-    const bool displayChanged  = newSettings.displayZone != old.displayZone;
+    const bool displayChanged  = newSettings.timeDisplay != old.timeDisplay;
+
+    // A format change re-indexes (or reparses) but does not carry a persisted run
+    // selection; the newest run is the default afterwards. A display-mode change
+    // re-derives nothing, so it must NOT drop a restore still waiting on a scan.
+    if (patternChanged || encodingChanged || sourceChanged)
+        ctx->pendingRunRestore.reset();
 
     ctx->settings = newSettings;
     persistFormat(path, newSettings);
@@ -893,15 +898,20 @@ void MainWindow::applySettings(const FormatSettings &newSettings)
     if (sourceChanged)
         doc->reparseTimestamps(newSettings.sourceZone.toZone());
 
-    // Display-zone change (or a source change while display "follows source") is a
-    // free reformat — just repaint (§5.1).
+    // A display-mode change (or a source change, which moves the derived zone when
+    // the mode is "as written") is a free reformat — just repaint (§5.1). This
+    // branch can never lead to a rescan or a reparse.
     if (sourceChanged || displayChanged) {
-        const QTimeZone display = newSettings.displayZone.kind == ZoneChoice::Kind::Default
-            ? doc->sourceZone() // "as written" == the (possibly updated) source zone
-            : newSettings.displayZone.toZone();
-        doc->setDisplayZone(display);
+        doc->setTimeDisplay(newSettings.timeDisplay);
         for (DocumentView *v : std::as_const(ctx->views))
             v->logView()->viewport()->update();
+        // Run labels and the time-range filter editors both render in the display
+        // zone, so they go stale with it if left alone.
+        if (m_runPane)
+            m_runPane->refresh();
+        if (m_filterPane)
+            m_filterPane->refreshTimeBounds();
+        updateTimeDisplayActions();
     }
 
     updateStatus();
@@ -1223,6 +1233,65 @@ void MainWindow::updateStatus()
     }
 }
 
+void MainWindow::buildTimeDisplayMenu()
+{
+    // Parented to the window, NOT to a context menu: showColumnMenu builds its QMenu
+    // on the stack per invocation, so this one is borrowed and must outlive it. The
+    // actions being window children is also what lets tests findChild them without
+    // opening a modal menu (precedent: newViewAction).
+    m_timeDisplayMenu = new QMenu(QStringLiteral("&Timestamp Format"), this);
+    m_timeDisplayMenu->setObjectName(QStringLiteral("timeDisplayMenu"));
+    auto *group = new QActionGroup(this);
+
+    struct Item
+    {
+        TimeDisplay mode;
+        const char *text;
+        const char *name;
+    };
+    static constexpr Item kItems[] = {
+        { TimeDisplay::AsWritten,    "As &Written in the File", "timeDisplayAsWrittenAction" },
+        { TimeDisplay::LocalTime,    "&Local Time",             "timeDisplayLocalAction" },
+        { TimeDisplay::Utc,          "&UTC",                    "timeDisplayUtcAction" },
+        { TimeDisplay::EpochSeconds, "&Seconds",                "timeDisplaySecondsAction" },
+        { TimeDisplay::RunSeconds,   "Seconds from &Run Start", "timeDisplayRunSecondsAction" },
+    };
+    for (const Item &item : kItems) {
+        QAction *a = m_timeDisplayMenu->addAction(QLatin1String(item.text));
+        a->setObjectName(QLatin1String(item.name));
+        a->setCheckable(true);
+        group->addAction(a);
+        m_timeDisplayActions[int(item.mode)] = a;
+        const TimeDisplay mode = item.mode;
+        connect(a, &QAction::triggered, this, [this, mode]() { setTimeDisplay(mode); });
+    }
+    m_timeDisplayActions[int(TimeDisplay::AsWritten)]->setChecked(true);
+}
+
+void MainWindow::setTimeDisplay(TimeDisplay mode)
+{
+    DocumentContext *ctx = activeContext();
+    if (!ctx || ctx->settings.timeDisplay == mode)
+        return;
+    // Through applySettings, exactly like the Log Format dialog: that is what puts
+    // the choice in the FormatCache and the session, so it survives a restart.
+    FormatSettings s = ctx->settings;
+    s.timeDisplay = mode;
+    applySettings(s);
+}
+
+void MainWindow::updateTimeDisplayActions()
+{
+    if (!m_timeDisplayMenu)
+        return;
+    DocumentContext *ctx = activeContext();
+    // With no file open the menu is unreachable anyway; leave it on the default so a
+    // fresh open starts from a sane checkmark.
+    const TimeDisplay mode = ctx ? ctx->settings.timeDisplay : TimeDisplay::AsWritten;
+    if (QAction *a = m_timeDisplayActions[int(mode)])
+        a->setChecked(true);
+}
+
 void MainWindow::showColumnMenu(const QPoint &pos)
 {
     // The menu belongs to the header that asked for it, which may be any view's.
@@ -1231,6 +1300,22 @@ void MainWindow::showColumnMenu(const QPoint &pos)
     if (!header || !model)
         return;
     QMenu menu(this);
+
+    // Right-clicking the TIMESTAMP column also offers its display mode (SPEC.md §4).
+    // A submenu rather than five more inline entries: the column toggles below are
+    // independent checkboxes and these are an exclusive radio group, and flattened
+    // together they would read as ten equivalent checkmarks. A click past the last
+    // section gives -1 and simply yields the plain column menu.
+    const int logical = header->logicalIndexAt(pos);
+    const Document *doc = activeDocument();
+    if (doc && logical >= 0 && logical < doc->format().fields.size()
+        && doc->format().fields.at(logical).role == FieldRole::Date) {
+        updateTimeDisplayActions();
+        menu.addMenu(m_timeDisplayMenu); // borrowed; addMenu does not take ownership
+        menu.addSeparator();
+    }
+
+    menu.addSection(QStringLiteral("Columns"));
     for (int c = 0; c < model->columnCount(); ++c) {
         const QString name = model->headerData(c, Qt::Horizontal).toString();
         QAction *a = menu.addAction(name);

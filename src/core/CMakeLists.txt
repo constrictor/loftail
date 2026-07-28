@@ -13,6 +13,7 @@ add_library(loftail_core STATIC
     # M2a — the spine
     Priority.h
     Encoding.h
+    TimeDisplay.h
     Record.h
     Decoder.cpp
     Decoder.h

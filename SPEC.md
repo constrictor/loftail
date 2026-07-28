@@ -98,12 +98,23 @@ Encoding is an explicit setting in the Log Format dialog, offered as a list:
 
 Timestamps are parsed into real points in time, not treated as opaque text — this is what makes time-range filtering (§6) and jump-to-time possible.
 
-Because a log file records no zone information, two settings control interpretation, both in the Log Format dialog and both remembered per file:
+Because a log file records no zone information, **how timestamps are read** and **how they are shown** are configured separately. Both are remembered per file, but they are edited in different places.
 
-- **Source time zone** — how to read the timestamps in the file: **Infer from pattern** *(default)*, Local time, UTC, or a fixed offset. Inference uses the date specifier in the configured pattern, since log4cplus distinguishes local-time and UTC forms. Explicit selection exists because the producing application may have been configured in ways the pattern does not reveal, and because logs are routinely read on a different machine than they were written on.
-- **Display time zone** — how to show them: **As written in the file** *(default)*, Local time, or UTC. The default performs no conversion, so what loftail shows matches what a text editor shows — the least surprising behavior when cross-checking against raw log text.
+- **Source time zone** — how to read the timestamps in the file: **Infer from pattern** *(default)*, Local time, UTC, or a fixed offset. Inference uses the date specifier in the configured pattern, since log4cplus distinguishes local-time and UTC forms. Explicit selection exists because the producing application may have been configured in ways the pattern does not reveal, and because logs are routinely read on a different machine than they were written on. *This one lives in the Log Format dialog.*
 
-Time-range filter bounds are entered in the display time zone, so what you type matches what you see.
+- **Timestamp display** — how to show them. **Right-clicking the timestamp column's header** offers five mutually exclusive modes. This is the only place the choice is made, and it applies to the *file*, so every view of it agrees.
+
+  | Mode | Shows |
+  | --- | --- |
+  | **As written in the file** *(default)* | The file's own date format, unconverted — what a text editor shows, which is the least surprising thing when cross-checking against raw log text |
+  | **Local time** | The same format, converted to the reader's zone |
+  | **UTC** | The same format, converted to UTC |
+  | **Seconds** | Seconds since the epoch — `1784644325`, or `1784644325.123` when the file's own format carries milliseconds |
+  | **Seconds from run start** | Seconds since the first record of *this record's* run (§3a) — `0.000`, `1.250`, … With no run-start pattern configured the whole file counts as one run, so the mode always works |
+
+  The two seconds modes render a plain number and involve no time zone at all. They exist for reading elapsed time straight out of the log, without arithmetic. Milliseconds appear only when the file's format actually carries them: a log written without sub-second precision shows whole seconds rather than a fabricated `.000` on every row.
+
+Time-range filter bounds (§6) are always entered as wall clock in the display time zone, so what you type matches what you see in the first three modes; the seconds modes do not change how bounds are entered.
 
 **Format autodetection.** Opening a file loftail has not seen before, whose pattern is not already remembered, guesses the `ConversionPattern` from the file itself and **pre-fills the dialog with the guess for confirmation** — never applying it silently, since a wrong pattern quietly mis-splits every record. A **Detect** button re-runs the guess into the pattern field at any time. Detection failure leaves the dialog on the fallback default, so manual entry is always the authority and always available.
 
@@ -111,7 +122,7 @@ Time-range filter bounds are entered in the display time zone, so what you type 
 
 - Records are displayed as a table, one row per record, with a column per field in the configured format (timestamp, priority, subsystem, message, and any others the pattern defines).
 
-- Columns can be resized, reordered, and individually hidden. Column layout is remembered per view (§5a).
+- Columns can be resized, reordered, and individually hidden. Column layout is remembered per view (§5a). Right-clicking any column header offers that list; right-clicking the **timestamp** column also offers its display mode (§4), which applies to the whole file rather than to the view.
 
 - **The table renders in a fixed-width font — every column, and the header.** Logs are column-aligned text written by machines; a proportional font destroys the alignment inside a message and makes timestamps and levels ragged from row to row. The font is the one the desktop designates as fixed-width, at the usual UI text size.
 
@@ -139,7 +150,7 @@ Open files and side panes share one arrangement, and any of them can be moved an
 
 - **Every open file is a tab.** A tab can be dragged into a side-by-side or stacked split, into another tab group, or out of the window entirely to float as a separate window — and dragged back. Side panes (§8) move by exactly the same gestures and can share a tab group or a split with a log.
 - **A file can be opened in more than one view.** *New View* opens a second, independently scrolled view onto the log already being read, so one can be pinned to a point in the history while the other keeps tailing. It starts as a copy of the view it was made from and diverges from there.
-  - **Shared** between views of one file: the records themselves, the log format, active filters, active highlighters, and the selected run. Filtering in one view filters both — the panes edit the *file*, not the view.
+  - **Shared** between views of one file: the records themselves, the log format, the timestamp display mode, active filters, active highlighters, and the selected run. Filtering in one view filters both — the panes edit the *file*, not the view.
   - **Private** to each view: scroll position, selection, wrap mode, column layout, follow state, and the Find bar.
 - **Closing a tab closes that view.** The file itself closes when its last view does; closing every tab leaves the empty view of §3.
 - The whole arrangement — which files are open, how many views each has, and where every tab, split and floating window sits — is part of the remembered session (§10).
@@ -192,14 +203,14 @@ Filters, highlighters, presets, and runs (§3) are each presented in a side pane
 On relaunch, loftail restores:
 
 - Every file that was open — each reopened at its end and following, like any open (§3), so follow state is never a remembered choice
-- The log format in use for each
+- The log format in use for each, and its timestamp display mode (§4)
 - The run-start pattern and which run was being viewed, per file (§3)
 - Active filters and highlighters per file, including which were enabled
 - Every view: how many views each file had, each one's column layout and wrap mode, and which view was active
 - Saved presets
 - Window geometry and the whole arrangement of tabs, splits, floating windows and panes (§5a)
 
-**Scoping:** the log format, the run-start pattern, active filters, active highlighters, and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a split showing wide messages and one showing just timestamps each keep their shape. Presets and the window/pane layout are global.
+**Scoping:** the log format, the timestamp display mode, the run-start pattern, active filters, active highlighters, and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a split showing wide messages and one showing just timestamps each keep their shape. Presets and the window/pane layout are global.
 
 **Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is keyed by file, so instances viewing different logs never conflict. For genuinely global state — window layout, and which files to restore on next launch — **the last instance to close wins**.
 

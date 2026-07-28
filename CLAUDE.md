@@ -85,7 +85,7 @@ These ten constraints are cheap to honor from the start and expensive to retrofi
 
 9. **The indexer is a single forward pass.** No backward passes, no seek-and-re-read. Compressed and SSH-backed sources are planned (`FUTURE.md`) and neither supports random access during indexing. Random access is fine in `data()` on the paint path, which only touches already-indexed records. See `ARCHITECTURE.md` §6.2.
 
-10. **`Record::timestamp` is always UTC epoch milliseconds.** Source and display time zones are both user-configurable, but conversion happens exactly twice: source zone applied at index time, display zone applied when formatting or interpreting typed filter bounds. Nothing in between is zone-aware. Storing local wall-clock time would make comparisons zone-dependent and break across DST transitions, where the same local time occurs twice. See `ARCHITECTURE.md` §5.1.
+10. **`Record::timestamp` is always UTC epoch milliseconds.** The source time zone and the timestamp display mode are both user-configurable, but conversion happens exactly twice: source zone applied at index time, display zone applied when formatting or interpreting typed filter bounds — or not at all, in the two *seconds* display modes, which render the stored ms directly. Nothing in between is zone-aware. Storing local wall-clock time would make comparisons zone-dependent and break across DST transitions, where the same local time occurs twice. See `ARCHITECTURE.md` §5.1.
 
 ## Conventions
 

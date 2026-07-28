@@ -113,16 +113,22 @@ Everything here is collected during the indexing scan, which is already reading 
 
 ### 5.1 Time zones
 
-`SPEC.md` §4 makes both the source and display time zone user-configurable. One rule keeps that from leaking everywhere:
+`SPEC.md` §4 makes both the source time zone and the timestamp display user-configurable. One rule keeps that from leaking everywhere:
 
 > **`Record::timestamp` is always UTC epoch milliseconds.** Zone conversion happens exactly twice — once on the way in, once on the way out.
 
 - **In:** the indexer applies the *source* zone (inferred from the pattern's date specifier, or explicitly set) to convert parsed wall-clock text to UTC.
-- **Out:** the view applies the *display* zone when formatting a timestamp for a cell, and the filter UI applies it when interpreting typed range bounds.
+- **Out:** the view applies the *display* zone when formatting a timestamp for a cell, and the filter UI applies it when interpreting typed range bounds. **The display zone is derived, not stored:** `Document` holds a `TimeDisplay` mode (`SPEC.md` §4) and `displayZone()` returns local, UTC, or the source zone accordingly. It is *cached* rather than computed per call, because `LogModel::cellText` reads it once per painted Date cell and `QTimeZone::systemTimeZone()` is not free.
+
+The two *seconds* modes convert nothing at all: `Record::timestamp` is already UTC epoch ms, so seconds are a subtraction and a divide. The out-conversion is therefore **conditional**, not universal — which does not weaken the invariant, because it only ever removes a conversion, never adds one somewhere else.
 
 Comparison, sorting, filtering, and any future multi-file merge therefore operate on a single monotonic integer scale with no zone awareness whatsoever. Storing local wall-clock time instead would make every comparison zone-dependent and would break outright across a DST transition, where the same local timestamp occurs twice.
 
-**Changing the source zone requires reparsing timestamps** — but only timestamps, not a full reindex: record boundaries and byte offsets are unaffected, so it is a pass over the existing index. Changing the display zone is free, a repaint.
+**Changing the source zone requires reparsing timestamps** — but only timestamps, not a full reindex: record boundaries and byte offsets are unaffected, so it is a pass over the existing index. Changing the display mode is free, a repaint: `MainWindow::applySettings` can never route a `TimeDisplay` change to a rescan or a reparse.
+
+**`RunSeconds` makes a timestamp cell depend on the run partition** — the first time a cell's rendering has depended on anything but its own `Record` plus a zone. The baseline is memoised per run behind `Document::runBaseTimestamp()` (O(log runs) plus a one-entry hint, since `LogView` paints contiguous row ranges), with a resume cursor so a run whose leading records are unparsed is walked once in total rather than once per cell. The memo is invalidated by `detectRuns()`, `reparseTimestamps()`, `rescan()` and `prepare()` — but deliberately **not** by `updateRunsAfterAppend()`, because appending only grows the run list and cannot un-resolve a baseline already found. Everything that repartitions the runs already ends in a model reset or a full repaint, so no `dataChanged` plumbing is needed.
+
+A run's baseline falls *forward* to the first timestamped record inside it rather than using the stored `Run::startTimestamp`, which is `kNoTimestamp` whenever the marker record's own date failed to parse. Note the marker must still *start* a record to be visible to run detection at all: a wholly non-matching line is a continuation of the record above it (invariant #2), so the reachable case is a structurally well-formed line whose date is not a real one.
 
 `PatternCompiler` reports which zone the date specifier implies, since log4cplus distinguishes local-time and UTC date specifiers: **`%d` is UTC and `%D` is local time**, per `log4cplus/layout.h`. The mapping reads backwards — the lowercase, more common specifier is the *UTC* one — and loftail had it inverted until 2026-07-28, silently shifting every `%d`/`%D` timestamp by the local UTC offset. `tst_patterncompiler`'s `impliedZone` rows pin it. That is what the *Infer from pattern* default consumes. Treat the inference as a hint that the user can override, not ground truth — the pattern reveals the specifier, not how the producing application was actually configured.
 
@@ -320,7 +326,7 @@ The load-bearing distinction is that a *file* and a *view onto it* are different
 
 | Scope | Type | Holds |
 | ----- | ---- | ----- |
-| Per file, below the UI | `Document` (`src/core`) | source, format, decoder, `RecordIndex`, `FilterSet`/`FilteredIndex`, `HighlighterSet`, zones, runs and the run selection |
+| Per file, below the UI | `Document` (`src/core`) | source, format, decoder, `RecordIndex`, `FilterSet`/`FilteredIndex`, `HighlighterSet`, zones and the timestamp display mode, runs and the run selection |
 | Per file, in the UI | `DocumentContext` (`src/ui`) | the `Document`, its `LogModel`, `IndexController`, `LiveController`, `FormatSettings`, indexing progress, the Filters pane's per-file widget state, and the list of views |
 | Per view | `DocumentView` (`src/ui`) | a `LogView` and its own `FindBar`; and inside the `LogView`, scroll position, selection, wrap mode, `QHeaderView` column layout, and follow state |
 
@@ -329,6 +335,8 @@ The load-bearing distinction is that a *file* and a *view onto it* are different
 **Follow state is per view** and lives only in `LogView`. `Document` deliberately has no `following` flag: pinning one view to a point in the history while another tails is the main reason to split a file at all.
 
 **One `LogModel` backs all of a file's views.** The model carries no view state (only the light/dark cue), and each `LogView` constructs its own `QHeaderView` and `QItemSelectionModel` — the ordinary Qt multi-view case. A second model would double the append and reset traffic and buy nothing.
+
+**The timestamp display mode is per file, despite being chosen from a per-view widget.** Its control is the timestamp column header's context menu (`SPEC.md` §4) and the header is per view, but the mode itself sits in `FormatSettings` beside the source zone it replaced. Per view would mean the shared `LogModel` could no longer format the Date column — it carries no view state — pushing that formatting into `LogView` for one setting's sake. The menu is built once, owned by the window, and its checkmark is refreshed from the active context by `updateActionStates()`, the same shape as the per-view `m_followAction`.
 
 ### 12.2 The dock shell
 
@@ -349,7 +357,7 @@ The accepted trade-off versus a third-party docking framework (KDDockWidgets, Qt
 ```json
 { "schemaVersion": 2,
   "geometry": "...", "windowState": "...",
-  "documents": [ { "path": "...", "format": "...", "filters": {}, "highlighters": {}, "runAll": false } ],
+  "documents": [ { "path": "...", "format": "...", "timeDisplay": "utc", "filters": {}, "highlighters": {}, "runAll": false } ],
   "views":     [ { "document": 0, "dockName": "docView-<uuid>", "columnState": "...", "wrapMode": 0 } ],
   "activeView": 0 }
 ```
@@ -368,6 +376,8 @@ Two arrays, matching the two scopes: N files, and N views pointing back at them.
 A file that has gone missing is skipped with an inline notice and no dialog (`SPEC.md` §10); its dock simply never appears, which `restoreState()` tolerates.
 
 **v1 is migrated, not discarded** — one document, one synthesized view, carrying the column state that used to live on the document. Its `windowState` is deliberately **dropped**: that blob describes a window with a central widget and no document docks, and feeding it to the dock-only shell yields a mangled layout with no diagnostic.
+
+**`timeDisplay` was added *within* v2, not as a v3.** It is one additive key in the existing shape, read with the legacy `displayZone` key as a fallback (the `"local"`/`"utc"` spellings are shared deliberately), so a v2 store round-trips through either build. The v1→v2 bump was earned by structural change — a new array, a field moved between scopes, a renamed key, a dropped blob — and none of that applies. Bumping anyway would also discard every existing session, since `load()` accepts only `kSchemaVersion` and 1.
 
 ### 12.4 The constraints that made this additive
 

@@ -97,6 +97,12 @@ private slots:
     void liveNewRunStaysOnCurrent();
     void liveEarlierRunUnaffectedByAppend();
     void rescanReDetectsAndSelectsNewest();
+
+    // The RunSeconds display mode's baseline lookup (SPEC.md §4). It runs on the
+    // paint path over the same run partition, so it is tested here rather than in
+    // the rendering tests, which cover the formatting.
+    void runBaseTimestampBinarySearch();
+    void runBaseTimestampFollowsAppend();
 };
 
 void TestRunSelect::detectsRunsAndSelectsNewest()
@@ -429,6 +435,107 @@ void TestRunSelect::rescanReDetectsAndSelectsNewest()
     QCOMPARE(doc.runs().size(), 3);  // re-detected against the new content
     QCOMPARE(doc.selectedRun(), 2);  // newest
     QCOMPARE(doc.filtered().recordCount(), 1);
+}
+
+void TestRunSelect::runBaseTimestampBinarySearch()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("basesearch.log"));
+
+    // Two pre-marker records, then three marked runs of two records each.
+    QByteArray whole;
+    int sec = 0;
+    whole += rec(sec++, "t0", "INFO ", "boot", "pre one");
+    whole += rec(sec++, "t0", "INFO ", "boot", "pre two");
+    for (int r = 0; r < 3; ++r) {
+        whole += banner(sec++, r);
+        whole += rec(sec++, "t1", "INFO ", "svc", "m");
+    }
+    QVERIFY(writeWhole(path, whole)); // 8 records
+
+    Document doc;
+    QVERIFY(openDoc(doc, path));
+    QCOMPARE(doc.index().records.size(), 8);
+
+    // With no run-start pattern the whole file is ONE run, so every row bases on the
+    // file's first record — this is what keeps the display mode always usable.
+    QVERIFY(doc.runs().isEmpty());
+    const qint64 first = doc.index().records.at(0).timestamp;
+    for (int row = 0; row < 8; ++row)
+        QCOMPARE(doc.runBaseTimestamp(row), first);
+
+    doc.setRunStart(QString::fromLatin1(kMarker), false, Qt::CaseInsensitive);
+    QCOMPARE(doc.runs().size(), 4); // preamble + 3 marked runs
+
+    // Each row resolves to its OWN run's first record. Walked backwards as well as
+    // forwards so the one-entry hint is exercised in both directions, not just on
+    // the contiguous forward sweep a repaint produces.
+    const int startOf[8] = { 0, 0, 2, 2, 4, 4, 6, 6 };
+    for (int row = 0; row < 8; ++row) {
+        QCOMPARE(doc.runBaseTimestamp(row),
+                 doc.index().records.at(startOf[row]).timestamp);
+    }
+    for (int row = 7; row >= 0; --row) {
+        QCOMPARE(doc.runBaseTimestamp(row),
+                 doc.index().records.at(startOf[row]).timestamp);
+    }
+
+    // Out of range in either direction yields no baseline rather than reading past
+    // the index — cellText guards on it, but the lookup must be safe on its own.
+    QCOMPARE(doc.runBaseTimestamp(-1), qint64(Record::kNoTimestamp));
+    QCOMPARE(doc.runBaseTimestamp(8), qint64(Record::kNoTimestamp));
+}
+
+void TestRunSelect::runBaseTimestampFollowsAppend()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("baseappend.log"));
+
+    QByteArray whole;
+    int sec = 0;
+    whole += banner(sec++, 0);
+    whole += rec(sec++, "t1", "INFO ", "svc", "a0");
+    whole += banner(sec++, 1);
+    whole += rec(sec++, "t1", "INFO ", "svc", "b0");
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY(openDoc(doc, path));
+    doc.setRunStart(QString::fromLatin1(kMarker), false, Qt::CaseInsensitive);
+    QCOMPARE(doc.runs().size(), 2);
+    doc.applyFilters();
+
+    const qint64 run0 = doc.index().records.at(0).timestamp;
+    const qint64 run1 = doc.index().records.at(2).timestamp;
+    // Resolve BEFORE the append so the memos are populated: the point of this case
+    // is that a later append neither invalidates them nor lets them go stale.
+    QCOMPARE(doc.runBaseTimestamp(1), run0);
+    QCOMPARE(doc.runBaseTimestamp(3), run1);
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+
+    // The app restarts: a third run arrives by append.
+    QByteArray chunk;
+    chunk += banner(sec++, 2);
+    chunk += rec(sec++, "t1", "INFO ", "svc", "c0");
+    QVERIFY(append(path, chunk));
+    live.checkNow();
+    QCOMPARE(doc.runs().size(), 3);
+
+    // The earlier runs' baselines are untouched...
+    QCOMPARE(doc.runBaseTimestamp(0), run0);
+    QCOMPARE(doc.runBaseTimestamp(1), run0);
+    QCOMPARE(doc.runBaseTimestamp(2), run1);
+    QCOMPARE(doc.runBaseTimestamp(3), run1);
+    // ...and the appended rows base on the NEW run's marker, not on run 1's.
+    const qint64 run2 = doc.index().records.at(4).timestamp;
+    QVERIFY(run2 != run1);
+    QCOMPARE(doc.runBaseTimestamp(4), run2);
+    QCOMPARE(doc.runBaseTimestamp(5), run2);
 }
 
 QTEST_GUILESS_MAIN(TestRunSelect)

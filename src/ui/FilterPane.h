@@ -47,6 +47,12 @@ public:
     // (SPEC.md §6: the lists are discovered as the file is scanned).
     void refreshDiscoveredLists();
 
+    // Re-render the time-range editors from the document's stored UTC ms bounds in
+    // the CURRENT display zone. Call after the display zone moves (a timestamp
+    // display-mode change, SPEC.md §4): the editors hold wall clock, so leaving the
+    // digits alone would silently re-point the bounds at a different instant.
+    void refreshTimeBounds();
+
     // Portable, name-based snapshot of the pane's filter state (SPEC.md §9, §10).
     // Used for both filter presets (create-from-current-state / apply) and per-file
     // session restore. Carries subsystem/thread NAMES, never interned ids, so it is
