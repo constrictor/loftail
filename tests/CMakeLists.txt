@@ -137,3 +137,20 @@ qt_add_executable(tst_openflow tst_openflow.cpp)
 target_link_libraries(tst_openflow PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_openflow COMMAND tst_openflow)
 set_tests_properties(tst_openflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# M9 — several logs open at once as tabs, and several views onto one log
+# (SPEC.md §3, §5a). Covers what multi-document changes: an open adds a tab rather
+# than replacing, pane rebinding on a FILE switch but not a view switch, and a file
+# closing with its last view. Drives the real MainWindow; UI layer, offscreen.
+qt_add_executable(tst_multidoc tst_multidoc.cpp)
+target_link_libraries(tst_multidoc PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_multidoc COMMAND tst_multidoc)
+set_tests_properties(tst_multidoc PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# M9 — the dock layout itself round-trips: tabs, splits and floating windows come
+# back where they were, each view keeping its own column layout and wrap mode.
+# Two MainWindow instances over one isolated settings store, offscreen.
+qt_add_executable(tst_docksession tst_docksession.cpp)
+target_link_libraries(tst_docksession PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_docksession COMMAND tst_docksession)
+set_tests_properties(tst_docksession PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

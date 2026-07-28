@@ -212,10 +212,10 @@ public:
     Encoding requestedEncoding() const { return m_requestedEncoding; }
     Encoding resolvedEncoding() const { return m_decoder.resolvedEncoding(); }
 
-    // Every file opens at its end, following (SPEC.md §3); watching is always on.
-    // The watch/append loop itself is M6; the flag lives here from the start.
-    bool following() const { return m_following; }
-    void setFollowing(bool f) { m_following = f; }
+    // NOTE: follow state is NOT here. Every file opens at its end following
+    // (SPEC.md §3) and watching is always on, but *whether the view is pinned to the
+    // newest record* is a property of a view, not of the file — two views onto one
+    // log follow independently. It lives in LogView::following().
 
     // Re-open the file at the current path and rebuild the index from scratch with
     // the SAME compiled format, decoder, and source zone (M6 rotation/truncation:
@@ -252,7 +252,6 @@ private:
     QTimeZone                  m_displayZone;
     CompileError               m_formatError;
     Encoding                   m_requestedEncoding = Encoding::Auto;
-    bool                       m_following = true;
 
     // Run selection state. m_runs holds start markers (ascending by offset); the
     // selected run's byte interval is cached in m_viewStart/m_viewEnd.

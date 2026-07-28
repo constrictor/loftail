@@ -14,16 +14,19 @@ QT_END_NAMESPACE
 
 namespace loftail {
 
-// M5 — Session persistence (SPEC.md §10, ARCHITECTURE.md §8, §12.4). What loftail
-// restores on relaunch: the last file(s), their format, active filters and
-// highlighters, column layout, and the global window geometry and pane layout.
+// Session persistence (SPEC.md §10, ARCHITECTURE.md §8, §12). What loftail restores
+// on relaunch: every open file, its format, active filters and highlighters, every
+// view onto it with its own column layout and wrap mode, and the global window
+// geometry and dock layout (which is what puts the tabs, splits and floating windows
+// back where they were).
 //
-// Per invariant #7 / §12.4 the schema stores a `documents` ARRAY from day one, even
-// though there is exactly one element today — writing it as a single-document schema
-// now would force a migration when multi-file lands. Per-file scope (format,
-// filters, highlighters, columns) lives in each array element; window/pane geometry
-// is global. Filters/highlighters are stored as their portable name/index JSON so
-// restoring is the same code path as applying a preset.
+// The schema has TWO arrays, because a file and a view are different things: N files
+// are open, and one file may have several views onto it. Per-file scope (format,
+// filters, highlighters, run selection) lives in `documents`; per-view scope (column
+// layout, wrap mode, and the dock object name that ties the view to its slot in
+// `windowState`) lives in `views`; window and pane layout is global.
+// Filters/highlighters are stored as their portable name/index JSON so restoring is
+// the same code path as applying a preset.
 //
 // Backed by QSettings, which gives its own store the atomic-write guarantee the
 // multi-instance case needs (§8.1); the global keys are last-writer-wins (§10).
@@ -31,7 +34,6 @@ struct SessionDocument
 {
     QString        path;
     FormatSettings format;       // pattern / encoding / source+display zones + run-start (§4, §3a)
-    QByteArray     columnState;  // QHeaderView state: order, sizes, hidden (§5)
     QJsonObject    filters;      // FilterPane portable state (names, not ids)
     QJsonObject    highlighters; // { rules: [...] } — names + palette indices (§8)
 
@@ -46,34 +48,61 @@ struct SessionDocument
     qint64 selectedRunStartTimestamp = Record::kNoTimestamp;
 };
 
+// One view onto one file. Several may name the same `documentIndex` — that is a file
+// opened in two independently-scrolled views.
+struct SessionView
+{
+    int        documentIndex = 0; // index into Session::documents
+    QString    dockName;          // the QDockWidget objectName, matching `windowState`
+    QByteArray columnState;       // QHeaderView state: order, sizes, hidden (§5)
+    int        wrapMode = 0;      // LogView::WrapMode
+};
+
 struct Session
 {
-    int                     schemaVersion = 1;
-    QByteArray              geometry;    // QWidget::saveGeometry()
-    QByteArray              windowState; // QMainWindow::saveState() — dock/pane layout
-    int                     activeDocument = 0;
+    int                      schemaVersion = 2; // SessionStore::kSchemaVersion
+    QByteArray               geometry;    // QWidget::saveGeometry()
+    QByteArray               windowState; // QMainWindow::saveState() — the whole dock layout
+    int                      activeView = 0; // index into `views`
     QVector<SessionDocument> documents;
+    QVector<SessionView>     views;
 
     bool hasDocuments() const { return !documents.isEmpty(); }
-    const SessionDocument *active() const
+    // The view that was active, clamped; nullptr when nothing was open.
+    const SessionView *active() const
     {
-        if (activeDocument < 0 || activeDocument >= documents.size())
-            return documents.isEmpty() ? nullptr : &documents.first();
-        return &documents.at(activeDocument);
+        if (views.isEmpty())
+            return nullptr;
+        if (activeView < 0 || activeView >= views.size())
+            return &views.first();
+        return &views.at(activeView);
+    }
+    // The document `view` belongs to, or nullptr if the index is out of range.
+    const SessionDocument *documentFor(const SessionView &view) const
+    {
+        if (view.documentIndex < 0 || view.documentIndex >= documents.size())
+            return nullptr;
+        return &documents.at(view.documentIndex);
     }
 };
 
 class SessionStore
 {
 public:
-    static constexpr int kSchemaVersion = 1;
+    // 2 — added the `views` array (multiple files, multiple views per file), moved
+    // columnState from the document to the view, and replaced `activeDocument` with
+    // `activeView`. A v1 session is migrated on read rather than discarded, EXCEPT
+    // its windowState: that blob was produced by a window with a central widget and
+    // no document docks, and feeding it to the dock-only shell yields a mangled
+    // layout with no diagnostic.
+    static constexpr int kSchemaVersion = 2;
 
     // Read the whole session (empty documents when nothing was saved, or when the
-    // stored schema version is not understood).
+    // stored schema version is not understood). A v1 store is migrated.
     static Session load(QSettings &settings);
 
-    // Write the whole session, replacing any previous one. The `documents` array is
-    // rewritten wholesale so a shrunk list leaves no stale tail.
+    // Write the whole session, replacing any previous one. Both arrays are rewritten
+    // wholesale so a shrunk list leaves no stale tail.
     static void save(QSettings &settings, const Session &session);
 
 private:

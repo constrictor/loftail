@@ -9,9 +9,10 @@
 
 using namespace loftail;
 
-// M5 — session persistence (SPEC.md §10, ARCHITECTURE.md §12.4). The schema stores
-// a `documents` ARRAY from day one even with a single element (invariant #7), so
-// multi-file needs no migration later. Core-only (a QSettings ini in a temp dir).
+// Session persistence (SPEC.md §10, ARCHITECTURE.md §12). Schema v2 has two arrays:
+// `documents` (one per open file) and `views` (one per view, pointing back at its
+// file), because one file may be open in several views. Core-only (a QSettings ini in
+// a temp dir).
 class TestSession : public QObject
 {
     Q_OBJECT
@@ -24,6 +25,9 @@ private slots:
     void perFileScopingSurvivesMultipleDocuments();
     void runSelectionRoundTrip();
     void runSelectionAbsentInOldSession();
+    void severalViewsOnOneDocument();
+    void viewsShrinkWithoutStaleTail();
+    void v1SessionMigrates();
 };
 
 void TestSession::documentsArrayRoundTrip()
@@ -34,7 +38,7 @@ void TestSession::documentsArrayRoundTrip()
     Session in;
     in.geometry = QByteArrayLiteral("GEOM");
     in.windowState = QByteArrayLiteral("STATE");
-    in.activeDocument = 0;
+    in.activeView = 0;
 
     SessionDocument d;
     d.path = QStringLiteral("/logs/app.log");
@@ -42,7 +46,6 @@ void TestSession::documentsArrayRoundTrip()
     d.format.encoding = Encoding::Utf16LE;
     d.format.sourceZone.kind = ZoneChoice::Kind::Utc;
     d.format.displayZone.kind = ZoneChoice::Kind::Local;
-    d.columnState = QByteArrayLiteral("COLS");
     QJsonObject filters;
     filters.insert(QStringLiteral("priorityEnabled"), true);
     d.filters = filters;
@@ -55,6 +58,13 @@ void TestSession::documentsArrayRoundTrip()
     d.highlighters = hl;
     in.documents = {d};
 
+    SessionView v;
+    v.documentIndex = 0;
+    v.dockName = QStringLiteral("docView-abc");
+    v.columnState = QByteArrayLiteral("COLS");
+    v.wrapMode = 2;
+    in.views = {v};
+
     {
         QSettings s(ini, QSettings::IniFormat);
         SessionStore::save(s, in);
@@ -65,16 +75,24 @@ void TestSession::documentsArrayRoundTrip()
 
     QCOMPARE(out.geometry, in.geometry);
     QCOMPARE(out.windowState, in.windowState);
-    QCOMPARE(out.activeDocument, 0);
-    QCOMPARE(out.documents.size(), 1); // stored as an array even with one element
+    QCOMPARE(out.activeView, 0);
+    QCOMPARE(out.documents.size(), 1);
     const SessionDocument &od = out.documents.first();
     QCOMPARE(od.path, d.path);
     QCOMPARE(od.format.pattern, d.format.pattern);
     QCOMPARE(int(od.format.encoding), int(Encoding::Utf16LE));
     QCOMPARE(int(od.format.sourceZone.kind), int(ZoneChoice::Kind::Utc));
     QCOMPARE(int(od.format.displayZone.kind), int(ZoneChoice::Kind::Local));
-    QCOMPARE(od.columnState, d.columnState);
     QCOMPARE(od.filters.value(QStringLiteral("priorityEnabled")).toBool(), true);
+
+    // The view's own state: dock identity, columns and wrap mode (§5).
+    QCOMPARE(out.views.size(), 1);
+    const SessionView &ov = out.views.first();
+    QCOMPARE(ov.documentIndex, 0);
+    QCOMPARE(ov.dockName, QStringLiteral("docView-abc"));
+    QCOMPARE(ov.columnState, QByteArrayLiteral("COLS"));
+    QCOMPARE(ov.wrapMode, 2);
+    QCOMPARE(out.documentFor(ov)->path, d.path);
     QCOMPARE(od.highlighters.value(QStringLiteral("rules")).toArray()
                  .first().toObject().value(QStringLiteral("background")).toInt(),
              3);
@@ -144,7 +162,7 @@ void TestSession::perFileScopingSurvivesMultipleDocuments()
     const QString ini = dir.filePath(QStringLiteral("s.ini"));
 
     Session in;
-    in.activeDocument = 1;
+    in.activeView = 1;
     SessionDocument a;
     a.path = QStringLiteral("/a.log");
     a.format.pattern = QStringLiteral("A%n");
@@ -152,6 +170,13 @@ void TestSession::perFileScopingSurvivesMultipleDocuments()
     b.path = QStringLiteral("/b.log");
     b.format.pattern = QStringLiteral("B%n");
     in.documents = {a, b};
+    SessionView va;
+    va.documentIndex = 0;
+    va.dockName = QStringLiteral("docView-a");
+    SessionView vb;
+    vb.documentIndex = 1;
+    vb.dockName = QStringLiteral("docView-b");
+    in.views = {va, vb};
     {
         QSettings s(ini, QSettings::IniFormat);
         SessionStore::save(s, in);
@@ -162,7 +187,118 @@ void TestSession::perFileScopingSurvivesMultipleDocuments()
     QCOMPARE(out.documents.size(), 2);
     QCOMPARE(out.documents.at(0).format.pattern, QStringLiteral("A%n"));
     QCOMPARE(out.documents.at(1).format.pattern, QStringLiteral("B%n"));
-    QCOMPARE(out.active()->path, QStringLiteral("/b.log"));
+    QCOMPARE(out.documentFor(*out.active())->path, QStringLiteral("/b.log"));
+}
+
+void TestSession::severalViewsOnOneDocument()
+{
+    // Two views onto ONE file: the document appears once, the views twice, each with
+    // its own column layout and wrap mode (ARCHITECTURE.md §12).
+    QTemporaryDir dir;
+    const QString ini = dir.filePath(QStringLiteral("s.ini"));
+
+    Session in;
+    SessionDocument d;
+    d.path = QStringLiteral("/logs/one.log");
+    in.documents = {d};
+    SessionView first;
+    first.documentIndex = 0;
+    first.dockName = QStringLiteral("docView-1");
+    first.columnState = QByteArrayLiteral("WIDE");
+    first.wrapMode = 0;
+    SessionView second;
+    second.documentIndex = 0;
+    second.dockName = QStringLiteral("docView-2");
+    second.columnState = QByteArrayLiteral("NARROW");
+    second.wrapMode = 2;
+    in.views = {first, second};
+    in.activeView = 1;
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        SessionStore::save(s, in);
+    }
+
+    QSettings s(ini, QSettings::IniFormat);
+    const Session out = SessionStore::load(s);
+    QCOMPARE(out.documents.size(), 1);
+    QCOMPARE(out.views.size(), 2);
+    QCOMPARE(out.views.at(0).documentIndex, out.views.at(1).documentIndex);
+    QCOMPARE(out.views.at(0).columnState, QByteArrayLiteral("WIDE"));
+    QCOMPARE(out.views.at(1).columnState, QByteArrayLiteral("NARROW"));
+    QCOMPARE(out.views.at(1).wrapMode, 2);
+    QCOMPARE(out.active()->dockName, QStringLiteral("docView-2"));
+}
+
+void TestSession::viewsShrinkWithoutStaleTail()
+{
+    // Same shrink hazard as the documents array: closing a tab must not leave a
+    // stale view entry behind, or restore would resurrect it.
+    QTemporaryDir dir;
+    const QString ini = dir.filePath(QStringLiteral("s.ini"));
+
+    Session two;
+    SessionDocument d;
+    d.path = QStringLiteral("/a.log");
+    two.documents = {d};
+    SessionView v1;
+    v1.dockName = QStringLiteral("docView-1");
+    SessionView v2;
+    v2.dockName = QStringLiteral("docView-2");
+    two.views = {v1, v2};
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        SessionStore::save(s, two);
+    }
+
+    Session one = two;
+    one.views = {v1};
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        SessionStore::save(s, one);
+    }
+
+    QSettings s(ini, QSettings::IniFormat);
+    const Session out = SessionStore::load(s);
+    QCOMPARE(out.views.size(), 1);
+    QCOMPARE(out.views.first().dockName, QStringLiteral("docView-1"));
+}
+
+void TestSession::v1SessionMigrates()
+{
+    // A session written by the pre-tabs release must still open the user's file
+    // rather than being silently discarded. Its windowState is deliberately dropped:
+    // it describes a window with a central widget and no document docks.
+    QTemporaryDir dir;
+    const QString ini = dir.filePath(QStringLiteral("s.ini"));
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        s.beginGroup(QStringLiteral("session"));
+        s.setValue(QStringLiteral("schemaVersion"), 1);
+        s.setValue(QStringLiteral("geometry"), QByteArrayLiteral("GEOM"));
+        s.setValue(QStringLiteral("windowState"), QByteArrayLiteral("OLDSTATE"));
+        s.setValue(QStringLiteral("activeDocument"), 0);
+        s.beginWriteArray(QStringLiteral("documents"), 1);
+        s.setArrayIndex(0);
+        s.setValue(QStringLiteral("path"), QStringLiteral("/logs/old.log"));
+        s.setValue(QStringLiteral("pattern"), QStringLiteral("%m%n"));
+        s.setValue(QStringLiteral("columnState"), QByteArrayLiteral("OLDCOLS"));
+        s.endArray();
+        s.endGroup();
+        s.sync();
+    }
+
+    QSettings s(ini, QSettings::IniFormat);
+    const Session out = SessionStore::load(s);
+    QCOMPARE(out.schemaVersion, SessionStore::kSchemaVersion);
+    QCOMPARE(out.geometry, QByteArrayLiteral("GEOM"));
+    QVERIFY(out.windowState.isEmpty()); // the v1 dock layout is NOT carried over
+    QCOMPARE(out.documents.size(), 1);
+    QCOMPARE(out.documents.first().path, QStringLiteral("/logs/old.log"));
+    // One synthesized view, carrying the column state that used to live on the file.
+    QCOMPARE(out.views.size(), 1);
+    QCOMPARE(out.views.first().documentIndex, 0);
+    QCOMPARE(out.views.first().columnState, QByteArrayLiteral("OLDCOLS"));
+    QVERIFY(!out.views.first().dockName.isEmpty());
 }
 
 void TestSession::runSelectionRoundTrip()
@@ -203,8 +339,7 @@ void TestSession::runSelectionAbsentInOldSession()
 {
     // A session written before this feature has none of the run keys. Reading it back
     // must yield tolerant defaults (no pattern, no restriction) — the fields were
-    // added additively at schemaVersion 1, NOT by bumping the schema (which would
-    // discard every saved session).
+    // added additively within a schema version, NOT by bumping the schema.
     QTemporaryDir dir;
     const QString ini = dir.filePath(QStringLiteral("s.ini"));
 

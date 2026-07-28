@@ -4,6 +4,7 @@
 #include <QDialog>
 #include <QFile>
 #include <QLineEdit>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -60,12 +61,23 @@ private:
 
 private slots:
     void initTestCase();
+    // Each case closes its window, which saves a session that the NEXT case's window
+    // would restore — and an open now ADDS a tab rather than replacing one, so a
+    // leaked session would show up as an extra view. Start each case clean.
+    void init();
     // First: it needs a MainWindow with nothing open, which only holds before any
     // case below closes a window and saves a session pointing at its file.
     void escapeWithNothingOpenLeavesEmptyView();
     void escapeCancelsOpenAndKeepsCurrentFile();
     void acceptedPatternOpensTheFile();
 };
+
+void TestOpenFlow::init()
+{
+    QSettings settings;
+    settings.remove(QStringLiteral("session"));
+    settings.sync();
+}
 
 void TestOpenFlow::initTestCase()
 {
@@ -88,7 +100,7 @@ void TestOpenFlow::escapeWithNothingOpenLeavesEmptyView()
 {
     MainWindow w;
     w.show();
-    QVERIFY(w.findChild<LogView *>() == nullptr);
+    QCOMPARE(w.findChildren<LogView *>().size(), 0);
 
     Dismisser d;
     dismissWhenShown(d, Qt::Key_Escape);
@@ -98,7 +110,7 @@ void TestOpenFlow::escapeWithNothingOpenLeavesEmptyView()
     // Cancelled with nothing to fall back to: no view at all, rather than a table
     // of unparsed plain text.
     QTest::qWait(100);
-    QVERIFY(w.findChild<LogView *>() == nullptr);
+    QCOMPARE(w.findChildren<LogView *>().size(), 0);
     w.close();
 }
 
@@ -109,7 +121,7 @@ void TestOpenFlow::escapeCancelsOpenAndKeepsCurrentFile()
     w.show();
 
     w.openFile(m_good); // parses with the default pattern: no prompt
-    QTRY_VERIFY(w.findChild<LogView *>() != nullptr);
+    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
     QTest::qWait(200); // let indexing finish
     LogView *before = w.findChild<LogView *>();
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — good.log"));
@@ -121,6 +133,9 @@ void TestOpenFlow::escapeCancelsOpenAndKeepsCurrentFile()
 
     // The cancelled open changed nothing: same file, same view, still usable.
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — good.log"));
+    // A cancelled open must create NOTHING: with several files openable, "the view is
+    // unchanged" also has to mean "no second tab appeared".
+    QCOMPARE(w.findChildren<LogView *>().size(), 1);
     QCOMPARE(w.findChild<LogView *>(), before);
     w.close();
 }
@@ -149,7 +164,7 @@ void TestOpenFlow::acceptedPatternOpensTheFile()
 
     w.openFile(m_weird);
     QVERIFY2(d.seen, "the format dialog was never shown");
-    QTRY_VERIFY(w.findChild<LogView *>() != nullptr);
+    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
     QTest::qWait(200);
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — weird.log"));
     w.close();

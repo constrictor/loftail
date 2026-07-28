@@ -1,10 +1,12 @@
 #pragma once
 
+#include "DocumentContext.h"
 #include "FormatSettings.h"
 #include "LogView.h"
 
 #include <QMainWindow>
 #include <QString>
+#include <QVector>
 
 #include <memory>
 #include <optional>
@@ -12,29 +14,26 @@
 
 QT_BEGIN_NAMESPACE
 class QAction;
+class QDockWidget;
 class QLabel;
 class QMenu;
 class QProgressBar;
-class QVBoxLayout;
 QT_END_NAMESPACE
 
 namespace loftail {
 
 class Document;
+class DocumentView;
 class LogModel;
-class IndexController;
-class LiveController;
+struct SessionDocument;
 class FilterPane;
 class HighlighterPane;
 class PresetPane;
 class RunPane;
-class FindBar;
 
-// The application's top-level window. M2b brings the open-file UI (dialog,
-// drag-and-drop, recent files), the production LogView, and worker-thread indexing
-// with a progress/cancel indicator. Per-file state lives in Document; the window
-// holds the one-element document vector and an active pointer (invariant #7), never
-// a "current file" global.
+// The application's top-level window. Per-file state lives in Document and the
+// machinery around it in DocumentContext; the window holds the context vector and
+// a pointer to the ACTIVE VIEW, never a "current file" global (invariant #7).
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -66,11 +65,9 @@ protected:
 private slots:
     void chooseFileToOpen();
     void showFormatDialog();
-    void onIndexProgress(qint64 done, qint64 total);
-    void onIndexFinished(bool cancelled);
     void showColumnMenu(const QPoint &pos);
     // Recompute the visible subset from the active document's filters and refresh
-    // the view + status counts (M4). Wrapped in a model reset.
+    // its views + status counts (M4). Wrapped in a model reset.
     void applyActiveFilters();
     // Walk the visible rows for the Find bar's query and move the selection
     // (SPEC.md §5); changes no filter state.
@@ -87,12 +84,23 @@ private slots:
     void onRunSelected(int runIndex);
 
 private:
+    // applyActiveFilters() for a NAMED file, so a background file finishing its scan
+    // re-applies its own filters without disturbing the active one.
+    void applyFiltersFor(DocumentContext *ctx);
+
     void buildMenus();
     void refreshRecentFilesMenu();
     void rememberRecentFile(const QString &path);
-    void teardownDocument();
     void updateStatus();
     void updateModelTheme(); // push the light/dark cue into the model (highlighting)
+
+    // Retitle a file's tabs, folding in its indexing progress.
+    void updateDockTitles(DocumentContext *ctx);
+
+    // Indexing progress/completion for ONE file. Taken per context rather than as a
+    // plain slot because a background file keeps scanning while another is active.
+    void onIndexProgress(DocumentContext *ctx, qint64 done, qint64 total);
+    void onIndexFinished(DocumentContext *ctx, bool cancelled);
 
     // Full session persistence (SPEC.md §10, ARCHITECTURE.md §12.4): write the active
     // document's per-file state (format, filters, highlighters, columns) into the
@@ -107,26 +115,87 @@ private:
     // Returns false when the open did not happen — a source that cannot be opened,
     // or a format dialog the user cancelled. On false the previously open document
     // (if any) is left untouched.
-    bool openWithSettings(const QString &path, FormatSettings settings, bool promptIfNoMatch);
-    // Build the model + view + controller for the active document and start the scan.
-    void buildViewAndIndex(const QString &path);
+    // `runRestore` carries a persisted run selection (session restore only); it is
+    // re-resolved once indexing finishes. A normal open passes nullopt and defaults
+    // to the newest run (§3a).
+    bool openWithSettings(const QString &path, FormatSettings settings, bool promptIfNoMatch,
+                          std::optional<RunRestore> runRestore = std::nullopt);
+    // Build the model and the indexing controller for `ctx`. No views, no scan.
+    void buildContext(DocumentContext *ctx);
+    // An interactive open: buildContext plus one view, shown, with the scan started.
+    void buildViewAndIndex(DocumentContext *ctx);
+    // Session restore's half of an open: build a context from a saved document with
+    // NO views (the caller creates each one under its saved dock name) and no scan.
+    // Returns nullptr if the file cannot be opened.
+    DocumentContext *prepareContext(const SessionDocument &d);
+    // Build one view onto `ctx`, wire it up, and dock it. Used both for a file's
+    // first view and for further views onto the same file.
+    DocumentView *createView(DocumentContext *ctx, const QString &dockName);
+    // Raise `view`'s tab, make it active, and focus its table.
+    void showView(DocumentView *view);
+    // Window ▸ New View: a second, independently-scrolled view onto the active file.
+    void newViewOfActiveDocument();
     // Apply a new format to the ALREADY-OPEN document, choosing the change-cost:
     // pattern/encoding change → full rescan; source-zone change → timestamp reparse;
     // display-zone change → repaint only (§5.1, §6.1).
     void applySettings(const FormatSettings &newSettings);
     void persistFormat(const QString &path, const FormatSettings &s);
 
-    Document *activeDocument() const;
+    // Close every open file (window close, and File ▸ Close All).
+    void closeAllDocuments();
+    // Close the active view's tab; the file itself closes with its last view.
+    void closeActiveView();
+    // A view is being destroyed (its dock was closed, or the window is going down):
+    // drop it from the bookkeeping, reap its file if that was its last view, and
+    // move the active view somewhere sensible.
+    void onViewDestroyed(QObject *obj);
+    // Track which view the user is in. Focus can land on any descendant (the table,
+    // the Find bar's line edit), so the walk goes up to the enclosing DocumentView.
+    void onFocusChanged(QWidget *old, QWidget *now);
+    // The view showing `path`, or nullptr — reopening an open file raises it.
+    DocumentView *viewOfPath(const QString &path) const;
+    // Rebuild the Window menu's list of open views.
+    void refreshWindowMenu();
+    // Move the active view one tab forward (or back) through m_views.
+    void cycleView(int delta);
 
-    std::vector<std::unique_ptr<Document>> m_documents;
-    int m_activeIndex = -1;
+    // Wrap `view` in a dock widget and add it to the window. `dockName` is the
+    // QDockWidget objectName, which restoreState()/restoreDockWidget() key off, so
+    // it is generated once per view and persisted with the session.
+    QDockWidget *addViewDock(DocumentView *view, const QString &dockName);
+    // The dock hosting `view` (its parent), or nullptr.
+    static QDockWidget *dockOf(DocumentView *view);
+    // Show the "no file open" notice when there are no documents, hide it otherwise
+    // (a hidden central widget collapses so the docks fill the window).
+    void updateEmptyState();
 
-    LogModel        *m_model = nullptr;
-    LogView         *m_view = nullptr;
-    IndexController *m_controller = nullptr;
-    LiveController  *m_live = nullptr; // M6 watch-and-append loop (starts post-scan)
+    // Make `view` the active one: repoint the status bar, title and per-file
+    // actions at it, and re-emit activeDocumentChanged when the Document changes.
+    void setActiveView(DocumentView *view);
+    // Reflect the active context's state in the status bar, progress and actions.
+    void updateActionStates();
+
+    // Move the global panes' per-file widget state to/from a context as the active
+    // document changes. See DocumentContext::filterState for why this is needed.
+    void stashPaneState(DocumentContext *ctx);
+    void hydratePanes(DocumentContext *ctx);
+
+    Document        *activeDocument() const;
+    DocumentContext *activeContext() const;
+    LogView         *activeLogView() const;
+    LogModel        *activeModel() const;
+
+    std::vector<std::unique_ptr<DocumentContext>> m_contexts;
+    // Every open view, in creation order — which is also the order the session
+    // stores them in, and the order Ctrl+Tab walks.
+    QVector<DocumentView *> m_views;
+    DocumentView *m_activeView = nullptr;
 
     QMenu   *m_recentMenu = nullptr;
+    QMenu   *m_windowMenu = nullptr;  // the open-views list, rebuilt on aboutToShow
+    QAction *m_closeTabAction = nullptr;
+    QAction *m_closeAllAction = nullptr;
+    QAction *m_newViewAction = nullptr; // Window ▸ New View (a second view on one file)
     QAction *m_cancelAction = nullptr;
     QAction *m_copyAction = nullptr;
     QAction *m_copyColumnsAction = nullptr;
@@ -139,29 +208,19 @@ private:
     HighlighterPane *m_highlighterPane = nullptr; // M5 highlighters side pane
     PresetPane      *m_presetPane = nullptr;      // M5 presets side pane
     RunPane         *m_runPane = nullptr;         // run selection side pane (§3a)
-    FindBar         *m_findBar = nullptr;         // M4 find bar
-    QVBoxLayout     *m_centralLayout = nullptr;   // holds [LogView, placeholder, FindBar]
-    QLabel          *m_placeholder = nullptr;     // shown when no file / last file missing
+    QVector<QDockWidget *> m_paneDocks;           // the four above, for View ▸ Panes
+    // The central widget, and nothing else: open files live in dock widgets, so the
+    // centre only carries the "no file open" notice and is hidden when one is.
+    QLabel *m_placeholder = nullptr;
+
+    // True once a saved dock layout has been applied (or once first-run proportions
+    // have been chosen), so the first-open sizing never overrides a restored layout.
+    bool m_layoutRestored = false;
 
     QString m_defaultPattern;
-    // The format choice for the active document (SPEC.md §4). Held here as UI
-    // configuration for the single active document; the source of truth across
-    // sessions is the per-file FormatCache. The pattern never reaches the view,
-    // filters, or highlighters (invariant #3).
-    FormatSettings m_currentSettings;
+    // The wrap mode new views are created with — a window-wide View-menu choice
+    // (SPEC.md §5), not per-file state; each LogView owns its own mode thereafter.
     LogView::WrapMode m_wrapMode = LogView::WrapMode::Off;
-
-    // A run selection to re-resolve once the (async) index finishes, set only by
-    // restoreSession(). Runs are detected after indexing, so the saved run identity
-    // (by start offset/timestamp, not ordinal) is re-resolved in onIndexFinished;
-    // consumed there. Absent for a normal open, which defaults to the newest run.
-    struct PendingRunRestore
-    {
-        bool   all = false;
-        qint64 startOffset = -1;
-        qint64 startTimestamp = 0;
-    };
-    std::optional<PendingRunRestore> m_pendingRunRestore;
 };
 
 } // namespace loftail

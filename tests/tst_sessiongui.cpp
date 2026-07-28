@@ -88,7 +88,7 @@ void TestSessionGui::roundTripRestoresFileFiltersHighlighters()
         w.resize(920, 640);
         w.show();
         w.openFile(m_sample);
-        QTRY_VERIFY(w.findChild<LogView *>() != nullptr); // the file opened
+        QTRY_COMPARE(w.findChildren<LogView *>().size(), 1); // the file opened
         QTest::qWait(300);                                // let indexing finish
 
         auto *hp = w.findChild<HighlighterPane *>();
@@ -106,7 +106,8 @@ void TestSessionGui::roundTripRestoresFileFiltersHighlighters()
     {
         MainWindow w; // constructor calls restoreSession()
         w.show();
-        QTRY_VERIFY(w.findChild<LogView *>() != nullptr); // the last file reopened
+        // Exactly one: restoring one saved file must not resurrect a second view.
+        QTRY_COMPARE(w.findChildren<LogView *>().size(), 1); // the last file reopened
         QTest::qWait(300);
 
         auto *hp = w.findChild<HighlighterPane *>();
@@ -139,7 +140,7 @@ void TestSessionGui::missingLastFileIsGraceful()
     MainWindow w;
     w.show();
     QTest::qWait(100);
-    QVERIFY(w.findChild<LogView *>() == nullptr); // empty view, no file, no dialog
+    QCOMPARE(w.findChildren<LogView *>().size(), 0); // empty view, no file, no dialog
     w.close();
 }
 
@@ -170,7 +171,7 @@ void TestSessionGui::runSelectionThroughUiAndPersists()
         w.resize(900, 600);
         w.show();
         w.openFile(path);
-        QTRY_VERIFY(w.findChild<LogView *>() != nullptr);
+        QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
         QTest::qWait(300); // let indexing finish
 
         auto *rp = w.findChild<RunPane *>();
@@ -194,7 +195,7 @@ void TestSessionGui::runSelectionThroughUiAndPersists()
     {
         MainWindow w;
         w.show();
-        QTRY_VERIFY(w.findChild<LogView *>() != nullptr);
+        QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
         QTest::qWait(300);
 
         auto *rp = w.findChild<RunPane *>();

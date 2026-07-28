@@ -10,8 +10,10 @@ constexpr auto kGroup = "session";
 constexpr auto kSchema = "schemaVersion";
 constexpr auto kGeometry = "geometry";
 constexpr auto kWindowState = "windowState";
-constexpr auto kActive = "activeDocument";
+constexpr auto kActiveView = "activeView";
+constexpr auto kActiveDocumentV1 = "activeDocument";
 constexpr auto kDocuments = "documents";
+constexpr auto kViews = "views";
 
 QString jsonToString(const QJsonObject &o)
 {
@@ -29,18 +31,23 @@ Session SessionStore::load(QSettings &settings)
     Session session;
     settings.beginGroup(QLatin1String(kGroup));
 
-    // An unknown (or absent) schema version yields an empty session rather than a
-    // half-read one — a clean first launch (§8).
+    // A schema version from the future (or an absent one) yields an empty session
+    // rather than a half-read one — a clean first launch (§8). Version 1 is read and
+    // migrated; anything else is discarded.
     const int version = settings.value(QLatin1String(kSchema), 0).toInt();
-    if (version != kSchemaVersion) {
+    if (version != kSchemaVersion && version != 1) {
         settings.endGroup();
         return session;
     }
+    const bool v1 = version == 1;
 
-    session.schemaVersion = version;
+    session.schemaVersion = kSchemaVersion;
     session.geometry = settings.value(QLatin1String(kGeometry)).toByteArray();
-    session.windowState = settings.value(QLatin1String(kWindowState)).toByteArray();
-    session.activeDocument = settings.value(QLatin1String(kActive), 0).toInt();
+    // A v1 windowState describes a window with a central widget and no document
+    // docks; restoring it into the dock-only shell would mangle the layout. Geometry
+    // (position and size) is still good, so only the dock layout is dropped.
+    if (!v1)
+        session.windowState = settings.value(QLatin1String(kWindowState)).toByteArray();
 
     const int n = settings.beginReadArray(QLatin1String(kDocuments));
     session.documents.reserve(n);
@@ -66,13 +73,41 @@ Session SessionStore::load(QSettings &settings)
                                           .value(QStringLiteral("selectedRunTs"),
                                                  qint64(Record::kNoTimestamp))
                                           .toLongLong();
-        d.columnState = settings.value(QStringLiteral("columnState")).toByteArray();
         d.filters = stringToJson(settings.value(QStringLiteral("filters")).toString());
         d.highlighters =
             stringToJson(settings.value(QStringLiteral("highlighters")).toString());
         session.documents.append(d);
+
+        // v1 had exactly one view per document, with the column state on the
+        // document. Synthesize that view; its dock name is fresh, which is harmless
+        // because the v1 windowState it would have matched is being dropped anyway.
+        if (v1) {
+            SessionView v;
+            v.documentIndex = i;
+            v.dockName = QStringLiteral("docView-migrated-%1").arg(i);
+            v.columnState = settings.value(QStringLiteral("columnState")).toByteArray();
+            session.views.append(v);
+        }
     }
     settings.endArray();
+
+    if (v1) {
+        session.activeView = settings.value(QLatin1String(kActiveDocumentV1), 0).toInt();
+    } else {
+        session.activeView = settings.value(QLatin1String(kActiveView), 0).toInt();
+        const int viewCount = settings.beginReadArray(QLatin1String(kViews));
+        session.views.reserve(viewCount);
+        for (int i = 0; i < viewCount; ++i) {
+            settings.setArrayIndex(i);
+            SessionView v;
+            v.documentIndex = settings.value(QStringLiteral("document"), 0).toInt();
+            v.dockName = settings.value(QStringLiteral("dockName")).toString();
+            v.columnState = settings.value(QStringLiteral("columnState")).toByteArray();
+            v.wrapMode = settings.value(QStringLiteral("wrapMode"), 0).toInt();
+            session.views.append(v);
+        }
+        settings.endArray();
+    }
 
     settings.endGroup();
     return session;
@@ -82,14 +117,16 @@ void SessionStore::save(QSettings &settings, const Session &session)
 {
     settings.beginGroup(QLatin1String(kGroup));
 
-    // Clear the array first so a shrunk documents list leaves no stale indices
+    // Clear the arrays first so a shrunk list leaves no stale indices
     // (QSettings::beginWriteArray does not remove entries beyond the new size).
     settings.remove(QLatin1String(kDocuments));
+    settings.remove(QLatin1String(kViews));
+    settings.remove(QLatin1String(kActiveDocumentV1)); // superseded by activeView
 
     settings.setValue(QLatin1String(kSchema), kSchemaVersion);
     settings.setValue(QLatin1String(kGeometry), session.geometry);
     settings.setValue(QLatin1String(kWindowState), session.windowState);
-    settings.setValue(QLatin1String(kActive), session.activeDocument);
+    settings.setValue(QLatin1String(kActiveView), session.activeView);
 
     settings.beginWriteArray(QLatin1String(kDocuments), session.documents.size());
     for (int i = 0; i < session.documents.size(); ++i) {
@@ -106,9 +143,19 @@ void SessionStore::save(QSettings &settings, const Session &session)
         settings.setValue(QStringLiteral("runAll"), d.runAll);
         settings.setValue(QStringLiteral("selectedRunOffset"), d.selectedRunStartOffset);
         settings.setValue(QStringLiteral("selectedRunTs"), d.selectedRunStartTimestamp);
-        settings.setValue(QStringLiteral("columnState"), d.columnState);
         settings.setValue(QStringLiteral("filters"), jsonToString(d.filters));
         settings.setValue(QStringLiteral("highlighters"), jsonToString(d.highlighters));
+    }
+    settings.endArray();
+
+    settings.beginWriteArray(QLatin1String(kViews), session.views.size());
+    for (int i = 0; i < session.views.size(); ++i) {
+        settings.setArrayIndex(i);
+        const SessionView &v = session.views.at(i);
+        settings.setValue(QStringLiteral("document"), v.documentIndex);
+        settings.setValue(QStringLiteral("dockName"), v.dockName);
+        settings.setValue(QStringLiteral("columnState"), v.columnState);
+        settings.setValue(QStringLiteral("wrapMode"), v.wrapMode);
     }
     settings.endArray();
 

@@ -2,6 +2,11 @@
 add_library(loftail_ui STATIC
     MainWindow.cpp
     MainWindow.h
+    # Per-file machinery (model, controllers, format choice) and one view onto it
+    DocumentContext.cpp
+    DocumentContext.h
+    DocumentView.cpp
+    DocumentView.h
     # The fixed-pitch font shared by the record view and the format preview
     Fonts.cpp
     Fonts.h

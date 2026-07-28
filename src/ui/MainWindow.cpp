@@ -3,6 +3,8 @@
 #include "Decoder.h"
 #include "DetectingFormatProvider.h"
 #include "Document.h"
+#include "DocumentContext.h"
+#include "DocumentView.h"
 #include "Filter.h"
 #include "FilterPane.h"
 #include "FindBar.h"
@@ -22,6 +24,7 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QApplication>
 #include <QCloseEvent>
 #include <QDockWidget>
 #include <QDragEnterEvent>
@@ -51,7 +54,6 @@ namespace {
 constexpr auto kDefaultPattern = "%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n";
 constexpr int  kMaxRecentFiles = 10;
 constexpr auto kRecentFilesKey = "recentFiles";
-constexpr auto kColumnStateKey = "view/columnState";
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -61,6 +63,18 @@ MainWindow::MainWindow(QWidget *parent)
     resize(1100, 720);
     setAcceptDrops(true);
 
+    // The whole window is a dock layout: open files and the side panes are all dock
+    // widgets, so either can be dragged into a tab group, split against the other, or
+    // pulled out into a floating window (SPEC.md §8).
+    //
+    // Two Qt constraints govern this and are easy to break:
+    //   * dock options must be set BEFORE any dock widget is added;
+    //   * GroupedDragging misbehaves for docks that restrict their allowed areas, so
+    //     no dock here may call setAllowedAreas().
+    setDockOptions(QMainWindow::AnimatedDocks | QMainWindow::AllowNestedDocks
+                   | QMainWindow::AllowTabbedDocks | QMainWindow::GroupedDragging);
+    setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
+
     m_progressBar = new QProgressBar(this);
     m_progressBar->setMaximumWidth(200);
     m_progressBar->setVisible(false);
@@ -68,21 +82,13 @@ MainWindow::MainWindow(QWidget *parent)
     statusBar()->addWidget(m_statusLabel, 1);
     statusBar()->addPermanentWidget(m_progressBar);
 
-    // Central area is a container holding the record view above the (hidden) Find
-    // bar, so Find can dock at the bottom of the view without a modal dialog. A
-    // placeholder fills the area when no file is open (or the last one is missing).
-    auto *central = new QWidget(this);
-    m_centralLayout = new QVBoxLayout(central);
-    m_centralLayout->setContentsMargins(0, 0, 0, 0);
-    m_centralLayout->setSpacing(0);
-    m_placeholder = new QLabel(QStringLiteral("No file open. Open a log file to begin."), central);
+    // The empty state. Open files live in dock widgets, so the central widget holds
+    // nothing but this notice; hiding it collapses the centre to zero and lets the
+    // document docks fill the window.
+    m_placeholder = new QLabel(QStringLiteral("No file open. Open a log file to begin."), this);
     m_placeholder->setAlignment(Qt::AlignCenter);
     m_placeholder->setWordWrap(true);
-    m_centralLayout->addWidget(m_placeholder, 1);
-    m_findBar = new FindBar(central);
-    m_centralLayout->addWidget(m_findBar);
-    setCentralWidget(central);
-    connect(m_findBar, &FindBar::findRequested, this, &MainWindow::runFind);
+    setCentralWidget(m_placeholder);
 
     // Three side panes (SPEC.md §8): filters, highlighters, presets. Each binds to
     // the active document by signal (invariant #7 / §12.3), never a fixed Document.
@@ -91,6 +97,7 @@ MainWindow::MainWindow(QWidget *parent)
     filterDock->setObjectName(QStringLiteral("filtersDock"));
     filterDock->setWidget(m_filterPane);
     addDockWidget(Qt::RightDockWidgetArea, filterDock);
+    m_paneDocks.append(filterDock);
     connect(this, &MainWindow::activeDocumentChanged, m_filterPane, &FilterPane::setDocument);
     connect(m_filterPane, &FilterPane::filtersChanged, this, &MainWindow::applyActiveFilters);
 
@@ -99,6 +106,7 @@ MainWindow::MainWindow(QWidget *parent)
     highlightDock->setObjectName(QStringLiteral("highlightersDock"));
     highlightDock->setWidget(m_highlighterPane);
     addDockWidget(Qt::RightDockWidgetArea, highlightDock);
+    m_paneDocks.append(highlightDock);
     connect(this, &MainWindow::activeDocumentChanged, m_highlighterPane, &HighlighterPane::setDocument);
     connect(m_highlighterPane, &HighlighterPane::highlightersChanged,
             this, &MainWindow::applyActiveHighlighters);
@@ -108,6 +116,7 @@ MainWindow::MainWindow(QWidget *parent)
     presetDock->setObjectName(QStringLiteral("presetsDock"));
     presetDock->setWidget(m_presetPane);
     addDockWidget(Qt::RightDockWidgetArea, presetDock);
+    m_paneDocks.append(presetDock);
 
     // Run selection pane (§3a): a run-start regexp splits the file into runs and the
     // user views one at a time. Binds to the active document by signal like the rest.
@@ -116,6 +125,7 @@ MainWindow::MainWindow(QWidget *parent)
     runDock->setObjectName(QStringLiteral("runsDock"));
     runDock->setWidget(m_runPane);
     addDockWidget(Qt::RightDockWidgetArea, runDock);
+    m_paneDocks.append(runDock);
     connect(this, &MainWindow::activeDocumentChanged, m_runPane, &RunPane::setDocument);
     connect(m_runPane, &RunPane::runStartChanged, this, &MainWindow::onRunStartChanged);
     connect(m_runPane, &RunPane::runSelected, this, &MainWindow::onRunSelected);
@@ -129,14 +139,22 @@ MainWindow::MainWindow(QWidget *parent)
 
     buildMenus();
 
-    // Restore the previous working state last, once every dock exists with its
+    // Which document is active follows the keyboard focus (invariant #7): the panes
+    // rebind to whichever file the user is reading.
+    connect(qApp, &QApplication::focusChanged, this, &MainWindow::onFocusChanged);
+
+    // Restore the previous working state last, once every pane dock exists with its
     // object name (restoreState keys off those) — SPEC.md §10.
     restoreSession();
 }
 
 MainWindow::~MainWindow()
 {
-    teardownDocument();
+    // Destroying the views moves the keyboard focus, which would call back into a
+    // half-destroyed MainWindow. QObject's own disconnect happens in ~QObject, i.e.
+    // AFTER this body, so the application-wide connection must be dropped by hand.
+    disconnect(qApp, nullptr, this, nullptr);
+    closeAllDocuments();
 }
 
 void MainWindow::buildMenus()
@@ -150,6 +168,18 @@ void MainWindow::buildMenus()
     refreshRecentFilesMenu();
 
     fileMenu->addSeparator();
+    m_closeTabAction = fileMenu->addAction(QStringLiteral("&Close Tab"));
+    m_closeTabAction->setObjectName(QStringLiteral("closeTabAction")); // findChild, for tests
+    m_closeTabAction->setShortcut(QKeySequence::Close); // Ctrl+W
+    m_closeTabAction->setEnabled(false);
+    connect(m_closeTabAction, &QAction::triggered, this, &MainWindow::closeActiveView);
+
+    m_closeAllAction = fileMenu->addAction(QStringLiteral("Close &All"));
+    m_closeAllAction->setObjectName(QStringLiteral("closeAllAction")); // findChild, for tests
+    m_closeAllAction->setEnabled(false);
+    connect(m_closeAllAction, &QAction::triggered, this, &MainWindow::closeAllDocuments);
+
+    fileMenu->addSeparator();
     m_formatAction = fileMenu->addAction(QStringLiteral("&Log Format..."));
     m_formatAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
     m_formatAction->setEnabled(false);
@@ -159,8 +189,8 @@ void MainWindow::buildMenus()
     m_cancelAction = fileMenu->addAction(QStringLiteral("&Cancel Indexing"));
     m_cancelAction->setEnabled(false);
     connect(m_cancelAction, &QAction::triggered, this, [this]() {
-        if (m_controller)
-            m_controller->cancel();
+        if (DocumentContext *ctx = activeContext(); ctx && ctx->controller)
+            ctx->controller->cancel();
     });
 
     fileMenu->addSeparator();
@@ -173,15 +203,15 @@ void MainWindow::buildMenus()
     m_copyAction->setShortcut(QKeySequence::Copy);
     m_copyAction->setEnabled(false);
     connect(m_copyAction, &QAction::triggered, this, [this]() {
-        if (m_view)
-            m_view->copySelectionRaw();
+        if (LogView *v = activeLogView())
+            v->copySelectionRaw();
     });
     m_copyColumnsAction = editMenu->addAction(QStringLiteral("Copy as &Columns"));
     m_copyColumnsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C));
     m_copyColumnsAction->setEnabled(false);
     connect(m_copyColumnsAction, &QAction::triggered, this, [this]() {
-        if (m_view)
-            m_view->copySelectionAsColumns();
+        if (LogView *v = activeLogView())
+            v->copySelectionAsColumns();
     });
 
     // Find / Find Next / Find Previous (SPEC.md §5). Find opens the bar; F3 /
@@ -190,8 +220,8 @@ void MainWindow::buildMenus()
     QAction *findAction = editMenu->addAction(QStringLiteral("&Find..."));
     findAction->setShortcut(QKeySequence::Find);
     connect(findAction, &QAction::triggered, this, [this]() {
-        if (m_findBar)
-            m_findBar->activate();
+        if (m_activeView)
+            m_activeView->activateFind();
     });
     QAction *findNextAction = editMenu->addAction(QStringLiteral("Find &Next"));
     findNextAction->setShortcut(QKeySequence::FindNext); // F3
@@ -211,21 +241,16 @@ void MainWindow::buildMenus()
         wrapGroup->addAction(a);
     }
     wrapOff->setChecked(true);
-    connect(wrapOff, &QAction::triggered, this, [this]() {
-        m_wrapMode = LogView::WrapMode::Off;
-        if (m_view)
-            m_view->setWrapMode(m_wrapMode);
-    });
-    connect(wrapSel, &QAction::triggered, this, [this]() {
-        m_wrapMode = LogView::WrapMode::SelectedRecordOnly;
-        if (m_view)
-            m_view->setWrapMode(m_wrapMode);
-    });
-    connect(wrapAll, &QAction::triggered, this, [this]() {
-        m_wrapMode = LogView::WrapMode::AlwaysOn;
-        if (m_view)
-            m_view->setWrapMode(m_wrapMode);
-    });
+    auto setWrap = [this](LogView::WrapMode mode) {
+        m_wrapMode = mode; // the default for views created from here on
+        if (LogView *v = activeLogView())
+            v->setWrapMode(mode);
+    };
+    connect(wrapOff, &QAction::triggered, this, [setWrap]() { setWrap(LogView::WrapMode::Off); });
+    connect(wrapSel, &QAction::triggered, this,
+            [setWrap]() { setWrap(LogView::WrapMode::SelectedRecordOnly); });
+    connect(wrapAll, &QAction::triggered, this,
+            [setWrap]() { setWrap(LogView::WrapMode::AlwaysOn); });
 
     // Return-to-bottom / follow control (SPEC.md §3, M6). Checked reflects whether
     // the view is currently following; triggering it re-attaches and jumps to the end.
@@ -236,16 +261,297 @@ void MainWindow::buildMenus()
     m_followAction->setEnabled(false);
     m_followAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_End));
     connect(m_followAction, &QAction::triggered, this, [this]() {
-        if (m_view)
-            m_view->followTail();
+        if (LogView *v = activeLogView())
+            v->followTail();
     });
+
+    // Panes are closable docks, so without this a closed pane could not be brought
+    // back (SPEC.md §8). Qt's own toggleViewAction does the work.
+    viewMenu->addSeparator();
+    QMenu *panesMenu = viewMenu->addMenu(QStringLiteral("&Panes"));
+    for (QDockWidget *dock : std::as_const(m_paneDocks))
+        panesMenu->addAction(dock->toggleViewAction());
+
+    // Window: move between the open files (SPEC.md §3). The list of open views is
+    // rebuilt each time the menu opens, since tabs come and go.
+    m_windowMenu = menuBar()->addMenu(QStringLiteral("&Window"));
+    // Parented to the window, not the menu, so refreshWindowMenu()'s clear() does not
+    // delete it out from under updateActionStates().
+    m_newViewAction = new QAction(QStringLiteral("&New View"), this);
+    m_newViewAction->setObjectName(QStringLiteral("newViewAction")); // findChild, for tests
+    m_newViewAction->setEnabled(false);
+    connect(m_newViewAction, &QAction::triggered, this, &MainWindow::newViewOfActiveDocument);
+    connect(m_windowMenu, &QMenu::aboutToShow, this, &MainWindow::refreshWindowMenu);
+    refreshWindowMenu();
+}
+
+void MainWindow::refreshWindowMenu()
+{
+    if (!m_windowMenu)
+        return;
+    m_windowMenu->clear();
+    m_windowMenu->addAction(m_newViewAction);
+    m_windowMenu->addSeparator();
+
+    QAction *next = m_windowMenu->addAction(QStringLiteral("&Next Tab"));
+    next->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Tab));
+    next->setEnabled(m_views.size() > 1);
+    connect(next, &QAction::triggered, this, [this]() { cycleView(1); });
+
+    QAction *prev = m_windowMenu->addAction(QStringLiteral("&Previous Tab"));
+    prev->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Tab));
+    prev->setEnabled(m_views.size() > 1);
+    connect(prev, &QAction::triggered, this, [this]() { cycleView(-1); });
+
+    if (m_views.isEmpty())
+        return;
+    m_windowMenu->addSeparator();
+    for (DocumentView *view : std::as_const(m_views)) {
+        QDockWidget *dock = dockOf(view);
+        QAction *a = m_windowMenu->addAction(dock ? dock->windowTitle() : QString());
+        a->setCheckable(true);
+        a->setChecked(view == m_activeView);
+        connect(a, &QAction::triggered, this, [this, view]() {
+            if (QDockWidget *d = dockOf(view))
+                d->raise();
+            setActiveView(view);
+            view->logView()->setFocus();
+        });
+    }
+}
+
+void MainWindow::cycleView(int delta)
+{
+    if (m_views.size() < 2)
+        return;
+    const int current = m_views.indexOf(m_activeView);
+    const int size = m_views.size();
+    const int next = ((current < 0 ? 0 : current) + delta % size + size) % size;
+    DocumentView *view = m_views.at(next);
+    if (QDockWidget *dock = dockOf(view))
+        dock->raise();
+    setActiveView(view);
+    view->logView()->setFocus();
+}
+
+// --- Document docks --------------------------------------------------------
+
+QDockWidget *MainWindow::dockOf(DocumentView *view)
+{
+    return view ? qobject_cast<QDockWidget *>(view->parentWidget()) : nullptr;
+}
+
+QDockWidget *MainWindow::addViewDock(DocumentView *view, const QString &dockName)
+{
+    view->setDockName(dockName);
+
+    auto *dock = new QDockWidget(this);
+    dock->setObjectName(dockName);
+    dock->setWindowTitle(QFileInfo(view->context()->doc->path()).fileName());
+    dock->setToolTip(view->context()->doc->path());
+    // The close button destroys the dock and, with it, the view. Deleting on close
+    // rather than from inside the close event is what keeps a dock being dragged or
+    // floated from being deleted underneath Qt.
+    dock->setAttribute(Qt::WA_DeleteOnClose);
+    // Deliberately NO setAllowedAreas(): a dock that restricts its areas breaks
+    // GroupedDragging, and an open file must be draggable anywhere.
+    dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable
+                      | QDockWidget::DockWidgetFloatable);
+    dock->setWidget(view);
+
+    // If the saved layout has a slot under this object name — a tab group, a split,
+    // a floating window — the dock goes straight back into it. restoreState() leaves
+    // such slots as placeholders for docks that do not exist yet, and this is the
+    // documented way to claim one. It must be tried BEFORE any addDockWidget(): a
+    // dock already placed in the layout no longer matches its placeholder.
+    //
+    // It returns false for a dock the saved layout never knew (a newly opened file,
+    // a brand-new view, or a first run), and then the default placement applies:
+    // documents share the left area, the panes sit on the right, and a further file
+    // joins the existing ones as a tab, to be dragged out into a split if wanted.
+    if (!restoreDockWidget(dock)) {
+        addDockWidget(Qt::LeftDockWidgetArea, dock);
+        if (!m_views.isEmpty()) {
+            if (QDockWidget *previous = dockOf(m_views.last()))
+                tabifyDockWidget(previous, dock);
+        }
+    }
+    m_views.append(view);
+
+    // Raising a tab does not necessarily move focus, so track visibility too.
+    connect(dock, &QDockWidget::visibilityChanged, this, [this, view](bool visible) {
+        if (visible)
+            setActiveView(view);
+    });
+    connect(view, &QObject::destroyed, this, &MainWindow::onViewDestroyed);
+
+    // First run only: the panes' size hints would otherwise claim about half the
+    // window. A restored session brings its own proportions.
+    if (!m_layoutRestored && m_contexts.size() == 1 && !m_paneDocks.isEmpty()) {
+        m_layoutRestored = true;
+        resizeDocks({dock, m_paneDocks.first()}, {width() * 2 / 3, width() / 3}, Qt::Horizontal);
+    }
+    return dock;
+}
+
+void MainWindow::updateEmptyState()
+{
+    m_placeholder->setVisible(m_views.isEmpty());
+}
+
+void MainWindow::onViewDestroyed(QObject *obj)
+{
+    // `obj` is mid-destruction: compare it, never dereference it.
+    auto *view = static_cast<DocumentView *>(obj);
+    m_views.removeAll(view);
+    for (auto &ctx : m_contexts)
+        ctx->views.removeAll(view);
+    if (m_activeView == view)
+        m_activeView = nullptr;
+
+    // A file with no views left is closed: its index, workers and model go with it.
+    std::erase_if(m_contexts, [](const auto &ctx) { return ctx->views.isEmpty(); });
+
+    updateEmptyState();
+    if (m_activeView)
+        return;
+
+    if (!m_views.isEmpty()) {
+        setActiveView(m_views.last());
+    } else {
+        // Nothing left open: unbind the panes (invariant #7) and disable the
+        // per-file actions, exactly as closing the only file used to do.
+        emit activeDocumentChanged(nullptr);
+        updateActionStates();
+        updateStatus();
+    }
+}
+
+void MainWindow::closeActiveView()
+{
+    if (QDockWidget *dock = dockOf(m_activeView))
+        dock->close(); // WA_DeleteOnClose -> onViewDestroyed
+}
+
+void MainWindow::onFocusChanged(QWidget *, QWidget *now)
+{
+    for (QWidget *w = now; w; w = w->parentWidget()) {
+        if (auto *view = qobject_cast<DocumentView *>(w)) {
+            setActiveView(view);
+            return;
+        }
+    }
+}
+
+// --- Active view / document ------------------------------------------------
+
+DocumentContext *MainWindow::activeContext() const
+{
+    return m_activeView ? m_activeView->context() : nullptr;
+}
+
+DocumentView *MainWindow::viewOfPath(const QString &path) const
+{
+    for (DocumentView *view : m_views) {
+        if (view->context()->doc->path() == path)
+            return view;
+    }
+    return nullptr;
 }
 
 Document *MainWindow::activeDocument() const
 {
-    if (m_activeIndex < 0 || m_activeIndex >= int(m_documents.size()))
-        return nullptr;
-    return m_documents[m_activeIndex].get();
+    DocumentContext *ctx = activeContext();
+    return ctx ? ctx->doc.get() : nullptr;
+}
+
+LogView *MainWindow::activeLogView() const
+{
+    return m_activeView ? m_activeView->logView() : nullptr;
+}
+
+LogModel *MainWindow::activeModel() const
+{
+    DocumentContext *ctx = activeContext();
+    return ctx ? ctx->model : nullptr;
+}
+
+void MainWindow::setActiveView(DocumentView *view)
+{
+    if (m_activeView == view)
+        return;
+
+    DocumentContext *outgoing = activeContext();
+    Document *before = activeDocument();
+    m_activeView = view;
+    Document *after = activeDocument();
+
+    updateActionStates();
+
+    // Rebind the panes only when the FILE changes: a second view onto the same log
+    // shares its filters and highlighters, and a needless rebind would reset the
+    // filter pane's discovered-value state (invariant #7, ARCHITECTURE.md §12.3).
+    if (before != after) {
+        stashPaneState(outgoing);
+        emit activeDocumentChanged(after);
+        hydratePanes(activeContext());
+    }
+
+    updateStatus();
+}
+
+void MainWindow::stashPaneState(DocumentContext *ctx)
+{
+    if (ctx && m_filterPane)
+        ctx->filterState = m_filterPane->saveState();
+}
+
+void MainWindow::hydratePanes(DocumentContext *ctx)
+{
+    if (!ctx || !m_filterPane)
+        return;
+    // Unconditionally, including for an empty state: restoreState() falls back to the
+    // pane's defaults key by key, which is exactly what a file with no stashed state
+    // should show. Skipping it would leave the PREVIOUS file's filters on screen,
+    // now bound to this one. This emits filtersChanged, which applies them to the
+    // freshly-bound document.
+    m_filterPane->restoreState(ctx->filterState);
+}
+
+void MainWindow::updateActionStates()
+{
+    DocumentContext *ctx = activeContext();
+    const bool hasFile = ctx != nullptr;
+
+    if (m_copyAction)
+        m_copyAction->setEnabled(hasFile);
+    if (m_copyColumnsAction)
+        m_copyColumnsAction->setEnabled(hasFile);
+    if (m_formatAction)
+        m_formatAction->setEnabled(hasFile);
+    if (m_closeTabAction)
+        m_closeTabAction->setEnabled(hasFile);
+    if (m_closeAllAction)
+        m_closeAllAction->setEnabled(!m_views.isEmpty());
+    if (m_newViewAction)
+        m_newViewAction->setEnabled(hasFile);
+    if (m_followAction) {
+        m_followAction->setEnabled(hasFile);
+        // With no file the next open follows again (SPEC.md §3); with one, the
+        // checkbox tracks that view's own follow state.
+        m_followAction->setChecked(hasFile ? m_activeView->logView()->following() : true);
+    }
+    if (m_cancelAction)
+        m_cancelAction->setEnabled(hasFile && ctx->indexing);
+    if (m_progressBar) {
+        m_progressBar->setVisible(hasFile && ctx->indexing);
+        if (hasFile && ctx->indexing)
+            m_progressBar->setValue(ctx->progressPercent);
+    }
+
+    setWindowTitle(hasFile
+                       ? QStringLiteral("loftail — %1").arg(QFileInfo(ctx->doc->path()).fileName())
+                       : QStringLiteral("loftail"));
 }
 
 void MainWindow::chooseFileToOpen()
@@ -257,57 +563,38 @@ void MainWindow::chooseFileToOpen()
         openFile(path);
 }
 
-void MainWindow::teardownDocument()
+void MainWindow::closeAllDocuments()
 {
-    // Stop the live watcher first: it references the model and document we are about
-    // to drop (M6).
-    if (m_live) {
-        m_live->stop();
-        delete m_live;
-        m_live = nullptr;
+    if (m_contexts.empty()) {
+        m_activeView = nullptr;
+        return;
     }
-    if (m_controller) {
-        m_controller->cancel();
-        delete m_controller; // dtor joins the worker thread
-        m_controller = nullptr;
-    }
-    if (m_view) {
-        // Persist the header layout before dropping the view (SPEC.md §5).
-        QSettings().setValue(QLatin1String(kColumnStateKey), m_view->saveColumnState());
-        m_centralLayout->removeWidget(m_view);
-        delete m_view; // no longer setCentralWidget-owned; the container persists
-    }
-    m_view = nullptr;
-    delete m_model;
-    m_model = nullptr;
-    m_documents.clear();
-    m_activeIndex = -1;
 
-    if (m_placeholder)
-        m_placeholder->show();
+    // Take the whole set down at once, so the per-view reaping in onViewDestroyed —
+    // which erases from the very containers being iterated here — stays out of it.
+    const QVector<DocumentView *> views = m_views;
+    m_views.clear();
+    m_activeView = nullptr;
+    for (DocumentView *view : views) {
+        disconnect(view, &QObject::destroyed, this, &MainWindow::onViewDestroyed);
+        delete dockOf(view); // the dock owns the view
+    }
+
+    // Only now the contexts: a view references its context's model and Document,
+    // and ~DocumentContext destroys both.
+    for (auto &ctx : m_contexts)
+        ctx->views.clear();
+    m_contexts.clear(); // ~DocumentContext stops the workers and deletes the model
+
+    updateEmptyState();
 
     // Unbind the panes from the now-gone document (invariant #7).
     emit activeDocumentChanged(nullptr);
-
-    if (m_copyAction)
-        m_copyAction->setEnabled(false);
-    if (m_copyColumnsAction)
-        m_copyColumnsAction->setEnabled(false);
-    if (m_formatAction)
-        m_formatAction->setEnabled(false);
-    if (m_followAction) {
-        m_followAction->setEnabled(false);
-        m_followAction->setChecked(true); // the next open follows again (SPEC.md §3)
-    }
+    updateActionStates();
 }
 
 void MainWindow::openFile(const QString &path, const QString &pattern)
 {
-    // An interactive/programmatic open defaults its run selection to the newest run;
-    // only session restore carries a persisted selection (cleared here so a stale one
-    // never leaks into this open, and put back below if the open does not happen).
-    auto savedRunRestore = std::exchange(m_pendingRunRestore, std::nullopt);
-
     // Per-file recall (SPEC.md §4): a file already configured reopens with its
     // saved format and no prompt. A never-seen file gets the supplied (or default)
     // pattern, and the dialog is offered when that pattern does not match.
@@ -325,11 +612,11 @@ void MainWindow::openFile(const QString &path, const QString &pattern)
     // line) is taken as the user's intent — a wrong one opens as plain text
     // without a blocking prompt, which also keeps headless/scripted opens safe.
     const bool promptIfNoMatch = !cached && pattern.isEmpty();
-    if (!openWithSettings(path, settings, promptIfNoMatch))
-        m_pendingRunRestore = std::move(savedRunRestore); // nothing changed hands
+    openWithSettings(path, settings, promptIfNoMatch);
 }
 
-bool MainWindow::openWithSettings(const QString &path, FormatSettings settings, bool promptIfNoMatch)
+bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
+                                  bool promptIfNoMatch, std::optional<RunRestore> runRestore)
 {
     // Prepare the candidate document and settle its format BEFORE touching the
     // document currently on screen: cancelling the format dialog aborts the open
@@ -393,13 +680,22 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings, 
         }
     }
 
-    teardownDocument();
+    // An open ADDS a file: several logs are open at once, each in its own tab
+    // (SPEC.md §3). Reopening a file already open just raises its view.
+    if (DocumentView *existing = viewOfPath(path)) {
+        setActiveView(existing);
+        if (QDockWidget *dock = dockOf(existing))
+            dock->raise();
+        return true;
+    }
 
-    m_currentSettings = settings;
-    m_documents.push_back(std::move(doc));
-    m_activeIndex = 0;
+    auto ctx = std::make_unique<DocumentContext>();
+    ctx->doc = std::move(doc);
+    ctx->settings = settings;
+    ctx->pendingRunRestore = std::move(runRestore);
+    m_contexts.push_back(std::move(ctx));
 
-    buildViewAndIndex(path);
+    buildViewAndIndex(m_contexts.back().get());
 
     if (persist)
         persistFormat(path, settings);
@@ -407,108 +703,183 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings, 
     return true;
 }
 
-void MainWindow::buildViewAndIndex(const QString &path)
+DocumentView *MainWindow::createView(DocumentContext *ctx, const QString &dockName)
 {
-    Document *active = activeDocument();
-    if (!active)
+    auto *view = new DocumentView(ctx);
+    ctx->views.append(view);
+    connect(view, &DocumentView::findRequested, this, &MainWindow::runFind);
+
+    LogView *logView = view->logView();
+    logView->setWrapMode(m_wrapMode);
+    // Reflect follow state in the View menu (M6): the checkbox tracks the ACTIVE
+    // view, and the overlay button/scroll gestures keep them in sync.
+    connect(logView, &LogView::followingChanged, this, [this, view](bool following) {
+        if (m_followAction && m_activeView == view)
+            m_followAction->setChecked(following);
+    });
+    logView->header()->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(logView->header(), &QWidget::customContextMenuRequested,
+            this, &MainWindow::showColumnMenu);
+
+    addViewDock(view, dockName);
+    updateEmptyState();
+    updateDockTitles(ctx); // numbers the tabs when a file has several views
+    return view;
+}
+
+void MainWindow::showView(DocumentView *view)
+{
+    // tabifyDockWidget leaves the PREVIOUS tab raised, so without this the status bar
+    // and panes would describe a tab that is not on top.
+    if (QDockWidget *dock = dockOf(view)) {
+        dock->show();
+        dock->raise();
+    }
+    setActiveView(view);
+    view->logView()->setFocus();
+}
+
+void MainWindow::newViewOfActiveDocument()
+{
+    DocumentContext *ctx = activeContext();
+    if (!ctx)
         return;
 
-    m_model = new LogModel(active);
-    m_model->setDarkTheme(palette().base().color().lightness()
-                          < palette().text().color().lightness());
-    m_view = new LogView(active, m_model);
-    m_view->setWrapMode(m_wrapMode);
-    // Reflect follow state in the View menu (M6): the checkbox tracks the view, and
-    // the overlay button/scroll gestures keep them in sync.
-    if (m_followAction) {
-        m_followAction->setEnabled(true);
-        m_followAction->setChecked(m_view->following());
-        connect(m_view, &LogView::followingChanged, m_followAction, &QAction::setChecked);
+    // A second view onto the same file starts as a copy of the one it was made from
+    // and diverges as the user scrolls, selects, wraps or resizes columns. Everything
+    // else — index, filters, highlighters, run selection, live tail — is shared.
+    LogView *source = m_activeView->logView();
+    DocumentView *view = createView(ctx, DocumentView::makeDockName());
+    LogView *fresh = view->logView();
+    fresh->setWrapMode(source->wrapMode());
+    fresh->restoreColumnState(source->saveColumnState());
+    // Open where the source view is looking, rather than at record 0 — the new view
+    // is a second window onto the same place, and the user splits it to compare
+    // against what they were already reading.
+    if (source->following())
+        fresh->followTail();
+    else if (source->currentRecord() >= 0)
+        fresh->setCurrentRecord(source->currentRecord());
+    showView(view);
+}
+
+DocumentContext *MainWindow::prepareContext(const SessionDocument &d)
+{
+    auto doc = std::make_unique<Document>();
+    ManualFormatProvider provider(d.format.pattern);
+    if (!doc->prepare(d.path, provider, d.format.encoding, d.format.sourceZone.toZone(),
+                      d.format.displayZone.toZone())) {
+        return nullptr;
     }
-    m_placeholder->hide();
-    m_centralLayout->insertWidget(0, m_view); // above the placeholder + Find bar
-    m_view->setFocus();
 
-    // Column layout persistence (SPEC.md §5): restore the saved header state.
-    const QByteArray colState = QSettings().value(QLatin1String(kColumnStateKey)).toByteArray();
-    if (!colState.isEmpty())
-        m_view->restoreColumnState(colState);
+    auto owned = std::make_unique<DocumentContext>();
+    DocumentContext *ctx = owned.get();
+    ctx->doc = std::move(doc);
+    ctx->settings = d.format;
+    ctx->filterState = d.filters;
+    if (!d.format.runStartPattern.isEmpty()) {
+        ctx->pendingRunRestore =
+            RunRestore{d.runAll, d.selectedRunStartOffset, d.selectedRunStartTimestamp};
+    }
+    m_contexts.push_back(std::move(owned));
 
-    m_view->header()->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(m_view->header(), &QWidget::customContextMenuRequested, this, &MainWindow::showColumnMenu);
+    // Highlight rules go straight onto the Document rather than through the pane:
+    // the pane holds one file's rules at a time, and every restored file needs its
+    // own. HighlighterPane::setDocument reads them back out when this file is shown.
+    ctx->doc->highlighters() =
+        HighlighterSet::fromJson(d.highlighters.value(QStringLiteral("rules")).toArray());
 
-    m_copyAction->setEnabled(true);
-    m_copyColumnsAction->setEnabled(true);
-    m_formatAction->setEnabled(true);
+    // The model and the controller only. Views are created by the caller, which is
+    // what lets session restore give each one its SAVED dock name; and indexing is
+    // not started, so every dock exists before any worker runs.
+    buildContext(ctx);
+    return ctx;
+}
 
-    m_controller = new IndexController(active, m_model, this);
-    connect(m_controller, &IndexController::progress, this, &MainWindow::onIndexProgress);
-    connect(m_controller, &IndexController::finished, this, &MainWindow::onIndexFinished);
+void MainWindow::buildContext(DocumentContext *ctx)
+{
+    Document *doc = ctx->doc.get();
 
-    m_progressBar->setRange(0, 100);
-    m_progressBar->setValue(0);
-    m_progressBar->setVisible(true);
-    m_cancelAction->setEnabled(true);
-
-    setWindowTitle(QStringLiteral("loftail — %1").arg(QFileInfo(path).fileName()));
+    ctx->model = new LogModel(doc);
+    ctx->model->setDarkTheme(palette().base().color().lightness()
+                             < palette().text().color().lightness());
 
     // Configure the run-start matcher from the (remembered) format before binding the
     // panes, so the Run pane shows the pattern. Runs are detected once indexing
     // finishes (the index is empty here); see onIndexFinished (§3a).
-    active->setRunStart(m_currentSettings.runStartPattern, m_currentSettings.runStartIsRegex,
-                        m_currentSettings.runStartCaseSensitive ? Qt::CaseSensitive
-                                                                : Qt::CaseInsensitive);
+    doc->setRunStart(ctx->settings.runStartPattern, ctx->settings.runStartIsRegex,
+                     ctx->settings.runStartCaseSensitive ? Qt::CaseSensitive
+                                                         : Qt::CaseInsensitive);
 
-    // Bind the filter pane to the new document (invariant #7). Its discovered
-    // subsystem/thread lists fill in as indexing progresses (refreshed on finish).
-    emit activeDocumentChanged(active);
-    updateStatus();
+    ctx->controller = new IndexController(doc, ctx->model);
+    connect(ctx->controller, &IndexController::progress, this,
+            [this, ctx](qint64 done, qint64 total) { onIndexProgress(ctx, done, total); });
+    connect(ctx->controller, &IndexController::finished, this,
+            [this, ctx](bool cancelled) { onIndexFinished(ctx, cancelled); });
+    ctx->indexing = true;
+    ctx->progressPercent = 0;
+    m_progressBar->setRange(0, 100);
+}
 
-    m_controller->start();
+void MainWindow::buildViewAndIndex(DocumentContext *ctx)
+{
+    buildContext(ctx);
+
+    // Column layout is per VIEW and lives in the session (SPEC.md §5). A newly
+    // opened file starts on the format's own default columns.
+    DocumentView *view = createView(ctx, DocumentView::makeDockName());
+
+    // Show the file just opened and make it active, which binds the panes to its
+    // Document (invariant #7). Their discovered subsystem/thread lists fill in as
+    // indexing progresses.
+    showView(view);
+    ctx->controller->start();
 }
 
 void MainWindow::showFormatDialog()
 {
-    Document *doc = activeDocument();
-    if (!doc || !doc->source())
+    DocumentContext *ctx = activeContext();
+    if (!ctx || !ctx->doc->source())
         return;
+    Document *doc = ctx->doc.get();
 
     const qint64 sampleLen = qMin<qint64>(64 * 1024, doc->source()->size());
     const QByteArray sample = sampleLen > 0
         ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
 
-    LogFormatDialog dlg(QFileInfo(doc->path()).fileName(), sample, m_currentSettings, this);
+    LogFormatDialog dlg(QFileInfo(doc->path()).fileName(), sample, ctx->settings, this);
     if (dlg.exec() == QDialog::Accepted) {
         // The dialog does not edit the run-start axis; carry it through unchanged so
         // accepting a format change never clears the run-start pattern (§3a).
         FormatSettings s = dlg.settings();
-        s.runStartPattern = m_currentSettings.runStartPattern;
-        s.runStartIsRegex = m_currentSettings.runStartIsRegex;
-        s.runStartCaseSensitive = m_currentSettings.runStartCaseSensitive;
+        s.runStartPattern = ctx->settings.runStartPattern;
+        s.runStartIsRegex = ctx->settings.runStartIsRegex;
+        s.runStartCaseSensitive = ctx->settings.runStartCaseSensitive;
         applySettings(s);
     }
 }
 
 void MainWindow::applySettings(const FormatSettings &newSettings)
 {
-    Document *doc = activeDocument();
-    if (!doc)
+    DocumentContext *ctx = activeContext();
+    if (!ctx)
         return;
+    Document *doc = ctx->doc.get();
 
     // A format change re-indexes (or reparses) but does not carry a persisted run
     // selection; the newest run is the default afterwards.
-    m_pendingRunRestore.reset();
+    ctx->pendingRunRestore.reset();
 
-    // Copy the path: a rescan tears the Document down, so `doc` must not be read
-    // after openWithSettings() runs.
+    // Copy the path: a rescan tears the Document down, so `doc` and `ctx` must not
+    // be read after openWithSettings() runs.
     const QString path = doc->path();
-    const FormatSettings old = m_currentSettings;
+    const FormatSettings old = ctx->settings;
     const bool patternChanged  = newSettings.pattern != old.pattern;
     const bool encodingChanged = newSettings.encoding != old.encoding;
     const bool sourceChanged   = newSettings.sourceZone != old.sourceZone;
     const bool displayChanged  = newSettings.displayZone != old.displayZone;
 
-    m_currentSettings = newSettings;
+    ctx->settings = newSettings;
     persistFormat(path, newSettings);
 
     // Pattern or encoding change alters record boundaries and byte offsets (§6.1,
@@ -529,8 +900,8 @@ void MainWindow::applySettings(const FormatSettings &newSettings)
             ? doc->sourceZone() // "as written" == the (possibly updated) source zone
             : newSettings.displayZone.toZone();
         doc->setDisplayZone(display);
-        if (m_view)
-            m_view->viewport()->update();
+        for (DocumentView *v : std::as_const(ctx->views))
+            v->logView()->viewport()->update();
     }
 
     updateStatus();
@@ -542,63 +913,103 @@ void MainWindow::persistFormat(const QString &path, const FormatSettings &s)
     FormatCache::save(store, path, s);
 }
 
-void MainWindow::onIndexProgress(qint64 done, qint64 total)
+void MainWindow::updateDockTitles(DocumentContext *ctx)
 {
-    if (total > 0)
-        m_progressBar->setValue(int((done * 100) / total));
-    updateStatus();
+    // A background file's scan has no claim on the status bar, so its progress shows
+    // in its own tab title instead.
+    const QString name = QFileInfo(ctx->doc->path()).fileName();
+    const QString base = ctx->indexing
+        ? QStringLiteral("%1 — indexing %2%").arg(name).arg(ctx->progressPercent)
+        : name;
+    // Several views onto one file are numbered, so two identically-named tabs are
+    // still tellable apart.
+    const bool numbered = ctx->views.size() > 1;
+    for (int i = 0; i < ctx->views.size(); ++i) {
+        if (QDockWidget *dock = dockOf(ctx->views.at(i)))
+            dock->setWindowTitle(numbered ? QStringLiteral("%1 [%2]").arg(base).arg(i + 1) : base);
+    }
 }
 
-void MainWindow::onIndexFinished(bool cancelled)
+void MainWindow::onIndexProgress(DocumentContext *ctx, qint64 done, qint64 total)
 {
-    m_progressBar->setVisible(false);
-    m_cancelAction->setEnabled(false);
-    // The full subsystem/thread value sets are known now, so fill the pane's
+    if (total > 0)
+        ctx->progressPercent = int((done * 100) / total);
+    updateDockTitles(ctx);
+    if (ctx == activeContext()) {
+        m_progressBar->setValue(ctx->progressPercent);
+        updateStatus();
+    }
+}
+
+void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
+{
+    Document *doc = ctx->doc.get();
+    ctx->indexing = false;
+    updateDockTitles(ctx);
+    const bool isActive = ctx == activeContext();
+    if (isActive) {
+        m_progressBar->setVisible(false);
+        m_cancelAction->setEnabled(false);
+    }
+
+    // The full subsystem/thread value sets are known now, so fill the panes'
     // auto-discovered lists (SPEC.md §6) and re-run any active filter over the
-    // completed index.
-    if (m_filterPane)
-        m_filterPane->refreshDiscoveredLists();
-    // Re-resolve highlight rules against the now-complete intern table so rules
-    // naming subsystems discovered late in the scan take effect (SPEC.md §6, §7).
-    if (m_highlighterPane)
-        m_highlighterPane->refreshDiscoveredLists();
-    if (Document *active = activeDocument()) {
-        active->resolveHighlighters();
-        // Runs are detected now that the full index exists (§3a). Restore the
-        // persisted selection if this open came from session restore, else default
-        // to the newest run (decision: open a live log on its current run).
-        active->detectRuns();
-        if (m_pendingRunRestore) {
-            if (m_pendingRunRestore->all)
-                active->selectRun(-1);
-            else
-                active->selectRunByStart(m_pendingRunRestore->startOffset,
-                                         m_pendingRunRestore->startTimestamp);
-            m_pendingRunRestore.reset();
-        } else {
-            active->selectNewestRun();
-        }
-        if (m_runPane)
-            m_runPane->refresh();
-        if (active->filters().anyActive() || active->viewRestricted())
-            applyActiveFilters();
+    // completed index. The panes show the ACTIVE document, so only refresh them
+    // when this is it; another file finishing in the background must not repaint
+    // its values into the pane bound to a different log.
+    if (isActive) {
+        if (m_filterPane)
+            m_filterPane->refreshDiscoveredLists();
+        // Re-resolve highlight rules against the now-complete intern table so rules
+        // naming subsystems discovered late in the scan take effect (SPEC.md §6, §7).
+        if (m_highlighterPane)
+            m_highlighterPane->refreshDiscoveredLists();
     }
-    if (m_view) {
-        m_view->viewport()->update(); // repaint with resolved highlights
-        m_view->scrollToEnd();        // open at the file's end, following (SPEC.md §3)
+
+    doc->resolveHighlighters();
+    // Runs are detected now that the full index exists (§3a). Restore the
+    // persisted selection if this open came from session restore, else default
+    // to the newest run (decision: open a live log on its current run).
+    doc->detectRuns();
+    if (ctx->pendingRunRestore) {
+        if (ctx->pendingRunRestore->all)
+            doc->selectRun(-1);
+        else
+            doc->selectRunByStart(ctx->pendingRunRestore->startOffset,
+                                  ctx->pendingRunRestore->startTimestamp);
+        ctx->pendingRunRestore.reset();
+    } else {
+        doc->selectNewestRun();
     }
-    updateStatus();
+    if (isActive && m_runPane)
+        m_runPane->refresh();
+    if (doc->filters().anyActive() || doc->viewRestricted())
+        applyFiltersFor(ctx);
+
+    for (DocumentView *v : std::as_const(ctx->views)) {
+        v->logView()->viewport()->update(); // repaint with resolved highlights
+        v->logView()->scrollToEnd();        // open at the file's end (SPEC.md §3)
+    }
+    if (isActive)
+        updateStatus();
     if (cancelled) {
-        m_statusLabel->setText(m_statusLabel->text() + QStringLiteral("  (indexing cancelled)"));
+        if (isActive) {
+            m_statusLabel->setText(m_statusLabel->text()
+                                   + QStringLiteral("  (indexing cancelled)"));
+        }
         return; // a cancelled scan is not watched — the user chose to stop reading it
     }
 
     // Activate the always-watched model (SPEC.md §3, M6): from here the file
     // auto-updates as it grows. The initial scan captured the size at open, so the
     // controller's first check catches up anything appended while it ran.
-    if (Document *active = activeDocument()) {
-        m_live = new LiveController(active, m_model, this);
-        connect(m_live, &LiveController::ingested, this, [this](qint64) {
+    {
+        ctx->live = new LiveController(doc, ctx->model);
+        connect(ctx->live, &LiveController::ingested, this, [this, ctx](qint64) {
+            if (ctx != activeContext()) {
+                updateStatus();
+                return;
+            }
             // Newly discovered subsystems/threads and the growing counts (SPEC.md §6).
             if (m_filterPane)
                 m_filterPane->refreshDiscoveredLists();
@@ -610,65 +1021,75 @@ void MainWindow::onIndexFinished(bool cancelled)
                 m_runPane->refresh();
             updateStatus();
         });
-        connect(m_live, &LiveController::rescanned, this, [this]() {
+        connect(ctx->live, &LiveController::rescanned, this, [this, ctx]() {
             // Rotation/truncation reloaded silently (SPEC.md §3): refresh the panes
             // against the fresh index and keep following if we were.
-            if (m_filterPane)
-                m_filterPane->refreshDiscoveredLists();
-            if (m_highlighterPane)
-                m_highlighterPane->refreshDiscoveredLists();
-            if (m_runPane)
-                m_runPane->refresh();
-            if (m_view && m_view->following())
-                m_view->followTail();
+            if (ctx == activeContext()) {
+                if (m_filterPane)
+                    m_filterPane->refreshDiscoveredLists();
+                if (m_highlighterPane)
+                    m_highlighterPane->refreshDiscoveredLists();
+                if (m_runPane)
+                    m_runPane->refresh();
+            }
+            for (DocumentView *v : std::as_const(ctx->views)) {
+                if (v->logView()->following())
+                    v->logView()->followTail();
+            }
             updateStatus();
         });
-        m_live->start();
+        ctx->live->start();
     }
 }
 
-void MainWindow::applyActiveFilters()
+void MainWindow::applyFiltersFor(DocumentContext *ctx)
 {
-    Document *doc = activeDocument();
-    if (!doc || !m_model)
+    if (!ctx || !ctx->model)
         return;
     // A filtered set is a wholesale row remap, so reset the model around the
     // recompute: the view/header/selection refresh over the new visible set and
     // LogView rebuilds its line geometry (invariant #6). The predicate chain inside
     // applyFilters runs integer axes first, message text last (invariant #4).
-    m_model->beginFilterReset();
-    doc->applyFilters();
-    m_model->endFilterReset();
-    if (m_view) {
-        m_view->updateGeometry();
-        m_view->viewport()->update();
+    ctx->model->beginFilterReset();
+    ctx->doc->applyFilters();
+    ctx->model->endFilterReset();
+    for (DocumentView *v : std::as_const(ctx->views)) {
+        v->logView()->updateGeometry();
+        v->logView()->viewport()->update();
     }
-    updateStatus();
+    if (ctx == activeContext())
+        updateStatus();
+}
+
+void MainWindow::applyActiveFilters()
+{
+    applyFiltersFor(activeContext());
 }
 
 void MainWindow::applyActiveHighlighters()
 {
-    Document *doc = activeDocument();
-    if (!doc)
+    DocumentContext *ctx = activeContext();
+    if (!ctx)
         return;
     // Highlighting recolors visible rows in place (SPEC.md §7): no rows are added or
     // removed, so a viewport repaint is enough — no model reset, unlike filtering.
-    doc->resolveHighlighters();
-    if (m_view)
-        m_view->viewport()->update();
+    ctx->doc->resolveHighlighters();
+    for (DocumentView *v : std::as_const(ctx->views))
+        v->logView()->viewport()->update();
 }
 
 void MainWindow::onRunStartChanged(const QString &pattern, bool regex, bool caseSensitive)
 {
-    Document *doc = activeDocument();
-    if (!doc)
+    DocumentContext *ctx = activeContext();
+    if (!ctx)
         return;
+    Document *doc = ctx->doc.get();
 
     // The run-start pattern is part of the per-file format (persisted like it, §3a).
-    m_currentSettings.runStartPattern = pattern;
-    m_currentSettings.runStartIsRegex = regex;
-    m_currentSettings.runStartCaseSensitive = caseSensitive;
-    persistFormat(doc->path(), m_currentSettings);
+    ctx->settings.runStartPattern = pattern;
+    ctx->settings.runStartIsRegex = regex;
+    ctx->settings.runStartCaseSensitive = caseSensitive;
+    persistFormat(doc->path(), ctx->settings);
 
     // Reconfigure + re-detect over the existing index (no rescan — offsets are
     // unchanged, invariant #3), defaulting to the newest run, then re-apply the view.
@@ -676,15 +1097,18 @@ void MainWindow::onRunStartChanged(const QString &pattern, bool regex, bool case
     if (m_runPane)
         m_runPane->refresh();
     applyActiveFilters();
-    if (m_view && m_view->following())
-        m_view->followTail();
+    for (DocumentView *v : std::as_const(ctx->views)) {
+        if (v->logView()->following())
+            v->logView()->followTail();
+    }
 }
 
 void MainWindow::onRunSelected(int runIndex)
 {
-    Document *doc = activeDocument();
-    if (!doc)
+    DocumentContext *ctx = activeContext();
+    if (!ctx)
         return;
+    Document *doc = ctx->doc.get();
 
     doc->selectRun(runIndex);
     applyActiveFilters();
@@ -694,25 +1118,25 @@ void MainWindow::onRunSelected(int runIndex)
     // Follow only makes sense for the live tail: the newest run (or "all runs") jumps
     // to the end and keeps following; an earlier, finished run scrolls to its start,
     // which detaches follow so the history stays put while the file grows (§3a).
-    if (m_view) {
-        const int newest = doc->runs().isEmpty() ? -1 : int(doc->runs().size()) - 1;
-        const bool isLive = runIndex < 0 || runIndex == newest;
+    const int newest = doc->runs().isEmpty() ? -1 : int(doc->runs().size()) - 1;
+    const bool isLive = runIndex < 0 || runIndex == newest;
+    for (DocumentView *v : std::as_const(ctx->views)) {
         if (isLive)
-            m_view->followTail();
+            v->logView()->followTail();
         else
-            m_view->setCurrentRecord(0); // top of the (filtered) run; detaches follow
+            v->logView()->setCurrentRecord(0); // top of the run; detaches follow
     }
 }
 
 void MainWindow::updateModelTheme()
 {
-    if (!m_model)
-        return;
     const bool dark = palette().base().color().lightness() < palette().text().color().lightness();
-    if (dark != m_model->darkTheme()) {
-        m_model->setDarkTheme(dark);
-        if (m_view)
-            m_view->viewport()->update();
+    for (auto &ctx : m_contexts) {
+        if (!ctx->model || dark == ctx->model->darkTheme())
+            continue;
+        ctx->model->setDarkTheme(dark);
+        for (DocumentView *v : std::as_const(ctx->views))
+            v->logView()->viewport()->update();
     }
 }
 
@@ -725,11 +1149,16 @@ void MainWindow::changeEvent(QEvent *event)
 
 void MainWindow::runFind(bool forward, bool fromStart)
 {
-    if (!m_view || !m_model || !m_findBar)
+    // Find runs over the view whose bar asked for it. Focusing that bar already made
+    // its view active, so the active view IS the requesting one.
+    LogView *logView = activeLogView();
+    LogModel *model = activeModel();
+    FindBar *findBar = m_activeView ? m_activeView->findBar() : nullptr;
+    if (!logView || !model || !findBar)
         return;
-    const QString pattern = m_findBar->pattern();
+    const QString pattern = findBar->pattern();
     if (pattern.isEmpty()) {
-        m_findBar->setStatus(QString());
+        findBar->setStatus(QString());
         return;
     }
 
@@ -737,39 +1166,39 @@ void MainWindow::runFind(bool forward, bool fromStart)
     // subset when a filter is active), reusing the filter's text matcher (SPEC.md
     // §5). Changes no filter state — it only moves the selection.
     TextMatcher matcher;
-    matcher.set(pattern, m_findBar->regex(),
-                m_findBar->caseSensitive() ? Qt::CaseSensitive : Qt::CaseInsensitive);
+    matcher.set(pattern, findBar->regex(),
+                findBar->caseSensitive() ? Qt::CaseSensitive : Qt::CaseInsensitive);
     if (!matcher.isValid()) {
-        m_findBar->setStatus(QStringLiteral("bad regex"));
+        findBar->setStatus(QStringLiteral("bad regex"));
         return;
     }
 
-    const int count = m_model->rowCount();
+    const int count = model->rowCount();
     if (count == 0) {
-        m_findBar->setStatus(QStringLiteral("no records"));
+        findBar->setStatus(QStringLiteral("no records"));
         return;
     }
 
     // Search every visible column's text so Find matches anything on screen, but
     // fall back to a message-only scan when the format defines no columns.
-    const int cols = m_model->columnCount();
-    auto rowMatches = [this, &matcher, cols](int row) {
+    const int cols = model->columnCount();
+    auto rowMatches = [model, &matcher, cols](int row) {
         if (cols == 0)
-            return matcher.matches(m_model->cellText(row, 0));
+            return matcher.matches(model->cellText(row, 0));
         for (int c = 0; c < cols; ++c)
-            if (matcher.matches(m_model->cellText(row, c)))
+            if (matcher.matches(model->cellText(row, c)))
                 return true;
         return false;
     };
 
-    const int from = fromStart ? -1 : m_view->currentRecord();
+    const int from = fromStart ? -1 : logView->currentRecord();
     const int hit = Find::search(count, from, forward, /*wrap=*/true, rowMatches);
     if (hit < 0) {
-        m_findBar->setStatus(QStringLiteral("no match"));
+        findBar->setStatus(QStringLiteral("no match"));
         return;
     }
-    m_view->setCurrentRecord(hit);
-    m_findBar->setStatus(QString()); // keep focus in the bar for repeated Enter/F3
+    logView->setCurrentRecord(hit);
+    findBar->setStatus(QString()); // keep focus in the bar for repeated Enter/F3
 }
 
 void MainWindow::updateStatus()
@@ -796,12 +1225,14 @@ void MainWindow::updateStatus()
 
 void MainWindow::showColumnMenu(const QPoint &pos)
 {
-    if (!m_view || !m_model)
+    // The menu belongs to the header that asked for it, which may be any view's.
+    auto *header = qobject_cast<QHeaderView *>(sender());
+    LogModel *model = activeModel();
+    if (!header || !model)
         return;
-    QHeaderView *header = m_view->header();
     QMenu menu(this);
-    for (int c = 0; c < m_model->columnCount(); ++c) {
-        const QString name = m_model->headerData(c, Qt::Horizontal).toString();
+    for (int c = 0; c < model->columnCount(); ++c) {
+        const QString name = model->headerData(c, Qt::Horizontal).toString();
         QAction *a = menu.addAction(name);
         a->setCheckable(true);
         a->setChecked(!header->isSectionHidden(c));
@@ -853,12 +1284,11 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 
 void MainWindow::dropEvent(QDropEvent *event)
 {
+    // Every dropped file opens, each in its own tab (SPEC.md §3).
     const QList<QUrl> urls = event->mimeData()->urls();
     for (const QUrl &url : urls) {
-        if (url.isLocalFile()) {
+        if (url.isLocalFile())
             openFile(url.toLocalFile());
-            break; // single-file view in M2b; multi-file is FUTURE.md
-        }
     }
 }
 
@@ -867,7 +1297,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // Persist the full session BEFORE teardown drops the view and unbinds the panes
     // (SPEC.md §10). Global state is last-writer-wins across instances (§8.1).
     saveSession();
-    teardownDocument();
+    closeAllDocuments();
     event->accept();
 }
 
@@ -875,21 +1305,31 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
 void MainWindow::saveSession()
 {
+    // The active file's pane state lives in the widgets, not in its context, until
+    // the user switches away — so fold it back before reading the contexts.
+    stashPaneState(activeContext());
+
     Session session;
     session.geometry = saveGeometry();
-    session.windowState = saveState(); // dock/pane layout (SPEC.md §8, §10)
+    // The whole dock layout: tab groups, splits and floating windows, for the panes
+    // AND for every open file (SPEC.md §8, §10). Must be taken while the docks still
+    // exist, i.e. before any teardown.
+    session.windowState = saveState();
 
-    // The active document's per-file state goes into the documents ARRAY (one
-    // element today, invariant #7 / §12.4). Everything here is portable name/index
-    // JSON, so restore is the same path as applying a preset.
-    Document *doc = activeDocument();
-    if (doc && m_view) {
+    // Every open file goes into the documents array; every view into the views array,
+    // pointing back at its file (invariant #7 / §12.4). Everything here is portable
+    // name/index JSON, so restore is the same path as applying a preset.
+    QHash<const DocumentContext *, int> documentIndex;
+    for (const auto &ctx : m_contexts) {
+        Document *doc = ctx->doc.get();
         SessionDocument d;
         d.path = doc->path();
-        d.format = m_currentSettings;
-        d.columnState = m_view->saveColumnState();
-        d.filters = m_filterPane ? m_filterPane->saveState() : QJsonObject();
-        d.highlighters = m_highlighterPane ? m_highlighterPane->saveState() : QJsonObject();
+        d.format = ctx->settings;
+        d.filters = ctx->filterState;
+        // Highlighter rules are read straight off the Document, which HighlighterPane
+        // keeps authoritative (it syncs on every edit) — so this is correct for a
+        // background file just as much as for the active one.
+        d.highlighters.insert(QStringLiteral("rules"), doc->highlighters().toJson());
 
         // Run selection (§3a). The run-start pattern rides in d.format; here we save
         // WHICH run was viewed by its stable start offset/timestamp (not the ordinal,
@@ -901,13 +1341,23 @@ void MainWindow::saveSession()
             d.selectedRunStartOffset = doc->runs().at(sel).startOffset;
             d.selectedRunStartTimestamp = doc->runs().at(sel).startTimestamp;
         } else {
-            d.runAll = !m_currentSettings.runStartPattern.isEmpty();
+            d.runAll = !ctx->settings.runStartPattern.isEmpty();
             d.selectedRunStartOffset = -1;
         }
 
+        documentIndex.insert(ctx.get(), int(session.documents.size()));
         session.documents.append(d);
-        session.activeDocument = 0;
     }
+
+    for (DocumentView *view : std::as_const(m_views)) {
+        SessionView v;
+        v.documentIndex = documentIndex.value(view->context(), 0);
+        v.dockName = view->dockName();
+        v.columnState = view->logView()->saveColumnState();
+        v.wrapMode = int(view->logView()->wrapMode());
+        session.views.append(v);
+    }
+    session.activeView = qMax(0, m_views.indexOf(m_activeView));
 
     QSettings store;
     SessionStore::save(store, session);
@@ -920,41 +1370,82 @@ void MainWindow::restoreSession()
 
     if (!session.geometry.isEmpty())
         restoreGeometry(session.geometry);
-    if (!session.windowState.isEmpty())
+
+    // The dock layout goes back FIRST, while only the pane docks exist. Docks named
+    // in the saved state but not yet created become placeholders, and each document
+    // dock claims its own slot below via restoreDockWidget() — the documented way to
+    // place a dock created after restoreState().
+    if (!session.windowState.isEmpty()) {
         restoreState(session.windowState);
+        m_layoutRestored = true;
+    }
 
-    const SessionDocument *d = session.active();
-    if (!d || d->path.isEmpty())
-        return;
+    // Rebuild the files and their views in the saved order. Opening is split: the
+    // synchronous half (open the source, compile the format, build the model and the
+    // dock) runs for everything first, so every dock exists before any of them starts
+    // indexing on a worker thread.
+    QStringList missing;
+    QHash<int, DocumentContext *> byDocument;
+    for (const SessionView &sv : session.views) {
+        const SessionDocument *d = session.documentFor(sv);
+        if (!d || d->path.isEmpty())
+            continue;
 
-    // A missing/unreadable last file must not error every launch (SPEC.md §10):
-    // leave the view empty and show an inline notice, no dialog.
-    const QFileInfo info(d->path);
-    if (!info.exists() || !info.isReadable()) {
+        DocumentContext *ctx = byDocument.value(sv.documentIndex, nullptr);
+        if (!ctx) {
+            // A missing/unreadable file must not error every launch (SPEC.md §10):
+            // skip it with an inline notice, no dialog. Its dock never appears, which
+            // restoreState() tolerates.
+            const QFileInfo info(d->path);
+            if (!info.exists() || !info.isReadable()) {
+                if (!missing.contains(d->path))
+                    missing.append(d->path);
+                continue;
+            }
+            ctx = prepareContext(*d);
+            if (!ctx)
+                continue;
+            byDocument.insert(sv.documentIndex, ctx);
+        }
+
+        // Every saved view is created here, under its OWN saved dock name — including
+        // the file's first, which is why prepareContext() makes none.
+        DocumentView *view = createView(ctx, sv.dockName);
+        // createView() has already put the dock back in its saved slot, keying off
+        // the dock name set above (or fallen back to the default placement).
+        view->logView()->setWrapMode(static_cast<LogView::WrapMode>(sv.wrapMode));
+        if (!sv.columnState.isEmpty())
+            view->logView()->restoreColumnState(sv.columnState);
+    }
+
+    if (!missing.isEmpty()) {
         m_placeholder->setText(
-            QStringLiteral("The last opened file is no longer available:\n%1").arg(d->path));
-        m_statusLabel->setText(QStringLiteral("Last file unavailable: %1").arg(info.fileName()));
-        return;
+            QStringLiteral("These files are no longer available:\n%1").arg(missing.join(u'\n')));
+        m_statusLabel->setText(
+            QStringLiteral("%1 file(s) from the last session unavailable").arg(missing.size()));
     }
-
-    // Stash the persisted run selection so onIndexFinished re-resolves it once runs
-    // are detected (offsets/ordinals settle only after the async index completes, §3a).
-    if (!d->format.runStartPattern.isEmpty()) {
-        m_pendingRunRestore = PendingRunRestore{d->runAll, d->selectedRunStartOffset,
-                                                d->selectedRunStartTimestamp};
-    }
-
-    // Reopen with the saved format (no prompt), then reapply the saved per-file
-    // column layout, filters and highlighters into the freshly-bound panes.
-    openWithSettings(d->path, d->format, /*promptIfNoMatch=*/false);
-    if (!activeDocument())
+    updateEmptyState();
+    if (m_contexts.empty())
         return;
-    if (m_view && !d->columnState.isEmpty())
-        m_view->restoreColumnState(d->columnState);
-    if (m_highlighterPane)
-        m_highlighterPane->restoreState(d->highlighters);
-    if (m_filterPane)
-        m_filterPane->restoreState(d->filters); // emits filtersChanged -> applies
+
+    // Activate the saved view, which binds the panes to its file, then start every
+    // scan. Indexing goes last so worker batches never race the layout settling.
+    const SessionView *activeSaved = session.active();
+    DocumentView *toActivate = nullptr;
+    if (activeSaved) {
+        for (DocumentView *view : std::as_const(m_views)) {
+            if (view->dockName() == activeSaved->dockName) {
+                toActivate = view;
+                break;
+            }
+        }
+    }
+    showView(toActivate ? toActivate : m_views.first());
+
+    for (auto &ctx : m_contexts) {
+        if (ctx->controller)
+            ctx->controller->start();
+    }
 }
 
 } // namespace loftail
