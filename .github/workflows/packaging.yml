@@ -118,6 +118,14 @@ jobs:
                 & $exe $fn *> $null
                 $status = if ($LASTEXITCODE -eq 0) { "ok" } else { "EXIT $LASTEXITCODE" }
                 Write-Host ("{0}::{1} -> {2}" -f $t, $fn, $status)
+                if ($LASTEXITCODE -ne 0) {
+                  # Whatever the test prints is not reaching ctest on Windows, so
+                  # ask QtTest for a FILE and read that back: it names the assertion
+                  # and the line, which is the thing actually worth having.
+                  $report = "qtest-$t-$fn.txt"
+                  & $exe $fn -o "$report,txt" *> $null
+                  if (Test-Path $report) { Get-Content $report | ForEach-Object { Write-Host "    $_" } }
+                }
               }
             }
             Write-Host "::endgroup::"
