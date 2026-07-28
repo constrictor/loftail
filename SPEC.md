@@ -3,7 +3,7 @@
 **Status:** Draft, 2026-07-20.
 **Scope:** User-visible behavior only. Internal design lives in `ARCHITECTURE.md`.
 
-This document describes the **first release only**; features planned for later releases live in `FUTURE.md`.
+This document describes **what loftail does today**; features not yet built live in `FUTURE.md`. A feature moves here when it ships.
 
 ---
 
@@ -30,8 +30,9 @@ It runs on Windows, macOS, and Linux.
 ## 3. Opening logs
 
 - Open a log file via menu, toolbar, keyboard shortcut, or drag-and-drop onto the window.
+- **Several logs can be open at once**, each in its own tab (§5a). Opening a file adds a tab rather than replacing what is on screen; dropping several files at once opens all of them. Opening a file that is already open raises its tab instead of opening it twice.
 - **From the command line:** `loftail <file>` opens that file directly, at its end and following, like every other open (see live updates below). A `--pattern <p>` switch supplies the log format for a file loftail has not seen before.
-- **Multiple instances may run simultaneously.** loftail does not enforce a single instance; launching it again opens an independent window with its own file and its own filters.
+- **Multiple instances may run simultaneously.** loftail does not enforce a single instance; launching it again opens an independent window with its own files and its own filters.
 - The 10 most recently opened files are listed for quick reopening.
 - Opening a large file shows progress and remains responsive; the view populates as scanning proceeds rather than blocking until it finishes.
 - Scanning can be cancelled, leaving whatever was scanned so far usable.
@@ -104,13 +105,13 @@ Because a log file records no zone information, two settings control interpretat
 
 Time-range filter bounds are entered in the display time zone, so what you type matches what you see.
 
-Format autodetection — guessing the pattern on open — is planned for a later release; see `FUTURE.md`. In the first release the pattern is always entered manually.
+**Format autodetection.** Opening a file loftail has not seen before, whose pattern is not already remembered, guesses the `ConversionPattern` from the file itself and **pre-fills the dialog with the guess for confirmation** — never applying it silently, since a wrong pattern quietly mis-splits every record. A **Detect** button re-runs the guess into the pattern field at any time. Detection failure leaves the dialog on the fallback default, so manual entry is always the authority and always available.
 
 ## 5. Main view
 
 - Records are displayed as a table, one row per record, with a column per field in the configured format (timestamp, priority, subsystem, message, and any others the pattern defines).
 
-- Columns can be resized, reordered, and individually hidden. Column layout is remembered.
+- Columns can be resized, reordered, and individually hidden. Column layout is remembered per view (§5a).
 
 - **The table renders in a fixed-width font — every column, and the header.** Logs are column-aligned text written by machines; a proportional font destroys the alignment inside a message and makes timestamps and levels ragged from row to row. The font is the one the desktop designates as fixed-width, at the usual UI text size.
 
@@ -130,7 +131,18 @@ Format autodetection — guessing the pattern on open — is planned for a later
 
 - **Find / Find Next.** Text search over record content, with next/previous navigation, case-sensitivity and regular-expression options, and wrap-around at the end. Distinct from filtering: find moves the cursor and leaves every record visible; filtering removes non-matching records. Find operates on what is currently visible — if a filter is active, find searches the filtered subset.
 
-- A status area shows total record count, the count after filtering, the current file, and whether it is currently receiving new records.
+- A status area shows total record count, the count after filtering, the current file, and whether it is currently receiving new records. It describes the **active** view; a file being scanned in another tab shows its progress in that tab's own label instead.
+
+## 5a. Tabs, splits, and windows
+
+Open files and side panes share one arrangement, and any of them can be moved anywhere in it.
+
+- **Every open file is a tab.** A tab can be dragged into a side-by-side or stacked split, into another tab group, or out of the window entirely to float as a separate window — and dragged back. Side panes (§8) move by exactly the same gestures and can share a tab group or a split with a log.
+- **A file can be opened in more than one view.** *New View* opens a second, independently scrolled view onto the log already being read, so one can be pinned to a point in the history while the other keeps tailing. It starts as a copy of the view it was made from and diverges from there.
+  - **Shared** between views of one file: the records themselves, the log format, active filters, active highlighters, and the selected run. Filtering in one view filters both — the panes edit the *file*, not the view.
+  - **Private** to each view: scroll position, selection, wrap mode, column layout, follow state, and the Find bar.
+- **Closing a tab closes that view.** The file itself closes when its last view does; closing every tab leaves the empty view of §3.
+- The whole arrangement — which files are open, how many views each has, and where every tab, split and floating window sits — is part of the remembered session (§10).
 
 ## 6. Filtering
 
@@ -161,7 +173,8 @@ Highlighting colors matching records without removing anything, for spotting eve
 
 Filters, highlighters, presets, and runs (§3) are each presented in a side pane, so they are visible and toggleable without opening dialogs.
 
-- Panes can be shown/hidden, resized, moved to either side, floated as separate windows, or tabbed together.
+- Panes can be shown/hidden, resized, moved to either side, floated as separate windows, or tabbed together — and, since panes and open files share one arrangement (§5a), tabbed or split against a log as well. A closed pane is brought back from the View menu.
+- **There is one of each pane, and it follows the active view.** With several logs open, the panes always show and edit whichever one is being read; moving to another log rebinds them to that log's filters and highlighters, and moving between two views of the *same* log changes nothing, because those views share them.
 - Pane layout is part of the remembered session (§10).
 - Enabling and disabling an individual filter or highlighter is a single click within its pane — no dialog.
 
@@ -178,25 +191,26 @@ Filters, highlighters, presets, and runs (§3) are each presented in a side pane
 
 On relaunch, loftail restores:
 
-- The last opened file — reopened at its end and following, like any open (§3), so follow state is never a remembered choice
-- The log format in use
-- The run-start pattern and which run was being viewed (§3)
-- Active filters and highlighters, including which were enabled
+- Every file that was open — each reopened at its end and following, like any open (§3), so follow state is never a remembered choice
+- The log format in use for each
+- The run-start pattern and which run was being viewed, per file (§3)
+- Active filters and highlighters per file, including which were enabled
+- Every view: how many views each file had, each one's column layout and wrap mode, and which view was active
 - Saved presets
-- Window geometry, pane layout, and column layout
+- Window geometry and the whole arrangement of tabs, splits, floating windows and panes (§5a)
 
-**Scoping**, which matters for the eventual multi-file support: the log format, the run-start pattern, active filters, active highlighters, and column layout are remembered **per file**, so returning to a given log restores how you were reading *that* log. Presets and window/pane layout are global, shared across all files. This way, when several files can be open at once, each keeps its own working state without further redesign.
+**Scoping:** the log format, the run-start pattern, active filters, active highlighters, and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a split showing wide messages and one showing just timestamps each keep their shape. Presets and the window/pane layout are global.
 
-**Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is keyed by file, so instances viewing different logs never conflict. For genuinely global state — window layout, and which file to restore on next launch — **the last instance to close wins**.
+**Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is keyed by file, so instances viewing different logs never conflict. For genuinely global state — window layout, and which files to restore on next launch — **the last instance to close wins**.
 
-If the last opened file is missing or unreadable, loftail opens with an empty view and reports it, rather than showing an error dialog on every launch.
+If a file from the last session is missing or unreadable, loftail restores the rest and reports the ones it could not open, rather than showing an error dialog on every launch. If none can be opened, it starts with an empty view.
 
 ## 11. Non-goals
 
-These are things loftail will **not** do — as distinct from features deferred to a later release, which are in `FUTURE.md`. loftail does not:
+These are things loftail will **not** do — as distinct from features not yet built, which are in `FUTURE.md`. loftail does not:
 
 - Edit, write, or delete log files — it is strictly a reader
 - Read log formats from other logging frameworks (the format is configurable, so some will happen to work; none are supported)
-- Aggregate several files into a single merged, time-ordered view — distinct from simply opening several files (which *is* planned; see `FUTURE.md`), and not planned at all
+- Aggregate several files into a single merged, time-ordered view — distinct from simply opening several files, which loftail does (§5a). Merging is not planned at all: each tab stays an independent log
 - Provide charts, statistics, or alerting
 - Install itself as the **default** system handler for `.log` files — loftail advertises that it *can* open them (so it appears in the OS "Open With" list), but claiming the default handler is a user/installer concern, not something the application does

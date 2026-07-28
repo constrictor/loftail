@@ -1,23 +1,19 @@
 # loftail — Planned for Later Releases
 
 **Status:** Draft, 2026-07-20.
-**Scope:** User-visible features intended for releases *after* the first. `SPEC.md` describes the first release only; genuine never-goals live in its §11. This file is the product roadmap beyond 1.0 — a list of intended features, not a schedule or a commitment to any order.
+**Scope:** User-visible features not yet built. `SPEC.md` describes what has shipped; genuine never-goals live in its §11. This file is the product roadmap — a list of intended features, not a schedule or a commitment to any order.
 
-Each item notes what the first release already does to accommodate it, so that adding the feature later is additive rather than a rewrite. Those accommodations are P1 obligations, not future work — they are the reason these features stay cheap to add.
+Each item notes what already-shipped code does to accommodate it, so that adding the feature later is additive rather than a rewrite. Those accommodations are obligations on the code as it stands, not future work — they are the reason these features stay cheap to add. Shipped items are struck through and kept, so the record of which accommodation paid off is not lost.
 
 ---
 
-## Format autodetection
+## ~~Format autodetection~~ — shipped
 
-When a file is opened, loftail guesses its `ConversionPattern` and pre-fills the Log Format dialog with the guess, shown for confirmation rather than applied silently. Manual entry remains available and authoritative; the dialog is the same one used in the first release.
+Delivered in M8 and specified in `SPEC.md` §4: an unrecognized file's `ConversionPattern` is guessed and pre-filled into the Log Format dialog for confirmation, never applied silently, with manual entry remaining authoritative. The accommodation did its job — detection reaches the format layer through the existing `IFormatProvider` seam and produces a *pattern string* fed to the same `PatternCompiler` as manual entry, so it needed no new parsing path and no new UI. See `ARCHITECTURE.md` §9 for the three-layer design (candidate scoring → structural inference → fall back to manual).
 
-**Already accommodated:** the format layer is reached only through the `IFormatProvider` seam, and autodetection produces a *pattern string* fed to the same `PatternCompiler` as manual entry — so it needs no new parsing path and no new UI. See `ARCHITECTURE.md` §9 for the three-layer detection design (candidate scoring → structural inference → fall back to manual).
+## ~~Multiple open files~~ — shipped
 
-## Multiple open files
-
-Several logs open at once, as tabs or a split view, each with its own format, filters, highlighters, and column layout. Per-file working state is already scoped and persisted per file (`SPEC.md` §10), so each file keeps how you were reading it.
-
-**Already accommodated:** all per-file state lives in a `Document` type; nothing reaches for "the current file" globally; panes bind to the active document by signal; and the settings schema stores a `documents` array even while it holds one element today. See `ARCHITECTURE.md` §12. The remaining work is genuinely additive: a tab bar or split view, and per-document indexing threads.
+Delivered in M9 and specified in `SPEC.md` §5a: several logs open at once as tabs, draggable into splits, tab groups and floating windows, with a second view onto one file available. The four accommodations this file used to list (a `Document` owning all per-file state, no "current file" global, panes binding by signal, a `documents` array in the settings schema) did their job — the work was additive, as intended. See `ARCHITECTURE.md` §12 for the implemented design.
 
 ## Compressed logs
 
@@ -41,6 +37,6 @@ Mark records of interest and jump between them, so a spot found once can be retu
 
 ## Relationship to other documents
 
-- `SPEC.md` — the first release. If a feature here ever ships, its user-visible behavior moves into `SPEC.md`.
-- `ARCHITECTURE.md` — the accommodations referenced above are implemented as part of the first release, not deferred.
-- `PLAN.md` — milestone M8 implements format autodetection. The other items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.
+- `SPEC.md` — what has shipped. When a feature here ships, its user-visible behavior moves into `SPEC.md` and its entry here is struck through, as "Multiple open files" now is.
+- `ARCHITECTURE.md` — the accommodations referenced above are implemented, not deferred.
+- `PLAN.md` — milestone M8 implemented format autodetection and M9 multiple open files. The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.

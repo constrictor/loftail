@@ -4,7 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**M0 complete (scaffold), 2026-07-21.** The project builds and runs an empty `QMainWindow` on Linux, with CTest wired to one passing Qt Test. The commands below work. Directory layout is `src/core/` (UI-free, links QtCore only), `src/ui/` (Qt Widgets), and `tests/`. Next up is M1 (`PatternCompiler`) per `PLAN.md`. Windows/macOS builds are not yet verified — required before M7.
+**M0–M8 complete, 2026-07-28.** The application is functional on Linux: it opens and indexes a log, filters and highlights it, tails it live, splits it into runs, restores its session, and autodetects a format. Directory layout is `src/core/` (UI-free, links QtCore only), `src/ui/` (Qt Widgets), and `tests/`; the commands below work and all CTest cases pass.
+
+**In progress: M9 — multiple documents, tabs and splits.** Several logs open at once as draggable, splittable, floatable tabs. See `PLAN.md` M9.
+
+**Outstanding regardless of milestone:** Windows and macOS builds and runtime behavior are still unverified (`PLAN.md` M6/M7), including the stubbed Windows `BufferedLogSource` share-mode open and `pathIdentity()`.
+
+**Known failure:** on Windows CI the code *compiles and links*, but `tst_logview` fails at runtime. It appeared in the push containing `144a45b..37f6627` (`8753d69` was the last green Windows run) — most likely `c1ea185`, which added the fixed-width table font and with it `everyColumnRendersFixedPitch`, a case that asserts on the font the system actually resolves. Until recently the failure was undiagnosable: test binaries inherited `WIN32_EXECUTABLE` from `qt_add_executable`, so on Windows they had no console and `ctest --output-on-failure` printed an empty block. `tests/CMakeLists.txt` now forces the console subsystem, so the next Windows run should say what actually fails.
 
 ## What loftail is
 
@@ -14,7 +20,7 @@ A cross-platform (Windows/macOS/Linux) desktop GUI viewer for logs produced by *
 
 | File              | Contents                                                                  |
 | ----------------- | ------------------------------------------------------------------------- |
-| `SPEC.md`         | User-visible behavior of the **first release** only. The product definition. |
+| `SPEC.md`         | User-visible behavior of what has shipped. The product definition.        |
 | `FUTURE.md`       | User-visible features planned for **later** releases, and the P1 accommodations that keep them cheap to add. |
 | `ARCHITECTURE.md` | Internal technical decisions and rationale. Not user-visible.             |
 | `PLAN.md`         | Milestone-by-milestone implementation plan.                               |
@@ -31,7 +37,7 @@ When a change alters user-visible behavior, update `SPEC.md`. When it alters an 
 
 loftail does **not** link log4cplus. It reads log files as text; it has no compile-time relationship to the library that produced them.
 
-## Commands (valid as of M0)
+## Commands
 
 ```bash
 # Configure (Debug)
@@ -46,11 +52,11 @@ cmake --build build
 # All tests
 ctest --test-dir build --output-on-failure
 
-# A single test binary (tst_patterncompiler arrives in M1)
-./build/tests/tst_scaffold
+# A single test binary
+./build/tests/tst_patterncompiler
 
 # A single test case within a binary (Qt Test convention)
-./build/tests/tst_scaffold applicationVersionIsNonEmpty
+./build/tests/tst_sessiongui sessionRoundTrip
 ```
 
 On Windows and macOS, `CMAKE_PREFIX_PATH` must point at the Qt installation.
@@ -71,7 +77,7 @@ These ten constraints are cheap to honor from the start and expensive to retrofi
 
 6. **The record table is a custom `LogView : QAbstractScrollArea`, not a `QTableView`.** Multi-line records render at full height, and `QTableView` cannot do variable row heights lazily — it needs an O(n) `resizeRowsToContents()` pass or per-row entries in `QHeaderView`, either of which defeats the lazy index. `LogView` scrolls in *line* units over two-level prefix sums of `Record::lineCount`. It has two geometry modes: **exact** (wrap off / selected-record-only) and **estimated** (wrap always on, where height depends on viewport width). Keep the estimation machinery unreachable from the exact path. See `ARCHITECTURE.md` §7.1–7.1.1; this is the project's highest-risk component.
 
-7. **All per-file state lives in `Document`; nothing reaches for "the current file" globally.** Multiple open files are deferred but must stay reachable: no singletons holding file state, panes bind to an `activeDocumentChanged(Document*)` signal rather than a fixed reference, and the settings schema stores a `documents` array even while it always has one element. See `ARCHITECTURE.md` §12.
+7. **All per-file state lives in `Document`; all per-view state lives in `DocumentView`; nothing reaches for "the current file" globally.** Several files are open at once and one file may have several views, so the two scopes must not blur: filters, highlighters, format and run selection belong to the *file*; scroll, selection, wrap mode, column layout, follow and find belong to the *view*. No singletons holding file state; panes bind to an `activeDocumentChanged(Document*)` signal rather than a fixed reference, and that signal fires only when the **file** changes, never when switching between two views of one file. The settings schema stores a `documents` array and a `views` array. See `ARCHITECTURE.md` §12.
 
 8. **Never scan for `\n` in raw bytes.** Encoding is user-selectable, defaults to auto-detect, and may be UTF-16, where a newline is `0A 00` or `00 0A`. All line-boundary and text work goes through the `Decoder` layer; only `Record::offset`/`length` stay in byte terms. See `ARCHITECTURE.md` §6.1 — this is the easiest invariant to violate by accident.
 
@@ -90,4 +96,4 @@ These ten constraints are cheap to honor from the start and expensive to retrofi
 ## Working notes
 
 - The user refers to the logging library as "cplus4log"; the actual library is **log4cplus**. Confirmed 2026-07-20.
-- Format configuration is manual in the first release (user supplies the `ConversionPattern`). Autodetection is a later-release feature (`FUTURE.md`), deliberately not built first — see `PLAN.md` M8 and the `IFormatProvider` seam.
+- Format configuration was manual first (user supplies the `ConversionPattern`); autodetection was deliberately built after it, in M8, behind the `IFormatProvider` seam. Both paths still end at the same `PatternCompiler`, and a detected pattern is never applied without confirmation — it pre-fills the Log Format dialog (`SPEC.md` §4).

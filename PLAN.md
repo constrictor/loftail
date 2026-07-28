@@ -160,9 +160,24 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 ---
 
+## M9 — Multiple documents, tabs and splits (post-1.0)
+
+`SPEC.md` §5a, `ARCHITECTURE.md` §12, formerly `FUTURE.md`'s "Multiple open files". The feature §12's four accommodations were built for; delivered in six stages, each building and keeping the suite green.
+
+- [x] **Per-file machinery out of the window.** `DocumentContext` (`src/ui`) takes the `LogModel`, `IndexController`, `LiveController`, `FormatSettings` and pending run restore that used to be `MainWindow` members; `DocumentView` takes the `LogView` plus its own `FindBar`. The window keeps a vector of contexts and a pointer to the active *view*. Also removed the dead `Document::following()` — follow was already per-view in `LogView`.
+- [x] **The dock shell.** No visible central widget; open files and side panes are all `QDockWidget`s under `AllowNestedDocks | AllowTabbedDocks | GroupedDragging`, so Qt's own dock dragging supplies drag-to-split, tab groups and floating windows. Added View ▸ Panes (a closed pane was previously unrecoverable). See §12.2 for the two Qt constraints this depends on.
+- [x] **N documents.** An open adds a tab instead of tearing the previous file down; reopening an open file raises it. Active view follows focus, and `activeDocumentChanged` fires only on a *file* change. Close Tab / Close All, a Window menu, multi-file drop, per-file indexing progress in each tab's own label. The Filters pane's per-file widget state is stashed and restored across the switch (§12.2).
+- [x] **A second view onto one file.** Window ▸ New View, sharing the `Document` and its `LogModel`; per-view scroll, selection, wrap, columns and follow. Tabs of one file are numbered.
+- [x] **Session schema v2.** A `views` array beside `documents`, `activeView`, per-view column state and wrap mode, UUID dock names, and the restore ordering of §12.3 (`restoreState` → create docks → `restoreDockWidget` → activate → index). v1 sessions migrate, minus their `windowState`. Dropped the duplicated global `view/columnState` key.
+- [x] **Tests and docs.** `tst_multidoc` (an open adds a tab; pane rebinding on a file switch but not a view switch; a file closing with its last view) and `tst_docksession` (the tab/split arrangement and per-view state round-trip through quit-and-relaunch; a missing file is skipped). `tst_session` covers the v2 arrays and the v1 migration; the existing GUI tests gained session isolation, since an open now accumulates.
+
+**Done when:** several logs open as tabs, draggable into splits, tab groups and floating windows; a second view onto one file scrolls independently; and the whole arrangement round-trips through quit-and-relaunch.
+
+---
+
 ## Deliberately deferred
 
-Later-release features are catalogued in `FUTURE.md` (multi-file views, compressed and SSH sources, bookmarks, and — with a milestone, M8 — format autodetection); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.
+Later-release features are catalogued in `FUTURE.md` (compressed and SSH sources, bookmarks; multi-file views shipped in M9, and format autodetection in M8); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.
 
 Column reorder/hide with remembered layout (`SPEC.md` §5) is additive to the M2 spine and lands in M2b. **Done (M2b):** `LogView` drives its columns through a `QHeaderView` (reorder, resize, hide via the header context menu); the layout round-trips through the header's own `saveState()`/`restoreState()`, persisted to `QSettings` — full session restore is folded in at M5. (Preset export/import, once deferred, is now in M5.)
 

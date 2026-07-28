@@ -248,7 +248,7 @@ A log file often concatenates several application runs (`SPEC.md` §3, Runs). Ra
 
 ## 8. Persistence
 
-- `QSettings` for window geometry, `QMainWindow::saveState()` output, column layout, active filters/highlighters, and last file. Follow state is **not** persisted: every file opens at its end, following (`SPEC.md` §3), so there is nothing to restore.
+- `QSettings` for window geometry, `QMainWindow::saveState()` output, the open files and the views onto them, per-view column layout and wrap mode, and per-file filters/highlighters. Follow state is **not** persisted: every file opens at its end, following (`SPEC.md` §3), so there is nothing to restore. The schema is at version 2; see §12.3 for its shape, the dock-name scheme it depends on, and the restore ordering.
 - Presets as JSON under `QStandardPaths::AppConfigLocation` — a discrete file format, since `SPEC.md` §9 proposes export/import.
 - Per-file format cache, keyed by canonical path, so a configured file reopens without prompting. Per file only — no directory-level fallback; a new file is never assumed to share a sibling's format.
 - Schema version field in both settings and preset files from day one; migrating unversioned user data later is unpleasant.
@@ -267,9 +267,9 @@ Preset export/import (`SPEC.md` §9) is JSON. Because rules carry palette *indic
 
 Deliberately *not* doing: a lock file, a single-instance server, or inter-instance IPC. Each adds a failure mode (stale locks, port conflicts) far more annoying than the state loss it prevents.
 
-## 9. Format autodetection (later release)
+## 9. Format autodetection
 
-Deferred to a later release (`FUTURE.md`), but the seam exists in the first:
+Built after the manual path (M8), behind a seam that existed from the start:
 
 ```cpp
 class IFormatProvider {
@@ -277,7 +277,7 @@ class IFormatProvider {
 };
 ```
 
-The first release ships `ManualFormatProvider` (reads the user's pattern from settings). A later release adds `DetectingFormatProvider`, which falls through three layers, cheapest first:
+`ManualFormatProvider` (reads the user's pattern from settings) came first; `DetectingFormatProvider` was added in M8 behind the same seam, and falls through three layers, cheapest first:
 
 1. **Candidate scoring.** A library of known patterns — log4cplus defaults plus common house styles. Compile each, run over the first ~200 records, score by match rate. Resolves the common case in milliseconds with no inference.
 2. **Structural inference.** Tokenize a sample; find positionally stable fields. The strongest anchor is priority: `TRACE|DEBUG|INFO|WARN|ERROR|FATAL` is a closed six-word vocabulary, so a token column drawn from it is near-certainly `%p`. A leading date-shaped run is `%d`; a dotted identifier adjacent to the priority is `%c`; a bracketed run between the logger and the message is `%x`; the remainder is `%m`. Synthesize a pattern string and hand it to the same `PatternCompiler`.
@@ -310,38 +310,70 @@ Provisional, to be validated against a real log early rather than assumed:
 - Live tail appends visible within ~200 ms of a write.
 - Rebuilding block prefix sums after a filter change: < 20 ms per million records.
 
-## 12. Multi-file accommodation
+## 12. Multiple documents: contexts, views, and the dock shell
 
-`FUTURE.md` plans opening several files at once, but the architecture must not preclude it. Four constraints make later support additive rather than a rewrite. They cost almost nothing now and are expensive to retrofit.
+Several logs are open at once as tabs, draggable into splits and floating windows, and one log may be open in several views (`SPEC.md` §5a). This section was previously a list of accommodations for a deferred feature; it now describes the implementation those accommodations bought — the four constraints below (§12.1–12.4) held, and the work was additive.
 
-**1. A `Document` owns all per-file state.**
+### 12.1 Three scopes, and what belongs in each
 
-```cpp
-class Document {              // one open log file
-    std::unique_ptr<LogSource> source;
-    LogFormat                  format;
-    RecordIndex                index;      // records + intern table + block sums
-    FilterSet                  filters;
-    HighlighterSet             highlighters;
-    ColumnLayout               columns;
-    bool                       following;  // auto-scroll to newest; watching is always on
-};
-```
+The load-bearing distinction is that a *file* and a *view onto it* are different things.
 
-The main window holds `std::vector<std::unique_ptr<Document>>` plus an *active document* pointer — a vector of length one today. Nothing outside `Document` may hold per-file state.
+| Scope | Type | Holds |
+| ----- | ---- | ----- |
+| Per file, below the UI | `Document` (`src/core`) | source, format, decoder, `RecordIndex`, `FilterSet`/`FilteredIndex`, `HighlighterSet`, zones, runs and the run selection |
+| Per file, in the UI | `DocumentContext` (`src/ui`) | the `Document`, its `LogModel`, `IndexController`, `LiveController`, `FormatSettings`, indexing progress, the Filters pane's per-file widget state, and the list of views |
+| Per view | `DocumentView` (`src/ui`) | a `LogView` and its own `FindBar`; and inside the `LogView`, scroll position, selection, wrap mode, `QHeaderView` column layout, and follow state |
 
-**2. No singletons or globals for file state.** No `currentFile()` accessor, no static index, no free function reaching for "the" log. This is the constraint most easily violated by accident and the most painful to unwind.
+**Filters, highlighters and the run selection are document-scoped, not view-scoped.** Making them per view would need a `FilteredIndex` per view, which cascades into a per-view row space in `LogModel`, a per-view branch in `LiveController`'s in-place append admission (§7.3), and a Runs pane that could no longer bind by `activeDocumentChanged(Document*)`. Two views of one file therefore show the *same records* and differ only in how they are being read — which is also what a single global set of panes can coherently express.
 
-**3. Panes bind to the active document by signal, not by construction.** The filter, highlighter, and preset panes observe an `activeDocumentChanged(Document*)` signal and rebind. A pane built against a fixed `Document&` reference works fine with one file and has to be torn apart for two.
+**Follow state is per view** and lives only in `LogView`. `Document` deliberately has no `following` flag: pinning one view to a point in the history while another tails is the main reason to split a file at all.
 
-**4. Settings schema stores an array from day one.** Persist documents as a list even while it always has exactly one element:
+**One `LogModel` backs all of a file's views.** The model carries no view state (only the light/dark cue), and each `LogView` constructs its own `QHeaderView` and `QItemSelectionModel` — the ordinary Qt multi-view case. A second model would double the append and reset traffic and buy nothing.
+
+### 12.2 The dock shell
+
+The window has **no visible central widget**: open files and side panes are all `QDockWidget`s, and the dock areas divide the whole window. That is what makes a log draggable into a split, a tab group, or a floating window with no bespoke drag machinery — Qt's own dock dragging does it. Three constraints come with it:
+
+- `setDockOptions(AnimatedDocks | AllowNestedDocks | AllowTabbedDocks | GroupedDragging)` must be set **before any dock widget is added**. `GroupedDragging` is what drags a whole tab group.
+- **No dock may call `setAllowedAreas()`.** `GroupedDragging` misbehaves for docks that restrict where they can go.
+- The central widget is the "no file open" notice, hidden while anything is open — a hidden central widget collapses to zero and lets the docks fill the window.
+
+The accepted trade-off versus a third-party docking framework (KDDockWidgets, Qt-ADS): nothing structurally prevents a pane from being tabbed next to a log, as Visual Studio's separate "document well" would. Neither library is packaged for the reference build environment (Ubuntu 24.04, `CLAUDE.md`), and vendoring one would mean rebuilding the packaging story on three platforms to buy a constraint we do not need.
+
+**Which view is active follows keyboard focus.** `QApplication::focusChanged` is walked up to the enclosing `DocumentView`; dock `visibilityChanged` covers a tab raised without taking focus. `activeDocumentChanged` is emitted only when the underlying **`Document`** changes, so moving between two views of one file does not rebind the panes — which would otherwise reset the Filters pane's discovered-value state for no reason.
+
+**The Filters pane needs an explicit hand-off.** `HighlighterPane` hydrates from the `Document` it binds to (and syncs rules back on every edit), so it needs nothing. `FilterPane`'s widget state is *not* derivable from a `FilterSet`, so the window stashes it into the outgoing `DocumentContext` and restores it into the pane on the way in; an empty stash means "the defaults", which is what a newly opened file gets.
+
+### 12.3 Session schema v2, and the restore ordering
 
 ```json
-{ "schemaVersion": 1,
-  "documents": [ { "path": "...", "format": "...", "filters": [], "highlighters": [], "columns": {} } ],
-  "activeDocument": 0 }
+{ "schemaVersion": 2,
+  "geometry": "...", "windowState": "...",
+  "documents": [ { "path": "...", "format": "...", "filters": {}, "highlighters": {}, "runAll": false } ],
+  "views":     [ { "document": 0, "dockName": "docView-<uuid>", "columnState": "...", "wrapMode": 0 } ],
+  "activeView": 0 }
 ```
 
-Adding files later then requires no settings migration. Presets and window/pane layout stay global, matching the scoping in `SPEC.md` §10.
+Two arrays, matching the two scopes: N files, and N views pointing back at them. `windowState` is `QMainWindow::saveState()` and carries the entire arrangement — tabs, splits, floating windows, panes.
 
-The work remaining when multi-file is actually implemented — a tab bar or split view, and per-document indexing threads — is then genuinely additive. That is the point of the four constraints above.
+**Dock object names are UUIDs, generated once per view and persisted.** `restoreState()` matches saved layout slots to docks by object name, so the name must be stable across sessions. Ordinals would shift when files are closed in a different order than they were saved, silently landing a view in another view's slot.
+
+**Restore order** — the subtle part, since document docks do not exist when `restoreState()` runs:
+
+1. `restoreGeometry()`, then `restoreState()`. Only the pane docks exist; slots naming document docks become placeholders.
+2. For each saved view, in order: build its file's `DocumentContext` if this is its first view (`Document::prepare()` — the fast, synchronous half of an open), then create the view under its **saved** dock name.
+3. Creating a dock tries `restoreDockWidget()` **before** any `addDockWidget()`: that claims the placeholder from step 1. A dock already placed in the layout no longer matches its placeholder, so the order is not optional. A `false` return (a newly opened file, a new view, a first run) falls back to the default placement — left area, tabbed onto the previous log.
+4. Activate the saved view, then start every indexing worker. Indexing goes last so worker batches never race the layout settling.
+
+A file that has gone missing is skipped with an inline notice and no dialog (`SPEC.md` §10); its dock simply never appears, which `restoreState()` tolerates.
+
+**v1 is migrated, not discarded** — one document, one synthesized view, carrying the column state that used to live on the document. Its `windowState` is deliberately **dropped**: that blob describes a window with a central widget and no document docks, and feeding it to the dock-only shell yields a mangled layout with no diagnostic.
+
+### 12.4 The constraints that made this additive
+
+For the record, since they still bind:
+
+1. **A `Document` owns all per-file state.** Nothing outside it may hold per-file state; `DocumentContext` holds the *machinery* around one file, not the file's state.
+2. **No singletons or globals for file state.** No `currentFile()` accessor, no static index. This is the constraint most easily violated by accident and the most painful to unwind.
+3. **Panes bind to the active document by signal, not by construction.** A pane built against a fixed `Document&` works fine with one file and has to be torn apart for two.
+4. **The settings schema stores arrays.** It held a one-element `documents` array from day one, which is why v2 could add `views` beside it instead of restructuring.
