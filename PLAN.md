@@ -177,6 +177,21 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 ---
 
+## M10 — Highlight rules gain the full filter axis set
+
+`SPEC.md` §7, `ARCHITECTURE.md` §7.2/§8. Highlighting shipped with two of the five axes filtering has, so there was no way to color by message text at all — the gap a user hits immediately, since the Highlighters pane offers nowhere to type a pattern.
+
+- [x] **`MatchCriteria`** (`src/core`) — the portable form of the five axes (names, levels, wall clock, a pattern) as against `FilterSet`'s resolved form (ids, UTC ms, a compiled regex), with `resolve()` between them. One type, two consumers: the Filters pane resolves it into the Document's `FilterSet`, and a `HighlightRule` embeds it. Its JSON keeps `FilterPane`'s original key names verbatim, so existing filter presets and sessions load unchanged.
+- [x] **`FilterSet::absentFieldMatches`** — the one genuine semantic inversion, as a flag rather than a second predicate chain: a record lacking the field an axis tests must not be *hidden* by a filter and must not be *colored* by a highlight rule.
+- [x] **`HighlightRule` embeds `MatchCriteria`**; `HighlighterSet::resolve()` builds one `FilterSet` per rule (regexes compiled here, off the paint path). `fromJson()` still reads the original flat two-axis keys, which is what makes a preset/session schema bump unnecessary — and both stores reject an unknown version outright, so a bump would have discarded every existing preset.
+- [x] **The paint path.** `HighlighterSet::match()` takes the decode as a lazy callable and memoizes it across rules (`FilterSet::accepts`'s shape); `LogModel::rowColors()` resolves both roles in one pass, since `LogView` asking for the two roles separately ran the rule list — and the decode — twice per record. Bound: one decode per *visible* record per repaint.
+- [x] **`AxisEditor`** (`src/ui`) — the five axis group boxes lifted out of `FilterPane` and shared with the per-rule editor in `HighlighterPane`, which wraps it in a scroll area and collapses each axis until it is enabled. Two behavior changes ride along: `setCriteria()` applies a stored selection *exactly* (the "newly discovered arrives checked" rule is right for a whole-file filter and wrong for one rule among several), and an invalid regex is now flagged inline — `FilterPane` never surfaced `TextMatcher::isValid()`, so a broken filter regex used to silently empty the view.
+- [x] **Tests.** `tst_matchcriteria` (JSON keys, the zone conversion, both policy arguments), `tst_highlighterpane` (a typed regex reaches the rule; switching rules shows that rule's selection; an invalid regex is flagged), and `tst_highlight` extended with the three new axes, the absent-field inversion, decode laziness, and the legacy flat-rule read.
+
+**Done when:** a highlight rule can match on anything a filter can, and the message-text axis costs one decode per visible record rather than one per cell.
+
+---
+
 ## Deliberately deferred
 
 Later-release features are catalogued in `FUTURE.md` (compressed and SSH sources, bookmarks; multi-file views shipped in M9, and format autodetection in M8); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.

@@ -1,12 +1,14 @@
 #include "HighlighterPane.h"
 
+#include "AxisEditor.h"
 #include "Document.h"
+#include "MatchCriteria.h"
 #include "Palette.h"
 #include "Priority.h"
 #include "RecordIndex.h"
 
-#include <QCheckBox>
 #include <QComboBox>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -15,26 +17,12 @@
 #include <QListWidget>
 #include <QPixmap>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QVBoxLayout>
 
 namespace loftail {
 
 namespace {
-// Combo index -> Priority, in severity order (§7.2), matching the filter pane so
-// the two priority selectors read identically.
-const Priority kPriorityByIndex[] = {
-    Priority::Trace, Priority::Debug, Priority::Info,
-    Priority::Warn,  Priority::Error, Priority::Fatal,
-};
-constexpr int kPriorityCount = int(sizeof(kPriorityByIndex) / sizeof(kPriorityByIndex[0]));
-
-int priorityIndexOf(Priority p)
-{
-    for (int i = 0; i < kPriorityCount; ++i)
-        if (kPriorityByIndex[i] == p)
-            return i;
-    return 3; // WARN default
-}
 
 QIcon swatchIcon(const QColor &c)
 {
@@ -42,6 +30,37 @@ QIcon swatchIcon(const QColor &c)
     pm.fill(c.isValid() ? c : Qt::transparent);
     return QIcon(pm);
 }
+
+// One axis's contribution to a rule's one-line summary, or an empty string when the
+// axis is off. Short by necessity: this is a row in a dock-width list.
+QString axisSummary(const MatchCriteria &c)
+{
+    QStringList parts;
+    if (c.priorityEnabled)
+        parts << QStringLiteral("≥%1").arg(QString(priorityName(c.minPriority)));
+    if (c.loggerEnabled) {
+        parts << (c.loggerNames.size() == 1
+                      ? c.loggerNames.first()
+                      : QStringLiteral("%1 subsystems").arg(c.loggerNames.size()));
+    }
+    if (c.threadEnabled) {
+        parts << (c.threadNames.size() == 1
+                      ? QStringLiteral("thread %1").arg(c.threadNames.first())
+                      : QStringLiteral("%1 threads").arg(c.threadNames.size()));
+    }
+    if (c.text.active()) {
+        // Slashes for a regex, quotes for a substring — the same visual shorthand the
+        // Find bar's two modes have.
+        const QString pat = c.text.matcher.isRegex()
+                                ? QStringLiteral("/%1/").arg(c.text.matcher.pattern())
+                                : QStringLiteral("\"%1\"").arg(c.text.matcher.pattern());
+        parts << (c.text.negate ? QStringLiteral("not %1").arg(pat) : pat);
+    }
+    if (c.timeEnabled)
+        parts << QStringLiteral("in time range");
+    return parts.join(QStringLiteral(", "));
+}
+
 } // namespace
 
 HighlighterPane::HighlighterPane(QWidget *parent) : QWidget(parent)
@@ -56,9 +75,9 @@ bool HighlighterPane::isDark() const
     return palette().base().color().lightness() < palette().text().color().lightness();
 }
 
-QComboBox *HighlighterPane::makeSwatchCombo()
+QComboBox *HighlighterPane::makeSwatchCombo(QWidget *parent)
 {
-    auto *combo = new QComboBox(this);
+    auto *combo = new QComboBox(parent);
     // Item 0 is the *default* sentinel: leave this role at the theme's normal color.
     combo->addItem(QStringLiteral("Default"), HighlightPalette::kDefault);
     const bool dark = isDark();
@@ -87,7 +106,7 @@ void HighlighterPane::buildUi()
 
     m_ruleList = new QListWidget(this);
     m_ruleList->setMinimumHeight(120);
-    root->addWidget(m_ruleList, 1);
+    root->addWidget(m_ruleList);
 
     auto *btnRow = new QHBoxLayout;
     m_addBtn = new QPushButton(QStringLiteral("Add"), this);
@@ -101,38 +120,46 @@ void HighlighterPane::buildUi()
     root->addLayout(btnRow);
 
     // --- Editor for the selected rule --------------------------------------
+    //
+    // Five axes plus two color pickers do not fit a dock, so the whole editor lives
+    // in a scroll area and the AxisEditor collapses each axis to its title row until
+    // that axis is enabled. A rule with two axes set therefore shows two open groups
+    // and three one-line stubs.
     m_editor = new QGroupBox(QStringLiteral("Selected rule"), this);
     auto *ev = new QVBoxLayout(m_editor);
 
-    m_matchPriority = new QCheckBox(QStringLiteral("Match minimum priority"), m_editor);
-    ev->addWidget(m_matchPriority);
-    auto *prow = new QHBoxLayout;
-    prow->addWidget(new QLabel(QStringLiteral("Minimum:"), m_editor));
-    m_priorityCombo = new QComboBox(m_editor);
-    for (Priority p : kPriorityByIndex)
-        m_priorityCombo->addItem(priorityName(p));
-    prow->addWidget(m_priorityCombo, 1);
-    ev->addLayout(prow);
+    auto *scroll = new QScrollArea(m_editor);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    ev->addWidget(scroll);
 
-    m_matchLogger = new QCheckBox(QStringLiteral("Match subsystem"), m_editor);
-    ev->addWidget(m_matchLogger);
-    m_loggerList = new QListWidget(m_editor);
-    m_loggerList->setMinimumHeight(80);
-    ev->addWidget(m_loggerList);
+    auto *content = new QWidget(scroll);
+    scroll->setWidget(content);
+    auto *cv = new QVBoxLayout(content);
+    cv->setContentsMargins(0, 0, 0, 0);
+
+    // Every axis is opt-in for a highlight rule: an unconfigured rule must stay inert
+    // (SPEC.md §7), the opposite of the Filters pane's enabled-by-default metadata
+    // axes, which exist so their controls act on the first click.
+    m_axes = new AxisEditor(AxisEditor::Defaults{/*priorityOn=*/false, /*loggerOn=*/false},
+                            content);
+    m_axes->setCollapsible(true);
+    cv->addWidget(m_axes);
 
     auto *bgRow = new QHBoxLayout;
-    bgRow->addWidget(new QLabel(QStringLiteral("Background:"), m_editor));
-    m_bgCombo = makeSwatchCombo();
+    bgRow->addWidget(new QLabel(QStringLiteral("Background:"), content));
+    m_bgCombo = makeSwatchCombo(content);
     bgRow->addWidget(m_bgCombo, 1);
-    ev->addLayout(bgRow);
+    cv->addLayout(bgRow);
 
     auto *fgRow = new QHBoxLayout;
-    fgRow->addWidget(new QLabel(QStringLiteral("Text:"), m_editor));
-    m_fgCombo = makeSwatchCombo();
+    fgRow->addWidget(new QLabel(QStringLiteral("Text:"), content));
+    m_fgCombo = makeSwatchCombo(content);
     fgRow->addWidget(m_fgCombo, 1);
-    ev->addLayout(fgRow);
+    cv->addLayout(fgRow);
 
-    root->addWidget(m_editor);
+    cv->addStretch(1);
+    root->addWidget(m_editor, 1);
 
     // --- Wiring -------------------------------------------------------------
     connect(m_ruleList, &QListWidget::currentRowChanged, this, [this](int row) {
@@ -152,10 +179,10 @@ void HighlighterPane::buildUi()
     connect(m_addBtn, &QPushButton::clicked, this, [this] {
         if (!m_document)
             return;
-        HighlightRule r;              // inert until an axis is configured
-        r.matchPriority = true;       // a sensible starting axis
-        r.minPriority = Priority::Error;
-        r.background = 0;             // Red
+        HighlightRule r;                              // inert until an axis is configured
+        r.match.priorityEnabled = true;               // a sensible starting axis
+        r.match.minPriority = Priority::Error;
+        r.background = 0;                             // Red
         m_rules.append(r);
         commit();
         reloadRuleList();
@@ -190,15 +217,7 @@ void HighlighterPane::buildUi()
         if (row < 0 || row >= m_rules.size())
             return;
         HighlightRule &r = m_rules[row];
-        r.matchPriority = m_matchPriority->isChecked();
-        r.minPriority = kPriorityByIndex[qBound(0, m_priorityCombo->currentIndex(), kPriorityCount - 1)];
-        r.matchLogger = m_matchLogger->isChecked();
-        r.loggerNames.clear();
-        for (int i = 0; i < m_loggerList->count(); ++i) {
-            QListWidgetItem *it = m_loggerList->item(i);
-            if (it->checkState() == Qt::Checked)
-                r.loggerNames.append(it->text());
-        }
+        r.match = m_axes->criteria();
         r.background = swatchValue(m_bgCombo);
         r.foreground = swatchValue(m_fgCombo);
         commit();
@@ -209,10 +228,7 @@ void HighlighterPane::buildUi()
             item->setText(ruleSummary(r));
         m_updating = false;
     };
-    connect(m_matchPriority, &QCheckBox::toggled, this, editorChanged);
-    connect(m_priorityCombo, &QComboBox::currentIndexChanged, this, [editorChanged](int) { editorChanged(); });
-    connect(m_matchLogger, &QCheckBox::toggled, this, editorChanged);
-    connect(m_loggerList, &QListWidget::itemChanged, this, [editorChanged](QListWidgetItem *) { editorChanged(); });
+    connect(m_axes, &AxisEditor::changed, this, editorChanged);
     connect(m_bgCombo, &QComboBox::currentIndexChanged, this, [editorChanged](int) { editorChanged(); });
     connect(m_fgCombo, &QComboBox::currentIndexChanged, this, [editorChanged](int) { editorChanged(); });
 }
@@ -224,24 +240,16 @@ int HighlighterPane::currentRow() const
 
 QString HighlighterPane::ruleSummary(const HighlightRule &r) const
 {
-    QStringList parts;
-    if (r.matchPriority)
-        parts << QStringLiteral("≥%1").arg(QString(priorityName(r.minPriority)));
-    if (r.matchLogger) {
-        if (r.loggerNames.size() == 1)
-            parts << r.loggerNames.first();
-        else
-            parts << QStringLiteral("%1 subsystems").arg(r.loggerNames.size());
-    }
-    if (parts.isEmpty())
-        parts << QStringLiteral("(no match set)");
+    QString axes = axisSummary(r.match);
+    if (axes.isEmpty())
+        axes = QStringLiteral("(no match set)");
 
     auto slotName = [](int i) {
         return HighlightPalette::isSlot(i) ? QString(HighlightPalette::slot(i).name)
                                            : QStringLiteral("default");
     };
     return QStringLiteral("%1  →  bg:%2 / text:%3")
-        .arg(parts.join(QStringLiteral(", ")), slotName(r.background), slotName(r.foreground));
+        .arg(axes, slotName(r.background), slotName(r.foreground));
 }
 
 void HighlighterPane::reloadRuleList()
@@ -269,31 +277,13 @@ void HighlighterPane::loadEditorFor(int row)
     m_editor->setEnabled(valid);
     if (valid) {
         const HighlightRule &r = m_rules.at(row);
-        m_matchPriority->setChecked(r.matchPriority);
-        m_priorityCombo->setCurrentIndex(priorityIndexOf(r.minPriority));
-        m_matchLogger->setChecked(r.matchLogger);
+        // setCriteria applies the rule's subsystem/thread selection EXACTLY, so moving
+        // between rules shows each rule's own values rather than letting the discovery
+        // rule ("a name never listed before arrives checked") leak the previous rule's
+        // selection — or the whole file's — into this one.
+        m_axes->setCriteria(r.match);
         setSwatchCombo(m_bgCombo, r.background);
         setSwatchCombo(m_fgCombo, r.foreground);
-        // The subsystem list: discovered names plus any the rule references that the
-        // scan has not produced yet, checking those the rule selects.
-        m_loggerList->clear();
-        QStringList names;
-        if (m_document)
-            names = m_document->index().loggers.names();
-        for (const QString &n : r.loggerNames)
-            if (!names.contains(n))
-                names.append(n);
-        QStringList clean;
-        for (const QString &n : names)
-            if (!n.isEmpty() && !clean.contains(n))
-                clean.append(n);
-        clean.sort(Qt::CaseInsensitive);
-        const QSet<QString> selected(r.loggerNames.begin(), r.loggerNames.end());
-        for (const QString &n : clean) {
-            auto *it = new QListWidgetItem(n, m_loggerList);
-            it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
-            it->setCheckState(selected.contains(n) ? Qt::Checked : Qt::Unchecked);
-        }
     }
     m_updating = false;
 }
@@ -316,17 +306,37 @@ void HighlighterPane::setDocument(Document *document)
 {
     m_document = document;
     setEnabled(document != nullptr);
+    m_axes->setDocument(document);
     m_rules = document ? document->highlighters().rules : QVector<HighlightRule>();
     reloadRuleList();
 }
 
 void HighlighterPane::refreshDiscoveredLists()
 {
-    // Re-resolve the rules against the grown intern table and refresh the editor's
-    // subsystem list for the current selection (SPEC.md §6 discovery timing).
+    // Re-resolve the rules against the grown intern tables (SPEC.md §6 discovery
+    // timing) and re-render the editor for the current rule, which repopulates its
+    // subsystem/thread lists from the new tables.
+    //
+    // Deliberately NOT AxisEditor::refreshDiscoveredLists(): that applies the
+    // discovery rule, which would tick every newly found subsystem into whichever
+    // rule happens to be selected. A filter is a statement about the whole file and
+    // should widen with it; a rule naming `net.io` must not silently grow to name
+    // `db.pool` as well.
     if (m_document)
         m_document->resolveHighlighters();
     loadEditorFor(currentRow());
+}
+
+void HighlighterPane::refreshTimeBounds()
+{
+    m_axes->refreshTimeBounds();
+    // The shown instant is unchanged, but the rule's stored wall clock was written in
+    // the old zone; take the re-rendered values back so the two cannot disagree.
+    const int row = currentRow();
+    if (row >= 0 && row < m_rules.size()) {
+        m_rules[row].match = m_axes->criteria();
+        commit();
+    }
 }
 
 QJsonObject HighlighterPane::saveState() const

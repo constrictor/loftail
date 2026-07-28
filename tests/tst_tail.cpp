@@ -340,8 +340,8 @@ void TestTail::filteredAndHighlightedAppend()
 
     // Highlight rule: color records from logger.hot.
     HighlightRule rule;
-    rule.matchLogger = true;
-    rule.loggerNames = QStringList{QStringLiteral("logger.hot")};
+    rule.match.loggerEnabled = true;
+    rule.match.loggerNames = QStringList{QStringLiteral("logger.hot")};
     rule.background = 3;
     doc.highlighters().rules.append(rule);
     doc.resolveHighlighters();

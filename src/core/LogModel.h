@@ -66,12 +66,25 @@ public:
     void endRemoveTail();
     void notifyRowChanged(int row);
 
-    // Resolve the first-match-wins highlight color for one view row's record, or an
-    // invalid QColor when no rule matches or the matched rule leaves that role at the
-    // theme default. `background` picks the background vs foreground role.
+    // Both highlight colors for one view row in a SINGLE first-match-wins pass, each
+    // invalid where no rule matched or the matched rule leaves that role at the theme
+    // default (SPEC.md §7). This is what LogView paints with.
+    //
+    // Resolving both roles together matters now that a rule can match on message text
+    // (SPEC.md §7): asking for the roles separately — as two data() calls do — runs
+    // the rule list twice per record and so can cost two decodes where one suffices.
+    void rowColors(int row, QColor &background, QColor &foreground) const;
+
+    // One role of the above. Retained for callers and tests that want a single role;
+    // prefer rowColors() on the paint path.
     QColor highlightColor(int row, bool background) const;
 
 private:
+    // The matched rule for a view row, or -1. Supplies HighlighterSet::match with the
+    // lazy message decode so the text axis costs nothing until a rule's integer axes
+    // have admitted the record (invariant #4).
+    int matchedRule(int row) const;
+
     const Document *m_document;
     bool            m_darkTheme = false;
 };

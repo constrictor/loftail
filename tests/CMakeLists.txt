@@ -69,7 +69,13 @@ add_test(NAME tst_filter COMMAND tst_filter)
 # default fallback), the preset store (schema-versioned JSON, atomic writes,
 # export/import portability), and the session `documents`-array round-trip. All
 # core-only; the highlight test is even QApplication-free (QColor is a value type).
-foreach(unit highlight presetstore session)
+#
+# `matchcriteria` covers the portable form of the five match axes that the Filters
+# pane and every highlight rule share: its JSON keys (unchanged from FilterPane's, so
+# existing presets and sessions keep loading) and the two arguments where filtering
+# and highlighting deliberately disagree — the absent-field exemption and whether a
+# no-op axis collapses.
+foreach(unit highlight matchcriteria presetstore session)
     qt_add_executable(tst_${unit} tst_${unit}.cpp)
     target_link_libraries(tst_${unit} PRIVATE loftail_core Qt6::Test)
     add_test(NAME tst_${unit} COMMAND tst_${unit})
@@ -120,6 +126,16 @@ qt_add_executable(tst_filterpane tst_filterpane.cpp)
 target_link_libraries(tst_filterpane PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_filterpane COMMAND tst_filterpane)
 set_tests_properties(tst_filterpane PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The Highlighters pane, where the same axis editor drives one rule among several
+# rather than the whole file: a typed regex must reach the rule, selecting another
+# rule must show THAT rule's subsystems (the Filters pane's "newly discovered arrives
+# checked" rule is wrong here), and an invalid regex must be visible rather than
+# silently coloring nothing. Links the UI layer, runs offscreen.
+qt_add_executable(tst_highlighterpane tst_highlighterpane.cpp)
+target_link_libraries(tst_highlighterpane PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_highlighterpane COMMAND tst_highlighterpane)
+set_tests_properties(tst_highlighterpane PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # M5 — full session round-trip through the real MainWindow (open a file, set
 # filters + highlighters, quit, relaunch, confirm restored) and graceful handling

@@ -211,15 +211,19 @@ public:
     // state (invariant #7): an ordered rule list, first-match-wins, each rule
     // supplying a background and a foreground palette reference. LogModel::data()
     // consults it for the Background/Foreground roles. Mutate highlighters() then
-    // call resolveHighlighters() so the rules' subsystem NAMES are re-bound to the
-    // current intern table's ids (the match runs on integers, invariant #4).
+    // call resolveHighlighters() so the rules' portable criteria — subsystem and
+    // thread NAMES, typed time bounds, the text pattern — are re-bound to the current
+    // intern tables, display zone and a compiled regex (invariant #4).
     HighlighterSet &highlighters() { return m_highlighters; }
     const HighlighterSet &highlighters() const { return m_highlighters; }
 
-    // Re-resolve every highlight rule's subsystem names to interned ids against the
-    // current index. Call after editing the rules and after indexing discovers more
-    // subsystems. Cheap (a hash lookup per name); leaves the rule list unchanged.
-    void resolveHighlighters() { m_highlighters.resolve(m_index); }
+    // Re-resolve every highlight rule's criteria against the current index, format
+    // and display zone. Call after editing the rules, after indexing discovers more
+    // subsystems or threads, and after the display zone moves (a time-range rule
+    // holds wall clock). Cheap — a hash lookup per name and one regex compile per
+    // text axis — and deliberately here rather than on the paint path. Leaves the
+    // rule list unchanged. Rules match nothing until it has run at least once.
+    void resolveHighlighters() { m_highlighters.resolve(m_index, m_format, displayZone()); }
 
     // Decode one record's message text through the Decoder (invariant #8, no raw
     // byte scans) — the message field when the pattern defines one, else the whole

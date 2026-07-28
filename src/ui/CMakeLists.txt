@@ -16,7 +16,11 @@ add_library(loftail_ui STATIC
     # M3 — the Log Format dialog
     LogFormatDialog.cpp
     LogFormatDialog.h
-    # M4 — the Filters side pane and the Find bar
+    # M4 — the Filters side pane and the Find bar. The five axis controls themselves
+    # live in AxisEditor, shared with the per-rule editor in the Highlighters pane so
+    # filtering and highlighting offer the same criteria and cannot drift apart.
+    AxisEditor.cpp
+    AxisEditor.h
     FilterPane.cpp
     FilterPane.h
     FindBar.cpp

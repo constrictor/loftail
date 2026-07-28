@@ -515,21 +515,21 @@ void LogView::resolveRowColors(int row, bool selected, QColor &bg, QColor &fg) c
     // Background/Foreground roles — or an empty variant meaning "leave this role at
     // the theme default". An invalid/absent background keeps the base fill with the
     // subtle alternating-row zebra; an invalid foreground keeps the theme text color.
-    const QModelIndex idx = m_model->index(row, 0);
-    const QVariant bgv = m_model->data(idx, Qt::BackgroundRole);
-    const QVariant fgv = m_model->data(idx, Qt::ForegroundRole);
+    // One call, not two data() lookups: highlighting is per record, and a rule may
+    // now match on message text, so resolving the roles separately would run the rule
+    // list — and potentially the decode — twice per painted record (SPEC.md §7).
+    QColor ruleBg, ruleFg;
+    m_model->rowColors(row, ruleBg, ruleFg);
 
-    if (bgv.canConvert<QColor>() && bgv.value<QColor>().isValid()) {
-        bg = bgv.value<QColor>();
+    if (ruleBg.isValid()) {
+        bg = ruleBg;
     } else {
         bg = palette().base().color();
         if (row % 2)
             bg = bg.lighter(108);
     }
 
-    fg = (fgv.canConvert<QColor>() && fgv.value<QColor>().isValid())
-             ? fgv.value<QColor>()
-             : palette().text().color();
+    fg = ruleFg.isValid() ? ruleFg : palette().text().color();
 }
 
 void LogView::paintEvent(QPaintEvent *event)

@@ -115,8 +115,12 @@ void TestSessionGui::roundTripRestoresFileFiltersHighlighters()
         const QJsonArray rules = hp->saveState().value(QStringLiteral("rules")).toArray();
         QCOMPARE(rules.size(), 1);
         const QJsonObject rule = rules.first().toObject();
-        QVERIFY(rule.value(QStringLiteral("matchPriority")).toBool());
-        QCOMPARE(rule.value(QStringLiteral("minPriority")).toString(), QStringLiteral("ERROR"));
+        // highlightRulesJson() is deliberately in the ORIGINAL two-axis rule shape, so
+        // this also exercises the backward-compatible read through the real session
+        // path; it comes back out in the current nested form.
+        const QJsonObject match = rule.value(QStringLiteral("match")).toObject();
+        QVERIFY(match.value(QStringLiteral("priorityEnabled")).toBool());
+        QCOMPARE(match.value(QStringLiteral("minPriorityIndex")).toInt(), 4); // ERROR
         QCOMPARE(rule.value(QStringLiteral("background")).toInt(), 0); // palette index, not RGB
 
         auto *fp = w.findChild<FilterPane *>();

@@ -206,32 +206,56 @@ void LogModel::notifyRowChanged(int row)
     emit dataChanged(index(row, 0), index(row, cols - 1));
 }
 
-QColor LogModel::highlightColor(int row, bool background) const
+int LogModel::matchedRule(int row) const
 {
     if (!m_document)
-        return QColor();
+        return -1;
 
+    // Early-out before touching the index: with no enabled, configured rule there is
+    // nothing to evaluate and, in particular, no message decode to risk.
     const HighlighterSet &set = m_document->highlighters();
-    if (set.rules.isEmpty())
-        return QColor();
+    if (!set.anyEnabled())
+        return -1;
 
     // Map the view row to the source record (identity when no filter is active),
-    // then run the ordered rules first-match-wins on integers (invariant #4).
+    // then run the ordered rules first-match-wins (invariant #4).
     const RecordIndex &idx = m_document->index();
     const int srcRow = m_document->filtered().sourceRow(row);
     if (srcRow < 0 || srcRow >= idx.records.size())
-        return QColor();
+        return -1;
 
-    const int ruleIndex = set.match(idx.records.at(srcRow));
+    const Record &rec = idx.records.at(srcRow);
+    // The decode is passed as a callable, not a value: match() invokes it only once a
+    // rule's integer axes have passed AND that rule has an active text axis, and
+    // memoizes the result across rules. Document::messageText is the filter path's
+    // decode (capture-free recordStartRe, whole-line fallback for unparsed records) —
+    // deliberately not cellText(), which runs the full-capture recordRe per column.
+    return set.match(rec, [this, &rec] { return m_document->messageText(rec); });
+}
+
+void LogModel::rowColors(int row, QColor &background, QColor &foreground) const
+{
+    background = QColor();
+    foreground = QColor();
+
+    const int ruleIndex = matchedRule(row);
     if (ruleIndex < 0)
-        return QColor(); // no rule matched — the theme's normal color
+        return; // no rule matched — the theme's normal colors
 
-    const HighlightRule &rule = set.rules.at(ruleIndex);
-    const int slot = background ? rule.background : rule.foreground;
+    const HighlightRule &rule = m_document->highlighters().rules.at(ruleIndex);
     // kDefault (or a corrupt slot) resolves to an invalid color, i.e. "leave this
-    // role at the theme default" (SPEC.md §7). The view treats an invalid return as
-    // no override.
-    return HighlightPalette::color(slot, m_darkTheme);
+    // role at the theme default" (SPEC.md §7). The view treats an invalid color as no
+    // override. First-match-wins is per RULE, not per role: a rule that sets only the
+    // background does not let a lower rule supply the foreground.
+    background = HighlightPalette::color(rule.background, m_darkTheme);
+    foreground = HighlightPalette::color(rule.foreground, m_darkTheme);
+}
+
+QColor LogModel::highlightColor(int row, bool background) const
+{
+    QColor bg, fg;
+    rowColors(row, bg, fg);
+    return background ? bg : fg;
 }
 
 QVariant LogModel::data(const QModelIndex &index, int role) const

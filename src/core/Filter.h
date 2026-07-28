@@ -100,33 +100,70 @@ struct FilterSet
     // By message text — the only axis without an integer fast path, evaluated LAST.
     TextFilter text;
 
+    // Whether a record MISSING the field an axis tests passes that axis. The one
+    // place filtering and highlighting genuinely disagree (SPEC.md §6 vs §7):
+    //   true  — FILTERING. An unparsed plain-text line has no subsystem, thread,
+    //           priority or timestamp; a filter on a field it never carried must not
+    //           hide it, or enabling the subsystem axis would swallow every such line
+    //           (SPEC.md §4 promises they stay visible).
+    //   false — HIGHLIGHTING. A rule keyed on a field a record lacks must not color
+    //           it, or a subsystem rule would paint every plain-text line.
+    // Same axes, same predicate, opposite exemption — hence a flag rather than a
+    // second copy of the chain (ARCHITECTURE.md §7.2).
+    bool absentFieldMatches = true;
+
     // Any axis actually narrowing the view. Drives whether the FilteredIndex
-    // materializes a visible subset at all (an all-inactive set stays identity).
+    // materializes a visible subset at all (an all-inactive set stays identity), and
+    // supplies highlighting's inertness rule: a rule with no active axis matches
+    // nothing (SPEC.md §7).
     bool anyActive() const
     {
         return priorityEnabled || loggerEnabled || threadEnabled || timeEnabled || text.active();
     }
 
     // Integer-only axes, in cheapest-first order (invariant #4). No decoding.
+    //
+    // Each axis first asks whether the record even CARRIES the field it tests, and
+    // defers to absentFieldMatches when it does not: id 0 is InternTable's "field
+    // absent" sentinel (an unparsed plain-text record, or one whose pattern has no
+    // %c/%t), Priority::Unknown is the unparsed priority, and kNoTimestamp the
+    // unparsed time. See absentFieldMatches for why the answer differs between
+    // filtering and highlighting.
     bool acceptsIntegerAxes(const Record &r) const
     {
-        // Priority min-level, but Unknown (unparsed, priority 0) is exempt so a
-        // minimum level never hides plain-text lines (§7.2).
-        if (priorityEnabled && r.priorityEnum() != Priority::Unknown
-            && r.priorityEnum() < minPriority)
-            return false;
-        // Id 0 is InternTable's "field absent" sentinel — an unparsed plain-text
-        // record, or one whose pattern has no %c/%t. Exempt, for the same reason
-        // Unknown priority is: a record that never had the field must not be hidden
-        // by a filter ON that field, or enabling the subsystem axis would silently
-        // swallow every plain-text line (SPEC.md §4 promises they stay visible).
-        if (loggerEnabled && r.loggerId != 0 && !loggerIds.contains(r.loggerId))
-            return false;
-        if (threadEnabled && r.threadId != 0 && !threadIds.contains(r.threadId))
-            return false;
-        if (timeEnabled && r.timestamp != Record::kNoTimestamp
-            && (r.timestamp < startMs || r.timestamp > endMs))
-            return false;
+        if (priorityEnabled) {
+            const Priority p = r.priorityEnum();
+            if (p == Priority::Unknown) {
+                if (!absentFieldMatches)
+                    return false;
+            } else if (p < minPriority) {
+                return false;
+            }
+        }
+        if (loggerEnabled) {
+            if (r.loggerId == 0) {
+                if (!absentFieldMatches)
+                    return false;
+            } else if (!loggerIds.contains(r.loggerId)) {
+                return false;
+            }
+        }
+        if (threadEnabled) {
+            if (r.threadId == 0) {
+                if (!absentFieldMatches)
+                    return false;
+            } else if (!threadIds.contains(r.threadId)) {
+                return false;
+            }
+        }
+        if (timeEnabled) {
+            if (r.timestamp == Record::kNoTimestamp) {
+                if (!absentFieldMatches)
+                    return false;
+            } else if (r.timestamp < startMs || r.timestamp > endMs) {
+                return false;
+            }
+        }
         return true;
     }
 

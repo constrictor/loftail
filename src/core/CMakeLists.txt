@@ -40,6 +40,10 @@ add_library(loftail_core STATIC
     Filter.cpp
     Filter.h
     FilteredIndex.h
+    # The portable (name/level/wall-clock) form of those same five axes, shared by
+    # the Filters pane and by every highlight rule so the two cannot drift apart.
+    MatchCriteria.cpp
+    MatchCriteria.h
     # M2b — worker-thread indexing controller (QtCore only, no Widgets)
     IndexController.cpp
     IndexController.h

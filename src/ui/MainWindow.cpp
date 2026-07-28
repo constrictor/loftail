@@ -818,6 +818,10 @@ DocumentContext *MainWindow::prepareContext(const SessionDocument &d)
     // own. HighlighterPane::setDocument reads them back out when this file is shown.
     ctx->doc->highlighters() =
         HighlighterSet::fromJson(d.highlighters.value(QStringLiteral("rules")).toArray());
+    // Rules match nothing until they have been resolved once. Indexing has not run
+    // yet, so this binds only the format and display zone (and compiles each text
+    // axis) — the intern-table pass follows when the scan reports names.
+    ctx->doc->resolveHighlighters();
 
     // The model and the controller only. Views are created by the caller, which is
     // what lets session restore rebuild a file's several views in their saved tab
@@ -932,12 +936,16 @@ void MainWindow::applySettings(const FormatSettings &newSettings)
         doc->setTimeDisplay(newSettings.timeDisplay);
         for (DocumentView *v : std::as_const(ctx->views))
             v->logView()->viewport()->update();
-        // Run labels and the time-range filter editors both render in the display
-        // zone, so they go stale with it if left alone.
+        // Run labels and the two panes' time-range editors all render in the display
+        // zone, so they go stale with it if left alone. A highlight rule's time axis
+        // holds wall clock exactly as a filter's does — leaving its digits alone would
+        // silently re-point the rule at a different instant.
         if (m_runPane)
             m_runPane->refresh();
         if (m_filterPane)
             m_filterPane->refreshTimeBounds();
+        if (m_highlighterPane)
+            m_highlighterPane->refreshTimeBounds();
         updateTimeDisplayActions();
     }
 

@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **M0–M8 complete, 2026-07-28.** The application is functional on Linux: it opens and indexes a log, filters and highlights it, tails it live, splits it into runs, restores its session, and autodetects a format. Directory layout is `src/core/` (UI-free, links QtCore only), `src/ui/` (Qt Widgets), and `tests/`; the commands below work and all CTest cases pass.
 
-**In progress: M9 — multiple documents and tabs.** Several logs open at once as tabs in a central document area; the side panes are the only dock widgets and cannot be dragged into it (`ARCHITECTURE.md` §12.2). See `PLAN.md` M9.
+**M9 complete:** several logs open at once as tabs in a central document area; the side panes are the only dock widgets and cannot be dragged into it (`ARCHITECTURE.md` §12.2).
+
+**M10 complete:** highlight rules match on the same five axes as filters — subsystem, thread, priority, time range and message text — through one shared `MatchCriteria`/`FilterSet` predicate and one shared `AxisEditor` widget. See `PLAN.md` M10.
 
 **Outstanding regardless of milestone:** Windows and macOS builds and runtime behavior are still unverified (`PLAN.md` M6/M7), including the stubbed Windows `BufferedLogSource` share-mode open and `pathIdentity()`.
 
@@ -73,7 +75,7 @@ These ten constraints are cheap to honor from the start and expensive to retrofi
 
 3. **Nothing downstream of the parser knows about the pattern string.** `PatternCompiler` turns a log4cplus `ConversionPattern` into a `LogFormat` (regex + field map). Views, filters, and highlighters consume only the field map. This indirection is what makes format autodetection (a later-release feature, `FUTURE.md`) a drop-in rather than a rewrite.
 
-4. **Filtering compares integers, not strings.** Logger and thread names are interned to `quint32` ids at index time; priority is an enum **declared in severity order** so filtering by minimum level is one `>=` test (`ARCHITECTURE.md` §7.2); timestamps are `qint64`. Filter predicates operate on those. The intern tables double as the subsystem and thread lists shown in the filter pane. Message-text filtering is the one axis with no integer fast path, so it runs last in the predicate chain.
+4. **Filtering compares integers, not strings.** Logger and thread names are interned to `quint32` ids at index time; priority is an enum **declared in severity order** so filtering by minimum level is one `>=` test (`ARCHITECTURE.md` §7.2); timestamps are `qint64`. Filter predicates operate on those. The intern tables double as the subsystem and thread lists shown in the filter pane. Message-text filtering is the one axis with no integer fast path, so it runs last in the predicate chain — including on the paint path, where highlight rules use the same axes and the same lazy-decode ordering.
 
 5. **Every file is opened append-aware; there is no post-mortem vs live mode.** loftail cannot know whether a file is still being written, so all files are watched and a finished log is just one that never grows (`SPEC.md` §3). No `LogSource` may assume the file is immutable, and none may hold it in a way that blocks the writer from appending, rotating, or truncating — observing a log must not disturb the process producing it. File access goes through the `LogSource` interface; the model cannot tell which implementation it has. The mmap (POSIX) vs buffered (Windows) split is now platform-driven, not mode-driven — see `ARCHITECTURE.md` §6.
 
