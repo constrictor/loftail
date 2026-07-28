@@ -106,8 +106,12 @@ jobs:
             $failed = [regex]::Matches(($listing -join "`n"), 'Test\s+#\d+:\s+(\S+)') |
                         ForEach-Object { $_.Groups[1].Value }
             foreach ($t in $failed) {
-              $exe = Join-Path "build\tests" "$t.exe"
-              if (-not (Test-Path $exe)) { Write-Host "$t : no such binary, skipped"; continue }
+              # Not build\tests\: on Windows Qt's finalizer puts executables in the
+              # build root so they sit beside the Qt DLLs, unlike the Linux layout.
+              # Search rather than assume either.
+              $exe = (Get-ChildItem -Path build -Recurse -File -Filter "$t.exe" |
+                        Select-Object -First 1).FullName
+              if (-not $exe) { Write-Host "$t : binary not found under build\, skipped"; continue }
               foreach ($line in (& $exe -functions)) {
                 $fn = $line.Trim().TrimEnd('()')
                 if (-not $fn) { continue }
