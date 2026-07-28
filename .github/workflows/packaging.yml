@@ -93,6 +93,32 @@ jobs:
           cmake --build build
           $env:QT_QPA_PLATFORM = "offscreen"
           ctest --test-dir build --output-on-failure
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            # A test that CRASHES loses its buffered stdout, so ctest reports the
+            # failure with an empty output block and there is nothing to read --
+            # which is exactly the state tst_logview has been failing in. Exit codes
+            # survive a crash, so re-run each failed binary one test function at a
+            # time and print the per-function status: the crashing function is the
+            # one that does not come back 0.
+            Write-Host "::group::Per-function exit codes for the failed test binaries"
+            $listing = ctest --test-dir build --rerun-failed -N
+            $failed = [regex]::Matches(($listing -join "`n"), 'Test\s+#\d+:\s+(\S+)') |
+                        ForEach-Object { $_.Groups[1].Value }
+            foreach ($t in $failed) {
+              $exe = Join-Path "build\tests" "$t.exe"
+              if (-not (Test-Path $exe)) { Write-Host "$t : no such binary, skipped"; continue }
+              foreach ($line in (& $exe -functions)) {
+                $fn = $line.Trim().TrimEnd('()')
+                if (-not $fn) { continue }
+                & $exe $fn *> $null
+                $status = if ($LASTEXITCODE -eq 0) { "ok" } else { "EXIT $LASTEXITCODE" }
+                Write-Host ("{0}::{1} -> {2}" -f $t, $fn, $status)
+              }
+            }
+            Write-Host "::endgroup::"
+          }
+          exit $code
 
       - name: Build portable zip
         shell: pwsh
