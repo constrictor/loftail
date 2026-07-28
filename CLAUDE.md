@@ -10,7 +10,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Outstanding regardless of milestone:** Windows and macOS builds and runtime behavior are still unverified (`PLAN.md` M6/M7), including the stubbed Windows `BufferedLogSource` share-mode open and `pathIdentity()`.
 
-**Known failure:** on Windows CI the code *compiles and links*, but `tst_logview` fails at runtime. It appeared in the push containing `144a45b..37f6627` (`8753d69` was the last green Windows run) — most likely `c1ea185`, which added the fixed-width table font and with it `everyColumnRendersFixedPitch`, a case that asserts on the font the system actually resolves. Until recently the failure was undiagnosable: test binaries inherited `WIN32_EXECUTABLE` from `qt_add_executable`, so on Windows they had no console and `ctest --output-on-failure` printed an empty block. `tests/CMakeLists.txt` now forces the console subsystem, so the next Windows run should say what actually fails.
+**Windows testing has no fonts.** The offscreen QPA plugin on Windows uses Qt's own font database, which looks in `$QTDIR/lib/fonts`; Qt no longer ships fonts, so `QFontDatabase::families()` comes back **empty** and nothing resolves — not even to a wrong font. (Offscreen on Linux has fontconfig, so this never shows up locally.) Any test that asserts on resolved font properties must guard on an empty family list and `QSKIP`; `tst_logview::everyColumnRendersFixedPitch` does. This is an environment limit, not a `monospaceFont()` bug.
+
+**When a Windows test fails, read the CI diagnostic, not the ctest output.** Test output does not reach ctest on Windows — a failure shows as `***Failed` with an empty block, which reads like a crash and is not. The Windows job re-runs each failed binary one test function at a time, prints per-function exit codes, and dumps QtTest's report via `-o file,txt` for the failing one. That is where the actual assertion appears.
 
 ## What loftail is
 

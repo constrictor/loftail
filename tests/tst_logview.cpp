@@ -1,6 +1,7 @@
 #include <QtTest>
 
 #include <QApplication>
+#include <QFontDatabase>
 #include <QHeaderView>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -187,6 +188,16 @@ void TestLogView::columnStateRoundTrips()
 // what makes columns line up vertically.
 void TestLogView::everyColumnRendersFixedPitch()
 {
+    // Nothing can resolve as fixed-pitch where nothing resolves at all. The
+    // offscreen plugin on Windows uses Qt's own font database, which looks in
+    // $QTDIR/lib/fonts -- and Qt no longer ships fonts, so the family list comes
+    // back EMPTY and every font is the same non-font. (Offscreen on Linux has
+    // fontconfig, so the assertions below do run there, and on any real desktop.)
+    // Skip rather than assert: this says nothing about monospaceFont(), and
+    // weakening the assertions would drop a real SPEC.md §5 requirement.
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; cannot test font resolution");
+
     QTemporaryFile file;
     QVERIFY(writeLog(file, "2026-07-21 14:32:05,123 [main] INFO  net.socket - a\n"));
 
