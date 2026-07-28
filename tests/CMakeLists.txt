@@ -154,3 +154,25 @@ qt_add_executable(tst_docksession tst_docksession.cpp)
 target_link_libraries(tst_docksession PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_docksession COMMAND tst_docksession)
 set_tests_properties(tst_docksession PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# --- Console subsystem on Windows ------------------------------------------
+#
+# Qt 6's qt_add_executable() sets WIN32_EXECUTABLE on Windows, which makes the
+# target a GUI-subsystem binary with NO console attached. A GUI-subsystem process
+# writes nothing to a redirected stdout, so on Windows every one of these test
+# binaries ran silently: `ctest --output-on-failure` reported a failure with an
+# empty output block, and there was no way to tell an assertion from a crash.
+#
+# Test binaries are console programs. Say so explicitly, for the same reason
+# src/bench is described as console-only. Harmless everywhere else — the property
+# is ignored off Windows, and MACOSX_BUNDLE would likewise hide the output in a
+# .app rather than printing it.
+get_property(loftail_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(target IN LISTS loftail_test_targets)
+    if(target MATCHES "^tst_")
+        set_target_properties(${target} PROPERTIES
+            WIN32_EXECUTABLE FALSE
+            MACOSX_BUNDLE FALSE
+        )
+    endif()
+endforeach()
