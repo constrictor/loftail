@@ -3,7 +3,7 @@
 **Status:** Draft, 2026-07-20.
 **Scope:** User-visible features not yet built. `SPEC.md` describes what has shipped; genuine never-goals live in its §11. This file is the product roadmap — a list of intended features, not a schedule or a commitment to any order.
 
-Each item notes what already-shipped code does to accommodate it, so that adding the feature later is additive rather than a rewrite. Those accommodations are obligations on the code as it stands, not future work — they are the reason these features stay cheap to add. Shipped items are struck through and kept, so the record of which accommodation paid off is not lost.
+Each item notes what already-shipped code does to accommodate it, so that adding the feature later is additive rather than a rewrite. Those accommodations are obligations on the code as it stands, not future work — they are the reason these features stay cheap to add. Shipped items are struck through and kept, so the record of which accommodation paid off is not lost — including where it did not, which has been the more useful record so far.
 
 ---
 
@@ -23,11 +23,18 @@ Compare two logs, or two points in one log, without alt-tabbing: split the docum
 
 **Already accommodated:** per-view state is entirely inside `DocumentView`/`LogView` (scroll, selection, wrap, columns, follow), several views onto one file already work, and the session stores views as an ordered array — so this is a layout change, not a state change. It belongs *inside* the document area (a splitter of tab groups, the shape every IDE uses), never by returning logs to the dock layout: what makes the current arrangement predictable is that the panes cannot reach into the document area, and that must survive. The session schema would gain a description of the split, which is why the `views` array is ordered rather than keyed by a layout blob.
 
-## Compressed logs
+## ~~Compressed logs~~ — shipped
 
-Open rotated logs directly in their compressed form (`.gz` to start), without decompressing them by hand first.
+~~Open rotated logs directly in their compressed form (`.gz` to start), without decompressing them by hand first.~~
 
-**Already accommodated:** file access goes through the `LogSource` interface, and the indexer is constrained to a single forward pass with no seek-and-re-read — because gzip has no random access without an index. See `ARCHITECTURE.md` §6.2. A `CompressedLogSource` decompresses forward into a local cache that the paint path reads from. That cache now exists: M11 built exactly this shape for SSH (`SpooledLogSource` over a `RemoteFetcher`, `ARCHITECTURE.md` §6.3), so a compressed source is a second fetcher rather than a second mechanism.
+**Shipped in M12**, and rather wider than `.gz`: zip, tar and every compressed tar too. The behavior is in `SPEC.md` §3 and the design in `ARCHITECTURE.md` §6.4.
+
+**This entry's prediction was right, and it is the only one in this file that was.** "A local cache that the paint path reads from" is exactly what shipped, and because M11 had already built that cache the work really was *a second fetcher rather than a second mechanism* — `ArchiveFetcher` beside `SshFetcher`, behind the same spool. The single-forward-pass constraint paid for the second time, and more visibly than the first: an archived log fills in **as it expands** rather than freezing until it is done.
+
+Two things the entry did not anticipate, both worth recording:
+
+- **A compressed source needs a way to say its stream is finished**, which no other source needs and which nothing in `LogSource` could express. It arrived as a non-pure `isComplete()`, by exactly the route `wasReplaced()` took in M11 — the same pattern twice is now evidence that the interface's non-pure-virtual seam is the right shape for "only some sources can answer this".
+- **An archive composes with a transport.** A log can be compressed *and* on another machine, and the two are orthogonal — a file type and a way of reaching a file. That fell out for free once the archive fetcher's input was itself an ordinary `LogSource`, but only because the address was spelled as a nested path rather than as a scheme of its own; `archive://` would have needed `archive+ssh://` next.
 
 ## ~~Remote log sources (SSH)~~ — shipped
 
@@ -47,4 +54,4 @@ Mark records of interest and jump between them, so a spot found once can be retu
 
 - `SPEC.md` — what has shipped. When a feature here ships, its user-visible behavior moves into `SPEC.md` and its entry here is struck through, as "Multiple open files" now is.
 - `ARCHITECTURE.md` — the accommodations referenced above are implemented, not deferred.
-- `PLAN.md` — milestone M8 implemented format autodetection, M9 multiple open files (including the move from dock widgets to a document area), and M11 remote logs over SSH. The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.
+- `PLAN.md` — milestone M8 implemented format autodetection, M9 multiple open files (including the move from dock widgets to a document area), M11 remote logs over SSH, and M12 compressed and archived logs. The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.

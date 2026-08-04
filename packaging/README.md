@@ -7,7 +7,14 @@ installed**.
 
 The Qt runtime is bundled into every artifact by the platform's standard deploy
 tool — `linuxdeploy` on Linux, `windeployqt` on Windows, `macdeployqt` on macOS.
-loftail does not link log4cplus, so there is nothing else to bundle.
+loftail does not link log4cplus, but it does link two optional libraries — libssh2
+(remote logs, M11) and libarchive (compressed and archived logs, M12) — so "nothing
+else to bundle" is no longer true. On Linux `linuxdeploy` resolves them through `ldd`
+and copies them in without a script change; CI asserts both are present in the
+AppImage, because a `--version` smoke test never opens a remote or archived log and a
+missing library would surface only for a user. On Windows both are built statically
+from source, so there is nothing extra for `windeployqt` or the portable zip to carry
+— which is the reason they are static there.
 
 ## Command line
 

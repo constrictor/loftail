@@ -29,7 +29,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
-            libssh2-1-dev \
+            libssh2-1-dev libarchive-dev \
             libfuse2 file desktop-file-utils
 
       - name: Configure + build (Debug) and test
@@ -40,6 +40,10 @@ jobs:
           # "not found" here means the dependency broke — fail loudly.
           grep -q "SSH remote sources: ENABLED" configure.log \
             || { echo "::error::libssh2 was not detected; remote log support is off"; exit 1; }
+          # Same for libarchive: auto-detection failing silently would drop the archive
+          # tests from the run entirely, so the suite would shrink and still go green.
+          grep -q "Archived log sources: ENABLED" configure.log \
+            || { echo "::error::libarchive was not detected; archived log support is off"; exit 1; }
           cmake --build build
           QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 
@@ -51,6 +55,20 @@ jobs:
           cmake -S . -B build-nossh -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLOFTAIL_WITH_SSH=OFF
           cmake --build build-nossh
           QT_QPA_PLATFORM=offscreen ctest --test-dir build-nossh --output-on-failure
+
+      # Likewise for archives, and both off together — which is the actual reference
+      # build (ARCHITECTURE.md §1: stock Ubuntu toolchain, nothing separately
+      # installed). The ungated tests must pass here too: tst_archivelocation and
+      # tst_complete cover the path layer and the completion contract precisely
+      # because those must behave the same with and without the dependency.
+      - name: Configure + build + test with neither optional dependency
+        run: |
+          cmake -S . -B build-bare -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DLOFTAIL_WITH_SSH=OFF -DLOFTAIL_WITH_ARCHIVE=OFF 2>&1 | tee configure-bare.log
+          grep -q "Archived log sources: DISABLED" configure-bare.log \
+            || { echo "::error::-DLOFTAIL_WITH_ARCHIVE=OFF did not disable archives"; exit 1; }
+          cmake --build build-bare
+          QT_QPA_PLATFORM=offscreen ctest --test-dir build-bare --output-on-failure
 
       - name: Build AppImage
         run: packaging/linux/build-appimage.sh Release
@@ -69,11 +87,13 @@ jobs:
           # --version smoke test does not open a remote log, so a missing library
           # would only surface for a user, on the first ssh:// open.
           APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMG" --appimage-extract >/dev/null
-          if ! ls squashfs-root/usr/lib/libssh2.so* >/dev/null 2>&1; then
-            echo "::error::libssh2 was not bundled into the AppImage"
-            exit 1
-          fi
-          ls -l squashfs-root/usr/lib/libssh2.so*
+          for lib in libssh2 libarchive; do
+            if ! ls squashfs-root/usr/lib/$lib.so* >/dev/null 2>&1; then
+              echo "::error::$lib was not bundled into the AppImage"
+              exit 1
+            fi
+          done
+          ls -l squashfs-root/usr/lib/libssh2.so* squashfs-root/usr/lib/libarchive.so*
           rm -rf squashfs-root
 
       - uses: actions/upload-artifact@v4
@@ -121,7 +141,23 @@ jobs:
           # portable zip to carry, so the missing-DLL trap the smoke test below
           # guards against stays satisfied. Off by default so ordinary and offline
           # builds do no configure-time network access.
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLOFTAIL_SSH_FETCH=ON
+          #
+          # -DLOFTAIL_ARCHIVE_FETCH=ON does the same for libarchive, which additionally
+          # needs its codecs built (zlib for .gz and zip, liblzma for .xz) — see
+          # cmake/FetchArchive.cmake. Static again, so nothing new to ship. bzip2 and
+          # zstd are deliberately left out: two more source trees for formats a rotated
+          # log is rarely written in, and SPEC.md records the resulting gap.
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DLOFTAIL_SSH_FETCH=ON -DLOFTAIL_ARCHIVE_FETCH=ON 2>&1 | Tee-Object configure.log
+          # Both are built from source here, so "not found" means the fetch chain broke
+          # rather than a package being absent — and a silent DISABLED would shrink the
+          # suite and still go green.
+          if (-not (Select-String -Path configure.log -Pattern "SSH remote sources: ENABLED" -Quiet)) {
+            Write-Host "::error::libssh2 was not built; remote log support is off"; exit 1
+          }
+          if (-not (Select-String -Path configure.log -Pattern "Archived log sources: ENABLED" -Quiet)) {
+            Write-Host "::error::libarchive was not built; archived log support is off"; exit 1
+          }
           cmake --build build
           $env:QT_QPA_PLATFORM = "offscreen"
           ctest --test-dir build --output-on-failure

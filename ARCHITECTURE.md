@@ -187,11 +187,15 @@ The `isRandomAccess()` flag exists so the indexer can branch now rather than bei
 
 **How that turned out (M11).** Half of this prediction was wrong, and the record is worth keeping straight rather than quietly amended. `isRandomAccess()` was expected to go *false* for SSH; it did not, and the flag remains unread by any branch in the codebase. The reason is the last clause above: once a non-seekable source is "served from a local cache", the cache is an ordinary local file and the source is randomly seekable again — the latency the flag was meant to warn about is absorbed by the cache, not exposed through the interface. What did pay off, decisively, is the **forward-single-pass constraint**. Because the indexer never seeks backwards, the spool can be filled and indexed *concurrently*, which is the whole difference between following a remote log and downloading one. Had the indexer needed a second pass, `SpooledLogSource` would have had to block until the fetch completed, and remote logs would not be live. Keep the constraint; treat `isRandomAccess()` as documentation of intent rather than as a working seam.
 
-### 6.3 Remote sources (SSH)
+**And again for `.gz` (M12).** The other half of the prediction was wrong in exactly the same way, which is what makes it worth recording twice rather than once. Gzip really has no random access — and it did not matter, for the identical reason: the expansion lands in a spool, the spool is an ordinary local file, and `isRandomAccess()` stayed true. The forward-single-pass constraint paid a second time, and more visibly than the first: an archived log **fills in as it expands** rather than freezing until it is done, because the spool is being filled and indexed at once. Two features, one constraint, and the flag that was designed for the job is still unread. The lesson to carry forward is that the *cache* was the accommodation, not the flag.
 
-A remote log is fetched forward into a **local spool file** and read back through an ordinary local source. `SpooledLogSource::bytes()`/`size()` delegate to `openLogSource(spoolPath)` — the same mmap-on-POSIX / buffered-on-Windows source everything else uses. Nothing on the read or paint path is remote-aware, and `isRandomAccess()` stays true (§6.2 explains why that is not the failure it looks like).
+### 6.3 The spool, and remote sources (SSH)
 
-**The spool is shared per remote file and reference-counted**, not owned by a Document. `RemoteSpoolRegistry` hands out `shared_ptr<RemoteSpool>` keyed by normalized location; the last handle dropping tears down the fetcher, the connection, and the spool files. This is the load-bearing decision, and it is what makes three separate problems not arise:
+The spool machinery below is **shared by every source that is not already a readable local file** — SSH since M11, archives since M12 (§6.4). It is named for that rather than for the transport: `SourceFetcher`, `SourceSpool`, `SourceSpoolRegistry`. SSH is a *transport* and an archive is a *file type*; the two compose, so a seam serving both must not be named for one of them.
+
+A log is fetched forward into a **local spool file** and read back through an ordinary local source. `SpooledLogSource::bytes()`/`size()` delegate to `openLogSource(spoolPath)` — the same mmap-on-POSIX / buffered-on-Windows source everything else uses. Nothing on the read or paint path knows where the bytes came from, and `isRandomAccess()` stays true (§6.2 explains why that is not the failure it looks like).
+
+**The spool is shared per log and reference-counted**, not owned by a Document. `SourceSpoolRegistry` hands out `shared_ptr<SourceSpool>` keyed by a plain normalized path **string** — the registry holds spools for several kinds of source and understands none of them; only `defaultFetcher()`, which builds the fetcher, has to read the key. The last handle dropping tears down the fetcher, the connection, and the spool files. This is the load-bearing decision, and it is what makes three separate problems not arise:
 
 - `Document::rescan()` runs on the GUI thread from the live watch tick. It reopens with `OpenPolicy::Reuse`, finds the live spool, and returns — a rotation mid-tail is a pointer swap, never a reconnect that could block the UI or prompt for a password behind the user's back.
 - Two tabs on one remote file share one connection and one spool.
@@ -203,11 +207,11 @@ A remote log is fetched forward into a **local spool file** and read back throug
 | --- | --- |
 | GUI | `Document`, `LiveController`, the `SpooledLogSource`, and the inner local source over the spool |
 | Index worker (existing) | `Indexer`, reading that same inner source via `bytes()` |
-| Fetcher (one per spool) | `RemoteFetcher`, the `LIBSSH2_SESSION`, and every write to the spool |
+| Fetcher (one per spool) | `SourceFetcher`, the `LIBSSH2_SESSION` or the decompressor, and every write to the spool |
 
 Two rules keep them apart, and there is no mutex between the GUI and the fetcher at all:
 
-1. **`refreshSize()` is the only method that reopens or re-maps the inner source, and only the GUI thread calls it.** This already held for local files — `Indexer::index()` snapshots `size()` once and `LiveController` is constructed only after the worker joins — but it *matters* now, because the fetcher is appending during the initial scan.
+1. **`refreshSize()` is the only method that reopens or re-maps the inner source, and exactly one thread ever calls it on a given instance.** This already held for local files — `Indexer::index()` snapshots `size()` once and `LiveController` is constructed only after the worker joins — but it *matters* now, because the fetcher is appending during the initial scan. The rule is stated **per instance**, not as "the GUI thread": for a Document's source that thread is the GUI thread, but a fetcher may hold a private source of its own and drive it from its own thread, which is what §6.4 does and why the distinction is not pedantry.
 2. **The fetcher publishes `committedSize` only after its write has landed, and readers clamp to it.** `refreshSize()` returns `min(spoolFileSize, committedSize)`. A half-written chunk is therefore not merely unlikely to be observed, it is unobservable. This ordering is the entire synchronisation.
 
 **Rotation makes a new spool *generation*, never a rewrite.** The index worker may be mmapping the current spool and every `Record::offset` indexes it, so on a rotation or truncation the fetcher opens spool file *N+1* and bumps an atomic generation, publishing it last once the new file exists. `identity()` returns the generation and `wasReplaced()` compares it, so `LiveController`'s existing rotation path works unchanged. The old spool is unlinked when its last reader lets go.
@@ -218,7 +222,50 @@ Two rules keep them apart, and there is no mutex between the GUI and the fetcher
 
 **One prompt per host** comes from a per-target credential cache, not from a shared connection. Sharing one `LIBSSH2_SESSION` across the per-file fetcher threads would need a mutex around every read and would serialize them; caching the accepted password per `user@host:port` gets the user-visible property with none of that. The cost is one TCP connection per open file, which is what `scp` does anyway.
 
-**The transport sits behind `RemoteFetcher`**, and that seam is what makes the feature testable: `tst_spooledsource`, `tst_remotetail` and `tst_remoteopen` drive the whole application — opening, indexing, tailing, rotation, session restore — against a fake fetcher, with no network and no libssh2 linked. CI exercises no libssh2 call beyond linking; the handshake, host-key and authentication paths are covered by `tst_sshlive`, which runs by hand against a real server.
+**The transport sits behind `SourceFetcher`**, and that seam is what makes the feature testable: `tst_spooledsource`, `tst_remotetail` and `tst_remoteopen` drive the whole application — opening, indexing, tailing, rotation, session restore — against a fake fetcher, with no network and no libssh2 linked. CI exercises no libssh2 call beyond linking; the handshake, host-key and authentication paths are covered by `tst_sshlive`, which runs by hand against a real server.
+
+### 6.4 Archived sources (M12)
+
+A compressed or archived log is a **second fetcher behind the same spool**, exactly as `FUTURE.md` predicted from the beginning. `ArchiveFetcher` decompresses one member forward into a spool file; `SpooledLogSource` reads it back. Nothing above the fetcher changed.
+
+**The input is an ordinary `LogSource`, and that is the whole design.** `ArchiveFetcher` holds a private `std::unique_ptr<LogSource>` over the container and feeds libarchive from it through a read callback. For a local container that is a `MappedLogSource`; for one on another machine it is a `SpooledLogSource` over the SSH fetcher's own spool — and the archive fetcher cannot tell. So **two fetchers chain**: SSH downloads `app.log.1.gz` while the archive fetcher expands what has arrived. Neither knows the other exists. This is why an archive is spelled as a *nested path* with no scheme of its own (§6.4.1): an archive is a file type and SSH is a way of reaching a file, and inventing `archive+ssh://` would have been inventing a combinatorial problem that does not exist.
+
+Two consequences that are easy to get wrong, and were:
+
+- **A container is opened as bytes, never as a log.** `openContainerSource()` exists beside `openLogSource()` and deliberately skips the archive branch. Without it, `openLogSource("app.log.gz")` — which *means* "expand it" — is what a fetcher would call to read its own input, and it recurses into expanding itself.
+- **Spool keys are namespaced by what fills them.** Because a single-stream container collapses to its own plain path (§6.4.1), the expanded log and the raw container are the *same address string*. Sharing a registry key between them is not merely ambiguous: the registry publishes its entry only after `start()` returns, so the inner lookup misses the outer spool and builds a second expansion, forever. `expandedSpoolKey()` prefixes the key, and the prefix never escapes the registry.
+
+#### 6.4.1 Addressing
+
+An archived log is spelled by continuing the path through the container: `/logs/bundle.tar.gz/var/log/app.log`, and `ssh://host/logs/bundle.tar.gz/app.log` for one on another machine. Like an `ssh://` URL it travels through the application as an ordinary path **string**, which is again why no session schema bump was needed.
+
+Resolution is deterministic and costs at most one `stat`:
+
+0. A **local path that already names a regular file is never split.** This is what keeps a real directory called `bundle.zip` working — the file that is actually there wins over the reading where the directory is an archive. It cannot apply remotely, where the answer would cost a round trip on a path that is normalized constantly.
+1. Otherwise the cut falls at the **first component carrying an archive extension**, of either kind. Which table matched decides what the address *means*; it does not decide where it splits.
+2. Otherwise this is an ordinary log.
+
+Classification is **pure string work — no I/O, no content sniffing** — so it answers the same for a file that does not exist yet, which is what session restore needs. The cost is real and is stated in `SPEC.md`: a `.log` that is secretly gzip fails with a decompression error rather than being rescued by a sniff. That is the deliberate trade for determinism.
+
+**The collapse rule.** A single-stream container (`.gz .xz .bz2 .zst`) keeps its **plain path** as the normal form and never grows a member. Without it one log would have two spellings, and therefore two tabs, two format-cache entries and two spools. A multi-member container always carries its member.
+
+#### 6.4.2 Completion
+
+An expansion genuinely ends, and loftail knows it does **because loftail produced the bytes**. That is the one thing invariant #5 does not forbid: the ban is on *guessing* that a file somebody else is writing has stopped.
+
+- `FetchStatus::State::Complete` is published **after** the final `committedSize` — the same ordering rule `generation` follows, so a reader that observes Complete is guaranteed to observe the final size.
+- `LogSource::isComplete()` is non-pure and false by default, arriving by exactly the route `wasReplaced()` did in M11: only a source that can prove it implements it.
+- `LiveController` reads it **before** `refreshSize()` and acts on it **after** `ingestAppended()`, then stops the watcher for good. Reversing either half drops the last chunk silently — no error, just records that never appear. `tst_complete` pins it, ungated, because it is a contract of the live seam and not of libarchive.
+
+**No user-facing mode follows.** The follow control is untouched; after completion the newest record simply stops moving, exactly as it does for a local file nobody is writing. Stopping the watch is an absence of work, not a setting.
+
+An expansion whose container is remote **does** complete, once the container has been fetched whole. The cautious-looking alternative — never completing, because the container might grow — is not caution but a permanent wait: an SSH fetcher tails forever and never reaches a terminal state, while libarchive always reads past a gzip member looking for a concatenated one. A rewritten container is not re-expanded either way (reopening does that, and rotation is the transport's business one level down), so there is genuinely nothing left to wait for.
+
+#### 6.4.3 Gating and testing
+
+libarchive is optional and auto-detected, gated exactly as libssh2 is (§1): `LOFTAIL_WITH_ARCHIVE`, a three-tier probe, a configure-time `Archived log sources: ENABLED/DISABLED` line, and `LOFTAIL_ARCHIVE_FETCH=ON` to build it and its codecs from source for the Windows job. `ArchiveLocation`, `ArchiveFetcher.h` and `ArchiveReader.h` are always compiled so both builds agree about what a settings file means; only `ArchiveReader.cpp` and `ArchiveFetcher.cpp` touch the dependency.
+
+**Unlike M11, this really is exercised in CI.** There is no network, no credential and no disposable remote path to arrange: the fixtures are built at runtime by libarchive's own write side. `tst_archivelocation` and `tst_complete` run in every configuration; `tst_archivemembers`, `tst_archivefetcher`, `tst_archivetail` and `tst_archiveopen` run wherever the dependency is present. The M11 caveat — that a green pipeline says nothing about the transport — does not carry over to this milestone.
 
 **Spool files** live under `QStandardPaths::CacheLocation` (never config — they can be gigabytes), in a per-process directory holding a `QLockFile`. Startup sweeps sibling directories and removes only those whose lock can be taken, since a lock that cannot be taken means a live owner — several instances may run at once (`SPEC.md` §3), so "old" would not be a safe test.
 

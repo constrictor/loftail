@@ -32,6 +32,7 @@ It runs on Windows, macOS, and Linux.
 - Open a log file via menu, toolbar, keyboard shortcut, or drag-and-drop onto the window.
 - **Several logs can be open at once**, each in its own tab (§5a). Opening a file adds a tab rather than replacing what is on screen; dropping several files at once opens all of them. Opening a file that is already open raises its tab instead of opening it twice.
 - **From the command line:** `loftail <file>` opens that file directly, at its end and following, like every other open (see live updates below). A `--pattern <p>` switch supplies the log format for a file loftail has not seen before.
+- **A compressed or archived log opens the same way**, written `app.log.1.gz` or `bundle.tar.gz/var/log/app.log`. See "Compressed and archived logs" below.
 - **A log on another machine opens the same way**, written as an `ssh://user@host/path/to/file.log` address. It is accepted anywhere a path is: the Open dialog, the command line, a drag-and-drop, the recent-files list, and the restored session. See "Remote logs" below.
 - **Multiple instances may run simultaneously.** loftail does not enforce a single instance; launching it again opens an independent window with its own files and its own filters.
 - The 10 most recently opened files are listed for quick reopening.
@@ -58,6 +59,21 @@ It runs on Windows, macOS, and Linux.
 - **The log is cached locally while you read it.** The copy lives in the system cache directory, is removed when the log is closed, and is what makes scrolling and searching a remote log as quick as a local one. A very large log can be opened from its end only, in which case the status bar says the beginning is not shown.
 - **Connection trouble is reported, not popped up.** A failure while opening explains itself in the status bar; one that happens while following shows there too, and loftail keeps trying to reconnect. Following a flaky link never produces a dialog.
 - **A build without SSH support** says so: the remote menu entries are visible but disabled and explain why.
+
+### Compressed and archived logs
+
+Rotated logs arrive compressed, and loftail opens them as they are — no unpacking by hand first.
+
+- **What opens.** A compressed log (`.gz`, `.bz2`, `.xz`, `.zst`) opens directly by its ordinary path: `loftail app.log.1.gz`. An archive holding several logs (`.zip`, `.tar`, `.7z`, and every compressed tar — `.tar.gz`, `.tgz`, `.tar.xz`, and so on) opens too, once you say which log inside it you want.
+- **Choosing a log, but only when there is a choice.** Opening an archive that holds several logs lists them — name, size, modified — and lets you pick. Several can be picked at once, each opening in its own tab, exactly as dropping several files does. A compressed log holds only one, and an archive may happen to hold only one; in neither case are you asked.
+- **Addresses continue through the container.** A log inside an archive is written by carrying the path on through it: `bundle.tar.gz/var/log/app.log`. That is accepted anywhere a path is — the Open dialog, the command line, drag-and-drop, the recent-files list and the restored session — and it combines with a remote address, so `ssh://user@host/var/log/app.log.1.gz` opens a compressed log on another machine. A single compressed file keeps its plain name and never grows a member.
+- **It fills in as it expands.** Records appear while the log is being decompressed, exactly as they do for a file that is growing, so a large archived log is readable long before it has finished expanding. Filters, highlighters, runs and find all apply to records as they arrive.
+- **Then it stops, with nothing to switch off.** Once the log has been expanded in full there is nothing more to come, and loftail stops looking. There is still no mode to choose and no control to forget: the follow control behaves exactly as it always does — it simply has nothing left to follow, which is also true of a finished file nobody is writing.
+- **The expanded copy lives in the local cache**, is removed when the log is closed, and is what makes scrolling and searching an archived log as quick as a plain one. A log with no room to expand is refused before anything is written, saying how much space it needs and how much there is; running out part-way says so and keeps what was expanded readable.
+- **The name decides how a file is read.** `app.log.gz` is read as compressed and `app.log` as plain text, from the name alone — nothing is guessed from the contents. So a file named wrongly fails with a decompression error rather than being quietly rescued, which is the deliberate cost of the name meaning the same thing every time, including for a file that is not there yet.
+- **A build without archive support** says so when one is opened, in the same way a build without SSH support does. The Open dialog offers the same file types either way.
+
+> On **Windows**, `.bz2` and `.zst` are not supported; `.gz`, `.xz`, `.zip` and tar in all its forms are.
 
 ### Runs
 
