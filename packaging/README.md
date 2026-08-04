@@ -16,6 +16,13 @@ missing library would surface only for a user. On Windows both are built statica
 from source, so there is nothing extra for `windeployqt` or the portable zip to carry
 — which is the reason they are static there.
 
+**The packaging scripts configure their own build tree**, so flags given to a tested
+build do not reach the artifact. On Linux that is harmless: the dependencies come from
+apt and are auto-detected either way, and CI asserts both `.so`s are in the AppImage.
+On Windows they must be passed explicitly (`build-portable.ps1 -CMakeArgs …`), and CI
+asserts the *packaged* configure reported both `ENABLED` — because the failure mode is
+a zip that ships without a feature every test in the same run just proved works.
+
 ## Command line
 
 All platforms share the same CLI (finalized in M7, `src/main.cpp`):

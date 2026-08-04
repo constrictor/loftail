@@ -214,9 +214,32 @@ jobs:
           }
           exit $code
 
+      # The SAME optional-dependency flags as the tested build above. This script
+      # configures a build tree of its own, so without them the zip would ship a
+      # loftail that cannot open a remote or a compressed log while every test in this
+      # run passed — the artifact and the tested build would not be the same build.
+      # That is exactly what happened before this was passed through.
       - name: Build portable zip
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File packaging\windows\build-portable.ps1
+        run: |
+          # Invoked in this pwsh session rather than via `powershell -File`, which
+          # parses its arguments as literal strings and would collapse the array below
+          # into one nonsense flag.
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          & packaging\windows\build-portable.ps1 -CMakeArgs @(
+              "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake",
+              "-DVCPKG_TARGET_TRIPLET=x64-windows-static-md",
+              "-DLOFTAIL_ARCHIVE_STATIC=ON",
+              "-DLOFTAIL_SSH_FETCH=ON"
+          )
+          # Assert on the PACKAGED build, not just the tested one: a DISABLED here
+          # means the shipped zip is missing a feature the whole run just proved works.
+          $log = Get-Content configure-portable.log -Raw
+          foreach ($want in @("SSH remote sources: ENABLED", "Archived log sources: ENABLED")) {
+            if ($log -notmatch [regex]::Escape($want)) {
+              Write-Host "::error::the portable zip was built without '$want'"; exit 1
+            }
+          }
 
       - name: Smoke-test the portable build (uses bundled Qt only)
         shell: pwsh

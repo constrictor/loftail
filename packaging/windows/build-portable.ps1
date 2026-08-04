@@ -23,6 +23,14 @@
     Qt prefix (the dir containing bin/windeployqt.exe). If omitted, windeployqt
     is expected on PATH and CMAKE_PREFIX_PATH is assumed already set.
 
+.PARAMETER CMakeArgs
+    Extra arguments forwarded verbatim to the configure step. THIS IS HOW THE
+    OPTIONAL DEPENDENCIES REACH THE PACKAGED BUILD: this script configures a build
+    tree of its own, so flags given to some earlier CMake invocation do not apply
+    here. Without them libssh2 and libarchive are simply not found, and the zip
+    ships a loftail that cannot open a remote or a compressed log while every test
+    in the run passed — the artifact and the tested build are not the same build.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File packaging\windows\build-portable.ps1 `
         -QtDir C:\Qt\6.4.2\msvc2019_64
@@ -30,7 +38,8 @@
 [CmdletBinding()]
 param(
     [string]$Config = "Release",
-    [string]$QtDir  = ""
+    [string]$QtDir  = "",
+    [string[]]$CMakeArgs = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,7 +66,15 @@ $cmakeArgs = @("-S", $RepoRoot, "-B", $BuildDir, "-DCMAKE_BUILD_TYPE=$Config")
 if ($QtDir -ne "") { $cmakeArgs += "-DCMAKE_PREFIX_PATH=$QtDir" }
 # Ninja if available, otherwise the default (Visual Studio) generator.
 if (Get-Command ninja -ErrorAction SilentlyContinue) { $cmakeArgs += @("-G", "Ninja") }
-cmake @cmakeArgs
+if ($CMakeArgs.Count -gt 0) { $cmakeArgs += $CMakeArgs }
+cmake @cmakeArgs 2>&1 | Tee-Object (Join-Path $RepoRoot "configure-portable.log")
+
+# The optional dependencies are what the caller most easily gets wrong here, because
+# this is a SEPARATE build tree from whatever was tested. Say what the artifact will
+# actually contain rather than leaving it to be discovered by a user.
+Select-String -Path (Join-Path $RepoRoot "configure-portable.log") `
+              -Pattern "sources: (ENABLED|DISABLED)" |
+    ForEach-Object { Write-Host ">> packaged build: $($_.Line.Trim())" }
 
 Write-Host ">> Building"
 cmake --build $BuildDir --config $Config
