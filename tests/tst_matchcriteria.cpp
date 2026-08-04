@@ -179,7 +179,8 @@ void TestMatchCriteria::resolveConvertsWallClockInTheDisplayZone()
     QCOMPARE(utc.startMs, qint64(3'600'000));
     QCOMPARE(utc.endMs, qint64(7'200'000));
 
-    const FilterSet plusOne = c.resolve(idx, makeFormat(), QTimeZone::fromSecondsAheadOfUtc(3600),
+    // QTimeZone(int) rather than fromSecondsAheadOfUtc(), which is Qt 6.5+.
+    const FilterSet plusOne = c.resolve(idx, makeFormat(), QTimeZone(3600),
                                         AbsentField::Matches, NoOpAxes::Keep);
     QCOMPARE(plusOne.startMs, qint64(0));
     QCOMPARE(plusOne.endMs, qint64(3'600'000));
