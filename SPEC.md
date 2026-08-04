@@ -73,7 +73,6 @@ Rotated logs arrive compressed, and loftail opens them as they are — no unpack
 - **The name decides how a file is read.** `app.log.gz` is read as compressed and `app.log` as plain text, from the name alone — nothing is guessed from the contents. So a file named wrongly fails with a decompression error rather than being quietly rescued, which is the deliberate cost of the name meaning the same thing every time, including for a file that is not there yet.
 - **A build without archive support** says so when one is opened, in the same way a build without SSH support does. The Open dialog offers the same file types either way.
 
-> On **Windows**, `.bz2` and `.zst` are not supported; `.gz`, `.xz`, `.zip` and tar in all its forms are.
 
 ### Runs
 

@@ -105,9 +105,13 @@ endif()
 # `apt install` nothing. One dependency covers .gz/.bz2/.xz/.zst, zip, tar and every
 # compressed tar, which is why it beats zlib plus a hand-rolled container reader.
 option(LOFTAIL_WITH_ARCHIVE "Build compressed/archived log support (needs libarchive)" ON)
-# Off by default so ordinary and offline builds stay hermetic — no configure-time
-# network. The Windows CI job turns it on, because that runner has no package manager.
-option(LOFTAIL_ARCHIVE_FETCH "Build libarchive and its codecs from source if not installed" OFF)
+# libarchive's own headers declare its API __declspec(dllimport) unless LIBARCHIVE_STATIC
+# is defined, and libarchive sets that only for its own build — so a consumer of a
+# STATIC libarchive must say so or link against import stubs that exist in no DLL.
+# There is no reliable way to detect it (an imported .lib may be UNKNOWN_LIBRARY), so
+# it is declared rather than guessed. Only the Windows CI job needs it, where a static
+# libarchive is what keeps the portable zip free of extra DLLs.
+option(LOFTAIL_ARCHIVE_STATIC "The libarchive being linked is a static library" OFF)
 
 set(LOFTAIL_HAVE_ARCHIVE OFF)
 if(LOFTAIL_WITH_ARCHIVE)
@@ -129,10 +133,13 @@ if(LOFTAIL_WITH_ARCHIVE)
         endif()
     endif()
 
-    if(NOT LOFTAIL_ARCHIVE_TARGET AND LOFTAIL_ARCHIVE_FETCH)
-        include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchArchive.cmake)
-    endif()
-
+    # There is deliberately no build-from-source fallback here, unlike LOFTAIL_SSH_FETCH.
+    # libarchive is only useful WITH its codecs, and it finds zlib and liblzma through
+    # find_package in MODULE mode — which CMAKE_FIND_PACKAGE_REDIRECTS_DIR does not
+    # reach, so a FetchContent-built codec is silently ignored and libarchive builds
+    # with no compression at all while still reporting itself found. That failure is
+    # invisible until a .gz refuses to open. A package manager (apt, brew, vcpkg —
+    # the Windows CI job uses vcpkg) supplies the codecs as a matter of course.
     if(LOFTAIL_ARCHIVE_TARGET)
         set(LOFTAIL_HAVE_ARCHIVE ON)
     endif()
@@ -142,8 +149,8 @@ if(LOFTAIL_HAVE_ARCHIVE)
     message(STATUS "Archived log sources: ENABLED (${LOFTAIL_ARCHIVE_TARGET})")
 else()
     message(STATUS "Archived log sources: DISABLED "
-                   "(libarchive not found; install libarchive-dev, or configure with "
-                   "-DLOFTAIL_ARCHIVE_FETCH=ON to build it from source)")
+                   "(libarchive not found; install libarchive-dev, brew install "
+                   "libarchive, or vcpkg install libarchive)")
 endif()
 
 enable_testing()

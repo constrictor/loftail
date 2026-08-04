@@ -43,6 +43,13 @@ private slots:
     void openingReportsWhenArchivesAreNotBuiltIn();
 
 private:
+    // "/logs/x" is NOT an absolute path on Windows — it lacks a drive, so
+    // absoluteFilePath() prepends the current one and toString() yields "D:/logs/x".
+    // Expectations are therefore built through the same transform the code uses, so
+    // they assert the RELATIONSHIP (container made absolute, member appended) rather
+    // than a POSIX spelling that is only correct on one platform.
+    static QString abs(const QString &path) { return QFileInfo(path).absoluteFilePath(); }
+
     // A real directory to resolve relative paths and rule 0 against.
     QTemporaryDir m_dir;
 };
@@ -89,7 +96,8 @@ void TestArchiveLocation::splitsAContainerFromItsMember()
     QVERIFY(!loc->isSingleStream());
     QVERIFY(!loc->needsMember());
     QVERIFY(loc->isOpenable());
-    QCOMPARE(loc->toString(), QStringLiteral("/logs/bundle.tar.gz/var/log/app.log"));
+    QCOMPARE(loc->toString(),
+             abs(QStringLiteral("/logs/bundle.tar.gz")) + QStringLiteral("/var/log/app.log"));
 }
 
 void TestArchiveLocation::aBareCompressedStreamHasAnImpliedMember()
@@ -127,13 +135,13 @@ void TestArchiveLocation::collapsesASingleStreamBackToItsPlainPath()
     // same thing would be two Document paths — two tabs, two format-cache entries and
     // two spools for one log.
     QCOMPARE(ArchiveLocation::normalize(QStringLiteral("/logs/app.log.gz")),
-             QStringLiteral("/logs/app.log.gz"));
+             abs(QStringLiteral("/logs/app.log.gz")));
     QCOMPARE(ArchiveLocation::normalize(QStringLiteral("/logs/app.log.gz/app.log")),
-             QStringLiteral("/logs/app.log.gz"));
+             abs(QStringLiteral("/logs/app.log.gz")));
 
     // A multi-member container does NOT collapse: the member is what is being read.
     QCOMPARE(ArchiveLocation::normalize(QStringLiteral("/logs/b.tgz/app.log")),
-             QStringLiteral("/logs/b.tgz/app.log"));
+             abs(QStringLiteral("/logs/b.tgz")) + QStringLiteral("/app.log"));
 }
 
 void TestArchiveLocation::normalizeIsIdempotentAndWorkingDirectoryIndependent()
@@ -208,7 +216,7 @@ void TestArchiveLocation::displayNamesReadLikeALog()
              QStringLiteral("app.log (web1)"));
 
     QCOMPARE(logSourceDisplayPath(QStringLiteral("/logs/b.tgz/app.log")),
-             QStringLiteral("/logs/b.tgz/app.log"));
+             abs(QStringLiteral("/logs/b.tgz")) + QStringLiteral("/app.log"));
 }
 
 void TestArchiveLocation::availabilityAsksAboutTheContainer()

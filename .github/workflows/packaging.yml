@@ -132,6 +132,20 @@ jobs:
         with:
           vsversion: "2022"
 
+      # libarchive comes from vcpkg (preinstalled on this runner) rather than being
+      # built from source like libssh2. The difference is codecs: libarchive is only
+      # useful WITH zlib and liblzma, and it finds them through find_package in MODULE
+      # mode, which a FetchContent-built copy cannot satisfy — libarchive then builds
+      # with no compression at all and still reports itself found, so a .gz fails only
+      # at runtime. A package manager supplies the codecs as a matter of course.
+      # The static-md triplet keeps the portable zip free of extra DLLs, which is the
+      # same reason libssh2 is static here.
+      - name: Install libarchive (vcpkg)
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install `
+            "libarchive[core,bzip2,lzma,zstd]:x64-windows-static-md"
+
       - name: Configure + build and test
         shell: pwsh
         run: |
@@ -142,16 +156,16 @@ jobs:
           # guards against stays satisfied. Off by default so ordinary and offline
           # builds do no configure-time network access.
           #
-          # -DLOFTAIL_ARCHIVE_FETCH=ON does the same for libarchive, which additionally
-          # needs its codecs built (zlib for .gz and zip, liblzma for .xz) — see
-          # cmake/FetchArchive.cmake. Static again, so nothing new to ship. bzip2 and
-          # zstd are deliberately left out: two more source trees for formats a rotated
-          # log is rarely written in, and SPEC.md records the resulting gap.
+          # libarchive comes from the vcpkg toolchain installed above;
+          # LOFTAIL_ARCHIVE_STATIC tells our own sources that its API is not dllimport.
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
-            -DLOFTAIL_SSH_FETCH=ON -DLOFTAIL_ARCHIVE_FETCH=ON 2>&1 | Tee-Object configure.log
-          # Both are built from source here, so "not found" means the fetch chain broke
-          # rather than a package being absent — and a silent DISABLED would shrink the
-          # suite and still go green.
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
+            -DLOFTAIL_ARCHIVE_STATIC=ON `
+            -DLOFTAIL_SSH_FETCH=ON 2>&1 | Tee-Object configure.log
+          # Neither is optional on this job — libssh2 is built from source and
+          # libarchive was just installed — so "not found" means the setup broke, and a
+          # silent DISABLED would shrink the suite and still go green.
           if (-not (Select-String -Path configure.log -Pattern "SSH remote sources: ENABLED" -Quiet)) {
             Write-Host "::error::libssh2 was not built; remote log support is off"; exit 1
           }

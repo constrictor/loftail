@@ -149,6 +149,12 @@ if(LOFTAIL_HAVE_ARCHIVE)
     )
     target_compile_definitions(loftail_core PUBLIC LOFTAIL_HAVE_ARCHIVE=1)
     target_link_libraries(loftail_core PRIVATE ${LOFTAIL_ARCHIVE_TARGET})
+    # PUBLIC: the test binaries call libarchive's write side directly to build their
+    # fixtures, so they need the same declaration or they link against import stubs
+    # that a static build never produces (see the option in the root CMakeLists).
+    if(LOFTAIL_ARCHIVE_STATIC)
+        target_compile_definitions(loftail_core PUBLIC LIBARCHIVE_STATIC)
+    endif()
 endif()
 
 # QtGui (not QtWidgets) for QColor: the highlight palette stores concrete colors and
