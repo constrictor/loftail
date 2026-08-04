@@ -32,6 +32,9 @@ add_library(loftail_core STATIC
     ArchiveLocation.cpp
     ArchiveLocation.h
     ArchiveFetcher.h
+    # Declares the member listing and the reader; free of libarchive types, so the
+    # member-picker dialog compiles either way and both builds' UI looks the same.
+    ArchiveReader.h
     # The spool: a log that is not already a readable local file is fetched forward
     # into a local cache file and read back through an ordinary local source, so the
     # paint path stays zero-copy and `tail -f` is just the fetcher appending. How the
@@ -142,7 +145,6 @@ endif()
 if(LOFTAIL_HAVE_ARCHIVE)
     target_sources(loftail_core PRIVATE
         ArchiveReader.cpp
-        ArchiveReader.h
         ArchiveFetcher.cpp
     )
     target_compile_definitions(loftail_core PUBLIC LOFTAIL_HAVE_ARCHIVE=1)

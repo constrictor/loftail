@@ -1,5 +1,9 @@
 # loftail_ui: the Qt Widgets layer. Links QtWidgets and loftail_core.
 add_library(loftail_ui STATIC
+    # M12 — archived logs: which log to read out of an archive holding several. Always
+    # compiled, like the dialog below, so both build configurations look the same.
+    OpenArchiveDialog.cpp
+    OpenArchiveDialog.h
     # M11 — remote logs: the Open Remote dialog (which also manages saved hosts, since
     # a global list has no active Document to bind a pane to — invariant #7) and the
     # widget-side answers to the host-key and password questions.

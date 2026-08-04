@@ -163,6 +163,14 @@ if(LOFTAIL_HAVE_ARCHIVE)
         target_link_libraries(tst_${unit} PRIVATE loftail_core Qt6::Test ${LOFTAIL_ARCHIVE_TARGET})
         add_test(NAME tst_${unit} COMMAND tst_${unit})
     endforeach()
+
+    # The same, through the real MainWindow: one tab per member however it is spelled,
+    # the picker shown only when there is a genuine choice, and a remembered format.
+    qt_add_executable(tst_archiveopen tst_archiveopen.cpp)
+    target_link_libraries(tst_archiveopen
+        PRIVATE loftail_ui Qt6::Test Qt6::Widgets ${LOFTAIL_ARCHIVE_TARGET})
+    add_test(NAME tst_archiveopen COMMAND tst_archiveopen)
+    set_tests_properties(tst_archiveopen PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 
 # M6 — the tail harness: append (incl. a multi-line record split across writes),

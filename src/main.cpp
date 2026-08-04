@@ -61,7 +61,11 @@ int main(int argc, char *argv[])
     parser.addPositionalArgument(
         QStringLiteral("file"),
         QStringLiteral("Log file to open (optional). Either a local path or a remote "
-                       "log over SSH, spelled ssh://user@host/path/to/file.log."),
+                       "log over SSH, spelled ssh://user@host/path/to/file.log. A "
+                       "compressed log (app.log.gz) opens directly; a log inside an "
+                       "archive is named by continuing the path through it, as "
+                       "bundle.tar.gz/var/log/app.log. The two combine, so "
+                       "ssh://host/var/log/app.log.1.gz works."),
         QStringLiteral("[file]"));
 
     QCommandLineOption patternOpt(

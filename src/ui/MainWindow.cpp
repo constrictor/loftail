@@ -19,6 +19,8 @@
 #include "LogSource.h"
 #include "ManualFormatProvider.h"
 #include "HostBookmarkStore.h"
+#include "ArchiveLocation.h"
+#include "OpenArchiveDialog.h"
 #include "OpenRemoteDialog.h"
 #include "PresetPane.h"
 #include "RemoteLocation.h"
@@ -614,7 +616,14 @@ void MainWindow::chooseFileToOpen()
 {
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open Log File"), QString(),
-        QStringLiteral("Log files (*.log *.txt);;All files (*)"));
+        // The archive filter is offered whether or not libarchive is compiled in, so
+        // the two builds' dialogs look alike: a file that simply vanished from the list
+        // would read as "loftail cannot see this", where trying it explains itself.
+        QStringLiteral("Log files (*.log *.txt);;"
+                       "Compressed and archived logs "
+                       "(*.gz *.bz2 *.xz *.zst *.zip *.tar *.tgz *.tar.gz *.tar.bz2 "
+                       "*.tar.xz *.txz *.tar.zst *.7z);;"
+                       "All files (*)"));
     if (!path.isEmpty())
         openFile(path);
 }
@@ -719,6 +728,27 @@ void MainWindow::openFile(const QString &rawPath, const QString &pattern)
     // two spellings of one remote file would otherwise open two tabs on it and
     // remember its format twice. A local path passes through untouched.
     const QString path = normalizeLogPath(rawPath);
+
+    // An archive naming no member cannot be opened, so ask which log is wanted —
+    // EXACTLY HERE and nowhere else. Document::prepare(), rescan() and session restore
+    // must only ever see an address that already names one, or a dialog could appear
+    // behind the user's back during a rotation or a relaunch. Cancelling abandons the
+    // open silently, the same contract cancelling the Log Format dialog has.
+    if (const auto archive = ArchiveLocation::split(path); archive && archive->needsMember()) {
+        QString error;
+        const QStringList members =
+            OpenArchiveDialog::chooseMembers(archive->container, this, &error);
+        if (!error.isEmpty()) {
+            m_statusLabel->setText(QStringLiteral("Cannot open %1: %2")
+                                       .arg(logSourceDisplayName(path), error));
+            return;
+        }
+        // Several picked logs open as several tabs, exactly as dropping several files
+        // does (SPEC.md §3).
+        for (const QString &member : members)
+            openFile(member, pattern);
+        return;
+    }
 
     // Per-file recall (SPEC.md §4): a file already configured reopens with its
     // saved format and no prompt. A never-seen file gets the supplied (or default)
