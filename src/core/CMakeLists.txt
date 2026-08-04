@@ -25,13 +25,14 @@ add_library(loftail_core STATIC
     # displays a remote path identically (see RemoteLocation.h).
     RemoteLocation.cpp
     RemoteLocation.h
-    # The spool: a remote file is fetched forward into a local cache file and read
-    # back through an ordinary local source, so the paint path stays zero-copy and
-    # `tail -f` is just the fetcher appending. The transport sits behind
-    # RemoteFetcher, which is what lets all of this be tested with no network.
-    RemoteFetcher.h
-    RemoteSpool.cpp
-    RemoteSpool.h
+    # The spool: a log that is not already a readable local file is fetched forward
+    # into a local cache file and read back through an ordinary local source, so the
+    # paint path stays zero-copy and `tail -f` is just the fetcher appending. How the
+    # bytes are obtained sits behind SourceFetcher, keyed by the normalized path
+    # string — which is what lets all of this be tested with no network.
+    SourceFetcher.h
+    SourceSpool.cpp
+    SourceSpool.h
     SpooledLogSource.cpp
     SpooledLogSource.h
     # The prompt seam and the per-host credential cache are compiled even without

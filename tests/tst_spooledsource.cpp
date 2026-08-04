@@ -4,7 +4,7 @@
 
 #include "FakeFetcher.h"
 #include "LogSource.h"
-#include "RemoteSpool.h"
+#include "SourceSpool.h"
 #include "SpooledLogSource.h"
 
 using namespace loftail;
@@ -278,8 +278,8 @@ void TestSpooledSource::unconfiguredRemoteReportsNotBuiltIn()
     // No farm installed, so the registry falls back to its default factory. In a
     // build without libssh2 that says so plainly; in one with it, the attempt fails
     // against a host that does not exist. Either way: no crash, and an explanation.
-    RemoteSpoolRegistry::instance().clear();
-    RemoteSpoolRegistry::instance().setFetcherFactory(nullptr);
+    SourceSpoolRegistry::instance().clear();
+    SourceSpoolRegistry::instance().setFetcherFactory(nullptr);
 
     QString error;
     auto src = openLogSource(QStringLiteral("ssh://nonexistent.invalid/var/log/a.log"),

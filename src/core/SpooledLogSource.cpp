@@ -1,12 +1,12 @@
 #include "SpooledLogSource.h"
 
-#include "RemoteSpool.h"
+#include "SourceSpool.h"
 
 namespace loftail {
 
 SpooledLogSource::~SpooledLogSource() = default;
 
-std::unique_ptr<SpooledLogSource> SpooledLogSource::open(std::shared_ptr<RemoteSpool> spool)
+std::unique_ptr<SpooledLogSource> SpooledLogSource::open(std::shared_ptr<SourceSpool> spool)
 {
     if (!spool)
         return nullptr;

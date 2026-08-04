@@ -18,7 +18,7 @@ class SshPrompter;
 // handed to that fetcher's own thread for the tail loop — a handoff, never sharing.
 //
 // libssh2 is confined to the .cpp: this header names no libssh2 type, so the rest of
-// the application (and RemoteSpool, which builds one of these) needs no include path
+// the application (and SourceSpool, which builds one of these) needs no include path
 // for it, and the no-SSH build is a matter of not compiling one file.
 class SshSession
 {

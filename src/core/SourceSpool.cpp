@@ -1,4 +1,6 @@
-#include "RemoteSpool.h"
+#include "SourceSpool.h"
+
+#include "RemoteLocation.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -29,40 +31,51 @@ QString spoolRoot()
     return cache + u'/' + QLatin1String(kSpoolRootName);
 }
 
-// A short, filesystem-safe directory name for one remote file.
-QString spoolKey(const RemoteLocation &location)
+// A short, filesystem-safe directory name for one spooled log.
+QString spoolKey(const QString &key)
 {
     const QByteArray digest =
-        QCryptographicHash::hash(location.toString().toUtf8(), QCryptographicHash::Sha1);
+        QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha1);
     return QString::fromLatin1(digest.toHex().left(16));
 }
 
-std::unique_ptr<RemoteFetcher> defaultFetcher(const RemoteLocation &location, QString *error)
+// The one place that turns a normalized path into the fetcher that can fill a spool
+// from it. Dispatching here rather than in the registry is what keeps the registry
+// ignorant of what it holds.
+std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error)
 {
+    if (RemoteLocation::isRemote(key)) {
 #if defined(LOFTAIL_HAVE_SSH)
-    return makeSshFetcher(location, error);
+        if (const auto location = RemoteLocation::parse(key))
+            return makeSshFetcher(*location, error);
+        if (error)
+            *error = QStringLiteral("Not a valid remote log address: %1").arg(key);
+        return nullptr;
 #else
-    Q_UNUSED(location);
-    if (error) {
-        *error = QStringLiteral(
-            "SSH support is not built into this copy of loftail, so remote logs "
-            "cannot be opened. Rebuild with libssh2 available to enable it.");
-    }
-    return nullptr;
+        if (error) {
+            *error = QStringLiteral(
+                "SSH support is not built into this copy of loftail, so remote logs "
+                "cannot be opened. Rebuild with libssh2 available to enable it.");
+        }
+        return nullptr;
 #endif
+    }
+
+    if (error)
+        *error = QStringLiteral("No way to fetch %1.").arg(key);
+    return nullptr;
 }
 
 } // namespace
 
-// --- RemoteSpool -----------------------------------------------------------
+// --- SourceSpool -----------------------------------------------------------
 
-RemoteSpool::RemoteSpool(RemoteLocation location, std::unique_ptr<RemoteFetcher> fetcher,
-                         QString dir)
-    : m_location(std::move(location)), m_fetcher(std::move(fetcher)), m_dir(std::move(dir))
+SourceSpool::SourceSpool(QString key, std::unique_ptr<SourceFetcher> fetcher, QString dir)
+    : m_key(std::move(key)), m_fetcher(std::move(fetcher)), m_dir(std::move(dir))
 {
 }
 
-RemoteSpool::~RemoteSpool()
+SourceSpool::~SourceSpool()
 {
     // Stop the fetcher BEFORE removing the directory: it owns a thread that is
     // writing into it, and stop() joins that thread.
@@ -72,39 +85,39 @@ RemoteSpool::~RemoteSpool()
         QDir(m_dir).removeRecursively();
 }
 
-FetchStatus RemoteSpool::status() const
+FetchStatus SourceSpool::status() const
 {
     return m_fetcher ? m_fetcher->status() : FetchStatus{};
 }
 
-QString RemoteSpool::spoolPath(quint64 generation) const
+QString SourceSpool::spoolPath(quint64 generation) const
 {
     return m_fetcher ? m_fetcher->spoolPath(generation) : QString();
 }
 
-void RemoteSpool::poke()
+void SourceSpool::poke()
 {
     if (m_fetcher)
         m_fetcher->pokeNow();
 }
 
-// --- RemoteSpoolRegistry ---------------------------------------------------
+// --- SourceSpoolRegistry ---------------------------------------------------
 
-RemoteSpoolRegistry::RemoteSpoolRegistry() = default;
-RemoteSpoolRegistry::~RemoteSpoolRegistry() = default;
+SourceSpoolRegistry::SourceSpoolRegistry() = default;
+SourceSpoolRegistry::~SourceSpoolRegistry() = default;
 
-RemoteSpoolRegistry &RemoteSpoolRegistry::instance()
+SourceSpoolRegistry &SourceSpoolRegistry::instance()
 {
-    static RemoteSpoolRegistry registry;
+    static SourceSpoolRegistry registry;
     return registry;
 }
 
-void RemoteSpoolRegistry::setFetcherFactory(FetcherFactory factory)
+void SourceSpoolRegistry::setFetcherFactory(FetcherFactory factory)
 {
     m_factory = std::move(factory);
 }
 
-QString RemoteSpoolRegistry::instanceDir()
+QString SourceSpoolRegistry::instanceDir()
 {
     if (m_instanceDir && m_instanceDir->isValid())
         return m_instanceDir->path();
@@ -132,13 +145,13 @@ QString RemoteSpoolRegistry::instanceDir()
     // singleton's own destructor — by then the application object is gone and, in a
     // test, so is the temporary HOME the directory lived under, which leaves QLockFile
     // complaining about a lock file that no longer exists.
-    qAddPostRoutine([] { RemoteSpoolRegistry::instance().shutdown(); });
+    qAddPostRoutine([] { SourceSpoolRegistry::instance().shutdown(); });
 
     sweepAbandonedSpools();
     return m_instanceDir->path();
 }
 
-void RemoteSpoolRegistry::sweepAbandonedSpools()
+void SourceSpoolRegistry::sweepAbandonedSpools()
 {
     const QString root = spoolRoot();
     if (root.isEmpty())
@@ -165,25 +178,23 @@ void RemoteSpoolRegistry::sweepAbandonedSpools()
     }
 }
 
-std::shared_ptr<RemoteSpool> RemoteSpoolRegistry::find(const RemoteLocation &location) const
+std::shared_ptr<SourceSpool> SourceSpoolRegistry::find(const QString &key) const
 {
-    return m_spools.value(location.toString()).lock();
+    return m_spools.value(key).lock();
 }
 
-std::shared_ptr<RemoteSpool> RemoteSpoolRegistry::acquire(const RemoteLocation &location,
-                                                          QString *error)
+std::shared_ptr<SourceSpool> SourceSpoolRegistry::acquire(const QString &key, QString *error)
 {
-    const QString key = location.toString();
     if (auto live = m_spools.value(key).lock())
         return live;
 
     const QString base = instanceDir();
     if (base.isEmpty()) {
         if (error)
-            *error = QStringLiteral("Cannot create a local cache directory for remote logs.");
+            *error = QStringLiteral("Cannot create a local cache directory for spooled logs.");
         return nullptr;
     }
-    const QString dir = base + u'/' + spoolKey(location);
+    const QString dir = base + u'/' + spoolKey(key);
     if (!QDir().mkpath(dir)) {
         if (error)
             *error = QStringLiteral("Cannot create the local cache directory %1.").arg(dir);
@@ -191,8 +202,8 @@ std::shared_ptr<RemoteSpool> RemoteSpoolRegistry::acquire(const RemoteLocation &
     }
 
     QString fetcherError;
-    auto fetcher = m_factory ? m_factory(location, &fetcherError)
-                             : defaultFetcher(location, &fetcherError);
+    auto fetcher = m_factory ? m_factory(key, &fetcherError)
+                             : defaultFetcher(key, &fetcherError);
     if (!fetcher) {
         QDir(dir).removeRecursively();
         if (error)
@@ -204,24 +215,23 @@ std::shared_ptr<RemoteSpool> RemoteSpoolRegistry::acquire(const RemoteLocation &
     if (!fetcher->start(dir, &startError)) {
         QDir(dir).removeRecursively();
         if (error)
-            *error = startError.isEmpty()
-                ? QStringLiteral("Cannot open %1.").arg(location.toString())
-                : startError;
+            *error = startError.isEmpty() ? QStringLiteral("Cannot open %1.").arg(key)
+                                          : startError;
         return nullptr;
     }
 
     // shared_ptr with an explicit deleter: the constructor is private, so make_shared
     // cannot reach it, and the weak entry must be reaped when the last handle drops.
-    std::shared_ptr<RemoteSpool> spool(new RemoteSpool(location, std::move(fetcher), dir),
-                                       [key](RemoteSpool *p) {
-                                           RemoteSpoolRegistry::instance().m_spools.remove(key);
+    std::shared_ptr<SourceSpool> spool(new SourceSpool(key, std::move(fetcher), dir),
+                                       [key](SourceSpool *p) {
+                                           SourceSpoolRegistry::instance().m_spools.remove(key);
                                            delete p;
                                        });
     m_spools.insert(key, spool);
     return spool;
 }
 
-void RemoteSpoolRegistry::shutdown()
+void SourceSpoolRegistry::shutdown()
 {
     clear();
     if (m_instanceLock) {
@@ -231,12 +241,12 @@ void RemoteSpoolRegistry::shutdown()
     m_instanceDir.reset(); // QTemporaryDir removes the tree on destruction
 }
 
-void RemoteSpoolRegistry::clear()
+void SourceSpoolRegistry::clear()
 {
     // Only the bookkeeping: a spool still referenced by an open SpooledLogSource is
     // kept alive by that handle and torn down when it drops, which is the point of
     // the weak map. Forgetting the entries just means the next acquire() of the same
-    // location builds a fresh spool instead of joining the old one.
+    // key builds a fresh spool instead of joining the old one.
     m_spools.clear();
 }
 

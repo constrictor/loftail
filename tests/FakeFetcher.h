@@ -10,16 +10,16 @@
 
 #include <memory>
 
-#include "RemoteFetcher.h"
+#include "SourceFetcher.h"
 #include "RemoteLocation.h"
-#include "RemoteSpool.h"
+#include "SourceSpool.h"
 
 namespace loftail {
 
-// A RemoteFetcher the test drives by hand (M11). This is what makes the entire
+// A SourceFetcher the test drives by hand (M11). This is what makes the entire
 // remote feature — opening, indexing, tailing, rotation, truncation, session
 // restore, the whole UI flow — testable with NO network and no libssh2 linked.
-// Everything above RemoteFetcher is exercised for real; only the transport is fake.
+// Everything above SourceFetcher is exercised for real; only the transport is fake.
 //
 // The test holds a shared_ptr<FakeRemote> and pokes it (append/withhold/replace)
 // while the registry separately owns a FakeFetcher wrapping the same object, so the
@@ -41,7 +41,7 @@ public:
         writeToCurrent(bytes);
         QMutexLocker lock(&m_mutex);
         m_status.committedSize = m_written;
-        m_status.remoteSize = m_status.baseOffset + m_written;
+        m_status.totalSize = m_status.baseOffset + m_written;
     }
 
     // Append to the spool file but DO NOT publish it — a chunk that has landed on
@@ -53,7 +53,7 @@ public:
     {
         QMutexLocker lock(&m_mutex);
         m_status.committedSize = m_written;
-        m_status.remoteSize = m_status.baseOffset + m_written;
+        m_status.totalSize = m_status.baseOffset + m_written;
     }
 
     // The remote file was rotated or truncated: the fetcher starts a NEW spool
@@ -71,7 +71,7 @@ public:
         lock.relock();
         m_written = bytes.size();
         m_status.committedSize = m_written;
-        m_status.remoteSize = m_written;
+        m_status.totalSize = m_written;
         m_status.baseOffset = 0;
         m_status.generation = next; // bumped LAST, after its bytes are on disk
     }
@@ -88,7 +88,7 @@ public:
     int stopCount() const { return m_stopCount; }
     int pokeCount() const { return m_pokeCount; }
 
-    // --- The RemoteFetcher side --------------------------------------------
+    // --- The SourceFetcher side --------------------------------------------
 
     bool start(const QString &spoolDir, QString *error)
     {
@@ -105,7 +105,7 @@ public:
         m_written = m_initial.size();
         m_status.generation = 1;
         m_status.committedSize = m_written;
-        m_status.remoteSize = m_written;
+        m_status.totalSize = m_written;
         m_status.state = FetchStatus::State::Live;
         return true;
     }
@@ -171,8 +171,8 @@ private:
     int            m_pokeCount = 0;
 };
 
-// The RemoteFetcher the registry owns; all behavior lives in the shared FakeRemote.
-class FakeFetcher final : public RemoteFetcher
+// The SourceFetcher the registry owns; all behavior lives in the shared FakeRemote.
+class FakeFetcher final : public SourceFetcher
 {
 public:
     explicit FakeFetcher(std::shared_ptr<FakeRemote> remote) : m_remote(std::move(remote)) {}
@@ -201,14 +201,12 @@ public:
         QStandardPaths::setTestModeEnabled(true);
         m_remotes = std::make_shared<QHash<QString, std::shared_ptr<FakeRemote>>>();
         auto remotes = m_remotes;
-        RemoteSpoolRegistry::instance().setFetcherFactory(
-            [remotes](const RemoteLocation &location, QString *error) -> std::unique_ptr<RemoteFetcher> {
-                const auto it = remotes->constFind(location.toString());
+        SourceSpoolRegistry::instance().setFetcherFactory(
+            [remotes](const QString &key, QString *error) -> std::unique_ptr<SourceFetcher> {
+                const auto it = remotes->constFind(key);
                 if (it == remotes->constEnd()) {
-                    if (error) {
-                        *error = QStringLiteral("No fake remote registered for %1")
-                                     .arg(location.toString());
-                    }
+                    if (error)
+                        *error = QStringLiteral("No fake remote registered for %1").arg(key);
                     return nullptr;
                 }
                 return std::make_unique<FakeFetcher>(*it);
@@ -217,8 +215,8 @@ public:
 
     ~FakeRemoteFarm()
     {
-        RemoteSpoolRegistry::instance().clear();
-        RemoteSpoolRegistry::instance().setFetcherFactory(nullptr);
+        SourceSpoolRegistry::instance().clear();
+        SourceSpoolRegistry::instance().setFetcherFactory(nullptr);
         QStandardPaths::setTestModeEnabled(false);
     }
 

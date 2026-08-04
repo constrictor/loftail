@@ -12,7 +12,7 @@
 #include "LogModel.h"
 #include "LogSource.h"
 #include "RemoteLocation.h"
-#include "RemoteSpool.h"
+#include "SourceSpool.h"
 #include "SshPrompter.h"
 
 using namespace loftail;
@@ -130,7 +130,7 @@ void TestSshLive::initTestCase()
 
 void TestSshLive::cleanup()
 {
-    RemoteSpoolRegistry::instance().clear();
+    SourceSpoolRegistry::instance().clear();
 }
 
 void TestSshLive::connectsAndReadsTheRemoteFile()

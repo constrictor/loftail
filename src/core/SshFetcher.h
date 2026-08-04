@@ -1,6 +1,6 @@
 #pragma once
 
-#include "RemoteFetcher.h"
+#include "SourceFetcher.h"
 #include "RemoteLocation.h"
 
 #include <memory>
@@ -35,6 +35,6 @@ SshFetchOptions sshFetchOptions(const RemoteLocation &location);
 
 // Build a fetcher that reads `location` over SSH. Returns nullptr with `error` filled
 // where SSH support is not compiled in. Connecting happens in start(), not here.
-std::unique_ptr<RemoteFetcher> makeSshFetcher(const RemoteLocation &location, QString *error);
+std::unique_ptr<SourceFetcher> makeSshFetcher(const RemoteLocation &location, QString *error);
 
 } // namespace loftail

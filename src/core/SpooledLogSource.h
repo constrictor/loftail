@@ -1,30 +1,34 @@
 #pragma once
 
 #include "LogSource.h"
-#include "RemoteFetcher.h"
+#include "SourceFetcher.h"
 
 #include <memory>
 
 namespace loftail {
 
-class RemoteSpool;
+class SourceSpool;
 
-// A remote log, read through the local spool a RemoteFetcher is filling
-// (ARCHITECTURE.md §6.3). One per Document; several may share one RemoteSpool.
+// A log that is not directly readable as a local file, read through the local spool a
+// SourceFetcher is filling (ARCHITECTURE.md §6.3). One per Document; several may
+// share one SourceSpool.
 //
 // The whole trick is that this class does no reading of its own: bytes() and size()
 // delegate to an ORDINARY LOCAL SOURCE over the spool file, opened through the same
 // openLogSource() everything else uses. So the paint path gets the existing mmap,
-// zero-copy and latency-free, and `isRandomAccess()` is TRUE for a remote file.
+// zero-copy and latency-free, and `isRandomAccess()` is TRUE even for a remote file.
 // ARCHITECTURE.md §6.2 predicted it would be false; the accommodation that actually
 // paid off was invariant #9 — because the indexer only ever scans forward, the spool
 // can be filled and indexed at the same time.
 //
-// THREADING. Everything here runs on the GUI thread, except that the fetcher thread
-// is concurrently appending to the spool file and publishing its status. The two are
-// kept apart by one rule: refreshSize() is the only method that reopens or re-maps
-// the inner source, and only the GUI thread calls it — the same rule that already
-// makes the index worker safe against a growing local file (LiveController.h).
+// THREADING. Everything here runs on the thread that owns this source, except that
+// the fetcher thread is concurrently appending to the spool file and publishing its
+// status. The two are kept apart by one rule: refreshSize() is the only method that
+// reopens or re-maps the inner source, and only ONE thread ever calls it on a given
+// instance — the same rule that already makes the index worker safe against a growing
+// local file (LiveController.h). For a Document's source that thread is the GUI
+// thread; the rule is stated per instance rather than naming the GUI thread because a
+// fetcher may itself hold a private source it drives from its own thread.
 class SpooledLogSource final : public LogSource
 {
 public:
@@ -33,7 +37,7 @@ public:
     // Bind to `spool` and adopt its current generation. Never fails: a spool that has
     // not committed a byte yet is a legal empty source, exactly as a zero-length local
     // file is (MappedLogSource::open).
-    static std::unique_ptr<SpooledLogSource> open(std::shared_ptr<RemoteSpool> spool);
+    static std::unique_ptr<SpooledLogSource> open(std::shared_ptr<SourceSpool> spool);
 
     QByteArrayView bytes(qint64 offset, qint64 length) override;
     qint64 size() const override { return m_size; }
@@ -47,13 +51,13 @@ public:
     // live, or failing (and why). Not used for any correctness decision here.
     FetchStatus fetchStatus() const;
 
-    const std::shared_ptr<RemoteSpool> &spool() const { return m_spool; }
+    const std::shared_ptr<SourceSpool> &spool() const { return m_spool; }
 
 private:
     SpooledLogSource() = default;
     void adoptGeneration(quint64 generation);
 
-    std::shared_ptr<RemoteSpool> m_spool;
+    std::shared_ptr<SourceSpool> m_spool;
     std::unique_ptr<LogSource>   m_inner;      // a local source over the spool file
     qint64                       m_size = 0;   // committed bytes, never the raw file
     quint64                      m_generation = 0;

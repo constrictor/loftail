@@ -2,7 +2,7 @@
 
 #include "BufferedLogSource.h"
 #include "RemoteLocation.h"
-#include "RemoteSpool.h"
+#include "SourceSpool.h"
 #include "SpooledLogSource.h"
 #if defined(Q_OS_WIN)
 #else
@@ -28,8 +28,12 @@ std::unique_ptr<LogSource> openRemote(const QString &path, OpenPolicy policy, QS
         return nullptr;
     }
 
-    RemoteSpoolRegistry &registry = RemoteSpoolRegistry::instance();
-    std::shared_ptr<RemoteSpool> spool = registry.find(*location);
+    // The registry keys on the normalized address string, not on the parsed value:
+    // it holds spools for several kinds of source and understands none of them.
+    const QString key = location->toString();
+
+    SourceSpoolRegistry &registry = SourceSpoolRegistry::instance();
+    std::shared_ptr<SourceSpool> spool = registry.find(key);
     if (!spool) {
         if (policy == OpenPolicy::Reuse) {
             // A rotation mid-tail must never turn into a reconnect: this runs from
@@ -38,7 +42,7 @@ std::unique_ptr<LogSource> openRemote(const QString &path, OpenPolicy policy, QS
                 *error = QStringLiteral("Not connected to %1.").arg(location->target());
             return nullptr;
         }
-        spool = registry.acquire(*location, error);
+        spool = registry.acquire(key, error);
         if (!spool)
             return nullptr;
     }

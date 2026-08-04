@@ -40,7 +40,7 @@ constexpr qint64 kHeadProbeBytes = 4096;
 // sample, and only then hands the session to a worker thread that does the tailing.
 // That is a handoff, not sharing — a LIBSSH2_SESSION is touched by exactly one thread
 // at a time, and the GUI never blocks again after the open.
-class SshFetcher final : public RemoteFetcher
+class SshFetcher final : public SourceFetcher
 {
 public:
     SshFetcher(RemoteLocation location, SshFetchOptions options)
@@ -218,7 +218,7 @@ void SshFetcher::beginGeneration(qint64 remoteSize)
     lock.relock();
     m_status.baseOffset = base;
     m_status.committedSize = 0;
-    m_status.remoteSize = remoteSize;
+    m_status.totalSize = remoteSize;
     m_status.generation = next; // published LAST, once its file exists and is empty
 }
 
@@ -274,7 +274,7 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
         if (m_status.generation != generation)
             break;
         m_status.committedSize = offset - m_status.baseOffset;
-        m_status.remoteSize = qMax(m_status.remoteSize, offset);
+        m_status.totalSize = qMax(m_status.totalSize, offset);
     }
 
     spool.close();
@@ -390,7 +390,7 @@ void SshFetcher::tailLoop()
     }
 }
 
-std::unique_ptr<RemoteFetcher> makeSshFetcher(const RemoteLocation &location, QString *error)
+std::unique_ptr<SourceFetcher> makeSshFetcher(const RemoteLocation &location, QString *error)
 {
     Q_UNUSED(error);
     return std::make_unique<SshFetcher>(location, sshFetchOptions(location));

@@ -35,7 +35,7 @@ public:
 // spelled, a sensible tab title, recent files, and a session that round-trips.
 //
 // The transport is a fake (tests/FakeFetcher.h), so this runs offscreen with no
-// network — which is the whole reason RemoteFetcher exists as a seam.
+// network — which is the whole reason SourceFetcher exists as a seam.
 class TestRemoteOpen : public QObject
 {
     Q_OBJECT
