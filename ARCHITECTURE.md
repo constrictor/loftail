@@ -150,14 +150,14 @@ class LogSource {                       // the model cannot tell which impl it h
 
 **Every local file is opened append-aware.** `SPEC.md` §3 removes the post-mortem/live distinction: loftail cannot know whether a file is finished, so it treats all of them as potentially-growing. **No `LogSource` may assume the file is immutable**, and none may hold the file in a way that blocks the writing process from appending, rotating, or truncating it — observing a log must not disturb the process producing it.
 
-Two implementations, selected by **platform**, not by mode:
+Two **local** implementations, selected by **platform**, not by mode (a third, for remote logs, is §6.3):
 
 - **`MappedLogSource`** (POSIX) — mmap of the currently-indexed extent, re-mapped as the file grows. Safe under rotation on POSIX: `rename`/`unlink` leave an existing mapping intact (it holds the inode), and copytruncate is caught by the size-shrink check below. No copying, fast random access on the paint path.
 - **`BufferedLogSource`** (Windows, and the fallback everywhere) — incremental buffered reads. Preferred on Windows because a held file mapping can block the writer from rotating or truncating the file — exactly what a logging framework does — and under the always-watched model that risk would otherwise apply to *every* open file, not just ones a user chose to tail. Opened with full sharing (`FILE_SHARE_READ | WRITE | DELETE`) so loftail never locks the writer out.
 
 The `bytes()`/`size()` interface hides which one is in use; the model and indexer are identical across both.
 
-**Rotation/truncation detection is always active** (it is not gated on a tailing toggle any more): poll size and file identity (inode on POSIX, file index on Windows). If size shrinks or identity changes, the file was rotated — discard the index and rescan. `QFileSystemWatcher` is the primary change signal but is unreliable on some filesystems (notably network mounts), so pair it with a low-frequency size poll rather than trusting it alone. On POSIX, guard mmap reads against a concurrent copytruncate so a read past the new EOF cannot `SIGBUS`.
+**Rotation/truncation detection is always active** (it is not gated on a tailing toggle any more): poll size and file identity (inode on POSIX, file index on Windows). If size shrinks or identity changes, the file was rotated — discard the index and rescan. The "was it replaced" half of that question lives behind `LogSource::wasReplaced()`, because *what has to be re-resolved* differs per source: a mapped fd follows the inode it mapped and sees nothing, so it re-stats its path, while a spooled remote source compares generations (§6.3). The controller asks the source and does not care which. `QFileSystemWatcher` is the primary change signal but is unreliable on some filesystems (notably network mounts), so pair it with a low-frequency size poll rather than trusting it alone. On POSIX, guard mmap reads against a concurrent copytruncate so a read past the new EOF cannot `SIGBUS`.
 
 Files are opened in binary mode; CRLF is handled explicitly rather than via platform text-mode translation, so a Windows-authored log reads identically on Linux.
 
@@ -184,6 +184,45 @@ The consequence that reaches furthest: **the record scanner cannot search for `\
 `FUTURE.md` plans `.gz` and SSH-retrieved logs, and both violate an assumption that is otherwise easy to bake in: **that a log source is local and randomly seekable.** Neither is. Gzip has no random access without an index; a remote source adds latency to every read.
 
 The `isRandomAccess()` flag exists so the indexer can branch now rather than being restructured later. Concretely, the constraint to honor today: **the indexer must be able to work as a forward, single-pass stream.** It already does — it scans start to finish. Do not add a second backward pass or a "seek to offset X and re-read" step. Random access is a legitimate optimization for `data()` on the paint path, which is only reachable for records already indexed and, for non-seekable sources, will be served from a local cache.
+
+**How that turned out (M11).** Half of this prediction was wrong, and the record is worth keeping straight rather than quietly amended. `isRandomAccess()` was expected to go *false* for SSH; it did not, and the flag remains unread by any branch in the codebase. The reason is the last clause above: once a non-seekable source is "served from a local cache", the cache is an ordinary local file and the source is randomly seekable again — the latency the flag was meant to warn about is absorbed by the cache, not exposed through the interface. What did pay off, decisively, is the **forward-single-pass constraint**. Because the indexer never seeks backwards, the spool can be filled and indexed *concurrently*, which is the whole difference between following a remote log and downloading one. Had the indexer needed a second pass, `SpooledLogSource` would have had to block until the fetch completed, and remote logs would not be live. Keep the constraint; treat `isRandomAccess()` as documentation of intent rather than as a working seam.
+
+### 6.3 Remote sources (SSH)
+
+A remote log is fetched forward into a **local spool file** and read back through an ordinary local source. `SpooledLogSource::bytes()`/`size()` delegate to `openLogSource(spoolPath)` — the same mmap-on-POSIX / buffered-on-Windows source everything else uses. Nothing on the read or paint path is remote-aware, and `isRandomAccess()` stays true (§6.2 explains why that is not the failure it looks like).
+
+**The spool is shared per remote file and reference-counted**, not owned by a Document. `RemoteSpoolRegistry` hands out `shared_ptr<RemoteSpool>` keyed by normalized location; the last handle dropping tears down the fetcher, the connection, and the spool files. This is the load-bearing decision, and it is what makes three separate problems not arise:
+
+- `Document::rescan()` runs on the GUI thread from the live watch tick. It reopens with `OpenPolicy::Reuse`, finds the live spool, and returns — a rotation mid-tail is a pointer swap, never a reconnect that could block the UI or prompt for a password behind the user's back.
+- Two tabs on one remote file share one connection and one spool.
+- Changing a remote file's log format reopens the Document and costs no network.
+
+**Three threads, and the contract between them is the design:**
+
+| Thread | Owns |
+| --- | --- |
+| GUI | `Document`, `LiveController`, the `SpooledLogSource`, and the inner local source over the spool |
+| Index worker (existing) | `Indexer`, reading that same inner source via `bytes()` |
+| Fetcher (one per spool) | `RemoteFetcher`, the `LIBSSH2_SESSION`, and every write to the spool |
+
+Two rules keep them apart, and there is no mutex between the GUI and the fetcher at all:
+
+1. **`refreshSize()` is the only method that reopens or re-maps the inner source, and only the GUI thread calls it.** This already held for local files — `Indexer::index()` snapshots `size()` once and `LiveController` is constructed only after the worker joins — but it *matters* now, because the fetcher is appending during the initial scan.
+2. **The fetcher publishes `committedSize` only after its write has landed, and readers clamp to it.** `refreshSize()` returns `min(spoolFileSize, committedSize)`. A half-written chunk is therefore not merely unlikely to be observed, it is unobservable. This ordering is the entire synchronisation.
+
+**Rotation makes a new spool *generation*, never a rewrite.** The index worker may be mmapping the current spool and every `Record::offset` indexes it, so on a rotation or truncation the fetcher opens spool file *N+1* and bumps an atomic generation, publishing it last once the new file exists. `identity()` returns the generation and `wasReplaced()` compares it, so `LiveController`'s existing rotation path works unchanged. The old spool is unlinked when its last reader lets go.
+
+**Detecting rotation without an inode.** SFTP attributes carry size and mtime but no inode. The primary check is `fstat(handle)` against `stat(path)`: OpenSSH's `sftp-server` implements FSTAT against the real descriptor, so an open handle follows the rotated-away file exactly as a POSIX mmap does locally, and a disagreement between the two means the *name* now points somewhere else — including the same-size rotate that a size check misses. Whether a given server behaves that way is probed once at connect; one that re-resolves by name instead falls back to comparing the head of the file, and only on suspicion (mtime advanced without the size growing), never on the ordinary poll.
+
+**Connecting blocks the calling thread, deliberately.** The connect, host-key check and authentication happen on the thread that opened the document, and only the tail loop is handed to the fetcher thread — a handoff, so exactly one thread ever touches a `LIBSSH2_SESSION`. The alternative considered was connecting on a worker and spinning a nested `QEventLoop` in `Document::prepare()` so a progress dialog could offer Cancel. It was rejected: `prepare()` is reached from `openWithSettings()`, which already runs a modal dialog and can abort an open, and adding re-entrancy there is a poor trade for a progress bar. The cost is a frozen UI for the length of a connect, bounded by the SSH timeout. A "Connecting…" dialog with Cancel is a genuine follow-up, and it needs the connect moved off-thread to be worth having.
+
+**One prompt per host** comes from a per-target credential cache, not from a shared connection. Sharing one `LIBSSH2_SESSION` across the per-file fetcher threads would need a mutex around every read and would serialize them; caching the accepted password per `user@host:port` gets the user-visible property with none of that. The cost is one TCP connection per open file, which is what `scp` does anyway.
+
+**The transport sits behind `RemoteFetcher`**, and that seam is what makes the feature testable: `tst_spooledsource`, `tst_remotetail` and `tst_remoteopen` drive the whole application — opening, indexing, tailing, rotation, session restore — against a fake fetcher, with no network and no libssh2 linked. CI exercises no libssh2 call beyond linking; the handshake, host-key and authentication paths are covered by `tst_sshlive`, which runs by hand against a real server.
+
+**Spool files** live under `QStandardPaths::CacheLocation` (never config — they can be gigabytes), in a per-process directory holding a `QLockFile`. Startup sweeps sibling directories and removes only those whose lock can be taken, since a lock that cannot be taken means a live owner — several instances may run at once (`SPEC.md` §3), so "old" would not be a safe test.
+
+**libssh2 is optional.** §1 promises the reference build works with the stock Ubuntu toolchain and nothing separately installed, so it is detected and never required: without it, `RemoteLocation`, the spool, the source and the bookmark store still compile, remote paths are still recognised, persisted and displayed identically, and opening one reports that support is not built in. Only `SshSession.cpp` and `SshFetcher.cpp` are conditional.
 
 ## 7. Model, view, and filtering
 

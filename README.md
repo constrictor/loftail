@@ -27,6 +27,7 @@ loftail does **not** link log4cplus. It reads log files as text and has no compi
 | 🪄 **Filters that scale** | Subsystem, minimum priority, thread, time range, message regex — OR within an axis, AND across axes. Each toggleable without deleting it. |
 | 🎨 **Highlighting** | Ordered rules recolor background and/or text from a curated palette defined once for light themes and once for dark, so highlights stay legible in both. |
 | 🧭 **Runs** | Give a regex that marks the start of an application run, and view one run at a time — scrolling, filtering, and find all restricted to it. |
+| 🌐 **Remote logs** | `ssh://user@host/var/log/app.log` opens and follows a log on another machine exactly like a local one, rotation and all. Agent and key auth, host-key confirmation, and saved hosts. |
 | 🗂️ **Tabs** | Several logs open at once, as reorderable tabs in a document area the side panes can never invade — and a second view onto one log pins the history while the other keeps tailing. |
 | 💾 **Session restore** | Every open file, its format, run selection, filters and highlighters; each view's column layout and wrap mode; presets, window geometry, the tab order and the pane layout — all come back. |
 | 📐 **Multi-line records** | A record whose message spans lines occupies a taller row and is shown in full, in place. Oversized records cap at 100 lines and expand on request. |
@@ -63,7 +64,7 @@ A few decisions carry most of the weight:
 - **A record is not a line.** A line matching the record-start regex begins a record; non-matching lines are continuations. Nothing assumes one row per line.
 - **Filtering compares integers.** Logger and thread names are interned to `quint32` at index time; priority is an enum declared in severity order, so "minimum level" is one `>=`. Message-text matching has no integer fast path, so it runs last.
 - **The table is a custom `QAbstractScrollArea`, not a `QTableView`,** scrolling in *line* units over two-level prefix sums of record line counts — because variable row heights can't be done lazily otherwise. It has an exact geometry mode and an estimated one for always-on wrapping.
-- **The indexer is a single forward pass**, and file access goes through a `LogSource` interface — which is what keeps compressed and SSH-backed sources additive rather than a rewrite.
+- **The indexer is a single forward pass**, and file access goes through a `LogSource` interface — which is what let SSH-backed sources land as an addition rather than a rewrite, and keeps compressed ones cheap. Because the indexer never seeks backwards, a remote log's local spool can be filled and indexed at the same time: the difference between *following* a remote log and downloading one.
 - **Nothing downstream of the parser knows about the pattern string.** Views, filters, and highlighters consume only a field map.
 
 Measured on a 200 MB / 1.9M-record synthetic log (Release, warm file): **214 MB/s** indexing single-threaded, block-sum rebuild **0.45 ms per 1M records**, paint-frame cost comfortably inside the 60 fps budget.

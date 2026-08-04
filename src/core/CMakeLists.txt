@@ -19,6 +19,32 @@ add_library(loftail_core STATIC
     Decoder.h
     LogSource.h
     LogSourceFactory.cpp
+    # M11 — remote sources. RemoteLocation is the ssh:// URL value type and the
+    # path-shaped helpers built on it; it never touches libssh2 and is ALWAYS
+    # compiled, so a build without SSH support still recognises, persists and
+    # displays a remote path identically (see RemoteLocation.h).
+    RemoteLocation.cpp
+    RemoteLocation.h
+    # The spool: a remote file is fetched forward into a local cache file and read
+    # back through an ordinary local source, so the paint path stays zero-copy and
+    # `tail -f` is just the fetcher appending. The transport sits behind
+    # RemoteFetcher, which is what lets all of this be tested with no network.
+    RemoteFetcher.h
+    RemoteSpool.cpp
+    RemoteSpool.h
+    SpooledLogSource.cpp
+    SpooledLogSource.h
+    # The prompt seam and the per-host credential cache are compiled even without
+    # libssh2: the UI installs a prompter unconditionally, and the "SSH is not built
+    # in" path must behave identically to the built-in one everywhere else.
+    SshPrompter.cpp
+    SshPrompter.h
+    SshFetcher.h
+    SshFetchOptions.cpp
+    # Saved hosts. A file rather than QSettings because it may hold a password the
+    # user chose to keep, and a file can be restricted to its owner.
+    HostBookmarkStore.cpp
+    HostBookmarkStore.h
     MappedLogSource.h
     BufferedLogSource.cpp
     BufferedLogSource.h
@@ -84,6 +110,22 @@ add_library(loftail_core STATIC
 # read strategy; the mmap source is simply not compiled there.
 if(NOT WIN32)
     target_sources(loftail_core PRIVATE MappedLogSource.cpp)
+endif()
+
+# M11 — the only libssh2-touching translation units. Same shape as the POSIX-only
+# source above: the seam is always compiled, one implementation is conditional.
+# PUBLIC on the definition so loftail_ui and the tests see the same feature state.
+if(LOFTAIL_HAVE_SSH)
+    target_sources(loftail_core PRIVATE
+        SshSession.cpp
+        SshSession.h
+        SshFetcher.cpp
+    )
+    target_compile_definitions(loftail_core PUBLIC LOFTAIL_HAVE_SSH=1)
+    target_link_libraries(loftail_core PRIVATE ${LOFTAIL_SSH_TARGET})
+    # Qt6::Network for QTcpSocket: the SSH transport hands libssh2 a connected socket
+    # rather than reimplementing name resolution and connect timeouts.
+    target_link_libraries(loftail_core PRIVATE Qt6::Network)
 endif()
 
 # QtGui (not QtWidgets) for QColor: the highlight palette stores concrete colors and

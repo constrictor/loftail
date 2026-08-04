@@ -3,6 +3,7 @@
 #include "DocumentContext.h"
 #include "FormatSettings.h"
 #include "LogView.h"
+#include "SshPromptDialogs.h"
 
 #include <QMainWindow>
 #include <QString>
@@ -53,7 +54,9 @@ public:
     // (SPEC.md §4); otherwise `pattern` (or a common log4cplus default) is tried,
     // and the Log Format dialog is offered when that pattern does not match. Safe
     // to call repeatedly; it replaces the open document.
-    void openFile(const QString &path, const QString &pattern = QString());
+    // `rawPath` is a local path or an ssh:// URL in any accepted spelling; it is
+    // normalized before it becomes a Document path (RemoteLocation.h).
+    void openFile(const QString &rawPath, const QString &pattern = QString());
 
 signals:
     // Panes bind to the active document by signal, not by construction (invariant
@@ -71,6 +74,10 @@ protected:
 
 private slots:
     void chooseFileToOpen();
+    // Open a log on another machine (SPEC.md §3, M11): the Open Remote dialog, and
+    // the File ▸ Remote Hosts submenu rebuilt from the saved-host store.
+    void chooseRemoteToOpen();
+    void refreshRemoteHostsMenu();
     void showFormatDialog();
     void showColumnMenu(const QPoint &pos);
     // Recompute the visible subset from the active document's filters and refresh
@@ -210,6 +217,11 @@ private:
     DocumentView *m_activeView = nullptr;
 
     QMenu   *m_recentMenu = nullptr;
+    QAction *m_openRemoteAction = nullptr;
+    QMenu   *m_remoteHostsMenu = nullptr;
+    // Answers the questions a remote open asks (host key, password). Owned here
+    // because it puts up dialogs parented to this window.
+    std::unique_ptr<GuiSshPrompter> m_sshPrompter;
     QMenu   *m_windowMenu = nullptr;  // the open-views list, rebuilt on aboutToShow
     QAction *m_closeTabAction = nullptr;
     QAction *m_closeAllAction = nullptr;

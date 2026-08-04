@@ -1,5 +1,7 @@
 #include "FormatCache.h"
 
+#include "RemoteLocation.h"
+
 #include <QFileInfo>
 #include <QSettings>
 #include <QVector>
@@ -54,6 +56,13 @@ QVector<Entry> readAll(QSettings &settings)
 
 QString FormatCache::canonicalKey(const QString &path)
 {
+    // A remote URL has no on-disk canonical form, and the absolute-path fallback below
+    // would mangle it into "<cwd>/ssh:/user@host/var/log/a.log" — a key that changes
+    // with the working directory, silently losing the file's remembered format. Its
+    // normal form is already the canonical spelling (RemoteLocation.h).
+    if (RemoteLocation::isRemote(path))
+        return RemoteLocation::normalize(path);
+
     const QFileInfo info(path);
     const QString canonical = info.canonicalFilePath();
     return canonical.isEmpty() ? info.absoluteFilePath() : canonical;

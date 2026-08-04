@@ -30,6 +30,7 @@ public:
     bool isRandomAccess() const override { return true; }
     quint64 identity() const override { return m_identity; }
     bool wasTruncated() const override { return m_truncated; }
+    bool wasReplaced() const override;
 
 private:
     BufferedLogSource() = default;
@@ -38,6 +39,11 @@ private:
     QFile      m_file;
     qint64     m_size = 0;
     quint64    m_identity = 0;
+    // The platform identity OF THE PATH as it stood at open, which is what
+    // wasReplaced() compares against. Distinct from m_identity: that one is the
+    // portable size+mtime stand-in below, which changes on every append and so
+    // cannot answer "was this file replaced".
+    quint64    m_pathIdentity = 0;
     bool       m_truncated = false;
     QByteArray m_buffer;      // backs the QByteArrayView returned by bytes()
 };

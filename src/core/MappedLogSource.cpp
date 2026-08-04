@@ -29,6 +29,7 @@ std::unique_ptr<MappedLogSource> MappedLogSource::open(const QString &path)
 
     auto src = std::unique_ptr<MappedLogSource>(new MappedLogSource());
     src->m_fd = fd;
+    src->m_path = path;
     src->m_identity = (static_cast<quint64>(st.st_dev) << 32) ^ static_cast<quint64>(st.st_ino);
 
     if (!src->remap(static_cast<qint64>(st.st_size))) {
@@ -88,6 +89,18 @@ qint64 MappedLogSource::refreshSize()
     if (current != m_mappedSize)
         remap(current);
     return m_mappedSize;
+}
+
+bool MappedLogSource::wasReplaced() const
+{
+    // Rotation-by-replace: the file now AT THE PATH is a different inode than the one
+    // this mapping holds (rename + recreate). Our fd still follows the old inode — it
+    // sees no change at all — so the path itself must be re-stat'd to notice
+    // (invariant #5, §6). A path that cannot be stat'd yields 0, i.e. "unknown, not
+    // replaced": that is the gap between a rotate's rename and recreate, and the next
+    // tick resolves it rather than triggering a rescan against a file that isn't there.
+    const quint64 current = pathIdentity(m_path);
+    return current != 0 && m_identity != 0 && current != m_identity;
 }
 
 QByteArrayView MappedLogSource::bytes(qint64 offset, qint64 length)

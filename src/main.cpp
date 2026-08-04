@@ -58,9 +58,11 @@ int main(int argc, char *argv[])
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
 
-    parser.addPositionalArgument(QStringLiteral("file"),
-                                 QStringLiteral("Log file to open (optional)."),
-                                 QStringLiteral("[file]"));
+    parser.addPositionalArgument(
+        QStringLiteral("file"),
+        QStringLiteral("Log file to open (optional). Either a local path or a remote "
+                       "log over SSH, spelled ssh://user@host/path/to/file.log."),
+        QStringLiteral("[file]"));
 
     QCommandLineOption patternOpt(
         QStringLiteral("pattern"),

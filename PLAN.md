@@ -192,10 +192,31 @@ Completes the always-watched model from `SPEC.md` §3. The `LogSource` is alread
 
 ---
 
+## M11 — Remote log sources over SSH (post-1.0)
+
+`SPEC.md` §3, `ARCHITECTURE.md` §6.3, formerly `FUTURE.md`'s "Remote log sources (SSH)". Reading a server's log meant scp-ing it down and losing the tail — the one place loftail's "every file is opened live" premise stopped short. §6.2 pre-specified the shape (a local cache behind the same `LogSource`) and this milestone spends that accommodation. It brings in the project's first non-Qt dependency, and makes it optional.
+
+- [x] **`RemoteLocation`** (`src/core`) — the `ssh://user@host:port/path` value type, and the normal form every entry point reduces to before the string becomes a `Document::path()`. That one rule is what makes `viewOfPath()`, the recent-files dedupe, the format-cache key and the session all agree that one remote log is one log. Fixed a latent bug on the way: `FormatCache::canonicalKey()` fell through to `absoluteFilePath()` for a URL, producing a working-directory-dependent key that lost the file's remembered format.
+- [x] **`SpooledLogSource` + `RemoteSpool`** — a remote log is fetched forward into a local spool and read back through an ordinary local source, so the paint path is unchanged and zero-copy. The spool is shared per file and reference-counted, which is what makes `Document::rescan()` during a tail a pointer swap rather than a reconnect on the GUI thread. `refreshSize()` clamps to a fetcher-published committed size; that ordering is the only synchronisation between the two threads, and there is no mutex.
+- [x] **`LogSource::wasReplaced()`** — the rotate-by-replace check moves out of `LiveController` and behind a non-pure virtual, because what has to be re-resolved differs per source (a path re-stat locally, a generation comparison remotely). Non-pure so `MemoryLogSource` and other fakes are untouched. `tst_tail` passing unaltered is the guard that local behavior is byte-identical.
+- [x] **`SshSession` / `SshFetcher`** — the only libssh2-touching files. Host-key verification before any credential is sent (unknown offers accept-once/accept-and-remember; **changed refuses outright**, with no override); agent, then key files, then password or keyboard-interactive. Rotation is detected by comparing `fstat(handle)` with `stat(path)` — the inode substitute — probed once at connect, with a head-compare fallback fired only on suspicion.
+- [x] **Credentials and host keys** — `HostBookmarkStore` (a file, not `QSettings`, because a password may be in it and a file can be made owner-only), and `GuiSshPrompter`. A remembered password is plain text, off by default, and the warning names the file it goes to rather than gesturing at "your configuration".
+- [x] **Entry points** — `ssh://` accepted by the Open dialog, the command line, drag-and-drop (`sftp://` too, which is what a file manager's SSH mount produces), recent files and session restore, plus `File ▸ Open Remote…` and a `File ▸ Remote Hosts` submenu. Saved hosts live in the dialog and that submenu, not a dock pane: every pane binds to the active Document (invariant #7) and a global list has none to bind to.
+- [x] **Build gating** — `option(LOFTAIL_WITH_SSH)`, auto-detected and never `REQUIRED`, because §1 promises the reference build installs nothing extra. Without libssh2 everything still compiles and a remote open says why it cannot proceed. `LOFTAIL_SSH_FETCH=ON` builds libssh2 from source, statically against WinCNG, for the Windows CI job — which has no package manager, and which then needs no new DLL in the portable zip.
+- [x] **Tests.** `tst_remotelocation`, `tst_spooledsource`, `tst_remotetail` (tst_tail's whole matrix over a fake fetcher, plus the two cases with no local counterpart: uncommitted bytes staying invisible, and a rescan not reconnecting), `tst_hostbookmarks`, `tst_remoteopen` (the real MainWindow, offscreen); all network-free. `tst_sshlive` is gated on `LOFTAIL_TEST_SSH_URL` and run by hand.
+
+**Done when:** `loftail ssh://user@host/var/log/app.log` opens, tails, and survives a remote logrotate as silently as a local file does, and a build without libssh2 still builds, tests, and says so.
+
+**Risk:** the CI dependency and the untested transport, not the design. **Nothing in CI exercises a single libssh2 call beyond linking** — the handshake, host-key, agent and keyboard-interactive paths, and whether a real `sftp-server`'s FSTAT tracks the handle, are covered only by the manual `tst_sshlive` harness. SFTP throughput on a large log is unmeasured; if priming proves slow, the opt-in "fetch only the end" becomes the default rather than an option. The Windows source build of libssh2 and the AppImage's bundling of it are both first exercised by CI, not locally.
+
+---
+
 ## Deliberately deferred
 
-Later-release features are catalogued in `FUTURE.md` (compressed and SSH sources, bookmarks; multi-file views shipped in M9, and format autodetection in M8); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.
+Later-release features are catalogued in `FUTURE.md` (compressed sources, bookmarks; multi-file views shipped in M9, format autodetection in M8, and SSH sources in M11); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.
 
 Column reorder/hide with remembered layout (`SPEC.md` §5) is additive to the M2 spine and lands in M2b. **Done (M2b):** `LogView` drives its columns through a `QHeaderView` (reorder, resize, hide via the header context menu); the layout round-trips through the header's own `saveState()`/`restoreState()`, persisted to `QSettings` — full session restore is folded in at M5. (Preset export/import, once deferred, is now in M5.)
+
+Note that M11's spool is a **bytes** cache, not an index cache, and so does not reopen the ruling below: it holds a copy of the remote file's contents, is discarded when the log is closed, and needs no invalidation or versioning because it is never reused across runs.
 
 Explicitly ruled out for now: caching the index to disk. It needs invalidation, versioning, and a cache location — real complexity to solve a problem that may not exist. Revisit only if the M2a measurements miss the §11 indexing target.

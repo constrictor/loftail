@@ -29,13 +29,28 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
+            libssh2-1-dev \
             libfuse2 file desktop-file-utils
 
       - name: Configure + build (Debug) and test
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug 2>&1 | tee configure.log
+          # SSH support is AUTO-detected, so a missing libssh2 would quietly disable
+          # remote logs and the job would still go green. It is installed above, so
+          # "not found" here means the dependency broke — fail loudly.
+          grep -q "SSH remote sources: ENABLED" configure.log \
+            || { echo "::error::libssh2 was not detected; remote log support is off"; exit 1; }
           cmake --build build
           QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+
+      # The no-SSH configuration is a supported build, not a theoretical one
+      # (ARCHITECTURE.md §1: the reference build installs nothing extra). Prove it
+      # still builds and that its whole test suite passes.
+      - name: Configure + build + test without SSH
+        run: |
+          cmake -S . -B build-nossh -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLOFTAIL_WITH_SSH=OFF
+          cmake --build build-nossh
+          QT_QPA_PLATFORM=offscreen ctest --test-dir build-nossh --output-on-failure
 
       - name: Build AppImage
         run: packaging/linux/build-appimage.sh Release
@@ -49,6 +64,17 @@ jobs:
           APPIMG=$(ls dist/loftail-*-x86_64.AppImage | head -n1)
           chmod +x "$APPIMG"
           APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMG" --version
+          # linuxdeploy resolves dependencies through ldd, so libssh2 (and the crypto
+          # it pulls in) should have been bundled. Verify rather than assume: a
+          # --version smoke test does not open a remote log, so a missing library
+          # would only surface for a user, on the first ssh:// open.
+          APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMG" --appimage-extract >/dev/null
+          if ! ls squashfs-root/usr/lib/libssh2.so* >/dev/null 2>&1; then
+            echo "::error::libssh2 was not bundled into the AppImage"
+            exit 1
+          fi
+          ls -l squashfs-root/usr/lib/libssh2.so*
+          rm -rf squashfs-root
 
       - uses: actions/upload-artifact@v4
         with:
@@ -89,7 +115,13 @@ jobs:
       - name: Configure + build and test
         shell: pwsh
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          # This runner has no package manager, so libssh2 is built from source
+          # (-DLOFTAIL_SSH_FETCH=ON) — statically, against Windows' own CNG crypto.
+          # That means no OpenSSL anywhere and nothing new for windeployqt or the
+          # portable zip to carry, so the missing-DLL trap the smoke test below
+          # guards against stays satisfied. Off by default so ordinary and offline
+          # builds do no configure-time network access.
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLOFTAIL_SSH_FETCH=ON
           cmake --build build
           $env:QT_QPA_PLATFORM = "offscreen"
           ctest --test-dir build --output-on-failure
@@ -169,6 +201,9 @@ jobs:
     # macOS SDKs removed ("framework 'AGL' not found"). Use the Intel macos-13
     # runner and pin Xcode 14.3.1 (macOS 13.3 SDK), which still ships AGL, so
     # the reference Qt 6.4 links.
+    #
+    # If re-enabled: `brew install libssh2` gives remote log support here too, and
+    # macdeployqt will need the same bundling check the AppImage step does.
     runs-on: macos-13
     steps:
       - uses: actions/checkout@v4

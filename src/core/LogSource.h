@@ -47,12 +47,38 @@ public:
     // True if the file shrank below the last-indexed size since open — a
     // copytruncate or truncation. Detection only; ingestion is M6.
     virtual bool wasTruncated() const = 0;
+
+    // True when the thing at this source's ORIGIN is no longer the thing we hold: a
+    // rename+recreate at a local path, or a rotated remote file. It cannot be derived
+    // from identity() alone — an open mmap follows the inode it mapped even after the
+    // path is renamed away, which is precisely the case this reports (invariant #5).
+    //
+    // Non-pure on purpose: only sources with an origin to re-resolve implement it, so
+    // in-memory and synthetic sources (tests/MemoryLogSource.h) need no boilerplate to
+    // say the obviously-correct "no".
+    virtual bool wasReplaced() const { return false; }
 };
 
-// Open the platform-appropriate source for a local path: MappedLogSource (mmap)
-// on POSIX, BufferedLogSource on Windows. Returns nullptr on failure. The choice
-// is platform-driven, not mode-driven (invariant #5, §6).
-std::unique_ptr<LogSource> openLogSource(const QString &path);
+// Whether opening may connect to a remote host (and therefore block and prompt).
+enum class OpenPolicy {
+    // A user-initiated open. A remote path with no live spool connects, which may
+    // prompt for a password and block for the connect timeout.
+    Interactive,
+    // Reopen only what is already connected. Used by Document::rescan(), which runs
+    // from the live watch tick on the GUI thread mid-tail: a rotation must never turn
+    // into a reconnect there. Fails fast for a remote path with no live spool.
+    Reuse,
+};
+
+// Open the appropriate source for `path`: MappedLogSource (mmap) on POSIX,
+// BufferedLogSource on Windows, or a SpooledLogSource over a local cache for an
+// `ssh://` URL (§6.3). Returns nullptr on failure, filling `error` when given — the
+// remote path has failure modes ("host unreachable", "SSH support is not built in")
+// that a caller cannot phrase for itself. The local choice is platform-driven, not
+// mode-driven (invariant #5, §6).
+std::unique_ptr<LogSource> openLogSource(const QString &path,
+                                         OpenPolicy policy = OpenPolicy::Interactive,
+                                         QString *error = nullptr);
 
 // The file-identity token for the file CURRENTLY at `path`, in the same encoding
 // LogSource::identity() uses (device+inode on POSIX). Unlike an open source — whose

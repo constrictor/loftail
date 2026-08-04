@@ -22,6 +22,9 @@ class LogModel;
 // maybeChanged() signal; the controller re-checks size/identity and decides what
 // happened. UI-free (QtCore only) so the whole thing is testable without a window,
 // and the controller can also be driven synchronously (checkNow()) for determinism.
+//
+// M11: a remote path is POLL-ONLY — there is no local path to watch, and the poll
+// costs a local stat of the spool rather than a network round trip (§6.3).
 class LiveWatcher : public QObject
 {
     Q_OBJECT
@@ -101,7 +104,6 @@ private:
     LogModel    *m_model;
     LiveWatcher *m_watcher = nullptr;
     qint64       m_lastSize = 0;
-    quint64      m_lastIdentity = 0;
     bool         m_started = false;
 };
 

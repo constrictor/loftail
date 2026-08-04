@@ -13,7 +13,19 @@ std::unique_ptr<BufferedLogSource> BufferedLogSource::open(const QString &path)
         return nullptr;
     src->m_size = src->m_file.size();
     src->m_identity = src->computeIdentity();
+    src->m_pathIdentity = pathIdentity(path);
     return src;
+}
+
+bool BufferedLogSource::wasReplaced() const
+{
+    // Compare the path's identity NOW against the one captured at open — not against
+    // identity(), which is the size+mtime stand-in below and moves on every append.
+    // On Windows pathIdentity() is still a stub returning 0, so this is false there
+    // and rotation-by-replace falls back to the size/truncation checks, exactly as
+    // before (LogSourceFactory.cpp, M6 Windows work).
+    const quint64 current = pathIdentity(m_file.fileName());
+    return current != 0 && m_pathIdentity != 0 && current != m_pathIdentity;
 }
 
 quint64 BufferedLogSource::computeIdentity() const

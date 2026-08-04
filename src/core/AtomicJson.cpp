@@ -41,6 +41,21 @@ bool AtomicJson::write(const QString &path, const QJsonDocument &doc, QString *e
     return true;
 }
 
+bool AtomicJson::writePrivate(const QString &path, const QJsonDocument &doc, QString *error)
+{
+    if (!write(path, doc, error))
+        return false;
+    // After the rename, not before: commit() replaces the file at `path`, so a mode
+    // set on the temporary file would not survive. A failure here is worth reporting
+    // — the caller wrote a secret expecting it to be unreadable by others.
+    if (!QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner)) {
+        if (error)
+            *error = QStringLiteral("Cannot restrict permissions on %1").arg(path);
+        return false;
+    }
+    return true;
+}
+
 QJsonDocument AtomicJson::read(const QString &path, bool *ok)
 {
     QFile file(path);

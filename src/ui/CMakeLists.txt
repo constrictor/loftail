@@ -1,5 +1,12 @@
 # loftail_ui: the Qt Widgets layer. Links QtWidgets and loftail_core.
 add_library(loftail_ui STATIC
+    # M11 — remote logs: the Open Remote dialog (which also manages saved hosts, since
+    # a global list has no active Document to bind a pane to — invariant #7) and the
+    # widget-side answers to the host-key and password questions.
+    OpenRemoteDialog.cpp
+    OpenRemoteDialog.h
+    SshPromptDialogs.cpp
+    SshPromptDialogs.h
     MainWindow.cpp
     MainWindow.h
     # Per-file machinery (model, controllers, format choice) and one view onto it

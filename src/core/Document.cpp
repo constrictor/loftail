@@ -5,6 +5,7 @@
 #include "LogSource.h"
 #include "ManualFormatProvider.h"
 #include "PatternCompiler.h"
+#include "RemoteLocation.h"
 #include "TimestampParser.h"
 
 #include <QRegularExpression>
@@ -54,11 +55,16 @@ void Document::recomputeDisplayZone()
     m_displayZone = m_sourceZone;
 }
 
-bool Document::prepare(const QString &path,
+bool Document::prepare(const QString &rawPath,
                        IFormatProvider &provider,
                        Encoding requestedEncoding,
                        const QTimeZone &sourceZone)
 {
+    // A remote URL is reduced to its one spelling HERE, not only at the UI entry
+    // point: path() is what the session file stores and what viewOfPath() compares,
+    // so the invariant has to hold no matter who opened the Document (RemoteLocation.h).
+    const QString path = RemoteLocation::normalize(rawPath);
+
     m_lastError.clear();
     m_formatError = CompileError{};
     m_index = RecordIndex();
@@ -75,9 +81,15 @@ bool Document::prepare(const QString &path,
     recomputeViewBounds();
     invalidateTimeBaselines();
 
-    m_source = openLogSource(path);
+    // Interactive: a never-yet-connected remote path connects here, which may prompt
+    // and may block for the connect timeout (§6.3). A local path never does either.
+    QString openError;
+    m_source = openLogSource(path, OpenPolicy::Interactive, &openError);
     if (!m_source) {
-        m_lastError = QStringLiteral("Cannot open file: %1").arg(path);
+        // A remote failure phrases itself ("host unreachable", "not built in"); a
+        // local one has only the path to report, as before.
+        m_lastError = openError.isEmpty() ? QStringLiteral("Cannot open file: %1").arg(path)
+                                          : openError;
         return false;
     }
 
@@ -147,14 +159,19 @@ bool Document::rescan()
     // index's contents keeps that binding valid; we only clear its active subset.
     m_filtered.clear();
     invalidateTimeBaselines(); // every record is about to be replaced
-    m_source = openLogSource(m_path);
+    // Reuse: this runs from the live watch tick, on the GUI thread, so a rotation must
+    // not become a reconnect here. A remote file's spool is shared and already live,
+    // which makes this a pointer swap rather than any network work at all (§6.3).
+    QString openError;
+    m_source = openLogSource(m_path, OpenPolicy::Reuse, &openError);
     if (!m_source) {
         m_index = RecordIndex();
         m_index.rebuildBlockSums();
         m_runs.clear();
         m_selectedRun = -1;
         recomputeViewBounds();
-        m_lastError = QStringLiteral("Cannot reopen file: %1").arg(m_path);
+        m_lastError = openError.isEmpty() ? QStringLiteral("Cannot reopen file: %1").arg(m_path)
+                                          : openError;
         return false;
     }
 

@@ -81,6 +81,58 @@ foreach(unit highlight matchcriteria presetstore session)
     add_test(NAME tst_${unit} COMMAND tst_${unit})
 endforeach()
 
+# M11 — remote sources, path layer. The ssh:// URL value type, the one-spelling
+# normalization every entry point relies on, the display/availability helpers, and
+# the format-cache key that used to mangle a URL into a working-directory-dependent
+# string. No libssh2 and no network, so it runs in every build configuration.
+qt_add_executable(tst_remotelocation tst_remotelocation.cpp)
+target_link_libraries(tst_remotelocation PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_remotelocation COMMAND tst_remotelocation)
+
+# M11 — the spooled source: the committed-size clamp that stands in for a lock
+# between the GUI thread and the fetcher thread, and generation-based rotation. Uses
+# tests/FakeFetcher.h, so no network and no libssh2 — this runs everywhere.
+qt_add_executable(tst_spooledsource tst_spooledsource.cpp)
+target_link_libraries(tst_spooledsource PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_spooledsource COMMAND tst_spooledsource)
+
+# M11 — `tail -f` over a remote log: tst_tail's matrix (append with a split
+# multi-line record, truncate, rotate, filtered/highlighted append) run again over a
+# SpooledLogSource, plus the two cases with no local counterpart — uncommitted bytes
+# staying invisible, and a rescan mid-tail not reconnecting. Also network-free, and
+# NOT gated on POSIX: the spool is an ordinary local file on every platform.
+qt_add_executable(tst_remotetail tst_remotetail.cpp)
+target_link_libraries(tst_remotetail PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_remotetail COMMAND tst_remotetail)
+
+# M11 — a remote log through the REAL MainWindow, offscreen and network-free (the
+# transport is FakeFetcher.h). Covers the promise that an ssh:// URL works wherever a
+# path does: one tab however it is spelled, the tab/title/status wording, recent
+# files, the session round trip, and the menu's behavior in a build without SSH.
+qt_add_executable(tst_remoteopen tst_remoteopen.cpp)
+target_link_libraries(tst_remoteopen PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_remoteopen COMMAND tst_remoteopen)
+set_tests_properties(tst_remoteopen PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# M11 — saved hosts and, more to the point, the containment rules around a password
+# the user chose to keep in clear text: written only when asked for, erased when
+# unasked, owner-only on disk, and never present in any of the path strings that get
+# written to the session, the recent-files list or a window title.
+qt_add_executable(tst_hostbookmarks tst_hostbookmarks.cpp)
+target_link_libraries(tst_hostbookmarks PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_hostbookmarks COMMAND tst_hostbookmarks)
+
+# M11 — the live SSH harness, and the ONLY place libssh2 is exercised beyond linking.
+# Gated twice: it is not built without SSH support, and it QSKIPs unless
+# LOFTAIL_TEST_SSH_URL names a disposable remote path. CI never runs it, so the
+# handshake, host-key and authentication paths are verified by hand — say so plainly
+# rather than letting a green pipeline imply otherwise (PLAN.md M11 risk).
+if(LOFTAIL_HAVE_SSH)
+    qt_add_executable(tst_sshlive tst_sshlive.cpp)
+    target_link_libraries(tst_sshlive PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_sshlive COMMAND tst_sshlive)
+endif()
+
 # M6 — the tail harness: append (incl. a multi-line record split across writes),
 # truncate, rotate, and filtered/highlighted append, all driven synchronously via
 # LiveController::checkNow() against a real temp file. Core-only, GUILESS.

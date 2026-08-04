@@ -27,13 +27,13 @@ Compare two logs, or two points in one log, without alt-tabbing: split the docum
 
 Open rotated logs directly in their compressed form (`.gz` to start), without decompressing them by hand first.
 
-**Already accommodated:** file access goes through the `LogSource` interface, and the indexer is constrained to a single forward pass with no seek-and-re-read — because gzip has no random access without an index. See `ARCHITECTURE.md` §6.2. A `CompressedLogSource` decompresses forward into a local cache that the paint path reads from.
+**Already accommodated:** file access goes through the `LogSource` interface, and the indexer is constrained to a single forward pass with no seek-and-re-read — because gzip has no random access without an index. See `ARCHITECTURE.md` §6.2. A `CompressedLogSource` decompresses forward into a local cache that the paint path reads from. That cache now exists: M11 built exactly this shape for SSH (`SpooledLogSource` over a `RemoteFetcher`, `ARCHITECTURE.md` §6.3), so a compressed source is a second fetcher rather than a second mechanism.
 
-## Remote log sources (SSH)
+## ~~Remote log sources (SSH)~~ — shipped
 
-Retrieve and follow logs from remote hosts over SSH, rather than only local files. Live updates work the same way — the remote file is polled or streamed for appends.
+~~Retrieve and follow logs from remote hosts over SSH, rather than only local files. Live updates work the same way — the remote file is polled or streamed for appends.~~
 
-**Already accommodated:** the same `LogSource` interface and single-forward-pass indexer as compressed logs; `isRandomAccess()` already lets the indexer branch for a source where every read carries latency. See `ARCHITECTURE.md` §6.2.
+**Shipped in M11**; the behavior is in `SPEC.md` §3 and the design in `ARCHITECTURE.md` §6.3. The accommodation that paid off was *not* the one this entry named. `isRandomAccess()` was expected to become false for a remote source, and it did not: fetching forward into a local spool file makes a remote log randomly seekable after all, so the paint path needed no change whatsoever. What actually made this additive was the **single-forward-pass indexer** — because the indexer only ever scans forward and never seeks back, the spool can be filled and indexed at the same time, which is what turns a remote log into a live one rather than a download. The `LogSource` interface itself held up exactly as intended: two of its six methods gained a remote implementation and nothing above it changed.
 
 ## Bookmarks
 
@@ -47,4 +47,4 @@ Mark records of interest and jump between them, so a spot found once can be retu
 
 - `SPEC.md` — what has shipped. When a feature here ships, its user-visible behavior moves into `SPEC.md` and its entry here is struck through, as "Multiple open files" now is.
 - `ARCHITECTURE.md` — the accommodations referenced above are implemented, not deferred.
-- `PLAN.md` — milestone M8 implemented format autodetection and M9 multiple open files (including the move from dock widgets to a document area). The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.
+- `PLAN.md` — milestone M8 implemented format autodetection, M9 multiple open files (including the move from dock widgets to a document area), and M11 remote logs over SSH. The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.

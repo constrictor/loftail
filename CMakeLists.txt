@@ -23,8 +23,82 @@ endif()
 # Target Qt 6.4 (the version in Ubuntu 24.04's repos); dev machines may have newer.
 # See ARCHITECTURE.md §1.
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Widgets Test)
+# Network is used only by the SSH transport (QTcpSocket, M11) and is optional for
+# exactly that reason: a build without libssh2 must not start needing a new Qt module.
+find_package(Qt6 6.4 QUIET COMPONENTS Network)
 
 qt_standard_project_setup()
+
+# ---------------------------------------------------------------------------
+# Remote log sources over SSH (M11) — the project's only non-Qt dependency, and
+# an OPTIONAL one. ARCHITECTURE.md §1 promises the reference build works with the
+# stock Ubuntu toolchain and nothing separately installed, so libssh2 is detected,
+# never REQUIRED: without it loftail builds, tests and runs exactly as before, and
+# says plainly that remote logs are unavailable (RemoteSpool.cpp).
+option(LOFTAIL_WITH_SSH "Build SSH remote log source support (needs libssh2)" ON)
+# Off by default so ordinary and offline builds stay hermetic — no configure-time
+# network. The Windows CI job turns it on, because that runner has no package manager.
+option(LOFTAIL_SSH_FETCH "Build libssh2 from source if it is not installed" OFF)
+
+set(LOFTAIL_HAVE_SSH OFF)
+if(LOFTAIL_WITH_SSH)
+    # libssh2 ships a CMake package config; Debian/Ubuntu's libssh2-1-dev installs it.
+    find_package(Libssh2 CONFIG QUIET)
+    if(TARGET Libssh2::libssh2_shared)
+        set(LOFTAIL_SSH_TARGET Libssh2::libssh2_shared)
+    elseif(TARGET Libssh2::libssh2_static)
+        set(LOFTAIL_SSH_TARGET Libssh2::libssh2_static)
+    elseif(TARGET Libssh2::libssh2)
+        set(LOFTAIL_SSH_TARGET Libssh2::libssh2)
+    endif()
+
+    # Fall back to pkg-config, which is how libssh2 is found on distributions whose
+    # package predates the CMake config.
+    if(NOT LOFTAIL_SSH_TARGET)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(LIBSSH2 QUIET IMPORTED_TARGET libssh2)
+            if(TARGET PkgConfig::LIBSSH2)
+                set(LOFTAIL_SSH_TARGET PkgConfig::LIBSSH2)
+            endif()
+        endif()
+    endif()
+
+    if(NOT LOFTAIL_SSH_TARGET AND LOFTAIL_SSH_FETCH)
+        # Static, with Windows' own CNG crypto: no OpenSSL anywhere, so the portable
+        # zip needs no extra DLL and windeployqt stays untouched (PLAN.md M11 risk 2).
+        include(FetchContent)
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+        set(ENABLE_ZLIB_COMPRESSION OFF CACHE BOOL "" FORCE)
+        if(WIN32)
+            set(CRYPTO_BACKEND "WinCNG" CACHE STRING "" FORCE)
+        endif()
+        FetchContent_Declare(libssh2
+            GIT_REPOSITORY https://github.com/libssh2/libssh2.git
+            GIT_TAG libssh2-1.11.1
+            GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(libssh2)
+        if(TARGET libssh2_static)
+            set(LOFTAIL_SSH_TARGET libssh2_static)
+        elseif(TARGET libssh2)
+            set(LOFTAIL_SSH_TARGET libssh2)
+        endif()
+    endif()
+
+    if(LOFTAIL_SSH_TARGET)
+        set(LOFTAIL_HAVE_SSH ON)
+    endif()
+endif()
+
+if(LOFTAIL_HAVE_SSH)
+    message(STATUS "SSH remote sources: ENABLED (${LOFTAIL_SSH_TARGET})")
+else()
+    message(STATUS "SSH remote sources: DISABLED "
+                   "(libssh2 not found; install libssh2-1-dev, or configure with "
+                   "-DLOFTAIL_SSH_FETCH=ON to build it from source)")
+endif()
 
 enable_testing()
 

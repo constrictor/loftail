@@ -25,7 +25,8 @@ class FormatCache
 {
 public:
     // The stored key for a path: its canonical form, falling back to the absolute
-    // path when the file does not yet exist on disk.
+    // path when the file does not yet exist on disk. A remote `ssh://` URL is keyed
+    // by its normal form instead — it has no on-disk canonical path (M11).
     static QString canonicalKey(const QString &path);
 
     // The saved settings for `path`, or nullopt when the file has not been seen.

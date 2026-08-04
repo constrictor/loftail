@@ -20,6 +20,12 @@ namespace AtomicJson {
 // truncated file when the directory cannot be created or the write/commit fails.
 bool write(const QString &path, const QJsonDocument &doc, QString *error = nullptr);
 
+// As write(), but the resulting file is readable and writable by its owner ONLY.
+// For a file that may hold a secret: the host bookmark store, when the user has
+// chosen to save a password (M11, SPEC.md §3). Permissions are applied after the
+// atomic rename, since the rename replaces the file and with it its mode.
+bool writePrivate(const QString &path, const QJsonDocument &doc, QString *error = nullptr);
+
 // Read and parse `path`. `*ok` (when given) is false on a missing file or a parse
 // error; the returned document is then null.
 QJsonDocument read(const QString &path, bool *ok = nullptr);

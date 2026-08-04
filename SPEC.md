@@ -32,6 +32,7 @@ It runs on Windows, macOS, and Linux.
 - Open a log file via menu, toolbar, keyboard shortcut, or drag-and-drop onto the window.
 - **Several logs can be open at once**, each in its own tab (§5a). Opening a file adds a tab rather than replacing what is on screen; dropping several files at once opens all of them. Opening a file that is already open raises its tab instead of opening it twice.
 - **From the command line:** `loftail <file>` opens that file directly, at its end and following, like every other open (see live updates below). A `--pattern <p>` switch supplies the log format for a file loftail has not seen before.
+- **A log on another machine opens the same way**, written as an `ssh://user@host/path/to/file.log` address. It is accepted anywhere a path is: the Open dialog, the command line, a drag-and-drop, the recent-files list, and the restored session. See "Remote logs" below.
 - **Multiple instances may run simultaneously.** loftail does not enforce a single instance; launching it again opens an independent window with its own files and its own filters.
 - The 10 most recently opened files are listed for quick reopening.
 - Opening a large file shows progress and remains responsive; the view populates as scanning proceeds rather than blocking until it finishes.
@@ -45,6 +46,18 @@ It runs on Windows, macOS, and Linux.
 - Active filters and highlighters apply to incoming records exactly as they do to existing ones.
 - If the file is rotated or truncated by the writing application, loftail detects this and reloads rather than showing stale or corrupt data. This happens silently — no notice is shown.
 - Because loftail always holds the file open for reading, it must never prevent the writing application from appending to, rotating, or truncating it. Observing a log must not disturb the process producing it.
+
+### Remote logs
+
+- **A remote log behaves exactly like a local one.** It opens at its end and follows; filters, highlighters, runs, the log format and the remembered session all work identically. Rotation and truncation on the far end are detected and reloaded silently, just as they are locally.
+- **Addresses are written `ssh://user@host:port/path`.** The user and port may be omitted (your SSH configuration and port 22 are assumed). `sftp://` is accepted as the same thing, so a file dragged out of a file manager's SSH mount opens. Whatever spelling is used, one log is one tab: reopening it by a different spelling raises the tab that is already showing it.
+- **File ▸ Open Remote…** offers the same thing as a form, and remembers hosts. Saved hosts and their logs then appear under **File ▸ Remote Hosts** for one-click reopening.
+- **Signing in.** An SSH agent or one of your usual `~/.ssh` keys is tried first and needs no interaction. If the server insists on a password, loftail asks for it, and asks **once per host** however many of that host's logs are open — including when a session is restored.
+- **Unknown hosts are confirmed, changed keys are refused.** A host not in your `known_hosts` shows its SHA256 fingerprint and can be accepted once or accepted and remembered; nothing is sent to it until you do. If a host's key has *changed*, loftail will not connect at all, because that is indistinguishable from an intercepted connection.
+- **A remembered password is stored as plain text.** It is off by default, and the option says so plainly and names the file it would be written to. The file is readable only by its owner. Nothing is encrypted, and loftail does not claim otherwise — an SSH key or agent is the safer choice.
+- **The log is cached locally while you read it.** The copy lives in the system cache directory, is removed when the log is closed, and is what makes scrolling and searching a remote log as quick as a local one. A very large log can be opened from its end only, in which case the status bar says the beginning is not shown.
+- **Connection trouble is reported, not popped up.** A failure while opening explains itself in the status bar; one that happens while following shows there too, and loftail keeps trying to reconnect. Following a flaky link never produces a dialog.
+- **A build without SSH support** says so: the remote menu entries are visible but disabled and explain why.
 
 ### Runs
 

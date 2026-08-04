@@ -67,7 +67,10 @@ public:
     // thread — the controller calls prepare() on the GUI thread (fast), then
     // streams records into index() from a background scan. Returns false only on an
     // unopenable file (see open() for the bad-pattern semantics).
-    bool prepare(const QString &path,
+    //
+    // `rawPath` is a local path or an ssh:// URL in any accepted spelling; path()
+    // afterwards is its normal form, which is what the session stores (M11).
+    bool prepare(const QString &rawPath,
                  IFormatProvider &provider,
                  Encoding requestedEncoding = Encoding::Auto,
                  const QTimeZone &sourceZone = QTimeZone());

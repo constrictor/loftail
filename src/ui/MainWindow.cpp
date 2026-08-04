@@ -18,8 +18,13 @@
 #include "LogModel.h"
 #include "LogSource.h"
 #include "ManualFormatProvider.h"
+#include "HostBookmarkStore.h"
+#include "OpenRemoteDialog.h"
 #include "PresetPane.h"
+#include "RemoteLocation.h"
 #include "RunPane.h"
+#include "SshFetcher.h"
+#include "SshPromptDialogs.h"
 #include "SessionStore.h"
 
 #include <QAction>
@@ -103,10 +108,18 @@ MainWindow::MainWindow(QWidget *parent)
                    | QMainWindow::AllowTabbedDocks);
     setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
 
+    // Remote logs ask questions — an unknown host key, a password — and this is what
+    // answers them. Installed unconditionally: in a build without SSH nothing ever
+    // calls it, and having it here means the two builds differ in one place only.
+    m_sshPrompter = std::make_unique<GuiSshPrompter>(this);
+    m_sshPrompter->setPasswordStorePath(HostBookmarkStore(HostBookmarkStore::defaultDir()).filePath());
+    setSshPrompter(m_sshPrompter.get());
+
     m_progressBar = new QProgressBar(this);
     m_progressBar->setMaximumWidth(200);
     m_progressBar->setVisible(false);
     m_statusLabel = new QLabel(QStringLiteral("No file open"), this);
+    m_statusLabel->setObjectName(QStringLiteral("statusLabel")); // findChild, for tests
     statusBar()->addWidget(m_statusLabel, 1);
     statusBar()->addPermanentWidget(m_progressBar);
 
@@ -181,6 +194,10 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     closeAllDocuments();
+    // The prompter is about to be destroyed; a stale pointer would outlive it and be
+    // reachable from any later open (a second window, in the multi-instance case).
+    if (sshPrompter() == m_sshPrompter.get())
+        setSshPrompter(nullptr);
 }
 
 void MainWindow::buildMenus()
@@ -190,8 +207,30 @@ void MainWindow::buildMenus()
     openAction->setShortcut(QKeySequence::Open);
     connect(openAction, &QAction::triggered, this, &MainWindow::chooseFileToOpen);
 
+    // Remote logs (M11, SPEC.md §3). Both entries are present whether or not SSH was
+    // compiled in — a disabled item with a tooltip explains the situation, where a
+    // missing one would just look like the feature does not exist.
+    m_openRemoteAction = fileMenu->addAction(QStringLiteral("Open &Remote..."));
+    m_openRemoteAction->setObjectName(QStringLiteral("openRemoteAction")); // findChild, for tests
+    m_openRemoteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")));
+    connect(m_openRemoteAction, &QAction::triggered, this, &MainWindow::chooseRemoteToOpen);
+
     m_recentMenu = fileMenu->addMenu(QStringLiteral("Open &Recent"));
     refreshRecentFilesMenu();
+
+    m_remoteHostsMenu = fileMenu->addMenu(QStringLiteral("Remote &Hosts"));
+    m_remoteHostsMenu->setObjectName(QStringLiteral("remoteHostsMenu"));
+    refreshRemoteHostsMenu();
+
+#if !defined(LOFTAIL_HAVE_SSH)
+    const QString noSsh = QStringLiteral(
+        "This copy of loftail was built without SSH support, so remote logs cannot "
+        "be opened. Rebuild with libssh2 available to enable it.");
+    m_openRemoteAction->setEnabled(false);
+    m_openRemoteAction->setToolTip(noSsh);
+    m_remoteHostsMenu->setEnabled(false);
+    m_remoteHostsMenu->setToolTip(noSsh);
+#endif
 
     fileMenu->addSeparator();
     m_closeTabAction = fileMenu->addAction(QStringLiteral("&Close Tab"));
@@ -567,7 +606,7 @@ void MainWindow::updateActionStates()
     }
 
     setWindowTitle(hasFile
-                       ? QStringLiteral("loftail — %1").arg(QFileInfo(ctx->doc->path()).fileName())
+                       ? QStringLiteral("loftail — %1").arg(logSourceDisplayName(ctx->doc->path()))
                        : QStringLiteral("loftail"));
 }
 
@@ -578,6 +617,62 @@ void MainWindow::chooseFileToOpen()
         QStringLiteral("Log files (*.log *.txt);;All files (*)"));
     if (!path.isEmpty())
         openFile(path);
+}
+
+void MainWindow::chooseRemoteToOpen()
+{
+    HostBookmarkStore store(HostBookmarkStore::defaultDir());
+    OpenRemoteDialog dialog(&store, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    refreshRemoteHostsMenu(); // the dialog may have saved or removed a host
+    const QString url = dialog.chosenUrl();
+    if (!url.isEmpty())
+        openFile(url);
+}
+
+void MainWindow::refreshRemoteHostsMenu()
+{
+    if (!m_remoteHostsMenu)
+        return;
+    m_remoteHostsMenu->clear();
+
+    const HostBookmarkStore store(HostBookmarkStore::defaultDir());
+    const QVector<HostBookmark> hosts = store.all();
+    if (hosts.isEmpty()) {
+        QAction *none = m_remoteHostsMenu->addAction(QStringLiteral("(none saved)"));
+        none->setEnabled(false);
+        return;
+    }
+
+    for (const HostBookmark &host : hosts) {
+        if (host.paths.isEmpty()) {
+            // A host with no remembered log opens the dialog pre-filled rather than
+            // guessing at a path.
+            QAction *action = m_remoteHostsMenu->addAction(
+                QStringLiteral("%1...").arg(host.displayName()));
+            connect(action, &QAction::triggered, this, [this, host] {
+                HostBookmarkStore store(HostBookmarkStore::defaultDir());
+                OpenRemoteDialog dialog(&store, this);
+                dialog.preset(host, QString());
+                if (dialog.exec() == QDialog::Accepted && !dialog.chosenUrl().isEmpty())
+                    openFile(dialog.chosenUrl());
+                refreshRemoteHostsMenu();
+            });
+            continue;
+        }
+        QMenu *hostMenu = m_remoteHostsMenu->addMenu(host.displayName());
+        for (const QString &path : host.paths) {
+            QAction *action = hostMenu->addAction(path);
+            const QString url = host.locationFor(path).toString();
+            connect(action, &QAction::triggered, this, [this, url, host, path] {
+                // Carry this host's poll cadence and tail-start choice into the
+                // fetcher about to be built for it.
+                setSshFetchOptions(host.locationFor(path), host.fetchOptions());
+                openFile(url);
+            });
+        }
+    }
 }
 
 void MainWindow::closeAllDocuments()
@@ -616,8 +711,15 @@ void MainWindow::closeAllDocuments()
     updateActionStates();
 }
 
-void MainWindow::openFile(const QString &path, const QString &pattern)
+void MainWindow::openFile(const QString &rawPath, const QString &pattern)
 {
+    // Normalize a remote URL to its one spelling FIRST, before it becomes a Document
+    // path (RemoteLocation.h). Everything downstream compares these strings —
+    // viewOfPath(), the recent-files dedupe, the format-cache key, the session — so
+    // two spellings of one remote file would otherwise open two tabs on it and
+    // remember its format twice. A local path passes through untouched.
+    const QString path = RemoteLocation::normalize(rawPath);
+
     // Per-file recall (SPEC.md §4): a file already configured reopens with its
     // saved format and no prompt. A never-seen file gets the supplied (or default)
     // pattern, and the dialog is offered when that pattern does not match.
@@ -646,10 +748,23 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     // entirely (SPEC.md §4), and an aborted open must leave the open file alone.
     auto doc = std::make_unique<Document>();
     ManualFormatProvider provider(settings.pattern);
-    if (!doc->prepare(path, provider, settings.encoding, settings.sourceZone.toZone())) {
-        m_statusLabel->setText(QStringLiteral("Cannot open %1: %2")
-                                   .arg(QFileInfo(path).fileName(), doc->lastError()));
-        return false;
+    {
+        // Opening a remote log connects, which blocks this thread for as long as the
+        // handshake and authentication take (bounded by the SSH timeout). Say so with
+        // the cursor — the prompts that may appear during it are modal dialogs, which
+        // is also what stops a second open from starting on top of this one.
+        const bool remote = RemoteLocation::isRemote(path);
+        if (remote)
+            QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+        const bool prepared =
+            doc->prepare(path, provider, settings.encoding, settings.sourceZone.toZone());
+        if (remote)
+            QGuiApplication::restoreOverrideCursor();
+        if (!prepared) {
+            m_statusLabel->setText(QStringLiteral("Cannot open %1: %2")
+                                       .arg(logSourceDisplayName(path), doc->lastError()));
+            return false;
+        }
     }
     doc->setTimeDisplay(settings.timeDisplay);
 
@@ -680,13 +795,13 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
             if (detector.detected())
                 seed.pattern = detector.detectedPattern();
 
-            LogFormatDialog dlg(QFileInfo(path).fileName(), sample, seed, this);
+            LogFormatDialog dlg(logSourceDisplayName(path), sample, seed, this);
             if (dlg.exec() == QDialog::Accepted) {
                 settings = dlg.settings();
                 ManualFormatProvider chosen(settings.pattern);
                 if (!doc->prepare(path, chosen, settings.encoding, settings.sourceZone.toZone())) {
                     m_statusLabel->setText(QStringLiteral("Cannot open %1: %2")
-                                               .arg(QFileInfo(path).fileName(), doc->lastError()));
+                                               .arg(logSourceDisplayName(path), doc->lastError()));
                     return false;
                 }
                 doc->setTimeDisplay(settings.timeDisplay);
@@ -697,7 +812,7 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
                 // plain text — so abort the open instead (SPEC.md §4). Whatever
                 // was already open stays open, untouched.
                 m_statusLabel->setText(QStringLiteral("Open cancelled: %1")
-                                           .arg(QFileInfo(path).fileName()));
+                                           .arg(logSourceDisplayName(path)));
                 return false;
             }
         }
@@ -881,7 +996,7 @@ void MainWindow::showFormatDialog()
     const QByteArray sample = sampleLen > 0
         ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
 
-    LogFormatDialog dlg(QFileInfo(doc->path()).fileName(), sample, ctx->settings, this);
+    LogFormatDialog dlg(logSourceDisplayName(doc->path()), sample, ctx->settings, this);
     if (dlg.exec() == QDialog::Accepted) {
         // The dialog does not edit the run-start axis; carry it through unchanged so
         // accepting a format change never clears the run-start pattern (§3a).
@@ -962,7 +1077,7 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
 {
     // A background file's scan has no claim on the status bar, so its progress shows
     // in its own tab title instead.
-    QString name = QFileInfo(ctx->doc->path()).fileName();
+    QString name = logSourceDisplayName(ctx->doc->path());
     name.replace(u'&', QLatin1String("&&")); // the tab bar reads '&' as a mnemonic
     const QString base = ctx->indexing
         ? QStringLiteral("%1 — indexing %2%").arg(name).arg(ctx->progressPercent)
@@ -1268,12 +1383,12 @@ void MainWindow::updateStatus()
     // when a filter narrows the view, otherwise a plain record count.
     if (doc->filters().anyActive()) {
         m_statusLabel->setText(QStringLiteral("%1  |  %2 of %3 records shown")
-                                   .arg(QFileInfo(doc->path()).fileName())
+                                   .arg(logSourceDisplayName(doc->path()))
                                    .arg(doc->filtered().recordCount())
                                    .arg(total));
     } else {
         m_statusLabel->setText(QStringLiteral("%1  |  %2 records")
-                                   .arg(QFileInfo(doc->path()).fileName())
+                                   .arg(logSourceDisplayName(doc->path()))
                                    .arg(total));
     }
 }
@@ -1414,11 +1529,15 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 
 void MainWindow::dropEvent(QDropEvent *event)
 {
-    // Every dropped file opens, each in its own tab (SPEC.md §3).
+    // Every dropped file opens, each in its own tab (SPEC.md §3). A drop out of a
+    // file manager's SSH mount arrives as an sftp:// (or ssh://) URL rather than a
+    // local file, and opens as a remote log — openFile() normalizes the spelling.
     const QList<QUrl> urls = event->mimeData()->urls();
     for (const QUrl &url : urls) {
         if (url.isLocalFile())
             openFile(url.toLocalFile());
+        else if (RemoteLocation::isRemote(url.toString()))
+            openFile(url.toString());
     }
 }
 
@@ -1524,6 +1643,14 @@ void MainWindow::restoreSession()
     // order. Opening is split: the synchronous half (open the source, compile the
     // format, build the model and the tab) runs for everything first, so every tab
     // exists before any of them starts indexing on a worker thread.
+    // A restored session reopens every remote log too, prompting where a host needs
+    // it. The storm that could be is contained structurally rather than by refusing
+    // to restore: the credential cache means one prompt PER HOST however many of its
+    // files were open, and the prompt grows "Skip This Host" / "Skip All Remaining"
+    // so a host that is not available today cannot hold the launch hostage.
+    if (m_sshPrompter)
+        m_sshPrompter->beginBulkRestore();
+
     QStringList missing;
     QHash<int, DocumentContext *> byDocument;
     DocumentView *toActivate = nullptr;
@@ -1537,15 +1664,29 @@ void MainWindow::restoreSession()
         if (!ctx) {
             // A missing/unreadable file must not error every launch (SPEC.md §10):
             // skip it with an inline notice, no dialog. Its tab simply never appears.
-            const QFileInfo info(d->path);
-            if (!info.exists() || !info.isReadable()) {
+            // For a remote path this check is optimistic and non-blocking — an
+            // unreachable host surfaces as an open failure below, not as a stall here.
+            if (!logSourceAvailable(d->path)) {
+                if (!missing.contains(d->path))
+                    missing.append(d->path);
+                continue;
+            }
+            // The user asked to stop reopening remote logs: honor it for the rest of
+            // the restore instead of asking again per file.
+            if (RemoteLocation::isRemote(d->path) && m_sshPrompter
+                && m_sshPrompter->restoreCancelled()) {
                 if (!missing.contains(d->path))
                     missing.append(d->path);
                 continue;
             }
             ctx = prepareContext(*d);
-            if (!ctx)
+            if (!ctx) {
+                // A remote log whose host refused, timed out or was skipped: listed
+                // with the rest rather than erroring, exactly as a missing file is.
+                if (RemoteLocation::isRemote(d->path) && !missing.contains(d->path))
+                    missing.append(d->path);
                 continue;
+            }
             byDocument.insert(sv.documentIndex, ctx);
         }
 
@@ -1561,9 +1702,26 @@ void MainWindow::restoreSession()
             toActivate = view;
     }
 
+    if (m_sshPrompter)
+        m_sshPrompter->endBulkRestore();
+
     if (!missing.isEmpty()) {
-        m_placeholder->setText(
-            QStringLiteral("These files are no longer available:\n%1").arg(missing.join(u'\n')));
+        // A local file that has gone and a remote host that would not answer are
+        // different problems, so say which one this is rather than telling someone
+        // their server's log "no longer exists".
+        const bool anyRemote = std::any_of(missing.cbegin(), missing.cend(),
+                                           [](const QString &p) {
+                                               return RemoteLocation::isRemote(p);
+                                           });
+        QStringList shown;
+        shown.reserve(missing.size());
+        for (const QString &p : std::as_const(missing))
+            shown.append(logSourceDisplayPath(p));
+        m_placeholder->setText(QStringLiteral("%1\n%2")
+                                   .arg(anyRemote
+                                            ? QStringLiteral("These logs could not be reopened:")
+                                            : QStringLiteral("These files are no longer available:"),
+                                        shown.join(u'\n')));
         m_statusLabel->setText(
             QStringLiteral("%1 file(s) from the last session unavailable").arg(missing.size()));
     }

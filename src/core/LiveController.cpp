@@ -7,6 +7,7 @@
 #include "LogModel.h"
 #include "LogSource.h"
 #include "RecordIndex.h"
+#include "RemoteLocation.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -48,6 +49,18 @@ void LiveWatcher::watch(const QString &path)
 {
     stop();
     m_path = path;
+
+    // A remote log has no watchable path on this machine: QFileSystemWatcher would
+    // either fail or, worse, latch onto a same-named local file. Poll only — and the
+    // poll is cheap regardless of where the log lives, because the GUI-side check is
+    // an atomic read plus one local stat of the spool (ARCHITECTURE.md §6.3). The
+    // NETWORK cadence is the fetcher thread's own, not this timer's.
+    if (RemoteLocation::isRemote(path)) {
+        m_dir.clear();
+        m_poll->start();
+        return;
+    }
+
     m_dir = QFileInfo(path).absolutePath();
     if (!m_dir.isEmpty() && QDir(m_dir).exists())
         m_fsw->addPath(m_dir);
@@ -73,7 +86,7 @@ void LiveWatcher::setPollInterval(int ms)
 
 void LiveWatcher::ensureWatched()
 {
-    if (m_path.isEmpty())
+    if (m_path.isEmpty() || RemoteLocation::isRemote(m_path))
         return;
     if (m_fsw->files().contains(m_path))
         return;
@@ -101,9 +114,10 @@ void LiveController::setPollInterval(int ms)
 
 void LiveController::syncBaseline()
 {
+    // Size only: the identity half of the old baseline moved into the source itself,
+    // which is the only thing that knows how to re-resolve its own origin.
     LogSource *src = m_document ? m_document->source() : nullptr;
     m_lastSize = src ? src->size() : 0;
-    m_lastIdentity = src ? src->identity() : 0;
 }
 
 void LiveController::start()
@@ -129,16 +143,17 @@ void LiveController::checkNow()
         // The source is gone (a previous rescan hit a moment when the path did not
         // exist — the gap between a rotate's rename and recreate). If the path is
         // back, reload it silently; otherwise wait for the next tick.
-        if (m_document && pathIdentity(m_document->path()) != 0)
+        if (m_document && logSourceAvailable(m_document->path()))
             doRescan();
         return;
     }
 
-    // Rotation-by-replace: the file now at the path is a DIFFERENT inode than the
-    // one our source holds (rename + recreate). Our mapped fd still follows the old
-    // inode, so we must stat the path to see this (invariant #5, §6).
-    const quint64 pathId = pathIdentity(m_document->path());
-    const bool replaced = pathId != 0 && m_lastIdentity != 0 && pathId != m_lastIdentity;
+    // Rotation-by-replace: the thing at the source's ORIGIN is no longer the thing it
+    // holds — a rename+recreate at a local path, or a rotated remote file. Only the
+    // source can answer this, because what has to be re-resolved differs per source
+    // (invariant #5, §6): a mapped fd still follows the inode it mapped and so sees
+    // nothing, and re-stats its path; a spooled remote source compares generations.
+    const bool replaced = src->wasReplaced();
 
     // Refresh the source size (re-maps so reads cannot run past the live EOF). This
     // also latches truncation when the file shrank below what we indexed.

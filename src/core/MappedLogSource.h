@@ -27,6 +27,7 @@ public:
     bool isRandomAccess() const override { return true; }
     quint64 identity() const override { return m_identity; }
     bool wasTruncated() const override { return m_truncated; }
+    bool wasReplaced() const override;
 
 private:
     MappedLogSource() = default;
@@ -36,6 +37,7 @@ private:
     int      m_fd = -1;
     void    *m_map = nullptr;   // MAP_FAILED-checked pointer to the mapping
     qint64   m_mappedSize = 0;  // bytes currently mapped (== indexed extent)
+    QString  m_path;            // re-stat'd by wasReplaced(); the fd follows the inode
     quint64  m_identity = 0;    // dev<<32 ^ inode, for rotation detection
     bool     m_truncated = false;
 };
