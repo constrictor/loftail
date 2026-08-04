@@ -100,6 +100,14 @@ FetchContent_MakeAvailable(libarchive)
 
 if(TARGET archive_static)
     set(LOFTAIL_ARCHIVE_TARGET archive_static)
+    # libarchive's public header declares its whole API __declspec(dllimport) unless
+    # LIBARCHIVE_STATIC is defined. libarchive sets that PRIVATE for its own build and
+    # never exports it, so a consumer linking the STATIC library compiles calls to
+    # __imp_archive_* import stubs that exist in no DLL — and gets a wall of LNK2019
+    # only on Windows, only in the from-source configuration. Put it on the target's
+    # INTERFACE so every consumer inherits it, including the test binaries that call
+    # libarchive's write side directly.
+    target_compile_definitions(archive_static INTERFACE LIBARCHIVE_STATIC)
 elseif(TARGET archive)
     set(LOFTAIL_ARCHIVE_TARGET archive)
 endif()
