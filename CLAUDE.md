@@ -22,6 +22,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Windows testing has no fonts.** The offscreen QPA plugin on Windows uses Qt's own font database, which looks in `$QTDIR/lib/fonts`; Qt no longer ships fonts, so `QFontDatabase::families()` comes back **empty** and nothing resolves — not even to a wrong font. (Offscreen on Linux has fontconfig, so this never shows up locally.) Any test that asserts on resolved font properties must guard on an empty family list and `QSKIP`; `tst_logview::everyColumnRendersFixedPitch` does. This is an environment limit, not a `monospaceFont()` bug.
 
+**Windows headers define `min` and `max` as macros.** `std::numeric_limits<qint64>::min()` — `Record::kNoTimestamp`, `FilterSet`'s time bounds — becomes a syntax error in any translation unit that reaches `<windows.h>` before a loftail header. Nothing here includes it directly; **libarchive's public header does**, so the breakage lands on include *order* and only on Windows, which is exactly the rule nobody remembers. The build defines `NOMINMAX` (and `WIN32_LEAN_AND_MEAN`) PUBLIC on `loftail_core` so `loftail_ui` and every test inherit it. This bit M12 in CI, in two test files that included the fixture header first.
+
 **When a Windows test fails, read the CI diagnostic, not the ctest output.** Test output does not reach ctest on Windows — a failure shows as `***Failed` with an empty block, which reads like a crash and is not. The Windows job re-runs each failed binary one test function at a time, prints per-function exit codes, and dumps QtTest's report via `-o file,txt` for the failing one. That is where the actual assertion appears.
 
 ## What loftail is

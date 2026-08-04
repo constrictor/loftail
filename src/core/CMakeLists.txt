@@ -157,6 +157,19 @@ endif()
 # QApplication" rule (CLAUDE.md) still holds — the ban is on QtWidgets, not QtGui.
 target_link_libraries(loftail_core PUBLIC Qt6::Core Qt6::Gui)
 
+# Windows headers define min() and max() as MACROS, which turn
+# `std::numeric_limits<qint64>::min()` — Record::kNoTimestamp, among others — into a
+# syntax error in any translation unit that happens to include <windows.h> FIRST.
+# Nothing of ours includes it directly; libarchive's public header does, so the
+# breakage lands in whichever file includes <archive.h> before a loftail header, which
+# is a rule about include ORDER that no one can be expected to remember.
+#
+# PUBLIC, so loftail_ui and every test inherit it: the failure is not a property of
+# this library but of anything downstream that pulls in a Windows header.
+if(WIN32)
+    target_compile_definitions(loftail_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
 target_include_directories(loftail_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_compile_definitions(loftail_core PRIVATE

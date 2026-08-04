@@ -5,6 +5,14 @@
 #include <QString>
 #include <QVector>
 
+// Belt and braces with the NOMINMAX the build already defines on Windows (see
+// src/core/CMakeLists.txt): <archive.h> reaches <windows.h>, whose min()/max() macros
+// break std::numeric_limits<...>::min() in any loftail header included after it. This
+// header is the one most likely to be included first, being a fixture.
+#if defined(_WIN32) && !defined(NOMINMAX)
+#define NOMINMAX
+#endif
+
 #include <archive.h>
 #include <archive_entry.h>
 
