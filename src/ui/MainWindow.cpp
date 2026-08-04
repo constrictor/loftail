@@ -1191,6 +1191,13 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
                 m_runPane->refresh();
             updateStatus();
         });
+        // Expansion and fetch progress, and the failures SPEC.md §3 promises are
+        // reported rather than popped up. Stored per file; only the active one shows.
+        connect(ctx->live, &LiveController::sourceStatusChanged, this,
+                [this, ctx](const QString &text) {
+                    ctx->sourceStatus = text;
+                    updateStatus();
+                });
         connect(ctx->live, &LiveController::rescanned, this, [this, ctx]() {
             // Rotation/truncation reloaded silently (SPEC.md §3): refresh the panes
             // against the fresh index and keep following if we were.
@@ -1381,16 +1388,25 @@ void MainWindow::updateStatus()
     const int total = doc->index().records.size();
     // Filtered/total counts (SPEC.md §5, §6): show the shown-vs-total pair only
     // when a filter narrows the view, otherwise a plain record count.
+    QString text;
     if (doc->filters().anyActive()) {
-        m_statusLabel->setText(QStringLiteral("%1  |  %2 of %3 records shown")
-                                   .arg(logSourceDisplayName(doc->path()))
-                                   .arg(doc->filtered().recordCount())
-                                   .arg(total));
+        text = QStringLiteral("%1  |  %2 of %3 records shown")
+                   .arg(logSourceDisplayName(doc->path()))
+                   .arg(doc->filtered().recordCount())
+                   .arg(total);
     } else {
-        m_statusLabel->setText(QStringLiteral("%1  |  %2 records")
-                                   .arg(logSourceDisplayName(doc->path()))
-                                   .arg(total));
+        text = QStringLiteral("%1  |  %2 records")
+                   .arg(logSourceDisplayName(doc->path()))
+                   .arg(total);
     }
+
+    // What the source is doing, when it is doing anything worth mentioning: expanding
+    // an archive, priming a remote log, or having failed at either. Appended rather
+    // than replacing, so the record count stays visible throughout.
+    if (const DocumentContext *ctx = activeContext(); ctx && !ctx->sourceStatus.isEmpty())
+        text += QStringLiteral("  |  ") + ctx->sourceStatus;
+
+    m_statusLabel->setText(text);
 }
 
 void MainWindow::buildTimeDisplayMenu()

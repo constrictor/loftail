@@ -16,6 +16,18 @@ struct FetchStatus
         Live,         // following the input for more bytes
         Error,        // last operation failed; `error` says how. Retried with backoff
         Disconnected, // stopped, deliberately
+
+        // Every byte has been delivered and committed, and there will never be another.
+        // PUBLISHED LAST, after the final committedSize — the same ordering rule
+        // `generation` follows, and for the same reason: a reader that observes
+        // Complete is thereby guaranteed to observe the final size. Get this backwards
+        // and the watch stops one chunk short, silently losing the last records.
+        //
+        // Only reachable where loftail PRODUCED the bytes from a fixed input, i.e. an
+        // archive member expanded into its spool. A remote file can always grow, so
+        // SshFetcher never publishes this and must not be made to: guessing that a log
+        // is finished is exactly what invariant #5 forbids.
+        Complete,
     };
 
     State   state = State::Idle;

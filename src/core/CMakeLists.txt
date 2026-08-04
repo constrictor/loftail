@@ -31,6 +31,7 @@ add_library(loftail_core STATIC
     # archived path identically (see ArchiveLocation.h).
     ArchiveLocation.cpp
     ArchiveLocation.h
+    ArchiveFetcher.h
     # The spool: a log that is not already a readable local file is fetched forward
     # into a local cache file and read back through an ordinary local source, so the
     # paint path stays zero-copy and `tail -f` is just the fetcher appending. How the
@@ -133,6 +134,19 @@ if(LOFTAIL_HAVE_SSH)
     # Qt6::Network for QTcpSocket: the SSH transport hands libssh2 a connected socket
     # rather than reimplementing name resolution and connect timeouts.
     target_link_libraries(loftail_core PRIVATE Qt6::Network)
+endif()
+
+# M12 — the only libarchive-touching translation units, gated the same way. ArchiveReader
+# is the sole place archive.h is included; ArchiveFetcher rides on it and would compile
+# anywhere, but has nothing to do without it.
+if(LOFTAIL_HAVE_ARCHIVE)
+    target_sources(loftail_core PRIVATE
+        ArchiveReader.cpp
+        ArchiveReader.h
+        ArchiveFetcher.cpp
+    )
+    target_compile_definitions(loftail_core PUBLIC LOFTAIL_HAVE_ARCHIVE=1)
+    target_link_libraries(loftail_core PRIVATE ${LOFTAIL_ARCHIVE_TARGET})
 endif()
 
 # QtGui (not QtWidgets) for QColor: the highlight palette stores concrete colors and

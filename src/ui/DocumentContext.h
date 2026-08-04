@@ -85,6 +85,13 @@ public:
     bool indexing = false;
     int  progressPercent = 0;
 
+    // What this file's source is doing, for the status bar — expanding an archive,
+    // fetching a remote log, or failing to (sourceStatusText). Empty means there is
+    // nothing to report, which is the ordinary case. Per FILE rather than per window
+    // because the status bar describes the active view (SPEC.md §5), and a log being
+    // expanded in another tab must not overwrite what this one says.
+    QString sourceStatus;
+
     // The views showing this file. Non-owning: each view is owned by its dock.
     QVector<DocumentView *> views;
 };

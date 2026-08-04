@@ -1,5 +1,6 @@
 #include "SourceSpool.h"
 
+#include "ArchiveFetcher.h"
 #include "ArchiveLocation.h"
 #include "RemoteLocation.h"
 
@@ -62,13 +63,17 @@ std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error
 #endif
     }
 
-    if (ArchiveLocation::isArchivePath(key)) {
+    if (const auto archive = ArchiveLocation::split(key)) {
+#if defined(LOFTAIL_HAVE_ARCHIVE)
+        return makeArchiveFetcher(*archive, error);
+#else
         if (error) {
             *error = QStringLiteral(
                 "Support for compressed and archived logs is not built into this copy "
                 "of loftail. Rebuild with libarchive available to enable it.");
         }
         return nullptr;
+#endif
     }
 
     if (error)

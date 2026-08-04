@@ -95,16 +95,31 @@ signals:
     // The file was rotated or truncated and silently reloaded (SPEC.md §3).
     void rescanned();
 
+    // What this source is doing, for the status bar, or empty when there is nothing to
+    // report (sourceStatusText). Emitted only when the text CHANGES, so the 750 ms tick
+    // costs a string compare rather than a repaint.
+    void sourceStatusChanged(const QString &text);
+
+    // The source's stream is finished and watching has stopped, permanently. Fires at
+    // most once per source, after the last bytes have been ingested.
+    void completed();
+
 private:
     void ingestAppended();
     void doRescan();
     void syncBaseline();
+    void publishSourceStatus();
 
     Document    *m_document;
     LogModel    *m_model;
     LiveWatcher *m_watcher = nullptr;
     qint64       m_lastSize = 0;
     bool         m_started = false;
+    // Latched once the source reports its stream finished. checkNow() is reachable
+    // from a stray watcher tick and directly from tests, and completion is a one-time
+    // event: without this it would be re-announced on every later call.
+    bool         m_completed = false;
+    QString      m_lastStatusText;
 };
 
 } // namespace loftail

@@ -46,6 +46,7 @@ public:
     quint64 identity() const override { return m_generation; }
     bool wasTruncated() const override { return m_truncated; }
     bool wasReplaced() const override;
+    bool isComplete() const override;
 
     // The fetcher's view of the world, for the status bar: connecting, priming,
     // live, or failing (and why). Not used for any correctness decision here.
@@ -63,5 +64,20 @@ private:
     quint64                      m_generation = 0;
     bool                         m_truncated = false;
 };
+
+// A one-line, user-facing description of what a source is doing, or an EMPTY string
+// when there is nothing worth saying — a plain local file, a healthily tailing remote
+// log, a finished expansion. The status bar is for the exceptional case.
+//
+//   "expanding — 41.2 MB of 300 MB"   an archive member being decompressed
+//   "expanding — 41.2 MB so far"      the same, where the expanded size is not recorded
+//   "fetching — 2.1 MB of 40 MB"      a remote log being primed
+//   "connecting…"                     before the first byte
+//   "prod-web: connection refused"    a failure, in the fetcher's own words
+//
+// `path` decides the verb, because the LogSource alone cannot tell an expansion from a
+// download. NEVER contains a credential: the text comes from FetchStatus::error, which
+// carries the same promise.
+QString sourceStatusText(const LogSource &source, const QString &path);
 
 } // namespace loftail

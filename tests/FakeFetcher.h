@@ -76,6 +76,20 @@ public:
         m_status.generation = next; // bumped LAST, after its bytes are on disk
     }
 
+    // The stream is finished — what an archive expansion publishes when the member has
+    // been read to its end (M12). Committing the outstanding bytes FIRST and the state
+    // LAST is the ordering the real fetcher promises and the live controller relies on:
+    // whoever observes Complete is thereby guaranteed to observe the final size. A test
+    // that wants to prove the controller loses nothing writes the last bytes with
+    // appendWithheld() and then calls this.
+    void markComplete()
+    {
+        QMutexLocker lock(&m_mutex);
+        m_status.committedSize = m_written;
+        m_status.totalSize = m_status.baseOffset + m_written;
+        m_status.state = FetchStatus::State::Complete;
+    }
+
     // The connection dropped mid-tail. The spool keeps whatever it had.
     void failWith(const QString &message)
     {

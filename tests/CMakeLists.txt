@@ -143,6 +143,28 @@ if(LOFTAIL_HAVE_SSH)
     add_test(NAME tst_sshlive COMMAND tst_sshlive)
 endif()
 
+# M12 — a source that can prove its stream is finished, and the live seam's response.
+# UNGATED: isComplete() and the take-before-refresh / act-after-ingest ordering are a
+# contract of LiveController, not of libarchive, so they are driven through the fake
+# fetcher and covered in a build with no codec linked at all.
+qt_add_executable(tst_complete tst_complete.cpp)
+target_link_libraries(tst_complete PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_complete COMMAND tst_complete)
+
+# M12 — the archive layer, exercised for real. THE CONTRAST WITH tst_sshlive ABOVE IS
+# THE POINT: this needs no network, no credentials and no disposable remote path, so
+# unlike M11's transport it runs in CI on every push. The fixtures are built at runtime
+# by libarchive's own write side (tests/ArchiveFixtures.h) — nothing binary is
+# committed — which is why these link the dependency directly as well: loftail_core
+# links it PRIVATE, and the fixtures call it.
+if(LOFTAIL_HAVE_ARCHIVE)
+    foreach(unit archivemembers archivefetcher archivetail)
+        qt_add_executable(tst_${unit} tst_${unit}.cpp)
+        target_link_libraries(tst_${unit} PRIVATE loftail_core Qt6::Test ${LOFTAIL_ARCHIVE_TARGET})
+        add_test(NAME tst_${unit} COMMAND tst_${unit})
+    endforeach()
+endif()
+
 # M6 — the tail harness: append (incl. a multi-line record split across writes),
 # truncate, rotate, and filtered/highlighted append, all driven synchronously via
 # LiveController::checkNow() against a real temp file. Core-only, GUILESS.

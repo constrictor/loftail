@@ -100,6 +100,52 @@ else()
                    "-DLOFTAIL_SSH_FETCH=ON to build it from source)")
 endif()
 
+# --- M12: compressed and archived logs, via libarchive ---------------------
+# Auto-detected and never REQUIRED, for the reason §1 gives about the reference build:
+# `apt install` nothing. One dependency covers .gz/.bz2/.xz/.zst, zip, tar and every
+# compressed tar, which is why it beats zlib plus a hand-rolled container reader.
+option(LOFTAIL_WITH_ARCHIVE "Build compressed/archived log support (needs libarchive)" ON)
+# Off by default so ordinary and offline builds stay hermetic — no configure-time
+# network. The Windows CI job turns it on, because that runner has no package manager.
+option(LOFTAIL_ARCHIVE_FETCH "Build libarchive and its codecs from source if not installed" OFF)
+
+set(LOFTAIL_HAVE_ARCHIVE OFF)
+if(LOFTAIL_WITH_ARCHIVE)
+    # CMake ships FindLibArchive, so the common case needs nothing of our own. 3.2 is
+    # the floor: archive_read_support_format_raw is what makes a bare .gz a one-member
+    # archive, so the container and single-stream paths can be one piece of code.
+    find_package(LibArchive 3.2 QUIET)
+    if(TARGET LibArchive::LibArchive)
+        set(LOFTAIL_ARCHIVE_TARGET LibArchive::LibArchive)
+    endif()
+
+    if(NOT LOFTAIL_ARCHIVE_TARGET)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(LIBARCHIVE QUIET IMPORTED_TARGET libarchive>=3.2)
+            if(TARGET PkgConfig::LIBARCHIVE)
+                set(LOFTAIL_ARCHIVE_TARGET PkgConfig::LIBARCHIVE)
+            endif()
+        endif()
+    endif()
+
+    if(NOT LOFTAIL_ARCHIVE_TARGET AND LOFTAIL_ARCHIVE_FETCH)
+        include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchArchive.cmake)
+    endif()
+
+    if(LOFTAIL_ARCHIVE_TARGET)
+        set(LOFTAIL_HAVE_ARCHIVE ON)
+    endif()
+endif()
+
+if(LOFTAIL_HAVE_ARCHIVE)
+    message(STATUS "Archived log sources: ENABLED (${LOFTAIL_ARCHIVE_TARGET})")
+else()
+    message(STATUS "Archived log sources: DISABLED "
+                   "(libarchive not found; install libarchive-dev, or configure with "
+                   "-DLOFTAIL_ARCHIVE_FETCH=ON to build it from source)")
+endif()
+
 enable_testing()
 
 add_subdirectory(src)

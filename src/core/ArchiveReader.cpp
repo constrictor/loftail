@@ -1,0 +1,292 @@
+#include "ArchiveReader.h"
+
+#include "ArchiveLocation.h"
+#include "LogSource.h"
+
+#include <QByteArray>
+#include <QFileInfo>
+
+#include <cstring>
+
+#include <archive.h>
+#include <archive_entry.h>
+
+namespace loftail {
+
+namespace {
+
+// Handed to libarchive one block at a time. Big enough that the decompressor is not
+// dominated by callback overhead, small enough that a growing input is re-checked
+// often while a remote container is still arriving.
+constexpr qint64 kInputChunk = 256 * 1024;
+
+// A member path as recorded in an archive may be written "./var/log/app.log" or
+// "/var/log/app.log" or "var/log/app.log" for the same thing. One spelling, so a
+// member picked from the list matches the member sought on reopen.
+QString normalizeMember(QString path)
+{
+    while (path.startsWith(QLatin1String("./")))
+        path.remove(0, 2);
+    while (path.startsWith(u'/'))
+        path.remove(0, 1);
+    return path;
+}
+
+QString lastError(struct archive *a, const QString &fallback)
+{
+    if (a) {
+        if (const char *text = archive_error_string(a)) {
+            const QString message = QString::fromUtf8(text);
+            if (!message.isEmpty())
+                return message;
+        }
+    }
+    return fallback;
+}
+
+} // namespace
+
+struct ArchiveStream::Impl
+{
+    struct archive *handle = nullptr;
+    LogSource      *input = nullptr;
+    AwaitInput      await;
+    qint64          offset = 0;
+    QByteArray      block;   // libarchive holds this until the next callback
+    qint64          entrySize = -1;
+    bool            atEntry = false;
+};
+
+namespace {
+
+// The read callback. Copies into the stream's own buffer rather than handing out a
+// view into the input: refreshSize() below may re-map a MappedLogSource, and a caller
+// holding a pointer into the old mapping would be reading freed address space.
+la_ssize_t readBlock(struct archive *a, void *client, const void **buffer)
+{
+    auto *d = static_cast<ArchiveStream::Impl *>(client);
+    Q_UNUSED(a);
+
+    for (;;) {
+        qint64 available = d->input->size() - d->offset;
+        if (available <= 0) {
+            d->input->refreshSize();
+            available = d->input->size() - d->offset;
+        }
+        if (available > 0) {
+            const qint64 want = qMin(available, kInputChunk);
+            const QByteArrayView view = d->input->bytes(d->offset, want);
+            if (view.isEmpty())
+                return 0;
+            // resize() keeps the capacity, so this is a memcpy per block and not an
+            // allocation per block. (QByteArray::assign would say it better but is
+            // Qt 6.6; the floor is 6.4 — ARCHITECTURE.md §1.)
+            d->block.resize(view.size());
+            std::memcpy(d->block.data(), view.data(), static_cast<size_t>(view.size()));
+            d->offset += d->block.size();
+            *buffer = d->block.constData();
+            return static_cast<la_ssize_t>(d->block.size());
+        }
+        // Nothing committed beyond what we have read. Either more is coming — a
+        // container still being fetched — or this really is the end.
+        if (!d->await || !d->await())
+            return 0;
+    }
+}
+
+// Only installed for a complete input. Seeking is what lets libarchive read a zip
+// through its central directory rather than streaming it, which is where entry sizes
+// come from.
+la_int64_t seekBlock(struct archive *a, void *client, la_int64_t offset, int whence)
+{
+    auto *d = static_cast<ArchiveStream::Impl *>(client);
+    Q_UNUSED(a);
+
+    qint64 base = 0;
+    switch (whence) {
+    case SEEK_SET:
+        base = 0;
+        break;
+    case SEEK_CUR:
+        base = d->offset;
+        break;
+    case SEEK_END:
+        base = d->input->refreshSize();
+        break;
+    default:
+        return ARCHIVE_FATAL;
+    }
+    d->offset = qBound<qint64>(0, base + offset, d->input->size());
+    return d->offset;
+}
+
+} // namespace
+
+ArchiveStream::ArchiveStream() : d(std::make_unique<Impl>()) {}
+
+ArchiveStream::~ArchiveStream()
+{
+    if (d && d->handle)
+        archive_read_free(d->handle);
+}
+
+std::unique_ptr<ArchiveStream> ArchiveStream::open(LogSource *input, AwaitInput await,
+                                                   bool allowRaw, QString *error)
+{
+    if (!input) {
+        if (error)
+            *error = QStringLiteral("No archive to read.");
+        return nullptr;
+    }
+
+    std::unique_ptr<ArchiveStream> stream(new ArchiveStream);
+    stream->d->input = input;
+    stream->d->await = std::move(await);
+
+    struct archive *a = archive_read_new();
+    if (!a) {
+        if (error)
+            *error = QStringLiteral("Cannot start reading the archive.");
+        return nullptr;
+    }
+    stream->d->handle = a;
+
+    archive_read_support_filter_all(a);
+    archive_read_support_format_all(a);
+    if (allowRaw) {
+        // AFTER format_all, and it is what makes a bare .gz a one-member archive: raw
+        // is the fallback format, so a gzipped tar is still recognised as a tar and
+        // both kinds share one code path from here on. Off for a multi-member
+        // container, where raw would swallow a corrupt file as one member of garbage.
+        archive_read_support_format_raw(a);
+    }
+
+    const bool seekable = !stream->d->await;
+    if (seekable)
+        archive_read_set_seek_callback(a, seekBlock);
+    archive_read_set_read_callback(a, readBlock);
+    archive_read_set_callback_data(a, stream->d.get());
+
+    if (archive_read_open1(a) != ARCHIVE_OK) {
+        if (error)
+            *error = lastError(a, QStringLiteral("Cannot read the archive."));
+        return nullptr;
+    }
+    return stream;
+}
+
+bool ArchiveStream::nextEntry(ArchiveEntry *out, QString *error)
+{
+    d->atEntry = false;
+    d->entrySize = -1;
+
+    struct archive_entry *entry = nullptr;
+    const int rc = archive_read_next_header(d->handle, &entry);
+    if (rc == ARCHIVE_EOF)
+        return false;
+    if (rc != ARCHIVE_OK && rc != ARCHIVE_WARN) {
+        if (error)
+            *error = lastError(d->handle, QStringLiteral("Cannot read the archive."));
+        return false;
+    }
+
+    if (out) {
+        const char *name = archive_entry_pathname_utf8(entry);
+        if (!name)
+            name = archive_entry_pathname(entry);
+        out->path = normalizeMember(name ? QString::fromUtf8(name) : QString());
+        out->size = archive_entry_size_is_set(entry) ? archive_entry_size(entry) : -1;
+        out->mtime = archive_entry_mtime_is_set(entry) ? archive_entry_mtime(entry) : 0;
+    }
+    d->entrySize = archive_entry_size_is_set(entry) ? archive_entry_size(entry) : -1;
+    d->atEntry = archive_entry_filetype(entry) == AE_IFREG
+        || archive_entry_filetype(entry) == 0; // raw format reports no type
+    return true;
+}
+
+bool ArchiveStream::seekToMember(const QString &member, QString *error)
+{
+    const QString wanted = normalizeMember(member);
+    ArchiveEntry entry;
+    QString readError;
+
+    while (nextEntry(&entry, &readError)) {
+        if (!d->atEntry)
+            continue; // a directory or a link is not a log
+        if (wanted.isEmpty() || entry.path == wanted)
+            return true;
+    }
+    if (error) {
+        *error = readError.isEmpty()
+            ? QStringLiteral("The archive holds no member named %1.").arg(member)
+            : readError;
+    }
+    return false;
+}
+
+qint64 ArchiveStream::read(char *buffer, qint64 length, QString *error)
+{
+    const la_ssize_t got = archive_read_data(d->handle, buffer, static_cast<size_t>(length));
+    if (got < 0) {
+        if (error)
+            *error = lastError(d->handle, QStringLiteral("Cannot read the archive."));
+        return -1;
+    }
+    return got;
+}
+
+qint64 ArchiveStream::currentSize() const
+{
+    return d->entrySize;
+}
+
+QVector<ArchiveEntry> listArchiveMembers(const QString &container, QString *error)
+{
+    QVector<ArchiveEntry> entries;
+
+    // A bare compressed stream holds exactly one member and does not name it. Answer
+    // without decompressing a byte: the name is the container's, minus the suffix.
+    if (ArchiveLocation::isSingleStreamName(container)) {
+        ArchiveLocation loc;
+        loc.container = container;
+        entries.append(ArchiveEntry{loc.displayMember(), -1, 0});
+        return entries;
+    }
+
+    QString openError;
+    std::unique_ptr<LogSource> input =
+        openContainerSource(container, OpenPolicy::Interactive, &openError);
+    if (!input) {
+        if (error) {
+            *error = openError.isEmpty()
+                ? QStringLiteral("Cannot open %1.").arg(container)
+                : openError;
+        }
+        return entries;
+    }
+
+    // The container is fully available by the time it is listed, so no await — which
+    // also makes it seekable, and a zip is then read through its central directory
+    // rather than streamed. allowRaw is false: everything reaching here is a
+    // multi-member container, the single-stream case having returned above.
+    auto stream = ArchiveStream::open(input.get(), nullptr, false, error);
+    if (!stream)
+        return entries;
+
+    ArchiveEntry entry;
+    QString readError;
+    while (stream->nextEntry(&entry, &readError)) {
+        // Only regular files, and only ones with something in them: an empty entry is
+        // a placeholder, and a directory or a symlink is not a log.
+        if (!stream->currentSize())
+            continue;
+        if (entry.path.isEmpty())
+            continue;
+        entries.append(entry);
+    }
+    if (!readError.isEmpty() && error)
+        *error = readError;
+    return entries;
+}
+
+} // namespace loftail

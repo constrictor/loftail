@@ -8,6 +8,7 @@
 #include "LogSource.h"
 #include "RecordIndex.h"
 #include "RemoteLocation.h"
+#include "SpooledLogSource.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -141,6 +142,9 @@ void LiveController::stop()
 
 void LiveController::checkNow()
 {
+    if (m_completed)
+        return; // the stream ended; there is nothing left that could change
+
     LogSource *src = m_document ? m_document->source() : nullptr;
     if (!src) {
         // The source is gone (a previous rescan hit a moment when the path did not
@@ -150,6 +154,13 @@ void LiveController::checkNow()
             doRescan();
         return;
     }
+
+    // Take this BEFORE the refresh below, not after. The fetcher publishes Complete
+    // only once its final committedSize is published, so a source that says "finished"
+    // here guarantees that the refresh and ingest that follow see every remaining byte.
+    // Reading it afterwards would let the last chunk land in the window between the two
+    // and be dropped — the records would simply never appear, with no error anywhere.
+    const bool sourceFinished = src->isComplete();
 
     // Rotation-by-replace: the thing at the source's ORIGIN is no longer the thing it
     // holds — a rename+recreate at a local path, or a rotated remote file. Only the
@@ -172,6 +183,29 @@ void LiveController::checkNow()
         ingestAppended();
     else
         m_lastSize = newSize; // no growth (or a spurious watcher tick)
+
+    publishSourceStatus();
+
+    if (sourceFinished) {
+        // Nothing can ever arrive again, so stop looking. This is an absence of work,
+        // NOT a mode: there is no setting, nothing on screen changes, and the follow
+        // control is untouched — after this the newest record simply stops moving,
+        // exactly as it does for a local file nobody is writing (SPEC.md §3).
+        m_completed = true;
+        m_watcher->stop();
+        m_started = false;
+        emit completed();
+    }
+}
+
+void LiveController::publishSourceStatus()
+{
+    LogSource *src = m_document ? m_document->source() : nullptr;
+    const QString text = src ? sourceStatusText(*src, m_document->path()) : QString();
+    if (text == m_lastStatusText)
+        return;
+    m_lastStatusText = text;
+    emit sourceStatusChanged(text);
 }
 
 void LiveController::doRescan()

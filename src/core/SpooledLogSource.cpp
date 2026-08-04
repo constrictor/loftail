@@ -1,6 +1,9 @@
 #include "SpooledLogSource.h"
 
+#include "ArchiveLocation.h"
 #include "SourceSpool.h"
+
+#include <QLocale>
 
 namespace loftail {
 
@@ -45,6 +48,18 @@ bool SpooledLogSource::wasReplaced() const
     return m_spool && m_spool->status().generation != m_generation;
 }
 
+bool SpooledLogSource::isComplete() const
+{
+    // The fetcher publishes Complete only after its final committedSize, so a caller
+    // that reads this BEFORE refreshSize() — which LiveController does deliberately —
+    // is guaranteed that the refresh which follows sees every remaining byte.
+    //
+    // Only an expansion ever reaches this state. A remote log's fetcher cannot, and
+    // must not be made to: claiming a file somebody else is writing is finished is
+    // exactly the guess invariant #5 forbids.
+    return m_spool && m_spool->status().state == FetchStatus::State::Complete;
+}
+
 qint64 SpooledLogSource::refreshSize()
 {
     if (!m_spool)
@@ -81,6 +96,49 @@ QByteArrayView SpooledLogSource::bytes(qint64 offset, qint64 length)
     // Clamp to the committed extent, not to the inner source's own idea of the file:
     // the spool on disk may already be longer than what has been published.
     return m_inner->bytes(offset, qMin(length, m_size - offset));
+}
+
+QString sourceStatusText(const LogSource &source, const QString &path)
+{
+    const auto *spooled = dynamic_cast<const SpooledLogSource *>(&source);
+    if (!spooled)
+        return QString(); // an ordinary local file has nothing to report, ever
+
+    const FetchStatus status = spooled->fetchStatus();
+    const QLocale locale;
+    const auto sized = [&locale](qint64 bytes) { return locale.formattedDataSize(bytes); };
+
+    switch (status.state) {
+    case FetchStatus::State::Idle:
+    case FetchStatus::State::Live:
+    case FetchStatus::State::Complete:
+    case FetchStatus::State::Disconnected:
+        // A healthy tail, a finished expansion and a closed source are all the ordinary
+        // case. Saying so would be noise that trains the user to ignore the line.
+        return QString();
+
+    case FetchStatus::State::Error:
+        return status.error;
+
+    case FetchStatus::State::Connecting:
+        return QStringLiteral("connecting…");
+
+    case FetchStatus::State::Priming: {
+        // Only the path can say which of the two this is: the source is a spool either
+        // way, and a spool does not know who fills it.
+        const QString verb = ArchiveLocation::isArchivePath(path)
+            ? QStringLiteral("expanding")
+            : QStringLiteral("fetching");
+        if (status.totalSize > status.committedSize) {
+            return QStringLiteral("%1 — %2 of %3")
+                .arg(verb, sized(status.committedSize), sized(status.totalSize));
+        }
+        // A raw compressed stream does not record its expanded length, so there is no
+        // honest denominator to show. Say what is known rather than inventing one.
+        return QStringLiteral("%1 — %2 so far").arg(verb, sized(status.committedSize));
+    }
+    }
+    return QString();
 }
 
 } // namespace loftail

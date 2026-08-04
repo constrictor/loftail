@@ -88,6 +88,12 @@ std::unique_ptr<LogSource> openLogSource(const QString &path, OpenPolicy policy,
     if (const auto archive = ArchiveLocation::split(path))
         return openArchive(*archive, policy, error);
 
+    return openContainerSource(path, policy, error);
+}
+
+std::unique_ptr<LogSource> openContainerSource(const QString &path, OpenPolicy policy,
+                                               QString *error)
+{
     if (RemoteLocation::isRemote(path))
         return openRemote(path, policy, error);
 

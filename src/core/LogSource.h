@@ -57,6 +57,23 @@ public:
     // in-memory and synthetic sources (tests/MemoryLogSource.h) need no boilerplate to
     // say the obviously-correct "no".
     virtual bool wasReplaced() const { return false; }
+
+    // True when this source's byte stream is provably FINISHED — every byte has been
+    // delivered and there will never be another.
+    //
+    // NOT "the file is not growing right now", which is unknowable and which invariant
+    // #5 forbids guessing at. This is only ever true where loftail PRODUCED the bytes
+    // itself from a fixed input: an archive member expanded into its own cache (§6.4).
+    // Every local file and every remote file says false forever, because neither can be
+    // proven finished. A remote ARCHIVE says false too — the container may still grow.
+    //
+    // No user-facing mode follows from it. The live controller stops polling something
+    // that cannot change, which is an absence of work rather than a setting; the follow
+    // control is untouched and simply has nothing left to follow.
+    //
+    // Non-pure on purpose, exactly as wasReplaced() is: only a source that can prove it
+    // implements it, and the fakes need no boilerplate to say the obviously-correct "no".
+    virtual bool isComplete() const { return false; }
 };
 
 // Whether opening may connect to a remote host (and therefore block and prompt).
@@ -79,6 +96,19 @@ enum class OpenPolicy {
 std::unique_ptr<LogSource> openLogSource(const QString &path,
                                          OpenPolicy policy = OpenPolicy::Interactive,
                                          QString *error = nullptr);
+
+// Open `path` as RAW BYTES rather than as a log: identical to openLogSource() except
+// that the archive branch is deliberately NOT taken, so an `ssh://` container still
+// goes through its spool but a `.tar.gz` one is handed back as the compressed file it
+// is (§6.4).
+//
+// This is what an archive's own container is opened with, and it is not an
+// optimization — openLogSource() on `/logs/app.log.gz` means "expand it", so a fetcher
+// using it to read its own input would recurse into expanding itself forever. The rule
+// is simply that a container is bytes, never a log.
+std::unique_ptr<LogSource> openContainerSource(const QString &path,
+                                               OpenPolicy policy = OpenPolicy::Interactive,
+                                               QString *error = nullptr);
 
 // The file-identity token for the file CURRENTLY at `path`, in the same encoding
 // LogSource::identity() uses (device+inode on POSIX). Unlike an open source — whose
