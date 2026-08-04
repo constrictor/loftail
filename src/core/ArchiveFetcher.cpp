@@ -2,13 +2,16 @@
 
 #include "ArchiveReader.h"
 #include "LogSource.h"
+#include "RemoteLocation.h"
 #include "SpooledLogSource.h"
 
 #include <QByteArray>
 #include <QDeadlineTimer>
 #include <QFile>
+#include <QLocale>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QStorageInfo>
 #include <QThread>
 #include <QWaitCondition>
 
@@ -30,6 +33,12 @@ constexpr qint64 kPrimeBytes = 128 * 1024;
 // whether it ever will. Only reached for a REMOTE container: a local one is complete
 // the moment it is opened.
 constexpr int kAwaitSliceMs = 100;
+
+// What an unknown expanded size is guessed at, as a multiple of the compressed input,
+// for the free-space check alone. Text compresses around 10:1, so this is the right
+// order of magnitude for a log and errs toward refusing an open that would fill the
+// disk. It bounds nothing: an archive that clears the check expands in full.
+constexpr qint64 kAssumedRatio = 10;
 
 } // namespace
 
@@ -90,6 +99,7 @@ private:
     };
 
     void expandRest();
+    bool checkFreeSpace(qint64 expandedSize, QString *error) const;
     // Expands at most `limit` bytes (0 meaning "to the end"). Returns false on error;
     // sets `finished` when the member has been read to its end.
     bool expand(qint64 limit, bool *finished);
@@ -155,6 +165,19 @@ bool ArchiveFetcher::start(const QString &spoolDir, QString *error)
         if (error)
             *error = streamError;
         setError(streamError);
+        m_stream.reset();
+        m_input.reset();
+        return false;
+    }
+
+    // Refuse before writing anything rather than filling the disk and failing partway.
+    // This is the failure that actually happens: a 200 MB .gz is 2 GB expanded, and the
+    // cache lives on the user's home filesystem.
+    QString spaceError;
+    if (!checkFreeSpace(m_stream->currentSize(), &spaceError)) {
+        if (error)
+            *error = spaceError;
+        setError(spaceError);
         m_stream.reset();
         m_input.reset();
         return false;
@@ -296,6 +319,33 @@ bool ArchiveFetcher::awaitInput()
     }
 }
 
+bool ArchiveFetcher::checkFreeSpace(qint64 expandedSize, QString *error) const
+{
+    const QStorageInfo storage(m_spoolDir);
+    if (!storage.isValid() || storage.bytesAvailable() < 0)
+        return true; // cannot tell; do not refuse an open over a question we cannot answer
+
+    // The archive records the expanded size for a tar or zip member. A raw stream does
+    // not, so guess from the compressed input — which is exactly where a zip bomb wins,
+    // and is why this is a courtesy rather than a defence.
+    const qint64 needed = expandedSize > 0
+        ? expandedSize
+        : (m_input ? m_input->size() * kAssumedRatio : 0);
+    if (needed <= 0 || storage.bytesAvailable() >= needed)
+        return true;
+
+    if (error) {
+        const QLocale locale;
+        *error = QStringLiteral(
+                     "Not enough space in the cache directory to expand %1: it needs "
+                     "about %2 and there is %3 free.")
+                     .arg(logSourceDisplayName(m_location.toString()),
+                          locale.formattedDataSize(needed),
+                          locale.formattedDataSize(storage.bytesAvailable()));
+    }
+    return false;
+}
+
 void ArchiveFetcher::beginGeneration(qint64 expandedSize)
 {
     QMutexLocker lock(&m_mutex);
@@ -357,8 +407,17 @@ bool ArchiveFetcher::expand(qint64 limit, bool *finished)
         }
 
         if (spool.write(buffer.constData(), got) != got || !spool.flush()) {
+            // Running out of room mid-expansion is the ordinary way this fails, and it
+            // deserves its own sentence: "cannot write" would send someone looking for
+            // a permissions problem. Whatever expanded stays indexed and readable — a
+            // partly recovered log beats an empty window.
+            const bool full = spool.error() == QFileDevice::ResourceError;
             spool.close();
-            setError(QStringLiteral("Cannot write to the local cache file %1.").arg(path));
+            setError(full
+                         ? QStringLiteral("Ran out of space while expanding %1. What was "
+                                          "expanded so far is still shown.")
+                               .arg(logSourceDisplayName(m_location.toString()))
+                         : QStringLiteral("Cannot write to the local cache file %1.").arg(path));
             return false;
         }
         written += got;

@@ -21,6 +21,8 @@
 #include "HostBookmarkStore.h"
 #include "ArchiveLocation.h"
 #include "OpenArchiveDialog.h"
+#include "SourceSpool.h"
+#include "SpooledLogSource.h"
 #include "OpenRemoteDialog.h"
 #include "PresetPane.h"
 #include "RemoteLocation.h"
@@ -1193,6 +1195,14 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
     if (isActive)
         updateStatus();
     if (cancelled) {
+        // Cancelling the scan cancels the FETCHING too. No LiveController is created
+        // below, so nothing would ever read what a fetcher went on writing — and for
+        // an archive that means expanding gigabytes into a cache for a log the user
+        // has just said they are done with.
+        if (auto *spooled = dynamic_cast<SpooledLogSource *>(doc->source())) {
+            if (const auto &spool = spooled->spool())
+                spool->cancel();
+        }
         if (isActive) {
             m_statusLabel->setText(m_statusLabel->text()
                                    + QStringLiteral("  (indexing cancelled)"));

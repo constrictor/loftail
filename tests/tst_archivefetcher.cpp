@@ -36,6 +36,8 @@ private slots:
     void committedSizeNeverRunsAheadOfTheSpoolFile();
     void aCorruptArchiveFailsAndKeepsWhatItExpanded();
     void stopReturnsPromptlyMidExpansion();
+    void anUnanswerableSpaceQuestionDoesNotRefuseTheOpen();
+    void aStoppedExpansionKeepsWhatItWrote();
 
 private:
     QString path(const QString &name) const { return m_dir.path() + u'/' + name; }
@@ -278,6 +280,57 @@ void TestArchiveFetcher::stopReturnsPromptlyMidExpansion()
     fetcher->stop();
     QVERIFY2(clock.elapsed() < 2000,
              qPrintable(QStringLiteral("stop() took %1 ms").arg(clock.elapsed())));
+}
+
+void TestArchiveFetcher::anUnanswerableSpaceQuestionDoesNotRefuseTheOpen()
+{
+    // The free-space check has two halves and this covers the second one: when
+    // QStorageInfo cannot say — an unreadable or absent spool directory — the open must
+    // PROCEED, because refusing over a question that cannot be answered would break
+    // opens on filesystems the check does not understand.
+    //
+    // NOT COVERED HERE: the refusal itself. A genuinely full filesystem cannot be
+    // conjured portably without root, and adding an injection seam for a courtesy check
+    // would cost more than it is worth. The refusal message is exercised by hand.
+    const QByteArray body = logBody(500);
+    const QString gz = path(QStringLiteral("space.log.gz"));
+    QVERIFY(writeGzip(gz, body));
+
+    QString error;
+    auto fetcher = makeArchiveFetcher(at(gz), &error);
+    QVERIFY2(fetcher, qPrintable(error));
+    const QString missing = m_dir.path() + QStringLiteral("/no-such-dir");
+    // Unanswerable, so it proceeds — and then fails on the write, not on the guess.
+    fetcher->start(missing, &error);
+    QVERIFY(!error.isEmpty());
+    QVERIFY2(!error.contains(QStringLiteral("Not enough space")), qPrintable(error));
+}
+
+void TestArchiveFetcher::aStoppedExpansionKeepsWhatItWrote()
+{
+    // Cancelling the initial scan cancels the expansion (MainWindow::onIndexFinished),
+    // and what was expanded stays readable: a cancelled scan leaves whatever it scanned
+    // usable, and the same promise has to hold for the bytes underneath it.
+    const QByteArray body = logBody(200000);
+    const QString gz = path(QStringLiteral("stopped.log.gz"));
+    QVERIFY(writeGzip(gz, body));
+
+    QString error;
+    auto fetcher = makeArchiveFetcher(at(gz), &error);
+    QVERIFY2(fetcher, qPrintable(error));
+    QVERIFY2(fetcher->start(spoolDir(), &error), qPrintable(error));
+
+    const qint64 committedBefore = fetcher->status().committedSize;
+    QVERIFY(committedBefore > 0);
+    fetcher->stop();
+
+    const FetchStatus after = fetcher->status();
+    QVERIFY(after.state != FetchStatus::State::Complete);
+    // Never fewer bytes than were published before the stop, and the spool file still
+    // holds at least what was committed: nothing is retracted or truncated.
+    QVERIFY(after.committedSize >= committedBefore);
+    QCOMPARE(spoolContents(*fetcher).size(), after.committedSize);
+    QVERIFY(spoolContents(*fetcher).startsWith(body.left(1024)));
 }
 
 QTEST_GUILESS_MAIN(TestArchiveFetcher)

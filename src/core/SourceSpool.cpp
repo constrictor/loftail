@@ -130,6 +130,12 @@ void SourceSpool::poke()
         m_fetcher->pokeNow();
 }
 
+void SourceSpool::cancel()
+{
+    if (m_fetcher)
+        m_fetcher->stop();
+}
+
 // --- SourceSpoolRegistry ---------------------------------------------------
 
 SourceSpoolRegistry::SourceSpoolRegistry() = default;

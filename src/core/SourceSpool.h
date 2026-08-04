@@ -63,6 +63,12 @@ public:
     // Ask the fetcher to poll now (Reconnect, or a test stepping deterministically).
     void poke();
 
+    // Stop filling this spool, for good. Used when the user cancels the initial scan:
+    // no LiveController is created for a cancelled open, so without this the fetcher
+    // would go on expanding into a spool nobody will ever read. The bytes already
+    // written stay — the cancelled scan left them usable (SPEC.md §3).
+    void cancel();
+
 private:
     friend class SourceSpoolRegistry;
     SourceSpool(QString key, std::unique_ptr<SourceFetcher> fetcher, QString dir);
