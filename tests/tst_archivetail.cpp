@@ -6,6 +6,7 @@
 
 #include "ArchiveFixtures.h"
 #include "Document.h"
+#include "FakeFetcher.h"
 #include "FilteredIndex.h"
 #include "LiveController.h"
 #include "LogModel.h"
@@ -82,6 +83,7 @@ private slots:
     void aMultiLineRecordSplitAcrossChunksResolves();
     void filtersApplyToRecordsArrivingDuringExpansion();
     void anExpandedMemberIndexesExactlyLikeAPlainFile();
+    void aRemoteArchiveChainsTwoFetchers();
 
 private:
     QTemporaryDir m_dir;
@@ -247,6 +249,47 @@ void TestArchiveTail::anExpandedMemberIndexesExactlyLikeAPlainFile()
 
     QString why;
     QVERIFY2(sameIndex(archived.index(), plain.index(), &why), qPrintable(why));
+}
+
+void TestArchiveTail::aRemoteArchiveChainsTwoFetchers()
+{
+    // THE COMPOSED CASE, and the reason the nested spelling has no scheme of its own:
+    // an archive is a file type and SSH is a way of reaching a file, so a rotated
+    // app.log.1.gz on a server needs no new mechanism — the SSH fetcher supplies the
+    // container's bytes and the archive fetcher expands them. Only the transport is
+    // faked here, so both fetchers are real and no network is involved.
+    QByteArray body;
+    for (int i = 0; i < 3000; ++i)
+        body += rec(i, "INFO ", "app.core", QByteArrayLiteral("record ") + QByteArray::number(i));
+
+    // Build the compressed container on disk, then hand its bytes to the fake server.
+    const QString staging = path(QStringLiteral("staging.log.gz"));
+    QVERIFY(writeGzip(staging, body));
+    QFile packed(staging);
+    QVERIFY(packed.open(QIODevice::ReadOnly));
+    const QByteArray compressed = packed.readAll();
+    packed.close();
+
+    const QString url = QStringLiteral("ssh://deploy@web1/var/log/app.log.1.gz");
+    FakeRemoteFarm farm;
+    farm.at(url)->setInitialContent(compressed);
+
+    Document doc;
+    QVERIFY2(openDoc(doc, url), qPrintable(doc.lastError()));
+
+    // A single-stream container collapses to its own address, so the expanded log and
+    // the raw container are the same string. They must still be two spools: sharing a
+    // key made the expansion resolve its own input to itself and recurse.
+    QCOMPARE(doc.path(), QStringLiteral("ssh://deploy@web1:22/var/log/app.log.1.gz"));
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+    QVERIFY(pumpToCompletion(doc, live));
+    live.checkNow();
+
+    QCOMPARE(doc.index().records.size(), 3000);
+    QCOMPARE(doc.messageText(doc.index().records.at(2999)), QStringLiteral("record 2999"));
 }
 
 QTEST_GUILESS_MAIN(TestArchiveTail)

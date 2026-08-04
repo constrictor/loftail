@@ -69,8 +69,12 @@ std::unique_ptr<LogSource> openArchive(const ArchiveLocation &location, OpenPoli
         }
         return nullptr;
     }
-    const QString key = location.toString();
-    return openSpooled(key, QStringLiteral("%1 is no longer expanded.").arg(key), policy,
+    // Namespaced, not the plain address: for a single-stream container the two are the
+    // same string, and the expansion's own input would otherwise resolve to the
+    // expansion (SourceSpool.h).
+    const QString address = location.toString();
+    return openSpooled(expandedSpoolKey(address),
+                       QStringLiteral("%1 is no longer expanded.").arg(address), policy,
                        error);
 }
 

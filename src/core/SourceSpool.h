@@ -15,6 +15,18 @@ QT_END_NAMESPACE
 
 namespace loftail {
 
+// Spool keys are NAMESPACED BY WHAT FILLS THEM, because one address can legitimately
+// need two spools at once. A remote `app.log.gz` is fetched as a container (by the SSH
+// fetcher) and expanded from it (by the archive fetcher) — and because a single-stream
+// container collapses to its own plain path, both of those are the *same address
+// string*. Sharing a key between them is not merely ambiguous: the expansion's own
+// input lookup would find the expansion, and since the registry publishes its entry
+// only after start() returns, it would build a second one and recurse forever.
+//
+// The prefix never escapes the registry. Document::path(), the session and the
+// format-cache key all hold the plain address (ArchiveLocation.h).
+QString expandedSpoolKey(const QString &address);
+
 // One log's local spool, and the fetcher filling it (ARCHITECTURE.md §6.3).
 //
 // SHARED, NOT PER-DOCUMENT — this is the load-bearing decision. A Document holds a

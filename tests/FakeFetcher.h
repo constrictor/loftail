@@ -13,6 +13,10 @@
 #include "SourceFetcher.h"
 #include "RemoteLocation.h"
 #include "SourceSpool.h"
+#if defined(LOFTAIL_HAVE_ARCHIVE)
+#include "ArchiveFetcher.h"
+#include "ArchiveLocation.h"
+#endif
 
 namespace loftail {
 
@@ -217,6 +221,19 @@ public:
         auto remotes = m_remotes;
         SourceSpoolRegistry::instance().setFetcherFactory(
             [remotes](const QString &key, QString *error) -> std::unique_ptr<SourceFetcher> {
+#if defined(LOFTAIL_HAVE_ARCHIVE)
+                // ONLY THE TRANSPORT IS FAKE. An expansion key is handed to the real
+                // archive fetcher, which then opens its own input — and that input is
+                // a remote address, so it comes back through here and gets the fake.
+                // That is how a remote archive is exercised end to end with no network:
+                // two real fetchers chained, over faked bytes (ARCHITECTURE.md §6.4).
+                if (key.startsWith(QStringLiteral("expand\n"))) {
+                    const auto archive =
+                        ArchiveLocation::split(key.mid(qstrlen("expand\n")));
+                    if (archive)
+                        return makeArchiveFetcher(*archive, error);
+                }
+#endif
                 const auto it = remotes->constFind(key);
                 if (it == remotes->constEnd()) {
                     if (error)

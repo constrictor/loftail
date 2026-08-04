@@ -65,7 +65,9 @@ public:
     // #5 forbids guessing at. This is only ever true where loftail PRODUCED the bytes
     // itself from a fixed input: an archive member expanded into its own cache (§6.4).
     // Every local file and every remote file says false forever, because neither can be
-    // proven finished. A remote ARCHIVE says false too — the container may still grow.
+    // proven finished. An archive on another machine DOES report it once its container
+    // has been fetched whole — a rewritten container is not re-expanded either way, so
+    // there is genuinely nothing further to wait for.
     //
     // No user-facing mode follows from it. The live controller stops polling something
     // that cannot change, which is an absence of work rather than a setting; the follow

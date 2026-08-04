@@ -41,11 +41,33 @@ QString spoolKey(const QString &key)
     return QString::fromLatin1(digest.toHex().left(16));
 }
 
-// The one place that turns a normalized path into the fetcher that can fill a spool
-// from it. Dispatching here rather than in the registry is what keeps the registry
-// ignorant of what it holds.
+// Marks a key whose spool holds the EXPANSION of an address rather than the address's
+// own bytes. See expandedSpoolKey() in the header for why the two must never collide.
+constexpr auto kExpandPrefix = "expand\n";
+
+// The one place that turns a spool key into the fetcher that can fill it. Dispatching
+// here rather than in the registry is what keeps the registry ignorant of what it holds.
 std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error)
 {
+    if (key.startsWith(QLatin1String(kExpandPrefix))) {
+        const QString address = key.mid(qstrlen(kExpandPrefix));
+        if (const auto archive = ArchiveLocation::split(address)) {
+#if defined(LOFTAIL_HAVE_ARCHIVE)
+            return makeArchiveFetcher(*archive, error);
+#else
+            if (error) {
+                *error = QStringLiteral(
+                    "Support for compressed and archived logs is not built into this "
+                    "copy of loftail. Rebuild with libarchive available to enable it.");
+            }
+            return nullptr;
+#endif
+        }
+        if (error)
+            *error = QStringLiteral("Nothing to expand in %1.").arg(address);
+        return nullptr;
+    }
+
     if (RemoteLocation::isRemote(key)) {
 #if defined(LOFTAIL_HAVE_SSH)
         if (const auto location = RemoteLocation::parse(key))
@@ -63,25 +85,17 @@ std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error
 #endif
     }
 
-    if (const auto archive = ArchiveLocation::split(key)) {
-#if defined(LOFTAIL_HAVE_ARCHIVE)
-        return makeArchiveFetcher(*archive, error);
-#else
-        if (error) {
-            *error = QStringLiteral(
-                "Support for compressed and archived logs is not built into this copy "
-                "of loftail. Rebuild with libarchive available to enable it.");
-        }
-        return nullptr;
-#endif
-    }
-
     if (error)
         *error = QStringLiteral("No way to fetch %1.").arg(key);
     return nullptr;
 }
 
 } // namespace
+
+QString expandedSpoolKey(const QString &address)
+{
+    return QLatin1String(kExpandPrefix) + address;
+}
 
 // --- SourceSpool -----------------------------------------------------------
 

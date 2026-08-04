@@ -259,22 +259,35 @@ bool ArchiveFetcher::awaitInput()
         if (spooled->refreshSize() > before)
             return true;
 
-        bool terminal = false;
-        switch (spooled->fetchStatus().state) {
+        const FetchStatus upstream = spooled->fetchStatus();
+        bool exhausted = false;
+        switch (upstream.state) {
         case FetchStatus::State::Idle:
         case FetchStatus::State::Error:
         case FetchStatus::State::Disconnected:
         case FetchStatus::State::Complete:
-            terminal = true;
+            exhausted = true;
             break;
         case FetchStatus::State::Connecting:
         case FetchStatus::State::Priming:
         case FetchStatus::State::Live:
+            // A healthy transport with nothing left to send. This case is NOT optional:
+            // an SSH fetcher tails forever and so never reaches a terminal state, while
+            // libarchive always reads past a gzip member to look for a concatenated
+            // one. Without it the expansion of a remote archive would block here having
+            // already produced every byte — a hang, not caution.
+            exhausted = upstream.totalSize > 0 && upstream.committedSize >= upstream.totalSize;
             break;
         }
-        if (terminal) {
-            // Nothing more will arrive. Whatever was expanded stays readable; a
-            // container cut short surfaces as a decompression error from libarchive.
+        if (exhausted) {
+            // Nothing more will arrive, so this is the end of the input. Whatever was
+            // expanded stays readable; a container cut short surfaces as a
+            // decompression error from libarchive rather than as silence.
+            //
+            // A container that is later rewritten is NOT re-expanded — reopening the
+            // log does that — so an expansion finishing here really is finished, and
+            // may say so. Rotation of the container is the transport's business one
+            // level down, where a generation bump handles it.
             return spooled->refreshSize() > before;
         }
 
