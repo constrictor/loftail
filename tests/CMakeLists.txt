@@ -89,6 +89,16 @@ qt_add_executable(tst_remotelocation tst_remotelocation.cpp)
 target_link_libraries(tst_remotelocation PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_remotelocation COMMAND tst_remotelocation)
 
+# M12 — archived sources, path layer. The nested-path value type, the resolution rule
+# (where the container ends) and the collapse rule (a bare compressed stream keeps its
+# plain path), plus the same display/availability/format-cache obligations the remote
+# path layer carries. UNGATED: recognising, normalizing, persisting and displaying an
+# archived path must be identical with and without libarchive, or the two builds would
+# disagree about what a settings file means.
+qt_add_executable(tst_archivelocation tst_archivelocation.cpp)
+target_link_libraries(tst_archivelocation PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_archivelocation COMMAND tst_archivelocation)
+
 # M11 — the spooled source: the committed-size clamp that stands in for a lock
 # between the GUI thread and the fetcher thread, and generation-based rotation. Uses
 # tests/FakeFetcher.h, so no network and no libssh2 — this runs everywhere.

@@ -50,12 +50,15 @@ void LiveWatcher::watch(const QString &path)
     stop();
     m_path = path;
 
-    // A remote log has no watchable path on this machine: QFileSystemWatcher would
-    // either fail or, worse, latch onto a same-named local file. Poll only — and the
-    // poll is cheap regardless of where the log lives, because the GUI-side check is
-    // an atomic read plus one local stat of the spool (ARCHITECTURE.md §6.3). The
-    // NETWORK cadence is the fetcher thread's own, not this timer's.
-    if (RemoteLocation::isRemote(path)) {
+    // A spooled log has no watchable path on this machine: what grows is the local
+    // cache, not the path. For a remote log QFileSystemWatcher would either fail or,
+    // worse, latch onto a same-named local file; for an archived one the container is
+    // a real file, but watching it would fire on a rewrite that does not change what
+    // has already been expanded. Poll only — and the poll is cheap regardless of where
+    // the log lives, because the GUI-side check is an atomic read plus one local stat
+    // of the spool (ARCHITECTURE.md §6.3). The FETCH cadence is the fetcher thread's
+    // own, not this timer's.
+    if (logPathIsSpooled(path)) {
         m_dir.clear();
         m_poll->start();
         return;
@@ -86,7 +89,7 @@ void LiveWatcher::setPollInterval(int ms)
 
 void LiveWatcher::ensureWatched()
 {
-    if (m_path.isEmpty() || RemoteLocation::isRemote(m_path))
+    if (m_path.isEmpty() || logPathIsSpooled(m_path))
         return;
     if (m_fsw->files().contains(m_path))
         return;

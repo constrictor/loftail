@@ -718,7 +718,7 @@ void MainWindow::openFile(const QString &rawPath, const QString &pattern)
     // viewOfPath(), the recent-files dedupe, the format-cache key, the session — so
     // two spellings of one remote file would otherwise open two tabs on it and
     // remember its format twice. A local path passes through untouched.
-    const QString path = RemoteLocation::normalize(rawPath);
+    const QString path = normalizeLogPath(rawPath);
 
     // Per-file recall (SPEC.md §4): a file already configured reopens with its
     // saved format and no prompt. A never-seen file gets the supplied (or default)

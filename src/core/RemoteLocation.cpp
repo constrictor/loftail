@@ -1,5 +1,7 @@
 #include "RemoteLocation.h"
 
+#include "ArchiveLocation.h"
+
 #include <QFileInfo>
 #include <QLatin1String>
 #include <QUrl>
@@ -83,7 +85,13 @@ QString RemoteLocation::target() const
 
 // --- Path-shaped helpers shared by core and UI -----------------------------
 
-QString logSourceDisplayName(const QString &path)
+namespace {
+
+// The display name of a path that is NOT an archive address. Split out so the archive
+// branch below can label its container with it without recursing back into itself —
+// a container path is an archive address, so calling the public function would not
+// terminate.
+QString plainDisplayName(const QString &path)
 {
     if (const auto loc = RemoteLocation::parse(path)) {
         const QString name = QFileInfo(loc->path).fileName();
@@ -93,14 +101,9 @@ QString logSourceDisplayName(const QString &path)
     return QFileInfo(path).fileName();
 }
 
-QString logSourceDisplayPath(const QString &path)
-{
-    if (const auto loc = RemoteLocation::parse(path))
-        return loc->toString();
-    return path;
-}
-
-bool logSourceAvailable(const QString &path)
+// Likewise: a container path is itself an archive address, so the archive branch must
+// ask this rather than the public function.
+bool plainAvailable(const QString &path)
 {
     if (RemoteLocation::isRemote(path)) {
         // Optimistic by design: the honest answer costs a connection, and this is
@@ -110,6 +113,63 @@ bool logSourceAvailable(const QString &path)
     }
     const QFileInfo info(path);
     return info.exists() && info.isReadable();
+}
+
+} // namespace
+
+QString normalizeLogPath(const QString &s)
+{
+    // Archive first: its normal form contains a remote address when the container is
+    // remote, and ArchiveLocation::toString() normalizes that part itself.
+    if (const auto loc = ArchiveLocation::split(s))
+        return loc->toString();
+    return RemoteLocation::normalize(s);
+}
+
+bool logPathIsSpooled(const QString &s)
+{
+    return RemoteLocation::isRemote(s) || ArchiveLocation::isArchivePath(s);
+}
+
+QString logSourceDisplayName(const QString &path)
+{
+    if (const auto loc = ArchiveLocation::split(path)) {
+        // A bare compressed stream is shown as the log the writer meant — "app.log",
+        // not "app.log (app.log.gz)", which would name the same thing twice.
+        if (loc->isSingleStream()) {
+            if (RemoteLocation::isRemote(loc->container)) {
+                if (const auto url = RemoteLocation::parse(loc->container)) {
+                    return QStringLiteral("%1 (%2)").arg(loc->displayMember(),
+                                                         url->displayHost());
+                }
+            }
+            return loc->displayMember();
+        }
+        if (loc->member.isEmpty())
+            return plainDisplayName(loc->container);
+        return QStringLiteral("%1 (%2)").arg(loc->displayMember(),
+                                             plainDisplayName(loc->container));
+    }
+    return plainDisplayName(path);
+}
+
+QString logSourceDisplayPath(const QString &path)
+{
+    if (const auto loc = ArchiveLocation::split(path))
+        return loc->toString();
+    if (const auto loc = RemoteLocation::parse(path))
+        return loc->toString();
+    return path;
+}
+
+bool logSourceAvailable(const QString &path)
+{
+    // An archived log is available exactly when its container is: whether the member
+    // is really in there costs an expansion to answer, and a wrong member surfaces as
+    // an open failure instead.
+    if (const auto loc = ArchiveLocation::split(path))
+        return plainAvailable(loc->container);
+    return plainAvailable(path);
 }
 
 } // namespace loftail

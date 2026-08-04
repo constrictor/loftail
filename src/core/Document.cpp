@@ -60,10 +60,11 @@ bool Document::prepare(const QString &rawPath,
                        Encoding requestedEncoding,
                        const QTimeZone &sourceZone)
 {
-    // A remote URL is reduced to its one spelling HERE, not only at the UI entry
-    // point: path() is what the session file stores and what viewOfPath() compares,
-    // so the invariant has to hold no matter who opened the Document (RemoteLocation.h).
-    const QString path = RemoteLocation::normalize(rawPath);
+    // A remote or archived path is reduced to its one spelling HERE, not only at the
+    // UI entry point: path() is what the session file stores and what viewOfPath()
+    // compares, so the invariant has to hold no matter who opened the Document
+    // (RemoteLocation.h).
+    const QString path = normalizeLogPath(rawPath);
 
     m_lastError.clear();
     m_formatError = CompileError{};

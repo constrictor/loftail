@@ -25,6 +25,12 @@ add_library(loftail_core STATIC
     # displays a remote path identically (see RemoteLocation.h).
     RemoteLocation.cpp
     RemoteLocation.h
+    # M12 — archived sources. ArchiveLocation is the nested-path value type; like
+    # RemoteLocation it never touches its optional dependency and is ALWAYS compiled,
+    # so a build without archive support still recognises, persists and displays an
+    # archived path identically (see ArchiveLocation.h).
+    ArchiveLocation.cpp
+    ArchiveLocation.h
     # The spool: a log that is not already a readable local file is fetched forward
     # into a local cache file and read back through an ordinary local source, so the
     # paint path stays zero-copy and `tail -f` is just the fetcher appending. How the

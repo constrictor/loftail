@@ -59,9 +59,12 @@ QString FormatCache::canonicalKey(const QString &path)
     // A remote URL has no on-disk canonical form, and the absolute-path fallback below
     // would mangle it into "<cwd>/ssh:/user@host/var/log/a.log" — a key that changes
     // with the working directory, silently losing the file's remembered format. Its
-    // normal form is already the canonical spelling (RemoteLocation.h).
-    if (RemoteLocation::isRemote(path))
-        return RemoteLocation::normalize(path);
+    // normal form is already the canonical spelling (RemoteLocation.h). The same is
+    // true of an archived path: canonicalFilePath() returns empty for one, because the
+    // member is not a file on this filesystem, and the fallback would then key on a
+    // working-directory-dependent string.
+    if (logPathIsSpooled(path))
+        return normalizeLogPath(path);
 
     const QFileInfo info(path);
     const QString canonical = info.canonicalFilePath();

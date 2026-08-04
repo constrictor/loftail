@@ -1,5 +1,6 @@
 #include "SourceSpool.h"
 
+#include "ArchiveLocation.h"
 #include "RemoteLocation.h"
 
 #include <QCoreApplication>
@@ -59,6 +60,15 @@ std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error
         }
         return nullptr;
 #endif
+    }
+
+    if (ArchiveLocation::isArchivePath(key)) {
+        if (error) {
+            *error = QStringLiteral(
+                "Support for compressed and archived logs is not built into this copy "
+                "of loftail. Rebuild with libarchive available to enable it.");
+        }
+        return nullptr;
     }
 
     if (error)
