@@ -1,5 +1,7 @@
 #include "LogView.h"
 
+#include "UiColors.h"
+
 #include "Decoder.h"
 #include "Document.h"
 #include "Fonts.h"
@@ -546,7 +548,7 @@ void LogView::paintEvent(QPaintEvent *event)
         // is a real, live view throughout: it keeps its filters, its column layout and
         // its place in the session, and gains rows the moment the log turns up.
         if (!m_placeholderText.isEmpty()) {
-            p.setPen(palette().color(QPalette::Disabled, QPalette::Text));
+            p.setPen(mutedColor(palette()));
             p.drawText(viewport()->rect(), Qt::AlignCenter | Qt::TextWordWrap,
                        m_placeholderText);
         }

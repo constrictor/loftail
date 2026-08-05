@@ -195,6 +195,14 @@ if(NOT WIN32)
     add_test(NAME tst_waiting COMMAND tst_waiting)
 endif()
 
+# Chrome colours on a dark theme: the placeholder role Qt leaves unset (which rendered
+# every hint black on a dark field), and the error/warning/muted hues that used to be
+# hardcoded against a light theme. Needs a QApplication — offscreen.
+qt_add_executable(tst_uicolors tst_uicolors.cpp)
+target_link_libraries(tst_uicolors PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_uicolors COMMAND tst_uicolors)
+set_tests_properties(tst_uicolors PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # The side panes' title-bar chrome: no name repeated under the tab that already carries
 # it, and the measured Qt constraints that made repainting the bar the only option
 # (a dock drags only from its own title bar). Needs a QApplication — offscreen.

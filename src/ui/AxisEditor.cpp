@@ -1,5 +1,9 @@
 #include "AxisEditor.h"
 
+#include "UiColors.h"
+
+#include <QApplication>
+
 #include "Document.h"
 #include "Filter.h"
 #include "LogFormat.h"
@@ -121,6 +125,7 @@ void AxisEditor::buildUi(Defaults defaults)
         m_loggerBody = a.body;
         m_loggerNarrow = new QLineEdit(a.body);
         m_loggerNarrow->setPlaceholderText(QStringLiteral("Narrow list..."));
+        ensureReadablePlaceholder(m_loggerNarrow);
         m_loggerNarrow->setClearButtonEnabled(true);
         a.bodyLayout->addWidget(m_loggerNarrow);
         m_loggerList = new QListWidget(a.body);
@@ -131,6 +136,7 @@ void AxisEditor::buildUi(Defaults defaults)
         auto *manualRow = new QHBoxLayout;
         m_loggerManual = new QLineEdit(a.body);
         m_loggerManual->setPlaceholderText(QStringLiteral("Add subsystem manually..."));
+        ensureReadablePlaceholder(m_loggerManual);
         auto *add = new QPushButton(QStringLiteral("Add"), a.body);
         manualRow->addWidget(m_loggerManual, 1);
         manualRow->addWidget(add);
@@ -166,6 +172,7 @@ void AxisEditor::buildUi(Defaults defaults)
         m_threadBody = a.body;
         m_threadNarrow = new QLineEdit(a.body);
         m_threadNarrow->setPlaceholderText(QStringLiteral("Narrow list..."));
+        ensureReadablePlaceholder(m_threadNarrow);
         m_threadNarrow->setClearButtonEnabled(true);
         a.bodyLayout->addWidget(m_threadNarrow);
         m_threadList = new QListWidget(a.body);
@@ -176,6 +183,7 @@ void AxisEditor::buildUi(Defaults defaults)
         auto *manualRow = new QHBoxLayout;
         m_threadManual = new QLineEdit(a.body);
         m_threadManual->setPlaceholderText(QStringLiteral("Add thread manually..."));
+        ensureReadablePlaceholder(m_threadManual);
         auto *add = new QPushButton(QStringLiteral("Add"), a.body);
         manualRow->addWidget(m_threadManual, 1);
         manualRow->addWidget(add);
@@ -211,6 +219,7 @@ void AxisEditor::buildUi(Defaults defaults)
         m_textBody = a.body;
         m_textEdit = new QLineEdit(a.body);
         m_textEdit->setPlaceholderText(QStringLiteral("Substring or regex..."));
+        ensureReadablePlaceholder(m_textEdit);
         m_textEdit->setClearButtonEnabled(true);
         a.bodyLayout->addWidget(m_textEdit);
         m_textRegex = new QCheckBox(QStringLiteral("Regular expression"), a.body);
@@ -306,9 +315,12 @@ void AxisEditor::updateTextValidity()
     probe.set(m_textEdit->text(), m_textRegex->isChecked(), Qt::CaseInsensitive);
     const bool bad = !probe.isValid();
 
-    QPalette pal;
-    if (bad)
-        pal.setColor(QPalette::Text, QColor(0xC0, 0x39, 0x2B));
+    // Start from the field's OWN palette, not a default-constructed one: this runs on
+    // every keystroke, and a fresh QPalette would drop the readable-placeholder repair
+    // applied below at construction — the invalid-regex cue would silently undo it.
+    QPalette pal = m_textEdit->palette();
+    pal.setColor(QPalette::Text,
+                 bad ? errorColor(pal) : qApp->palette(m_textEdit).color(QPalette::Text));
     m_textEdit->setPalette(pal);
     m_textEdit->setToolTip(bad ? QStringLiteral("Invalid regular expression — matches nothing.")
                                : QString());

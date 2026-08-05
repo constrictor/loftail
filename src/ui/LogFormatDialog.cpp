@@ -1,5 +1,7 @@
 #include "LogFormatDialog.h"
 
+#include "UiColors.h"
+
 #include "Decoder.h"
 #include "Fonts.h"
 #include "FormatDetector.h"
@@ -72,6 +74,7 @@ void LogFormatDialog::buildUi(const QString &fileName)
     auto *patRow = new QHBoxLayout;
     m_patternEdit = new QLineEdit(this);
     m_patternEdit->setPlaceholderText(QStringLiteral("e.g. %d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"));
+    ensureReadablePlaceholder(m_patternEdit);
     patRow->addWidget(m_patternEdit, 1);
     // M8: re-run autodetection over the sample and fill the pattern field. It only
     // pre-fills — the user still confirms via OK, so nothing is applied silently.
@@ -86,14 +89,16 @@ void LogFormatDialog::buildUi(const QString &fileName)
     // Inline compile error, pointing at the offending offset (CompileError::offset).
     m_errorLabel = new QLabel(this);
     m_errorLabel->setWordWrap(true);
-    m_errorLabel->setStyleSheet(QStringLiteral("color: #c0392b;")); // red
+    m_errorLabel->setStyleSheet(
+        QStringLiteral("color: %1;").arg(errorColor(palette()).name()));
     m_errorLabel->setVisible(false);
     form->addRow(QString(), m_errorLabel);
 
     // Missing %p / %c warning (filtering on that axis degrades).
     m_warnLabel = new QLabel(this);
     m_warnLabel->setWordWrap(true);
-    m_warnLabel->setStyleSheet(QStringLiteral("color: #b9770e;")); // amber
+    m_warnLabel->setStyleSheet(
+        QStringLiteral("color: %1;").arg(warningColor(palette()).name()));
     m_warnLabel->setVisible(false);
     form->addRow(QString(), m_warnLabel);
 
@@ -104,7 +109,8 @@ void LogFormatDialog::buildUi(const QString &fileName)
         m_encodingCombo->addItem(encodingName(e));
     encRow->addWidget(m_encodingCombo);
     m_detectedLabel = new QLabel(this);
-    m_detectedLabel->setStyleSheet(QStringLiteral("color: gray;"));
+    m_detectedLabel->setStyleSheet(
+        QStringLiteral("color: %1;").arg(mutedColor(palette()).name()));
     encRow->addWidget(m_detectedLabel);
     encRow->addStretch();
     form->addRow(QStringLiteral("&Encoding:"), encRow);
@@ -266,7 +272,7 @@ void LogFormatDialog::refresh()
             // Unparsed: show the raw line across the first column, dimmed, so a bad
             // pattern is visible rather than silently dropped (SPEC.md §4).
             auto *item = new QTableWidgetItem(row.rawFirstLine);
-            item->setForeground(QColor(150, 150, 150));
+            item->setForeground(mutedColor(palette()));
             m_previewTable->setItem(r, 0, item);
             for (int c = 1; c < cols; ++c)
                 m_previewTable->setItem(r, c, new QTableWidgetItem(QString()));

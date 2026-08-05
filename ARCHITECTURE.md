@@ -406,6 +406,19 @@ Preset export/import (`SPEC.md` §9) is JSON. Because rules carry palette *indic
 
 Deliberately *not* doing: a lock file, a single-instance server, or inter-instance IPC. Each adds a failure mode (stale locks, port conflicts) far more annoying than the state loss it prevents.
 
+### 8.2 Chrome colours, and the placeholder Qt forgets
+
+A log's own colours have been theme-aware since M5: highlight rules reference a `HighlightPalette` slot by index, and each slot carries a light and a dark variant (§8). The **chrome** around them was not. An invalid pattern's red, a caution's amber, a muted aside and the grey of placeholder text were each a hex literal chosen against a light theme — `#c0392b`, `#b9770e`, `#b04a00`, `color: gray` — and on a dark palette they ranged from dim to unreadable. `UiColors` gives those four the same treatment, as plain functions of a `QPalette` so they need no `QApplication` and track whatever theme the widget is actually in. It is deliberately *not* part of `HighlightPalette`: those twelve slots are a user-facing palette that rules reference by index and presets round-trip through, while these four are internal and nothing persists them.
+
+**The placeholder is a Qt gap rather than a loftail one, and it is worth naming.** `QPalette::PlaceholderText` arrived in Qt 5.12. A platform theme that predates it — or simply does not fill it in, which is common — leaves the role at Qt's built-in default of **black at 50% alpha**, no matter how dark `Base` is. Every placeholder in the application then renders black on a dark field: present, occupying space, unreadable. It was reported from a real desktop, and the diagnosis is repeatable from a screenshot alone — the *placeholders* were black while the typed values beside them (`22`, `1000 ms`) were light, which no theme would do on purpose.
+
+`ensureReadablePlaceholder()` repairs it, and two properties of how are load-bearing:
+
+- **Conditional, not unconditional.** A theme that set the role sensibly is left completely alone. Overriding it everywhere would replace a deliberate choice with a computed one and make loftail look wrong on the themes that were already right.
+- **Measured, not inferred.** The test is the WCAG contrast of the *composited* colour against the field, not "did the theme set this role". That also catches a theme that sets the role badly rather than not at all, and compositing matters because the failing value carries 50% alpha — comparing it uncomposited measures a colour that is never drawn.
+
+The repair writes a widget palette, which does not follow a later live theme switch; the colours are recomputed the next time the widget is built. Worth knowing, not worth a palette-tracking mechanism for a hint colour.
+
 ## 9. Format autodetection
 
 Built after the manual path (M8), behind a seam that existed from the start:

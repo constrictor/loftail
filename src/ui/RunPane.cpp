@@ -1,5 +1,7 @@
 #include "RunPane.h"
 
+#include "UiColors.h"
+
 #include "Document.h"
 #include "Record.h"
 
@@ -35,6 +37,7 @@ void RunPane::buildUi()
 
     m_patternEdit = new QLineEdit(box);
     m_patternEdit->setPlaceholderText(QStringLiteral("e.g. Application starting"));
+    ensureReadablePlaceholder(m_patternEdit);
     m_patternEdit->setClearButtonEnabled(true);
     v->addWidget(m_patternEdit);
 

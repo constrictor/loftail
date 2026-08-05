@@ -1,5 +1,7 @@
 #include "SshPromptDialogs.h"
 
+#include "UiColors.h"
+
 #include <QApplication>
 #include <QCheckBox>
 #include <QDialog>
@@ -100,10 +102,10 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
         ? QStringLiteral("loftail's configuration directory")
         : m_passwordStorePath;
     auto *warning = new QLabel(
-        QStringLiteral("<span style='color:#b04a00'>⚠ Stored as <b>plain text</b> in "
-                       "%1 — not encrypted. Anyone who can read your home directory can "
+        QStringLiteral("<span style='color:%1'>⚠ Stored as <b>plain text</b> in "
+                       "%2 — not encrypted. Anyone who can read your home directory can "
                        "read it. An SSH key or agent is safer.</span>")
-            .arg(where.toHtmlEscaped()),
+            .arg(warningColor(dialog.palette()).name(), where.toHtmlEscaped()),
         &dialog);
     warning->setTextFormat(Qt::RichText);
     warning->setWordWrap(true);

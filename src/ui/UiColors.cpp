@@ -1,0 +1,119 @@
+#include "UiColors.h"
+
+#include <QPalette>
+#include <QWidget>
+
+#include <cmath>
+
+namespace loftail {
+
+namespace {
+
+// How far a placeholder sits from the field's text colour toward its background. Enough
+// to read as a hint rather than as typed content, not so far that it disappears.
+constexpr qreal kPlaceholderMix = 0.45;
+
+// The contrast a placeholder must already have against its field before this leaves the
+// theme alone. Expressed as a WCAG contrast ratio; 4.5 is the bound for body text and
+// 3.0 for large text, so a hint is allowed to sit below both — but Qt's unset default
+// (black on a dark field) lands near 1.1, which is what this is here to catch.
+constexpr qreal kMinPlaceholderContrast = 2.0;
+
+// The two chrome hues, one variant per theme, in the same shape HighlightPalette uses.
+// The light values are the ones that were previously hardcoded at each call site; the
+// dark ones are lifted toward the light end of the same hue so they carry on a dark
+// field instead of sinking into it.
+constexpr QRgb kErrorLight = 0xffc0392b;
+constexpr QRgb kErrorDark = 0xffff7b6e;
+constexpr QRgb kWarningLight = 0xffb9770e;
+constexpr QRgb kWarningDark = 0xffffb454;
+
+// WCAG relative luminance, which is what a contrast ratio is defined in terms of. Not
+// QColor::lightness(): that is an HSL coordinate and says a saturated blue and a
+// saturated yellow are equally light, which is exactly wrong for legibility.
+qreal relativeLuminance(const QColor &color)
+{
+    const auto channel = [](qreal value) {
+        return value <= 0.03928 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * channel(color.redF()) + 0.7152 * channel(color.greenF())
+        + 0.0722 * channel(color.blueF());
+}
+
+qreal contrastRatio(const QColor &a, const QColor &b)
+{
+    const qreal la = relativeLuminance(a);
+    const qreal lb = relativeLuminance(b);
+    return (qMax(la, lb) + 0.05) / (qMin(la, lb) + 0.05);
+}
+
+// `over` composited onto `under`, honouring alpha. Qt's default PlaceholderText is
+// 50% alpha, so comparing it against the field without compositing would measure a
+// colour that is never actually drawn.
+QColor flatten(const QColor &over, const QColor &under)
+{
+    const qreal alpha = over.alphaF();
+    if (alpha >= 1.0)
+        return over;
+    return QColor::fromRgbF(over.redF() * alpha + under.redF() * (1 - alpha),
+                            over.greenF() * alpha + under.greenF() * (1 - alpha),
+                            over.blueF() * alpha + under.blueF() * (1 - alpha));
+}
+
+QColor mix(const QColor &from, const QColor &to, qreal amount)
+{
+    return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * amount,
+                            from.greenF() + (to.greenF() - from.greenF()) * amount,
+                            from.blueF() + (to.blueF() - from.blueF()) * amount);
+}
+
+} // namespace
+
+bool isDarkPalette(const QPalette &palette)
+{
+    return palette.color(QPalette::Base).lightness() < palette.color(QPalette::Text).lightness();
+}
+
+QColor errorColor(const QPalette &palette)
+{
+    return QColor::fromRgba(isDarkPalette(palette) ? kErrorDark : kErrorLight);
+}
+
+QColor warningColor(const QPalette &palette)
+{
+    return QColor::fromRgba(isDarkPalette(palette) ? kWarningDark : kWarningLight);
+}
+
+QColor mutedColor(const QPalette &palette)
+{
+    // Against the WINDOW, not the base: this is for labels sitting on the dialog
+    // background rather than inside a field.
+    return mix(palette.color(QPalette::WindowText), palette.color(QPalette::Window),
+               kPlaceholderMix);
+}
+
+QColor placeholderColor(const QPalette &palette)
+{
+    return mix(palette.color(QPalette::Text), palette.color(QPalette::Base), kPlaceholderMix);
+}
+
+void ensureReadablePlaceholder(QWidget *widget)
+{
+    if (!widget)
+        return;
+
+    QPalette palette = widget->palette();
+    const QColor base = palette.color(QPalette::Active, QPalette::Base);
+    const QColor current =
+        flatten(palette.color(QPalette::Active, QPalette::PlaceholderText), base);
+    if (contrastRatio(current, base) >= kMinPlaceholderContrast)
+        return; // the theme filled the role in sensibly — leave it entirely alone
+
+    const QColor readable = placeholderColor(palette);
+    // Both groups: a field in an inactive window still shows its placeholder.
+    palette.setColor(QPalette::Active, QPalette::PlaceholderText, readable);
+    palette.setColor(QPalette::Inactive, QPalette::PlaceholderText, readable);
+    widget->setPalette(palette);
+}
+
+} // namespace loftail

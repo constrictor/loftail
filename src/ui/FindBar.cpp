@@ -1,5 +1,7 @@
 #include "FindBar.h"
 
+#include "UiColors.h"
+
 #include <QCheckBox>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -19,6 +21,7 @@ FindBar::FindBar(QWidget *parent) : QWidget(parent)
     m_edit = new QLineEdit(this);
     m_edit->setClearButtonEnabled(true);
     m_edit->setPlaceholderText(QStringLiteral("Search visible records..."));
+    ensureReadablePlaceholder(m_edit);
     row->addWidget(m_edit, 1);
 
     auto *prev = new QToolButton(this);

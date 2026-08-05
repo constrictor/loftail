@@ -1,6 +1,7 @@
 #include "OpenRemoteDialog.h"
 
 #include "RemoteLocation.h"
+#include "UiColors.h"
 #include "SshFetcher.h"
 
 #include <QCheckBox>
@@ -78,6 +79,11 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
     m_path->setPlaceholderText(QStringLiteral("/var/log/app.log"));
     form->addRow(QStringLiteral("Pa&th:"), m_path);
 
+    // Qt's PlaceholderText role is unset by many themes, which leaves these four
+    // hints black on a dark field — present, occupying space, and unreadable.
+    for (QLineEdit *field : {m_url, m_label, m_user, m_path})
+        ensureReadablePlaceholder(field);
+
     m_auth = new QComboBox(detailBox);
     m_auth->addItem(QStringLiteral("SSH agent or key (recommended)"),
                     int(HostBookmark::Auth::Agent));
@@ -89,9 +95,10 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
     form->addRow(QString(), m_remember);
 
     auto *warning = new QLabel(
-        QStringLiteral("<span style='color:#b04a00'>⚠ A remembered password is stored as "
-                       "<b>plain text</b> in %1 — not encrypted.</span>")
-            .arg((store ? store->filePath() : QString()).toHtmlEscaped()),
+        QStringLiteral("<span style='color:%1'>⚠ A remembered password is stored as "
+                       "<b>plain text</b> in %2 — not encrypted.</span>")
+            .arg(warningColor(palette()).name(),
+                 (store ? store->filePath() : QString()).toHtmlEscaped()),
         detailBox);
     warning->setTextFormat(Qt::RichText);
     warning->setWordWrap(true);
