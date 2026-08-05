@@ -9,6 +9,8 @@ QT_BEGIN_NAMESPACE
 class QCheckBox;
 class QComboBox;
 class QDialogButtonBox;
+class QFormLayout;
+class QLabel;
 class QLineEdit;
 class QListWidget;
 class QSpinBox;
@@ -24,9 +26,13 @@ namespace loftail {
 // only pane in the window with no such binding, and the pane docking arrangement is
 // deliberately narrow after M9.
 //
-// The dialog accepts a pasted ssh:// URL as readily as filled-in fields, and keeps
-// the two in step in both directions — pasting a URL fills the fields, editing a
-// field rewrites the URL.
+// The dialog accepts a pasted ssh:// URL as readily as filled-in fields: paste one
+// into User, Host or Path and it is split across all of them.
+//
+// There is deliberately NO "Address" row showing the assembled URL. It used to be the
+// first field in the form, and it was every other field concatenated — it could show
+// nothing the rows below it did not already say, so it cost a row of the dialog to
+// repeat them. What it was actually for is PASTE, and paste needs no field of its own.
 class OpenRemoteDialog : public QDialog
 {
     Q_OBJECT
@@ -44,8 +50,8 @@ private:
     void reloadBookmarks();
     void showBookmark(int row);
     HostBookmark currentFields() const;
-    void syncUrlFromFields();
-    void syncFieldsFromUrl();
+    void setPasswordAuth(bool password);
+    void absorbPastedUrl(QLineEdit *field);
     void saveCurrentAsBookmark();
     void removeCurrentBookmark();
     void accept() override;
@@ -54,7 +60,6 @@ private:
     QVector<HostBookmark> m_bookmarks;
 
     QListWidget *m_list = nullptr;
-    QLineEdit   *m_url = nullptr;
     QLineEdit   *m_label = nullptr;
     QLineEdit   *m_user = nullptr;
     QLineEdit   *m_host = nullptr;
@@ -65,9 +70,10 @@ private:
     QCheckBox   *m_tailOnly = nullptr;
     QSpinBox    *m_tailMb = nullptr;
     QCheckBox   *m_remember = nullptr;
+    QLabel      *m_warning = nullptr;  // the plain-text password caution
+    QFormLayout *m_form = nullptr;     // owns the row m_warning lives in
     QDialogButtonBox *m_buttons = nullptr;
 
-    bool    m_syncing = false; // guards the two-way URL/field binding
     QString m_chosenUrl;
 };
 

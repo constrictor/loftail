@@ -167,7 +167,7 @@ void TestUiColors::theRemoteDialogsPlaceholdersAreReadable()
                                 .arg(edit->placeholderText())));
         ++checked;
     }
-    // The four from the report: address, name, user, path.
+    // The four from the report: name, user, host, path.
     QCOMPARE(checked, 4);
 }
 
