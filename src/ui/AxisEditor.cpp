@@ -417,7 +417,15 @@ QDateTime AxisEditor::wallClockOf(qint64 utcMs) const
     // bound at a different instant — on any machine whose local zone is not the
     // display zone, which is the normal case for a log from another host.
     QDateTime at = QDateTime::fromMSecsSinceEpoch(utcMs, m_renderZone);
+    // Detaching the zone is spelled two ways across the supported Qt range and
+    // neither spelling compiles on both: QTimeZone::LocalTime arrived in 6.5, and
+    // setTimeSpec() is deprecated from 6.9. The floor is 6.4 — Ubuntu 24.04's Qt,
+    // ARCHITECTURE.md §1 — so the older spelling cannot simply be kept.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     at.setTimeZone(QTimeZone::LocalTime);
+#else
+    at.setTimeSpec(Qt::LocalTime);
+#endif
     return at;
 }
 
