@@ -101,6 +101,115 @@ jobs:
           name: loftail-linux-appimage
           path: dist/*.AppImage
 
+  deb:
+    # Ubuntu packages, one per release. NOT one package built once: 24.04 has
+    # Qt 6.4.2 and 26.04 a much newer Qt with different sonames, so a single .deb
+    # cannot satisfy both. The release is stamped into the version
+    # (0.1.0~ubuntu24.04) by packaging/linux/deb.cmake, from /etc/os-release.
+    #
+    # This is the opposite artifact to the AppImage above and deliberately
+    # duplicates its build: the AppImage bundles Qt so it runs anywhere, the .deb
+    # links the distro's Qt so it stays small and gets archive security updates.
+    # The AppImage step asserts the optional libraries are INSIDE the artifact;
+    # here the same guarantee is an assertion that they are in Depends.
+    #
+    # 26.04 is a second thing at once: the reference Qt floor is 6.4 (ARCHITECTURE.md
+    # §1) and nothing so far proves the CEILING — this is the only job that compiles
+    # loftail with a much newer Qt and GCC.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: "24.04"
+            experimental: false
+          # ubuntu-26.04 is a PUBLIC PREVIEW runner image (announced 2026-06-11):
+          # usable by everyone, but with longer queues at peak and tool versions
+          # that still move. Non-blocking until it has run green a few times —
+          # flip `experimental` to false then, and this becomes a required check.
+          - release: "26.04"
+            experimental: true
+    runs-on: ubuntu-${{ matrix.release }}
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain + system Qt 6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake \
+            qt6-base-dev libgl1-mesa-dev \
+            libssh2-1-dev libarchive-dev \
+            file desktop-file-utils
+
+      - name: Configure + build (Release) and test
+        run: |
+          cmake -S . -B build-deb -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | tee configure-deb.log
+          # Both are auto-detected and both were just installed, so DISABLED here means
+          # the setup broke — and it would go on to produce a package that silently
+          # lacks the feature, since shlibdeps only reports what was actually linked.
+          for want in "SSH remote sources: ENABLED" "Archived log sources: ENABLED"; do
+            grep -q "$want" configure-deb.log \
+              || { echo "::error::the packaged build reported '$want' missing"; exit 1; }
+          done
+          cmake --build build-deb
+          # Run the suite against THIS toolchain, not just the Debug job's. On 26.04
+          # that is the point of the job as much as the package is.
+          QT_QPA_PLATFORM=offscreen ctest --test-dir build-deb --output-on-failure
+
+      - name: Build .deb
+        working-directory: build-deb
+        run: cpack -G DEB
+
+      - name: Verify the package metadata
+        run: |
+          DEB=$(ls build-deb/loftail_*.deb | head -n1)
+          echo "package: $DEB"
+          dpkg -I "$DEB"
+          dpkg -c "$DEB"
+
+          # The version must name the release it was built for, or the two releases'
+          # packages collide on a release page and upgrade over each other.
+          case "$DEB" in
+            *"~ubuntu${{ matrix.release }}_"*) ;;
+            *) echo "::error::$DEB is not stamped ~ubuntu${{ matrix.release }}"; exit 1 ;;
+          esac
+
+          # A .deb bundles nothing, so "the optional libraries are present" means they
+          # are in Depends. dpkg-shlibdeps writes a thin, valid-looking Depends just as
+          # happily when a library was auto-detected off.
+          DEPENDS=$(dpkg -f "$DEB" Depends)
+          for lib in libqt6 libssh2 libarchive; do
+            echo "$DEPENDS" | grep -q "$lib" \
+              || { echo "::error::Depends does not mention $lib: $DEPENDS"; exit 1; }
+          done
+
+          # And nothing of Qt may be INSIDE it — that is the AppImage's job. A stray
+          # bundled libQt6*.so would ship an unmanaged, unpatched Qt to users.
+          if dpkg -c "$DEB" | grep -q "libQt6"; then
+            echo "::error::the .deb bundles Qt libraries; it must link the distro's"
+            exit 1
+          fi
+
+      - name: Install it and run it
+        run: |
+          DEB=$(ls build-deb/loftail_*.deb | head -n1)
+          # apt, not dpkg -i: it RESOLVES Depends, so a dependency that does not exist
+          # in this release's archive fails here rather than on a user's machine.
+          sudo apt-get install -y "./$DEB"
+          command -v loftail
+          QT_QPA_PLATFORM=offscreen loftail --version
+          # The .desktop file is what makes the soft file association work once
+          # installed (packaging/README.md); a malformed one installs silently.
+          desktop-file-validate /usr/share/applications/loftail.desktop
+          sudo apt-get remove -y loftail
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loftail-deb-ubuntu-${{ matrix.release }}
+          path: build-deb/*.deb
+
   windows:
     # Pin windows-2022 (VS 2022 / MSVC 14.4x). windows-latest now ships a much
     # newer toolset (VS 18 / MSVC 14.51) whose STL fully removed the legacy

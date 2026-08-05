@@ -107,6 +107,60 @@ QT_QPA_PLATFORM=offscreen ./loftail-Release-x86_64.AppImage some.log --pattern '
 
 A GUI launch should show the window with no `libQt6*.so` on the system.
 
+## Linux — .deb (Ubuntu 24.04 and 26.04)
+
+The distro package is the **opposite artifact to the AppImage**, and both exist on
+purpose. The AppImage bundles Qt so it runs on any distribution; the `.deb` links
+the distribution's own Qt, so it is ~500 KB instead of ~50 MB and picks up Qt
+security updates from the archive rather than from a re-release of loftail.
+
+```bash
+cmake -S . -B build-deb -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-deb
+cd build-deb && cpack -G DEB     # → loftail_0.1.0~ubuntu24.04_amd64.deb
+```
+
+Configuration lives in `packaging/linux/deb.cmake`, included from the top-level
+`CMakeLists.txt` after the subdirectories so CPack packs the same `install()` rules
+that stage the AppDir. There is no second install layout.
+
+**One package per Ubuntu release, and this is not optional.** 24.04 has Qt 6.4.2 and
+26.04 a much newer Qt with different sonames, so no single `.deb` can satisfy both.
+The release is read from `/etc/os-release` and stamped into the version —
+`0.1.0~ubuntu24.04` — using `~`, which sorts *before* the plain version in dpkg
+ordering, so a per-release build never shadows an upstream `0.1.0` on upgrade. Pass
+`-DLOFTAIL_DEB_DISTRO=ubuntu24.04` when building in a container, where the host's
+`/etc/os-release` is not the target's.
+
+**`Depends:` is derived, never written by hand** (`CPACK_DEBIAN_PACKAGE_SHLIBDEPS`).
+Hand-listing would be wrong twice: the Qt package names differ between releases, and
+libssh2/libarchive are optional — a build configured without them must not produce a
+package demanding them. `dpkg-shlibdeps` reads what was actually linked, so the
+dependency list follows the configuration for free:
+
+```
+Depends: libarchive13t64 (>= 3.2.1), libc6 (>= 2.34), libgcc-s1 (>= 3.0),
+         libqt6core6t64 (>= 6.10.2), libqt6gui6 (>= 6.9.1), libqt6network6 (>= 6.1.2),
+         libqt6widgets6 (>= 6.4.0), libssh2-1t64 (>= 1.2.9), libstdc++6 (>= 5)
+```
+
+The corollary is what CI has to check. The AppImage step asserts libssh2 and
+libarchive are *inside* the artifact; the `.deb` bundles nothing, so the same
+guarantee becomes an assertion that both appear in `Depends` — because
+`dpkg-shlibdeps` writes a thin, entirely valid-looking `Depends` just as happily when
+an optional library was auto-detected off. CI also asserts the inverse, that no
+`libQt6*.so` is inside the package, since a bundled Qt here would be an unmanaged,
+unpatched copy.
+
+Installing the package is also what makes the **soft file association** real: unlike
+a bare AppImage run from `~/Downloads`, a `.deb` puts `loftail.desktop` in
+`/usr/share/applications`, so loftail appears under "Open With" for `.log` files. It
+still never becomes the default handler.
+
+**Clean-machine verify:** `sudo apt-get install ./loftail_*.deb` on a machine with no
+Qt *development* environment — apt resolving `Depends` is the actual test, which is
+why CI installs through apt rather than `dpkg -i`.
+
 ## Windows — portable zip (+ optional installer)
 
 ```powershell
@@ -159,3 +213,15 @@ Windows, and macOS. It is the mechanism by which the Windows and macOS artifacts
 — which cannot be produced from the Linux dev machine — get built and
 smoke-tested, and it doubles as the "verify the build on Windows and macOS"
 check that M0 left open.
+
+The `deb` job is a matrix over Ubuntu 24.04 and 26.04. It carries a second job
+beyond the package: ARCHITECTURE.md §1 pins the Qt **floor** at 6.4 and every other
+Linux build honors it, so the 26.04 leg is the only thing in CI that compiles
+loftail against a much newer Qt and GCC — the **ceiling** nothing else tests. It
+runs the full suite for that reason, not only `cpack`.
+
+`ubuntu-26.04` is a **public preview** runner image (announced 2026-06-11): available
+to everyone, but with longer queues at peak and tool versions that still move. That
+leg is therefore `continue-on-error` for now, so a preview-side breakage cannot block
+master; the result is still reported. Flip `experimental: false` in the matrix once it
+has run green a few times and it becomes a required check like the rest.
