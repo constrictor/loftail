@@ -79,9 +79,7 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
 10. **Find across all open tabs**, with a results list.
 11. **A density strip** beside the scrollbar showing where highlighted records and find matches sit
     in the whole file. Navigation aid, not a chart; reuses colors the highlighter already resolves.
-12. **Compressed `.gz` logs** — already in `FUTURE.md`, and since M11 it is a second
-    `RemoteFetcher` rather than a second mechanism.
-13. **Bookmarks** — already scoped in `FUTURE.md`, including the open question of what identifies a
+12. **Bookmarks** — already scoped in `FUTURE.md`, including the open question of what identifies a
     bookmarked record across a reindex.
 
 ## Watch-outs
