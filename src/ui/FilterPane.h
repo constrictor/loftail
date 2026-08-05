@@ -1,11 +1,12 @@
 #pragma once
 
+#include "AxisEditor.h"
+
 #include <QJsonObject>
 #include <QWidget>
 
 namespace loftail {
 
-class AxisEditor;
 class Document;
 
 // M4 — the Filters side pane (SPEC.md §6, §8). A dockable widget, NOT a modal
@@ -50,6 +51,22 @@ public:
     // emits filtersChanged() so the caller recomputes the visible set.
     QJsonObject saveState() const;
     void restoreState(const QJsonObject &state);
+
+    // --- Filtering by pointing (the record menu, SPEC.md §5) -------------------
+    //
+    // One edit to one axis, taken from the record under the cursor rather than typed.
+    // These go through the pane — and so through the AxisEditor's controls — rather
+    // than writing into the Document's FilterSet directly, for two reasons: the
+    // widget state is not derivable from the resolved set (which is why the window
+    // stashes it per file, DocumentContext::filterState), so a direct write would
+    // leave the pane showing something else and the next hand edit would undo the
+    // menu's; and the ticks visibly moving IS the undo story, since there is no undo
+    // stack. Each emits filtersChanged() exactly once, like a click in the pane.
+    void showOnlyValue(ValueAxis axis, const QString &name);
+    void hideValue(ValueAxis axis, const QString &name);
+    void setMinimumPriority(Priority p);
+    void setTimeBound(TimeBound which, qint64 utcMs);
+    void setTimeRange(qint64 fromUtcMs, qint64 toUtcMs);
 
 signals:
     // Emitted whenever any control changes. MainWindow rebuilds the Document's

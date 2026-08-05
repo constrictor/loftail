@@ -6,6 +6,7 @@
 #include <QVector>
 
 QT_BEGIN_NAMESPACE
+class QContextMenuEvent;
 class QHeaderView;
 class QItemSelectionModel;
 class QTimer;
@@ -131,12 +132,20 @@ protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void scrollContentsBy(int dx, int dy) override;
 
 signals:
     // Follow attached/detached, so the window can reflect it (menu check, control).
     void followingChanged(bool following);
+
+    // A record was right-clicked (SPEC.md §5). The view reports WHERE — the view row,
+    // the column under the cursor, and where to pop up — and nothing else: the menu
+    // is assembled by the window, which is the only place that can reach both the
+    // record's fields and the panes the items edit. `column` is the logical column,
+    // or -1 past the last one; it ranks the menu without changing its contents.
+    void recordMenuRequested(int viewRow, int column, const QPoint &globalPos);
 
 private slots:
     void handleRowsInserted();

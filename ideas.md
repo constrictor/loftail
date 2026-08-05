@@ -17,13 +17,7 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
    geometry (exact and estimated) works unchanged. New state is one bit per visible row
    ("context, not match") that `LogModel` turns into a dimmed row.
 
-2. **A record context menu — "Filter to this…" / "Highlight this…".** `LogView` has a header context
-   menu but no record one. Right-click a record: filter to this subsystem, exclude this thread,
-   highlight everything from this thread, start the time range here.
-   *Carried by:* every one of those is a `MatchCriteria` the panes already build and persist (M10).
-   Converts filtering from typing into pointing, which is how an unfamiliar log actually gets read.
-
-3. **Elapsed-time display mode.** A sixth `TimeDisplay`: seconds since the **previous visible**
+2. **Elapsed-time display mode.** A sixth `TimeDisplay`: seconds since the **previous visible**
    record. Stalls, timeouts and retry storms become visible by scanning one column. Companion:
    mark any gap over a threshold, so the pause is findable without reading.
    *Carried by:* the enum already round-trips through a string and the timestamp header menu
@@ -31,13 +25,13 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
    column shows that subsystem's cadence — and stays well-defined per file, since filters are
    per-file too.
 
-4. **An unread marker while detached.** Scrolling up off the tail drops a separator line where you
+3. **An unread marker while detached.** Scrolling up off the tail drops a separator line where you
    left, labelled "1,240 new records". Removes the "did I miss something?" tax of tailing.
    *Carried by:* pure per-view state (invariant #7); follow is already per-view in `LogView`.
 
 ## Tier 2 — distinctive, worth a milestone each
 
-5. **Time-locked side-by-side.** `FUTURE.md` already wants the split inside the document area; the
+4. **Time-locked side-by-side.** `FUTURE.md` already wants the split inside the document area; the
    interesting part is locking two views by **timestamp** rather than by row — scroll the client
    log, the server log follows to the nearest record in time.
    Threads a needle left deliberately: `SPEC.md` §11 rules out merged time-ordered views forever,
@@ -48,14 +42,14 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
    *Carried by:* invariant #10 — every timestamp is already UTC epoch ms, so the lock is a binary
    search into the other view's index.
 
-6. **Run diff.** "How did this run differ from the last one?" — align two runs by normalized message
+5. **Run diff.** "How did this run differ from the last one?" — align two runs by normalized message
    shape (timestamps and ids stripped) and mark records added, missing, reordered. Distinctive
    because the run split (`SPEC.md` §3a) is already there and nothing else has it.
-   *Cost:* the normalization and the diff, not the plumbing. Cheap v1: ship #5 first and
+   *Cost:* the normalization and the diff, not the plumbing. Cheap v1: ship #4 first and
    "compare with previous run" becomes a menu item opening a time-locked split of two runs, with
    no new machinery at all.
 
-7. **Shareable record links.** A `loftail://` link carrying address + timestamp + run + filter
+6. **Shareable record links.** A `loftail://` link carrying address + timestamp + run + filter
    preset, so "look at this line" is pasteable into a ticket and the colleague lands on the exact
    record with the same filters.
    *Carried by:* M11's `RemoteLocation` normal form, which the recent list, format cache, session
@@ -64,7 +58,7 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
    *Note:* registering a private URL scheme is distinct from `SPEC.md` §11's refusal to claim the
    default `.log` handler.
 
-8. **Capture-group columns.** A user regex with named groups over the message becomes columns —
+7. **Capture-group columns.** A user regex with named groups over the message becomes columns —
    pull `request_id=(\w+)` out and follow one request across every subsystem.
    *Scoping:* as a display column and filter axis this needs no `Record` change, computing lazily
    on the paint path exactly as the message-text axis does, at the same budget. Sorting or jumping
@@ -74,12 +68,12 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
 
 ## Tier 3 — small wins
 
-9. **Jump to timestamp** (Ctrl+G). `SPEC.md` §4 names it as something parsed timestamps make
+8. **Jump to timestamp** (Ctrl+G). `SPEC.md` §4 names it as something parsed timestamps make
    possible, but it does not appear to have shipped.
-10. **Find across all open tabs**, with a results list.
-11. **A density strip** beside the scrollbar showing where highlighted records and find matches sit
+9. **Find across all open tabs**, with a results list.
+10. **A density strip** beside the scrollbar showing where highlighted records and find matches sit
     in the whole file. Navigation aid, not a chart; reuses colors the highlighter already resolves.
-12. **Bookmarks** — already scoped in `FUTURE.md`, including the open question of what identifies a
+11. **Bookmarks** — already scoped in `FUTURE.md`, including the open question of what identifies a
     bookmarked record across a reindex.
 
 ## Watch-outs
@@ -88,9 +82,11 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
   §11's "no charts, statistics, or alerting" line. Worth an explicit ruling rather than drifting
   into it.
 - **Anything shaped like "alert me when ERROR appears"** is squarely a non-goal. The tailing
-  equivalent that is not is #4's unread marker.
+  equivalent that is not is #3's unread marker.
 
 ## A suggested order
 
-#2, #1 and #3 as one milestone — all three are about reading a *filtered* log and each is small —
-then #5 as the milestone after, since it also unlocks #6 for free.
+#1 and #2 as one milestone — both are about reading a *filtered* log and each is small. The record
+menu that was to lead them has **shipped** (`SPEC.md` §5, `ARCHITECTURE.md` §7.4), which is also
+what made the pair worth grouping: pointing at a record is how the filter gets set in the first
+place. Then #4 as the milestone after, since it also unlocks #5 for free.

@@ -302,6 +302,16 @@ target_link_libraries(tst_multidoc PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_multidoc COMMAND tst_multidoc)
 set_tests_properties(tst_multidoc PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# The record context menu (SPEC.md §5): what a record offers, and that triggering an
+# item reaches the same per-file state a click in the pane would. The pane-level half
+# — what each edit MEANS, including that "show only" must not widen as the scan finds
+# more — is in tst_filterpane; this covers the assembly, which is the part that needs
+# a real window, a real format and a real record. Offscreen, isolated config.
+qt_add_executable(tst_recordmenu tst_recordmenu.cpp)
+target_link_libraries(tst_recordmenu PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_recordmenu COMMAND tst_recordmenu)
+set_tests_properties(tst_recordmenu PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # M9 — the tab arrangement itself round-trips: the same tabs come back in the same
 # order, each view keeping its own column layout and wrap mode.
 # Two MainWindow instances over one isolated settings store, offscreen.

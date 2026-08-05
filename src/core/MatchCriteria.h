@@ -82,6 +82,23 @@ struct MatchCriteria
     bool loggerCoversAll = true;
     bool threadCoversAll = true;
 
+    // Whether the selection above is a deliberate RESTRICTION rather than a snapshot
+    // of everything the file had shown so far. It exists because the two are
+    // indistinguishable from the name list alone and the editor must treat them
+    // oppositely when the scan turns up a value nobody has seen yet: a hand-ticked
+    // list is a statement about the whole file and widens with it (SPEC.md §6, "every
+    // discovered subsystem starts selected, including ones that first appear later"),
+    // while "show only net.http" — the record menu's edit, SPEC.md §5 — must not
+    // quietly grow to name a subsystem discovered an hour into a tail.
+    //
+    // Persisted, unlike coversAll: it is part of what the selection MEANS, so a
+    // restored session or an applied preset must not widen where the original did
+    // not. Written only when true, so every state that predates it — and every state
+    // that does not use it — serializes byte-identically and no schema bump is
+    // needed (see toJson).
+    bool loggerRestrictive = false;
+    bool threadRestrictive = false;
+
     // By time range: display-zone WALL CLOCK. The single "in" conversion to UTC ms
     // (invariant #10, ARCHITECTURE.md §5.1) happens in resolve(), so moving the
     // display zone re-points these correctly instead of shifting the instant.

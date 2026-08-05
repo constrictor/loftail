@@ -58,6 +58,15 @@ public:
     QJsonObject saveState() const;
     void restoreState(const QJsonObject &state);
 
+    // Add a rule built from the record under the cursor (the record menu, SPEC.md §5)
+    // and select it, so the pane shows what was just added and it can be recolored or
+    // removed without hunting for it. APPENDED, never inserted: rules are
+    // first-match-wins (§7), and a rule the user placed deliberately must keep its
+    // precedence over one added by a menu click. The background color is the first
+    // palette slot no enabled rule is using, so two menu-made rules do not come out
+    // the same color.
+    void addRule(const MatchCriteria &criteria);
+
 signals:
     // Emitted whenever the rules change. MainWindow re-resolves and repaints; no
     // model reset is needed since highlighting recolors rows without adding/removing.

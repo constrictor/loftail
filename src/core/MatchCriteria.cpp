@@ -129,6 +129,15 @@ QJsonObject MatchCriteria::toJson() const
     o.insert(QStringLiteral("threadEnabled"), threadEnabled);
     o.insert(QStringLiteral("threadChecked"), namesToArray(threadNames));
 
+    // Written only when set, so a state that does not restrict serializes exactly as
+    // it did before the key existed — which is what keeps existing presets, exported
+    // files and sessions loading without a PresetStore/SessionStore version bump
+    // (both compare versions for exact equality and have no migration path).
+    if (loggerRestrictive)
+        o.insert(QStringLiteral("loggerRestrictive"), true);
+    if (threadRestrictive)
+        o.insert(QStringLiteral("threadRestrictive"), true);
+
     o.insert(QStringLiteral("textEnabled"), text.enabled);
     o.insert(QStringLiteral("text"), text.matcher.pattern());
     o.insert(QStringLiteral("textRegex"), text.matcher.isRegex());
@@ -157,6 +166,11 @@ MatchCriteria MatchCriteria::fromJson(const QJsonObject &o)
 
     c.threadEnabled = o.value(QStringLiteral("threadEnabled")).toBool(false);
     c.threadNames = arrayToNames(o.value(QStringLiteral("threadChecked")).toArray());
+
+    // Absent means "not a restriction", which is what every state written before the
+    // key existed meant: a hand-ticked list that widens with the file.
+    c.loggerRestrictive = o.value(QStringLiteral("loggerRestrictive")).toBool(false);
+    c.threadRestrictive = o.value(QStringLiteral("threadRestrictive")).toBool(false);
 
     c.text.enabled = o.value(QStringLiteral("textEnabled")).toBool(false);
     c.text.negate = o.value(QStringLiteral("textNegate")).toBool(false);

@@ -22,6 +22,8 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include <utility>
+
 namespace loftail {
 
 namespace {
@@ -144,8 +146,17 @@ void AxisEditor::buildUi(Defaults defaults)
         root->addWidget(a.box);
 
         connect(m_loggerEnable, &QCheckBox::toggled, this, emitChange);
+        // A hand edit to the list — one tick, or All / None / Invert, which reach here
+        // the same way — returns the axis to the discovery default: whatever the user
+        // is building now is a statement about the file, so a subsystem that appears
+        // later belongs in it. Only showOnlyValue() says otherwise. The m_populating
+        // guard keeps a repopulation from counting as an edit.
         connect(m_loggerList, &QListWidget::itemChanged, this,
-                [emitChange](QListWidgetItem *) { emitChange(); });
+                [this, emitChange](QListWidgetItem *) {
+                    if (!m_populating)
+                        m_loggerRestrictive = false;
+                    emitChange();
+                });
         connect(m_loggerNarrow, &QLineEdit::textChanged, this,
                 [this](const QString &s) { narrowList(m_loggerList, s); });
         connect(all, &QPushButton::clicked, this, [this] { setAllChecked(m_loggerList, true); });
@@ -156,6 +167,7 @@ void AxisEditor::buildUi(Defaults defaults)
             if (name.isEmpty())
                 return;
             m_loggerManualNames.insert(name);
+            m_loggerRestrictive = false; // typing a name is a hand edit like any other
             m_loggerManual->clear();
             refreshDiscoveredLists(); // re-inserts the manual name, checked
             emitChange();
@@ -192,7 +204,11 @@ void AxisEditor::buildUi(Defaults defaults)
 
         connect(m_threadEnable, &QCheckBox::toggled, this, emitChange);
         connect(m_threadList, &QListWidget::itemChanged, this,
-                [emitChange](QListWidgetItem *) { emitChange(); });
+                [this, emitChange](QListWidgetItem *) {
+                    if (!m_populating)
+                        m_threadRestrictive = false;
+                    emitChange();
+                });
         connect(m_threadNarrow, &QLineEdit::textChanged, this,
                 [this](const QString &s) { narrowList(m_threadList, s); });
         connect(all, &QPushButton::clicked, this, [this] { setAllChecked(m_threadList, true); });
@@ -203,6 +219,7 @@ void AxisEditor::buildUi(Defaults defaults)
             if (name.isEmpty())
                 return;
             m_threadManualNames.insert(name);
+            m_threadRestrictive = false;
             m_threadManual->clear();
             refreshDiscoveredLists();
             emitChange();
@@ -350,6 +367,11 @@ void AxisEditor::setDocument(Document *document)
     // already-seen-but-not-checked and the new file would open fully filtered out.
     m_loggerSeen.clear();
     m_threadSeen.clear();
+    // Likewise a statement about the previous file's values, and a wrong one about
+    // this file's: carried across, a new file would open with every subsystem it
+    // discovers arriving unticked.
+    m_loggerRestrictive = false;
+    m_threadRestrictive = false;
 
     const bool hasDoc = document != nullptr;
     const bool hasThread = hasDoc && document->format().threadGroup > 0;
@@ -365,25 +387,63 @@ void AxisEditor::setDocument(Document *document)
 
     refreshDiscoveredLists();
 
+    // The zone the editors' digits are written in, tracked for every bound document
+    // and not only for one carrying timestamps: setTimeBound() renders a record's UTC
+    // ms through it, and refreshTimeBounds() reads it to recover the instant.
+    if (hasDoc)
+        m_renderZone = document->displayZone();
+
     // Seed the time editors to the file's observed span so the pickers open near
     // useful values rather than the epoch.
     if (hasDate) {
         m_populating = true;
-        m_renderZone = document->displayZone();
-        qint64 lo = FilterSet::kMaxTime, hi = FilterSet::kMinTime;
-        for (const Record &r : document->index().records) {
-            if (r.timestamp == Record::kNoTimestamp)
-                continue;
-            lo = qMin(lo, r.timestamp);
-            hi = qMax(hi, r.timestamp);
-        }
-        if (lo <= hi) {
-            m_timeStart->setDateTime(QDateTime::fromMSecsSinceEpoch(lo, m_renderZone));
-            m_timeEnd->setDateTime(QDateTime::fromMSecsSinceEpoch(hi, m_renderZone));
+        qint64 lo = 0, hi = 0;
+        if (observedSpan(lo, hi)) {
+            m_timeStart->setDateTime(wallClockOf(lo));
+            m_timeEnd->setDateTime(wallClockOf(hi));
         }
         m_populating = false;
     }
     updateCollapse();
+}
+
+QDateTime AxisEditor::wallClockOf(qint64 utcMs) const
+{
+    // What the editors hold is display-zone WALL CLOCK with no zone attached, and
+    // criteria() reinterprets those digits in the display zone (invariant #10). So an
+    // instant has to be rendered in the display zone and the zone then dropped:
+    // QDateTimeEdit converts whatever it is handed to its own spec, so passing a
+    // zoned value would shift the digits by the machine's own offset and re-point the
+    // bound at a different instant — on any machine whose local zone is not the
+    // display zone, which is the normal case for a log from another host.
+    QDateTime at = QDateTime::fromMSecsSinceEpoch(utcMs, m_renderZone);
+    at.setTimeZone(QTimeZone::LocalTime);
+    return at;
+}
+
+bool AxisEditor::observedSpan(qint64 &lo, qint64 &hi) const
+{
+    if (!m_document)
+        return false;
+    lo = FilterSet::kMaxTime;
+    hi = FilterSet::kMinTime;
+    for (const Record &r : m_document->index().records) {
+        if (r.timestamp == Record::kNoTimestamp)
+            continue;
+        lo = qMin(lo, r.timestamp);
+        hi = qMax(hi, r.timestamp);
+    }
+    return lo <= hi;
+}
+
+bool AxisEditor::supportsThread() const
+{
+    return m_document && m_document->format().threadGroup > 0;
+}
+
+bool AxisEditor::supportsTime() const
+{
+    return m_document && m_document->format().dateGroup > 0;
 }
 
 void AxisEditor::refreshTimeBounds()
@@ -435,8 +495,10 @@ void AxisEditor::repopulate(const QSet<QString> &loggerChecked,
     loggers.append(m_loggerManualNames.values());
     threads.append(m_threadManualNames.values());
 
-    populateList(m_loggerList, loggers, loggerChecked, m_loggerManualNames, m_loggerSeen, exact);
-    populateList(m_threadList, threads, threadChecked, m_threadManualNames, m_threadSeen, exact);
+    populateList(m_loggerList, loggers, loggerChecked, m_loggerManualNames, m_loggerSeen,
+                 exact, m_loggerRestrictive);
+    populateList(m_threadList, threads, threadChecked, m_threadManualNames, m_threadSeen,
+                 exact, m_threadRestrictive);
     narrowList(m_loggerList, m_loggerNarrow ? m_loggerNarrow->text() : QString());
     narrowList(m_threadList, m_threadNarrow ? m_threadNarrow->text() : QString());
 }
@@ -458,10 +520,12 @@ MatchCriteria AxisEditor::criteria() const
     // table: the table grows mid-scan and the list lags it, so asking the table would
     // make a discovered-but-not-yet-listed subsystem look excluded.
     c.loggerCoversAll = allChecked(m_loggerList);
+    c.loggerRestrictive = m_loggerRestrictive;
 
     c.threadEnabled = m_threadEnable->isChecked();
     c.threadNames = toSortedList(checkedNames(m_threadList));
     c.threadCoversAll = allChecked(m_threadList);
+    c.threadRestrictive = m_threadRestrictive;
 
     c.text.enabled = m_textEnable->isChecked();
     c.text.negate = m_textNegate->isChecked();
@@ -505,6 +569,11 @@ void AxisEditor::setCriteria(const MatchCriteria &c)
     const QSet<QString> threadSel(c.threadNames.begin(), c.threadNames.end());
     m_loggerManualNames = loggerSel;
     m_threadManualNames = threadSel;
+    // Restore how the selection is meant to grow along with the selection itself: a
+    // preset or session that restricted must not widen when this file turns up a
+    // value the one it was made on never had.
+    m_loggerRestrictive = c.loggerRestrictive;
+    m_threadRestrictive = c.threadRestrictive;
 
     m_populating = false;
 
@@ -518,12 +587,165 @@ void AxisEditor::setCriteria(const MatchCriteria &c)
 }
 
 // ---------------------------------------------------------------------------
+// Edits driven from a record (the record menu, SPEC.md §5)
+// ---------------------------------------------------------------------------
+
+QListWidget *AxisEditor::listFor(ValueAxis axis) const
+{
+    return axis == ValueAxis::Subsystem ? m_loggerList : m_threadList;
+}
+
+QCheckBox *AxisEditor::enableFor(ValueAxis axis) const
+{
+    return axis == ValueAxis::Subsystem ? m_loggerEnable : m_threadEnable;
+}
+
+QSet<QString> &AxisEditor::manualFor(ValueAxis axis)
+{
+    return axis == ValueAxis::Subsystem ? m_loggerManualNames : m_threadManualNames;
+}
+
+bool &AxisEditor::restrictiveFor(ValueAxis axis)
+{
+    return axis == ValueAxis::Subsystem ? m_loggerRestrictive : m_threadRestrictive;
+}
+
+void AxisEditor::ensureListed(ValueAxis axis, const QString &name)
+{
+    QListWidget *list = listFor(axis);
+    if (!list)
+        return;
+    auto listed = [list, &name] {
+        for (int i = 0; i < list->count(); ++i)
+            if (list->item(i)->text() == name)
+                return true;
+        return false;
+    };
+    if (listed())
+        return;
+    // The value came off a record, so the intern table has it even when the list this
+    // pane last drew does not — indexing runs ahead of the repopulations that follow
+    // it. Refresh from the table first, and only fall back to carrying the name as a
+    // manual entry if it is somehow still absent.
+    refreshDiscoveredLists();
+    if (listed())
+        return;
+    manualFor(axis).insert(name);
+    refreshDiscoveredLists();
+}
+
+void AxisEditor::showOnlyValue(ValueAxis axis, const QString &name)
+{
+    QListWidget *list = listFor(axis);
+    if (!list || name.isEmpty() || (axis == ValueAxis::Thread && !supportsThread()))
+        return;
+    ensureListed(axis, name);
+
+    m_populating = true;
+    // Every item, including the ones the narrow box is currently hiding. All / None
+    // deliberately act on the narrowed view only, because there the user can see what
+    // they are acting on; a menu item that read "show only net.http" and quietly left
+    // hidden values ticked would restrict to more than it says.
+    for (int i = 0; i < list->count(); ++i) {
+        QListWidgetItem *item = list->item(i);
+        item->setCheckState(item->text() == name ? Qt::Checked : Qt::Unchecked);
+    }
+    if (QCheckBox *enable = enableFor(axis))
+        enable->setChecked(true);
+    restrictiveFor(axis) = true;
+    m_populating = false;
+
+    emitChanged();
+}
+
+void AxisEditor::hideValue(ValueAxis axis, const QString &name)
+{
+    QListWidget *list = listFor(axis);
+    if (!list || name.isEmpty() || (axis == ValueAxis::Thread && !supportsThread()))
+        return;
+    ensureListed(axis, name);
+
+    m_populating = true;
+    for (int i = 0; i < list->count(); ++i) {
+        QListWidgetItem *item = list->item(i);
+        if (item->text() == name)
+            item->setCheckState(Qt::Unchecked);
+    }
+    // Unticking one value out of everything says nothing until the axis is on — and
+    // the thread axis ships off (SPEC.md §6).
+    if (QCheckBox *enable = enableFor(axis))
+        enable->setChecked(true);
+    m_populating = false;
+
+    emitChanged();
+}
+
+void AxisEditor::setMinimumPriority(Priority p)
+{
+    if (!m_priorityEnable || !m_priorityCombo || p == Priority::Unknown)
+        return;
+    m_populating = true;
+    m_priorityCombo->setCurrentIndex(PriorityChoice::indexOf(p));
+    m_priorityEnable->setChecked(true);
+    m_populating = false;
+    emitChanged();
+}
+
+void AxisEditor::setTimeBound(TimeBound which, qint64 utcMs)
+{
+    if (!m_timeEnable || !m_timeStart || !m_timeEnd || !supportsTime())
+        return;
+    const QDateTime at = wallClockOf(utcMs);
+
+    // What the opposite bound should be when it has to move. The file's observed span
+    // is the honest "open end": the editors cannot hold "no bound", and leaving an
+    // unseeded end at the year 2000 — which is what a file that had no timestamps
+    // when the pane bound to it leaves behind — would hide everything.
+    qint64 lo = 0, hi = 0;
+    const bool span = observedSpan(lo, hi);
+    const QDateTime openEnd = wallClockOf(span ? qMax(hi, utcMs) : utcMs);
+    const QDateTime openStart = wallClockOf(span ? qMin(lo, utcMs) : utcMs);
+
+    const bool wasEnabled = m_timeEnable->isChecked();
+    m_populating = true;
+    if (which == TimeBound::Start) {
+        m_timeStart->setDateTime(at);
+        // Widen the far end only when it would otherwise exclude the record just
+        // pointed at — an end the user set deliberately is left where it is.
+        if (!wasEnabled || m_timeEnd->dateTime() < at)
+            m_timeEnd->setDateTime(openEnd);
+    } else {
+        m_timeEnd->setDateTime(at);
+        if (!wasEnabled || m_timeStart->dateTime() > at)
+            m_timeStart->setDateTime(openStart);
+    }
+    m_timeEnable->setChecked(true);
+    m_populating = false;
+
+    emitChanged();
+}
+
+void AxisEditor::setTimeRange(qint64 fromUtcMs, qint64 toUtcMs)
+{
+    if (!m_timeEnable || !m_timeStart || !m_timeEnd || !supportsTime())
+        return;
+    if (fromUtcMs > toUtcMs)
+        std::swap(fromUtcMs, toUtcMs);
+    m_populating = true;
+    m_timeStart->setDateTime(wallClockOf(fromUtcMs));
+    m_timeEnd->setDateTime(wallClockOf(toUtcMs));
+    m_timeEnable->setChecked(true);
+    m_populating = false;
+    emitChanged();
+}
+
+// ---------------------------------------------------------------------------
 // List helpers
 // ---------------------------------------------------------------------------
 
 void AxisEditor::populateList(QListWidget *list, const QStringList &names,
                               const QSet<QString> &checked, const QSet<QString> &manual,
-                              QSet<QString> &seen, bool exact)
+                              QSet<QString> &seen, bool exact, bool restrictive)
 {
     if (!list)
         return;
@@ -549,11 +771,22 @@ void AxisEditor::populateList(QListWidget *list, const QStringList &names,
     //
     // Load rule (exact == true): checked means exactly `checked`, because the caller is
     // reproducing a stored selection, not discovering values.
+    //
+    // Restriction rule (restrictive, exact == false): the discovery rule is exactly
+    // wrong — the selection names what the user asked to see, so a value nobody has
+    // seen yet is not part of it and arrives UNCHECKED. A name the user typed by hand
+    // still arrives checked: adding it is the request to see it.
+    //
+    // A name already listed keeps its own state under every rule but the load, which
+    // is what makes an unticked value stay unticked across the repopulations indexing
+    // drives — including one the user typed in and then unticked.
     for (const QString &n : sorted) {
         auto *item = new QListWidgetItem(n, list);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        const bool fresh = !seen.contains(n);
         const bool on = exact ? checked.contains(n)
-                              : (!seen.contains(n) || checked.contains(n) || manual.contains(n));
+                              : (checked.contains(n)
+                                 || (fresh && (!restrictive || manual.contains(n))));
         seen.insert(n);
         item->setCheckState(on ? Qt::Checked : Qt::Unchecked);
     }

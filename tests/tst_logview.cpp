@@ -1,6 +1,7 @@
 #include <QtTest>
 
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QFontDatabase>
 #include <QHeaderView>
 #include <QScrollBar>
@@ -85,6 +86,7 @@ private slots:
     void alwaysOnPaintRefinesWhileScrolling();
     void filterRestrictsVisibleSetAndGeometry();
     void followDetachesAndReattaches();
+    void rightClickReportsTheRecordUnderIt();
 };
 
 void TestLogView::wrapOffMappingMatchesBase()
@@ -455,6 +457,49 @@ void TestLogView::followDetachesAndReattaches()
 
     // The state actually toggled (not stuck): several transitions were signalled.
     QVERIFY(spy.count() >= 3);
+}
+
+// The record context menu's near end (SPEC.md §5). The view's whole part in it is to
+// answer WHERE the click landed — the window builds the menu — and the answer has to
+// survive the coordinate hop that made this worth a test: a context menu event is
+// delivered to the VIEWPORT and forwarded to the scroll area, so its position is in
+// viewport coordinates, the same ones the hit test and the header expect. Reading it
+// as widget coordinates would shift every row by the header's height.
+void TestLogView::rightClickReportsTheRecordUnderIt()
+{
+    QTemporaryFile file;
+    Document doc;
+    // Few enough records that the viewport has empty space below them, which the
+    // second half of this case needs.
+    QVERIFY2(openLog(doc, file, 5), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(600, 300);
+
+    QSignalSpy spy(&view, &LogView::recordMenuRequested);
+
+    // Two lines into the viewport is the second record — every record here is one
+    // line tall with wrap off.
+    const int lineHeight = view.fontMetrics().height();
+    const QPoint at(50, lineHeight * 2 + lineHeight / 2);
+    QContextMenuEvent event(QContextMenuEvent::Mouse, at, view.viewport()->mapToGlobal(at));
+    QApplication::sendEvent(view.viewport(), &event);
+
+    QCOMPARE(spy.count(), 1);
+    const QList<QVariant> args = spy.takeFirst();
+    QCOMPARE(args.at(0).toInt(), 2);
+    // Right-clicking a record the selection did not cover moves the selection to it,
+    // so the menu's copy items act on what is under the cursor.
+    QCOMPARE(view.currentRecord(), 2);
+
+    // A click in the empty space BELOW the last record reports nothing rather than
+    // the nearest row: there is no record under the cursor to build a menu from.
+    QContextMenuEvent below(QContextMenuEvent::Mouse, QPoint(50, 295),
+                            view.viewport()->mapToGlobal(QPoint(50, 295)));
+    QApplication::sendEvent(view.viewport(), &below);
+    QCOMPARE(spy.count(), 0);
 }
 
 int main(int argc, char *argv[])

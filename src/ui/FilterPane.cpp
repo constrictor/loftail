@@ -84,6 +84,40 @@ void FilterPane::restoreState(const QJsonObject &o)
 }
 
 // ---------------------------------------------------------------------------
+// Filtering by pointing (the record menu)
+// ---------------------------------------------------------------------------
+//
+// Nothing here does any work of its own: the AxisEditor makes the edit and emits
+// changed(), which the constructor already turns into applyToDocument() +
+// filtersChanged(). That is the point — a menu edit and a hand edit are the same
+// edit, so neither can grow behavior the other lacks.
+
+void FilterPane::showOnlyValue(ValueAxis axis, const QString &name)
+{
+    m_axes->showOnlyValue(axis, name);
+}
+
+void FilterPane::hideValue(ValueAxis axis, const QString &name)
+{
+    m_axes->hideValue(axis, name);
+}
+
+void FilterPane::setMinimumPriority(Priority p)
+{
+    m_axes->setMinimumPriority(p);
+}
+
+void FilterPane::setTimeBound(TimeBound which, qint64 utcMs)
+{
+    m_axes->setTimeBound(which, utcMs);
+}
+
+void FilterPane::setTimeRange(qint64 fromUtcMs, qint64 toUtcMs)
+{
+    m_axes->setTimeRange(fromUtcMs, toUtcMs);
+}
+
+// ---------------------------------------------------------------------------
 // Build the FilterSet
 // ---------------------------------------------------------------------------
 

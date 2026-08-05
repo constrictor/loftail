@@ -12,6 +12,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QContextMenuEvent>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
@@ -739,6 +740,42 @@ void LogView::mousePressEvent(QMouseEvent *event)
     setFocus();
     const bool shift = event->modifiers().testFlag(Qt::ShiftModifier);
     setCurrentRecord(record, shift);
+}
+
+void LogView::contextMenuEvent(QContextMenuEvent *event)
+{
+    // The viewport forwards this to the scroll area the same way it forwards a mouse
+    // press, so the position is in VIEWPORT coordinates — the coordinates the hit test
+    // and the header's own both expect.
+    //
+    // Resolved here rather than through recordAtViewportY because the empty space
+    // BELOW the last record has to answer "nothing", and that hit test deliberately
+    // clamps to the last record instead (it backs a click, which selects the nearest
+    // row). A menu for a record the cursor is not on would act on a record the user
+    // cannot see themselves pointing at.
+    const int y = int(event->pos().y());
+    const qint64 line = qint64(verticalScrollBar()->value()) + y / lineHeight();
+    if (y < 0 || recordCount() == 0 || line >= mapTotalLines()) {
+        QAbstractScrollArea::contextMenuEvent(event);
+        return;
+    }
+    const int record = mapRecordAtLine(line);
+    if (record < 0 || record >= recordCount()) {
+        QAbstractScrollArea::contextMenuEvent(event);
+        return;
+    }
+
+    // Right-clicking outside the selection moves it, as every list view does: the
+    // menu's copy items act on the selection, so what is under the cursor and what
+    // the menu acts on must not disagree. A right-click INSIDE a multi-record
+    // selection leaves it alone — that is what makes "these five records" possible.
+    if (!m_selection->isSelected(m_model->index(record, 0)))
+        setCurrentRecord(record);
+    setFocus();
+
+    emit recordMenuRequested(record, m_header->logicalIndexAt(int(event->pos().x())),
+                             event->globalPos());
+    event->accept();
 }
 
 void LogView::keyPressEvent(QKeyEvent *event)

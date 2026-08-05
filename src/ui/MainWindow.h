@@ -59,6 +59,13 @@ public:
     // normalized before it becomes a Document path (RemoteLocation.h).
     void openFile(const QString &rawPath, const QString &pattern = QString());
 
+    // Fill `menu` with what the record at `viewRow` of `view` offers (SPEC.md §5).
+    // Public, and split from showRecordMenu(), so a test can inspect and trigger the
+    // items without opening a modal menu — the same split LogView's pure geometry
+    // helpers are public for. `column` ranks the items; it never changes which ones
+    // are there.
+    void buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, int column);
+
 signals:
     // Panes bind to the active document by signal, not by construction (invariant
     // #7, ARCHITECTURE.md §12.3). Emitted with the newly-active Document (or
@@ -81,6 +88,9 @@ private slots:
     void refreshRemoteHostsMenu();
     void showFormatDialog();
     void showColumnMenu(const QPoint &pos);
+    // Pop up the record menu where the click was (SPEC.md §5). Built per invocation
+    // on the stack, exactly as the column menu is.
+    void showRecordMenu(DocumentView *view, int viewRow, int column, const QPoint &globalPos);
     // Recompute the visible subset from the active document's filters and refresh
     // its views + status counts (M4). Wrapped in a model reset.
     void applyActiveFilters();

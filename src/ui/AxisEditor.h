@@ -19,6 +19,13 @@ namespace loftail {
 
 class Document;
 
+// The two axes that offer a pick-list of discovered values, named so a caller can
+// say which one it means without reaching for the widgets (SPEC.md §6).
+enum class ValueAxis { Subsystem, Thread };
+
+// Which end of the time range an edit sets.
+enum class TimeBound { Start, End };
+
 // The editor for the five match axes — priority, subsystem, thread, message text,
 // time range (SPEC.md §6, §7). ONE widget, two users:
 //
@@ -90,6 +97,42 @@ public:
     // flags it inline; without this a malformed regex silently matches nothing.
     bool textPatternValid() const;
 
+    // --- Edits driven from a record, not typed (the record menu, SPEC.md §5) ----
+    //
+    // Each of these is ONE edit to ONE axis, made through the same controls a hand
+    // edit uses and followed by exactly one changed(): the widgets stay the
+    // authoritative state (ARCHITECTURE.md §12.3), so the pane resolves and applies
+    // the result by its ordinary path and the user can see — and undo — what
+    // happened by looking at the axis.
+    //
+    // showOnlyValue() replaces the axis's selection with the single named value and
+    // marks it RESTRICTIVE (MatchCriteria::loggerRestrictive): a value discovered
+    // later must not join a selection the user made by pointing at one record.
+    // hideValue() only unticks, leaving both the rest of the selection and the
+    // discovery rule alone — excluding one subsystem says nothing about the next one
+    // to appear. Both enable their axis, since neither means anything with it off.
+    void showOnlyValue(ValueAxis axis, const QString &name);
+    void hideValue(ValueAxis axis, const QString &name);
+
+    // Set the minimum-level axis and enable it. Priority::Unknown has no selector
+    // entry (an unparsed record carries no level) and is ignored.
+    void setMinimumPriority(Priority p);
+
+    // Set one end of the time range from a record's UTC ms, rendered in the display
+    // zone (invariant #10 — this is the ordinary "out" conversion). The OTHER end is
+    // pushed out to the file's observed span when it would otherwise make the range
+    // empty, which is what turning the axis on from a single record would otherwise
+    // do: the editors always hold some wall clock, and an unseeded end bound sits in
+    // the year 2000.
+    void setTimeBound(TimeBound which, qint64 utcMs);
+    void setTimeRange(qint64 fromUtcMs, qint64 toUtcMs);
+
+    // Whether the bound document's format carries the field an axis tests, so a
+    // caller can leave out what it cannot offer rather than showing it dead
+    // (SPEC.md §6).
+    bool supportsThread() const;
+    bool supportsTime() const;
+
 signals:
     // Emitted on any user edit. Never emitted by setCriteria(), setDocument() or
     // refreshDiscoveredLists(), so the owning pane can load state without recursing.
@@ -104,10 +147,12 @@ private:
     // Repopulate one checkable list. `exact` picks the check-state rule: false is
     // discovery (a name never listed before arrives checked, so an enabled-by-default
     // axis does not start dropping records mid-scan), true is loading a stored
-    // selection (checked means exactly the given names).
+    // selection (checked means exactly the given names). `restrictive` turns the
+    // discovery rule off for this axis without turning it into a load — see
+    // MatchCriteria::loggerRestrictive.
     void populateList(QListWidget *list, const QStringList &names,
                       const QSet<QString> &checked, const QSet<QString> &manual,
-                      QSet<QString> &seen, bool exact);
+                      QSet<QString> &seen, bool exact, bool restrictive);
     static bool   allChecked(const QListWidget *list);
     QSet<QString> checkedNames(const QListWidget *list) const;
     void          setAllChecked(QListWidget *list, bool checked);
@@ -115,6 +160,22 @@ private:
     void          narrowList(QListWidget *list, const QString &needle);
     void          repopulate(const QSet<QString> &loggerChecked,
                              const QSet<QString> &threadChecked, bool exact);
+
+    // The widgets and per-axis state behind ValueAxis, so the record-menu edits are
+    // written once rather than twice.
+    QListWidget *listFor(ValueAxis axis) const;
+    QCheckBox   *enableFor(ValueAxis axis) const;
+    QSet<QString> &manualFor(ValueAxis axis);
+    bool          &restrictiveFor(ValueAxis axis);
+    // Make sure `name` is in the axis's list — refreshing from the intern table
+    // first, and only carrying it as a manual entry if the file has genuinely not
+    // emitted it. Without this a menu edit could silently do nothing while the
+    // pane's list lagged the scan behind it.
+    void ensureListed(ValueAxis axis, const QString &name);
+    // The file's observed timestamp span, or false when it has no parsed timestamps.
+    bool observedSpan(qint64 &lo, qint64 &hi) const;
+    // A UTC instant as the zone-less display-zone wall clock the editors hold.
+    QDateTime wallClockOf(qint64 utcMs) const;
 
     Document *m_document = nullptr;
     bool      m_populating = false; // guards itemChanged storms during (re)population
@@ -138,6 +199,10 @@ private:
     QWidget      *m_loggerBody = nullptr;
     QSet<QString> m_loggerManualNames; // manually-added subsystems (may be absent)
     QSet<QString> m_loggerSeen;        // every subsystem name ever listed
+    // "This list is a restriction, not a snapshot" — set by showOnlyValue() and
+    // cleared by any hand edit to the list, which returns the axis to the discovery
+    // default. See MatchCriteria::loggerRestrictive.
+    bool          m_loggerRestrictive = false;
 
     // Thread
     QCheckBox    *m_threadEnable = nullptr;
@@ -147,6 +212,7 @@ private:
     QWidget      *m_threadBody = nullptr;
     QSet<QString> m_threadManualNames;
     QSet<QString> m_threadSeen;
+    bool          m_threadRestrictive = false;
 
     // Message text
     QCheckBox *m_textEnable = nullptr;

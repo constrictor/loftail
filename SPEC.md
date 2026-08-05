@@ -182,6 +182,13 @@ Time-range filter bounds (§6) are always entered as wall clock in the display t
 
 - Rows can be selected individually or as a range, and copied to the clipboard. Copying yields the original raw text by default, with **Copy as Columns** available as a separate action for pasting into a spreadsheet.
 
+- **Right-clicking a record filters and highlights by what that record contains.** The menu is built from the record under the cursor and offers, for each field it carries: *Show Only Subsystem "net.io"* / *Hide Subsystem "net.io"*, the same pair for its thread, *Show WARN and Above* at the record's own level, and *Start Time Range Here* / *End Time Range Here*. With two or more timestamped records selected it also offers *Filter to Selected Time Range*. A **Highlight** group takes the same values and colors instead of hiding — the rule is added to the end of the list (§7) with a color picked from the palette, so rules already there keep their precedence. Copy and Copy as Columns are on the menu too.
+  
+  - Every one of these is an ordinary filter or highlight rule: it appears in the Filters or Highlighters pane exactly as if it had been set there by hand, and can be adjusted, undone or saved as a preset from there. Nothing the menu does is expressible only through the menu.
+  - **An item the record cannot answer for is not shown** rather than shown greyed. An unparsed plain-text line has no subsystem, thread, level or timestamp (§4), and a format without `%t` or `%d` has none for any record (§6).
+  - *Show only* **replaces** that axis's selection; *hide* narrows it and leaves the rest, so repeated hides accumulate. Filtering is per file (§5a), so the effect is visible in every view of that log.
+  - Which column was right-clicked decides which items come **first**; it never changes which items are there.
+
 - **Find / Find Next.** Text search over record content, with next/previous navigation, case-sensitivity and regular-expression options, and wrap-around at the end. Distinct from filtering: find moves the cursor and leaves every record visible; filtering removes non-matching records. Find operates on what is currently visible — if a filter is active, find searches the filtered subset.
 
 - A status area shows total record count, the count after filtering, the current file, and whether it is currently receiving new records. It describes the **active** view; a file being scanned in another tab shows its progress in that tab's own label instead.
@@ -202,6 +209,8 @@ Time-range filter bounds (§6) are always entered as wall clock in the display t
 Filtering removes non-matching records from the view. The underlying file is never modified.
 
 - **By subsystem.** The subsystem list is discovered automatically from the file as it is scanned, so the user picks from what is actually present rather than typing from memory. Subsystems can also be entered manually — useful when following a file that has not yet emitted a given subsystem. Every discovered subsystem starts selected, including ones that first appear later in the scan.
+  
+  - **Except after a *show only*** (§5). Ticking a list is a statement about the file and widens with it; restricting to one named subsystem is not, so a subsystem that turns up afterwards stays unselected — otherwise a filter meant as "only this one" would quietly grow, and on a log still being written it would keep growing. Touching the list by hand returns it to the ordinary behavior, and the restriction travels with a saved preset or session.
 - **By priority.** A single **minimum level** is chosen (TRACE…FATAL); records below it are hidden. Selecting WARN, for example, shows WARN, ERROR, and FATAL. The default is TRACE, which shows everything.
 - **The subsystem and priority axes are enabled by default**, selecting everything. Unticking a subsystem or raising the minimum level therefore takes effect on the first click. The two axes that need a value typed before they can mean anything — message text and time range — stay disabled until the user turns them on, as does the thread axis.
 - **A record that lacks a field is never hidden by a filter on that field.** An unparsed plain-text line has no subsystem, no thread, and no priority; filtering by subsystem must not make it disappear, since §4 promises those lines stay visible.

@@ -287,6 +287,7 @@ void MainWindow::buildMenus()
 
     QMenu *editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
     m_copyAction = editMenu->addAction(QStringLiteral("&Copy"));
+    m_copyAction->setObjectName(QStringLiteral("copyAction")); // findChild, for tests
     m_copyAction->setShortcut(QKeySequence::Copy);
     m_copyAction->setEnabled(false);
     connect(m_copyAction, &QAction::triggered, this, [this]() {
@@ -294,6 +295,7 @@ void MainWindow::buildMenus()
             v->copySelectionRaw();
     });
     m_copyColumnsAction = editMenu->addAction(QStringLiteral("Copy as &Columns"));
+    m_copyColumnsAction->setObjectName(QStringLiteral("copyColumnsAction")); // findChild, for tests
     m_copyColumnsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C));
     m_copyColumnsAction->setEnabled(false);
     connect(m_copyColumnsAction, &QAction::triggered, this, [this]() {
@@ -941,6 +943,14 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
     logView->header()->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(logView->header(), &QWidget::customContextMenuRequested,
             this, &MainWindow::showColumnMenu);
+    // Right-clicking a RECORD offers what that record can filter and highlight by
+    // (SPEC.md §5). The view carries the click; the window builds the menu, because
+    // it is the only thing that can reach both the record's fields and the panes the
+    // items edit.
+    connect(logView, &LogView::recordMenuRequested, this,
+            [this, view](int row, int column, const QPoint &globalPos) {
+                showRecordMenu(view, row, column, globalPos);
+            });
 
     // Into the bookkeeping BEFORE the tab bar: adding the first tab makes it current
     // at once, and the active-view handling that fires from it reads m_views.
@@ -1707,6 +1717,229 @@ void MainWindow::showColumnMenu(const QPoint &pos)
         });
     }
     menu.exec(header->mapToGlobal(pos));
+}
+
+// --- The record context menu (SPEC.md §5) ----------------------------------
+//
+// Right-clicking a record turns that record's own field values into filter and
+// highlight criteria. Every item is a `MatchCriteria` the panes already build and
+// persist (M10) — the menu is an input method for them, not a second filtering
+// system, which is what keeps presets, session restore and portability across a
+// re-index applying to it with no work of its own.
+//
+// Two rules hold the design together. Items are OMITTED, never greyed, when the
+// record or the format cannot speak for that axis. And every edit goes through the
+// panes, so what the menu did is visible in the ticks — there is no undo stack, and
+// the pane IS the undo.
+
+void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, int column)
+{
+    if (!menu || !view)
+        return;
+    // A right-click can only land in the visible tab, so the clicked view is the
+    // active one and the panes below are bound to its file. Refuse rather than edit
+    // some other file's filters if that ever stops being true (invariant #7).
+    if (view != m_activeView)
+        return;
+    DocumentContext *ctx = view->context();
+    if (!ctx || !ctx->doc)
+        return;
+
+    const Document *doc = ctx->doc.get();
+    const int src = doc->filtered().sourceRow(viewRow);
+    if (src < 0 || src >= doc->index().records.size())
+        return;
+
+    const Record    &rec = doc->index().records.at(src);
+    const LogFormat &fmt = doc->format();
+    const QString subsystem = doc->index().loggers.name(rec.loggerId);
+    const QString thread = doc->index().threads.name(rec.threadId);
+    const Priority prio = rec.priorityEnum();
+
+    // An axis is offered only when THIS record can speak for it. An unparsed
+    // plain-text line has no subsystem, thread, level or timestamp (SPEC.md §4), and
+    // a pattern without %t or %d has none for any record (§6).
+    const bool hasSubsystem = fmt.loggerGroup > 0 && !subsystem.isEmpty();
+    const bool hasThread = fmt.threadGroup > 0 && !thread.isEmpty();
+    const bool hasPriority = prio != Priority::Unknown;
+    const bool hasTime = fmt.dateGroup > 0 && rec.timestamp != Record::kNoTimestamp;
+
+    // A multi-record selection contributes exactly one item: the two bounds it
+    // already names. Everything else reads the record that was clicked, because the
+    // union of five records' subsystems is not a gesture anyone means.
+    qint64 selLo = 0, selHi = 0;
+    int    selTimed = 0;
+    for (const QModelIndex &i : view->logView()->selectionModel()->selectedRows(0)) {
+        const int s = doc->filtered().sourceRow(i.row());
+        if (s < 0 || s >= doc->index().records.size())
+            continue;
+        const qint64 ts = doc->index().records.at(s).timestamp;
+        if (ts == Record::kNoTimestamp)
+            continue;
+        selLo = selTimed ? qMin(selLo, ts) : ts;
+        selHi = selTimed ? qMax(selHi, ts) : ts;
+        ++selTimed;
+    }
+    const bool hasSelectedRange = fmt.dateGroup > 0 && selTimed > 1 && selLo < selHi;
+
+    // Which axis the clicked column names leads the menu. The CONTENTS do not depend
+    // on the column: a menu whose items move is learnable, one whose items appear and
+    // disappear with the column is not.
+    enum class Axis { Subsystem, Thread, Priority, Time };
+    QVector<Axis> order{Axis::Subsystem, Axis::Thread, Axis::Priority, Axis::Time};
+    if (column >= 0 && column < fmt.fields.size()) {
+        std::optional<Axis> clicked;
+        switch (fmt.fields.at(column).role) {
+        case FieldRole::Logger:   clicked = Axis::Subsystem; break;
+        case FieldRole::Thread:   clicked = Axis::Thread; break;
+        case FieldRole::Priority: clicked = Axis::Priority; break;
+        case FieldRole::Date:     clicked = Axis::Time; break;
+        default: break;
+        }
+        if (clicked) {
+            order.removeAll(*clicked);
+            order.prepend(*clicked);
+        }
+    }
+
+    // Sections are added on first use so a record with nothing to offer produces an
+    // empty menu the caller can decline to pop up, rather than two bare headings.
+    bool filterSection = false;
+    bool highlightSection = false;
+    auto add = [this, menu](const QString &text, const char *name, auto &&fn) {
+        QAction *act = menu->addAction(text);
+        act->setObjectName(QLatin1String(name));
+        connect(act, &QAction::triggered, this, fn);
+    };
+
+    for (Axis axis : order) {
+        auto section = [&] {
+            if (!filterSection) {
+                menu->addSection(QStringLiteral("Filter"));
+                filterSection = true;
+            }
+        };
+        switch (axis) {
+        case Axis::Subsystem:
+            if (!hasSubsystem)
+                break;
+            section();
+            add(QStringLiteral("Show Only Subsystem \"%1\"").arg(subsystem),
+                "recordShowOnlySubsystem", [this, subsystem] {
+                    m_filterPane->showOnlyValue(ValueAxis::Subsystem, subsystem);
+                });
+            add(QStringLiteral("Hide Subsystem \"%1\"").arg(subsystem),
+                "recordHideSubsystem", [this, subsystem] {
+                    m_filterPane->hideValue(ValueAxis::Subsystem, subsystem);
+                });
+            break;
+        case Axis::Thread:
+            if (!hasThread)
+                break;
+            section();
+            add(QStringLiteral("Show Only Thread \"%1\"").arg(thread),
+                "recordShowOnlyThread", [this, thread] {
+                    m_filterPane->showOnlyValue(ValueAxis::Thread, thread);
+                });
+            add(QStringLiteral("Hide Thread \"%1\"").arg(thread),
+                "recordHideThread", [this, thread] {
+                    m_filterPane->hideValue(ValueAxis::Thread, thread);
+                });
+            break;
+        case Axis::Priority:
+            if (!hasPriority)
+                break;
+            section();
+            // The record's own level as the MINIMUM, which is the only shape the
+            // priority axis has (SPEC.md §6): "at least this bad".
+            add(QStringLiteral("Show %1 and Above").arg(QString(priorityName(prio))),
+                "recordPriorityFloor",
+                [this, prio] { m_filterPane->setMinimumPriority(prio); });
+            break;
+        case Axis::Time:
+            if (!hasTime && !hasSelectedRange)
+                break;
+            section();
+            if (hasTime) {
+                const qint64 ts = rec.timestamp;
+                add(QStringLiteral("Start Time Range Here"), "recordTimeStart",
+                    [this, ts] { m_filterPane->setTimeBound(TimeBound::Start, ts); });
+                add(QStringLiteral("End Time Range Here"), "recordTimeEnd",
+                    [this, ts] { m_filterPane->setTimeBound(TimeBound::End, ts); });
+            }
+            if (hasSelectedRange) {
+                add(QStringLiteral("Filter to Selected Time Range"), "recordTimeRange",
+                    [this, selLo, selHi] { m_filterPane->setTimeRange(selLo, selHi); });
+            }
+            break;
+        }
+    }
+
+    // Highlighting takes the same values and does the opposite with them: a one-axis
+    // rule, appended so existing rules keep their precedence (SPEC.md §7).
+    auto highlight = [&](const QString &text, const char *name, const MatchCriteria &c) {
+        if (!highlightSection) {
+            menu->addSection(QStringLiteral("Highlight"));
+            highlightSection = true;
+        }
+        add(text, name, [this, c] { m_highlighterPane->addRule(c); });
+    };
+    for (Axis axis : order) {
+        switch (axis) {
+        case Axis::Subsystem: {
+            if (!hasSubsystem)
+                break;
+            MatchCriteria c;
+            c.loggerEnabled = true;
+            c.loggerNames = QStringList{subsystem};
+            c.loggerCoversAll = false;
+            c.loggerRestrictive = true; // these names exactly, whatever turns up later
+            highlight(QStringLiteral("Highlight This Subsystem"), "recordHighlightSubsystem", c);
+            break;
+        }
+        case Axis::Thread: {
+            if (!hasThread)
+                break;
+            MatchCriteria c;
+            c.threadEnabled = true;
+            c.threadNames = QStringList{thread};
+            c.threadCoversAll = false;
+            c.threadRestrictive = true;
+            highlight(QStringLiteral("Highlight This Thread"), "recordHighlightThread", c);
+            break;
+        }
+        case Axis::Priority: {
+            if (!hasPriority)
+                break;
+            MatchCriteria c;
+            c.priorityEnabled = true;
+            c.minPriority = prio;
+            highlight(QStringLiteral("Highlight %1 and Above").arg(QString(priorityName(prio))),
+                      "recordHighlightPriority", c);
+            break;
+        }
+        case Axis::Time:
+            break; // one record names one instant, and a rule needs two bounds
+        }
+    }
+
+    // The clipboard actions live here too — a record menu is where people look for
+    // them, and these are the window's own, so the shortcuts stay visible beside them.
+    if (m_copyAction && m_copyColumnsAction) {
+        if (filterSection || highlightSection)
+            menu->addSeparator();
+        menu->addAction(m_copyAction);
+        menu->addAction(m_copyColumnsAction);
+    }
+}
+
+void MainWindow::showRecordMenu(DocumentView *view, int viewRow, int column,
+                                const QPoint &globalPos)
+{
+    QMenu menu(this);
+    buildRecordMenu(&menu, view, viewRow, column);
+    if (!menu.isEmpty())
+        menu.exec(globalPos);
 }
 
 // --- Recent files ----------------------------------------------------------

@@ -9,6 +9,8 @@
 #include "Document.h"
 #include "FilterPane.h"
 #include "Filter.h"
+#include "Priority.h"
+#include "RecordIndex.h"
 
 using namespace loftail;
 
@@ -73,12 +75,51 @@ private:
         "2026-07-21 12:00:00,000 [main] INFO  net.socket - a\n"
         "2026-07-21 12:00:01,000 [main] WARN  db.pool - b\n";
 
+    // "The scan continues and finds another subsystem" — appending and re-indexing is
+    // how these cases reproduce discovery without a live watcher.
+    static bool appendAndReindex(Document &doc, QTemporaryFile &file, const char *line)
+    {
+        QFile appended(file.fileName());
+        if (!appended.open(QIODevice::Append))
+            return false;
+        appended.write(line);
+        appended.close();
+        return doc.open(file.fileName(), QString::fromLatin1(kPattern), Encoding::Utf8,
+                        QTimeZone::utc());
+    }
+
+    static Qt::CheckState stateOf(QListWidget *list, const QString &name)
+    {
+        for (int i = 0; i < list->count(); ++i)
+            if (list->item(i)->text() == name)
+                return list->item(i)->checkState();
+        return Qt::PartiallyChecked; // "not listed at all"
+    }
+
+    static void setStateOf(QListWidget *list, const QString &name, Qt::CheckState state)
+    {
+        for (int i = 0; i < list->count(); ++i)
+            if (list->item(i)->text() == name)
+                list->item(i)->setCheckState(state);
+    }
+
 private slots:
     void metadataAxesAreOnByDefault();
     void allInclusiveAxesStayInactive();
     void narrowingActivatesTheAxis();
     void subsystemDiscoveredLaterArrivesChecked();
     void rebindingForgetsSeenNames();
+
+    // The record menu's edits (SPEC.md §5) land here, on the same controls a hand
+    // edit uses — so the cases that matter are about what each edit MEANS, and above
+    // all about the one place it contradicts the discovery rule above.
+    void showOnlyRestrictsToOneSubsystem();
+    void showOnlyDoesNotWidenWhenTheScanFindsMore();
+    void aHandEditGivesTheDiscoveryRuleBack();
+    void hideLeavesTheRestAloneAndKeepsDiscovering();
+    void priorityFloorComesFromTheRecord();
+    void timeBoundKeepsTheRangeNonEmpty();
+    void restrictionSurvivesASavedState();
 };
 
 void TestFilterPane::metadataAxesAreOnByDefault()
@@ -222,6 +263,191 @@ void TestFilterPane::rebindingForgetsSeenNames()
     QVERIFY(!docB.filters().anyActive());
     docB.applyFilters();
     QCOMPARE(docB.filtered().recordCount(), 2);
+}
+
+// --- Filtering by pointing (the record menu, SPEC.md §5) -------------------
+//
+// The menu itself is assembled in MainWindow (tst_recordmenu); what lands here is
+// the edit. These cases pin the two things a caller cannot see: that "show only"
+// means the axis and nothing else, and that it survives the file growing.
+
+void TestFilterPane::showOnlyRestrictsToOneSubsystem()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.showOnlyValue(ValueAxis::Subsystem, QStringLiteral("db.pool"));
+
+    QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
+    QVERIFY(list);
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
+    QCOMPARE(stateOf(list, QStringLiteral("net.socket")), Qt::Unchecked);
+
+    QVERIFY(doc.filters().loggerEnabled);
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 1);
+}
+
+// THE case this feature turns on. The subsystem list arrives checked for a name
+// nobody has seen yet, on purpose (subsystemDiscoveredLaterArrivesChecked above) —
+// which is exactly wrong for a selection made by pointing at one record: a filter
+// meant as "only db.pool" would silently grow a second subsystem, and on a tailing
+// log it would keep growing for as long as the file is open.
+void TestFilterPane::showOnlyDoesNotWidenWhenTheScanFindsMore()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.showOnlyValue(ValueAxis::Subsystem, QStringLiteral("db.pool"));
+
+    QVERIFY2(appendAndReindex(doc, file, "2026-07-21 12:00:02,000 [main] INFO  ui.window - c\n"),
+             qPrintable(doc.lastError()));
+    pane.refreshDiscoveredLists();
+
+    QListWidget *list = loggerList(pane, QStringLiteral("ui.window"));
+    QVERIFY(list);
+    QCOMPARE(list->count(), 3);
+    QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Unchecked);
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
+
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 1); // still just db.pool
+}
+
+// ...and the restriction is not permanent. Touching the list by hand is the user
+// taking the axis back, so it returns to the discovery default and widens again.
+void TestFilterPane::aHandEditGivesTheDiscoveryRuleBack()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.showOnlyValue(ValueAxis::Subsystem, QStringLiteral("db.pool"));
+
+    QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
+    QVERIFY(list);
+    setStateOf(list, QStringLiteral("net.socket"), Qt::Checked);
+
+    QVERIFY2(appendAndReindex(doc, file, "2026-07-21 12:00:02,000 [main] INFO  ui.window - c\n"),
+             qPrintable(doc.lastError()));
+    pane.refreshDiscoveredLists();
+
+    list = loggerList(pane, QStringLiteral("ui.window"));
+    QVERIFY(list);
+    QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Checked);
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 3);
+}
+
+// Hiding one value says nothing about the next value to appear, so it must NOT
+// restrict: the discovery rule stays in force and only the named subsystem is out.
+void TestFilterPane::hideLeavesTheRestAloneAndKeepsDiscovering()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.hideValue(ValueAxis::Subsystem, QStringLiteral("db.pool"));
+
+    QListWidget *list = loggerList(pane, QStringLiteral("net.socket"));
+    QVERIFY(list);
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Unchecked);
+    QCOMPARE(stateOf(list, QStringLiteral("net.socket")), Qt::Checked);
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 1);
+
+    QVERIFY2(appendAndReindex(doc, file, "2026-07-21 12:00:02,000 [main] INFO  ui.window - c\n"),
+             qPrintable(doc.lastError()));
+    pane.refreshDiscoveredLists();
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 2); // net.socket + ui.window, db.pool still out
+}
+
+void TestFilterPane::priorityFloorComesFromTheRecord()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.setMinimumPriority(Priority::Warn);
+
+    QVERIFY(doc.filters().priorityEnabled);
+    QCOMPARE(doc.filters().minPriority, Priority::Warn);
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 1); // the WARN record; the INFO one is out
+}
+
+// The time editors always hold SOME wall clock — there is no "no bound" to show —
+// so setting one bound has to answer for the other. Setting the start must not
+// leave an end that hides the record just pointed at, which is what an unseeded
+// end (the year 2000) would do.
+void TestFilterPane::timeBoundKeepsTheRangeNonEmpty()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+    const qint64 first = doc.index().records.at(0).timestamp;
+    const qint64 second = doc.index().records.at(1).timestamp;
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.setTimeBound(TimeBound::Start, first);
+
+    QVERIFY(doc.filters().timeEnabled);
+    QCOMPARE(doc.filters().startMs, first);
+    QVERIFY(doc.filters().endMs >= second);
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 2);
+
+    // Closing the other end from the first record leaves exactly that record.
+    pane.setTimeBound(TimeBound::End, first);
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 1);
+}
+
+// A restriction is part of what the selection MEANS, so it has to travel with it
+// into a preset or a session — otherwise a restored "only db.pool" would start
+// widening the moment the restored file turned up a subsystem the original lacked.
+void TestFilterPane::restrictionSurvivesASavedState()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane source;
+    source.setDocument(&doc);
+    // A state nobody restricted carries no such key at all, which is what keeps
+    // every preset written before this existed loading byte-identically.
+    QVERIFY(!source.saveState().contains(QStringLiteral("loggerRestrictive")));
+    source.showOnlyValue(ValueAxis::Subsystem, QStringLiteral("db.pool"));
+    const QJsonObject state = source.saveState();
+    QCOMPARE(state.value(QStringLiteral("loggerRestrictive")).toBool(), true);
+
+    FilterPane restored;
+    restored.setDocument(&doc);
+    restored.restoreState(state);
+
+    QVERIFY2(appendAndReindex(doc, file, "2026-07-21 12:00:02,000 [main] INFO  ui.window - c\n"),
+             qPrintable(doc.lastError()));
+    restored.refreshDiscoveredLists();
+
+    QListWidget *list = loggerList(restored, QStringLiteral("ui.window"));
+    QVERIFY(list);
+    QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Unchecked);
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 1);
 }
 
 QTEST_MAIN(TestFilterPane)

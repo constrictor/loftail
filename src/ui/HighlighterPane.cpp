@@ -18,6 +18,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSet>
 #include <QVBoxLayout>
 
 namespace loftail {
@@ -337,6 +338,35 @@ void HighlighterPane::refreshTimeBounds()
         m_rules[row].match = m_axes->criteria();
         commit();
     }
+}
+
+void HighlighterPane::addRule(const MatchCriteria &criteria)
+{
+    if (!m_document)
+        return;
+
+    // The first palette slot no existing rule paints with, so a second "highlight
+    // this thread" is distinguishable from the first at a glance. Once every slot is
+    // spoken for, cycle rather than refuse — a repeated color is a small annoyance,
+    // a menu item that silently does nothing is not.
+    QSet<int> used;
+    for (const HighlightRule &r : m_rules)
+        used.insert(r.background);
+    int slot = m_rules.size() % HighlightPalette::count();
+    for (int i = 0; i < HighlightPalette::count(); ++i) {
+        if (!used.contains(i)) {
+            slot = i;
+            break;
+        }
+    }
+
+    HighlightRule r;
+    r.match = criteria;
+    r.background = slot;
+    m_rules.append(r);
+    commit();
+    reloadRuleList();
+    m_ruleList->setCurrentRow(m_rules.size() - 1);
 }
 
 QJsonObject HighlighterPane::saveState() const
