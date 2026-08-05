@@ -9,11 +9,16 @@
 #include <QUrl>
 
 #include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QPushButton>
 #include <QTabWidget>
 
 #include "FakeFetcher.h"
+#include "HostBookmarkStore.h"
 #include "LogView.h"
 #include "MainWindow.h"
+#include "OpenRemoteDialog.h"
 #include "RemoteLocation.h"
 #include "SessionStore.h"
 
@@ -81,6 +86,7 @@ private slots:
     void menuEntriesExist();
     void refusedRemoteReportsWithoutOpeningATab();
     void unreachableRemoteOpensAWaitingTab();
+    void savingOverwritesTheBookmarkOfTheSameName();
 };
 
 void TestRemoteOpen::opensARemoteUrlAsATab()
@@ -262,6 +268,69 @@ void TestRemoteOpen::unreachableRemoteOpensAWaitingTab()
     QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() > 0, 5000);
     QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log (web1)"));
     QVERIFY(statusText(window).contains(QStringLiteral("2 records")));
+}
+
+void TestRemoteOpen::savingOverwritesTheBookmarkOfTheSameName()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    HostBookmarkStore store(dir.path());
+    OpenRemoteDialog dialog(&store);
+
+    auto *list = dialog.findChild<QListWidget *>(QStringLiteral("remoteBookmarkList"));
+    auto *name = dialog.findChild<QLineEdit *>(QStringLiteral("remoteNameField"));
+    auto *host = dialog.findChild<QLineEdit *>(QStringLiteral("remoteHostField"));
+    auto *path = dialog.findChild<QLineEdit *>(QStringLiteral("remotePathField"));
+    QVERIFY(list && name && host && path);
+
+    QPushButton *save = nullptr;
+    for (QPushButton *b : dialog.findChildren<QPushButton *>()) {
+        if (b->text() == QStringLiteral("Save"))
+            save = b;
+    }
+    QVERIFY(save);
+
+    const auto fill = [&](const QString &n, const QString &h, const QString &p) {
+        name->setText(n);
+        host->setText(h);
+        path->setText(p);
+    };
+
+    fill(QStringLiteral("prod"), QStringLiteral("web1"), QStringLiteral("/var/log/a.log"));
+    save->click();
+    QCOMPARE(list->count(), 1);
+    QCOMPARE(list->item(0)->text(), QStringLiteral("prod"));
+
+    // Same name, same machine, another log: one entry still, now remembering both —
+    // the Remote Hosts submenu lists a host's logs under it.
+    fill(QStringLiteral("prod"), QStringLiteral("web1"), QStringLiteral("/var/log/b.log"));
+    save->click();
+    QCOMPARE(list->count(), 1);
+    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(store.all().at(0).paths.size(), 2);
+
+    // Same name, different machine: the name has been reused for something else, so it
+    // is overwritten outright and the old machine's paths do not follow it over.
+    fill(QStringLiteral("prod"), QStringLiteral("web2"), QStringLiteral("/var/log/c.log"));
+    save->click();
+    QCOMPARE(list->count(), 1);
+    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(store.all().at(0).host, QStringLiteral("web2"));
+    QCOMPARE(store.all().at(0).paths, QStringList{QStringLiteral("/var/log/c.log")});
+
+    // A new name is a new entry, on the same machine or not.
+    fill(QStringLiteral("staging"), QStringLiteral("web2"), QStringLiteral("/var/log/c.log"));
+    save->click();
+    QCOMPARE(list->count(), 2);
+
+    // Remove goes by the same identity, so it takes the row that was clicked.
+    list->setCurrentRow(0);
+    for (QPushButton *b : dialog.findChildren<QPushButton *>()) {
+        if (b->text() == QStringLiteral("Remove"))
+            b->click();
+    }
+    QCOMPARE(list->count(), 1);
+    QCOMPARE(list->item(0)->text(), QStringLiteral("staging"));
 }
 
 int main(int argc, char *argv[])

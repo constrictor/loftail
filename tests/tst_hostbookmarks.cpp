@@ -40,7 +40,10 @@ private:
 
 private slots:
     void roundTripsABookmark();
-    void replacesRatherThanDuplicatingAHost();
+    void replacesTheBookmarkOfTheSameName();
+    void matchesNamesIgnoringCaseAndSpace();
+    void replacingKeepsTheListOrder();
+    void collapsesDuplicateNamesOnRead();
     void removesAHost();
     void withoutSavePasswordNoPasswordKeyIsWritten();
     void turningSavePasswordOffErasesTheStoredSecret();
@@ -75,27 +78,102 @@ void TestHostBookmarks::roundTripsABookmark()
     QCOMPARE(all.at(0).displayName(), QStringLiteral("prod-web"));
 }
 
-void TestHostBookmarks::replacesRatherThanDuplicatingAHost()
+void TestHostBookmarks::replacesTheBookmarkOfTheSameName()
 {
     QTemporaryDir dir;
     HostBookmarkStore store(dir.path());
     QVERIFY(store.save(sample()));
 
+    // The name is the identity: same name, one entry, whatever changed underneath —
+    // here a different machine entirely.
     HostBookmark updated = sample();
-    updated.label = QStringLiteral("production web");
-    updated.paths.append(QStringLiteral("/var/log/other.log"));
+    updated.host = QStringLiteral("web2.example.com");
+    updated.pollMs = 5000;
     QVERIFY(store.save(updated));
+
+    QVector<HostBookmark> all = store.all();
+    QCOMPARE(all.size(), 1);
+    QCOMPARE(all.at(0).host, QStringLiteral("web2.example.com"));
+    QCOMPARE(all.at(0).pollMs, 5000);
+
+    // A different name on the very same connection is a different entry — the two are
+    // distinguishable in the list, which is the whole test.
+    HostBookmark other = sample();
+    other.label = QStringLiteral("prod-web (root)");
+    QVERIFY(store.save(other));
+    QCOMPARE(store.all().size(), 2);
+
+    // An unnamed bookmark is identified by its host, which is what the list shows.
+    HostBookmark unnamed = sample();
+    unnamed.label.clear();
+    QVERIFY(store.save(unnamed));
+    QCOMPARE(store.all().size(), 3);
+    unnamed.pollMs = 250;
+    QVERIFY(store.save(unnamed));
+    all = store.all();
+    QCOMPARE(all.size(), 3);
+    QCOMPARE(all.at(2).pollMs, 250);
+}
+
+void TestHostBookmarks::matchesNamesIgnoringCaseAndSpace()
+{
+    QTemporaryDir dir;
+    HostBookmarkStore store(dir.path());
+    QVERIFY(store.save(sample()));
+
+    // Two rows a person cannot tell apart in the list are exactly the duplication the
+    // rule exists to prevent, so the comparison is not literal.
+    HostBookmark shouty = sample();
+    shouty.label = QStringLiteral("  PROD-Web ");
+    shouty.pollMs = 3000;
+    QVERIFY(store.save(shouty));
 
     const QVector<HostBookmark> all = store.all();
     QCOMPARE(all.size(), 1);
-    QCOMPARE(all.at(0).label, QStringLiteral("production web"));
-    QCOMPARE(all.at(0).paths.size(), 2);
+    QCOMPARE(all.at(0).pollMs, 3000);
+}
 
-    // A different port is a different connection, so a different bookmark.
-    HostBookmark other = sample();
-    other.port = 2222;
-    QVERIFY(store.save(other));
-    QCOMPARE(store.all().size(), 2);
+void TestHostBookmarks::replacingKeepsTheListOrder()
+{
+    QTemporaryDir dir;
+    HostBookmarkStore store(dir.path());
+    for (const QString &name : {QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c")}) {
+        HostBookmark b = sample();
+        b.label = name;
+        QVERIFY(store.save(b));
+    }
+
+    HostBookmark b = sample();
+    b.label = QStringLiteral("a");
+    b.pollMs = 4000;
+    QVERIFY(store.save(b));
+
+    const QVector<HostBookmark> all = store.all();
+    QCOMPARE(all.size(), 3);
+    // Overwriting must not move the row the user is looking at to the bottom.
+    QCOMPARE(all.at(0).label, QStringLiteral("a"));
+    QCOMPARE(all.at(0).pollMs, 4000);
+    QCOMPARE(all.at(2).label, QStringLiteral("c"));
+}
+
+void TestHostBookmarks::collapsesDuplicateNamesOnRead()
+{
+    QTemporaryDir dir;
+    HostBookmarkStore store(dir.path());
+
+    // A file written before names were the identity, or edited by hand. The first wins:
+    // showing both would put rows in the list that cannot be told apart or removed
+    // individually — the state this whole rule exists to keep out.
+    QVector<HostBookmark> written;
+    written.append(sample());
+    HostBookmark twin = sample();
+    twin.host = QStringLiteral("web9.example.com");
+    written.append(twin);
+    QVERIFY(store.replaceAll(written));
+
+    const QVector<HostBookmark> all = store.all();
+    QCOMPARE(all.size(), 1);
+    QCOMPARE(all.at(0).host, QStringLiteral("web1.example.com"));
 }
 
 void TestHostBookmarks::removesAHost()
@@ -103,10 +181,10 @@ void TestHostBookmarks::removesAHost()
     QTemporaryDir dir;
     HostBookmarkStore store(dir.path());
     QVERIFY(store.save(sample()));
-    QVERIFY(store.remove(QStringLiteral("deploy"), QStringLiteral("web1.example.com"), 22));
+    QVERIFY(store.remove(QStringLiteral("prod-web")));
     QVERIFY(store.all().isEmpty());
     // Removing something absent is a no-op, not a failure.
-    QVERIFY(store.remove(QStringLiteral("nobody"), QStringLiteral("nowhere"), 22));
+    QVERIFY(store.remove(QStringLiteral("nobody")));
 }
 
 void TestHostBookmarks::withoutSavePasswordNoPasswordKeyIsWritten()

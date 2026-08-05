@@ -142,10 +142,30 @@ QVector<HostBookmark> HostBookmarkStore::all() const
         if (!v.isObject())
             continue;
         HostBookmark b = fromJson(v.toObject());
-        if (!b.host.isEmpty())
-            out.append(b);
+        if (b.host.isEmpty())
+            continue;
+        // Names are the identity, and a file written before they were — or edited by
+        // hand — may repeat one. The first wins; keeping the rest would put entries in
+        // the list that read alike and cannot be removed separately.
+        if (HostBookmarkStore::indexOfName(out, b.displayName()) >= 0)
+            continue;
+        out.append(b);
     }
     return out;
+}
+
+bool HostBookmarkStore::sameName(const QString &a, const QString &b)
+{
+    return a.trimmed().compare(b.trimmed(), Qt::CaseInsensitive) == 0;
+}
+
+int HostBookmarkStore::indexOfName(const QVector<HostBookmark> &bookmarks, const QString &name)
+{
+    for (int i = 0; i < bookmarks.size(); ++i) {
+        if (sameName(bookmarks.at(i).displayName(), name))
+            return i;
+    }
+    return -1;
 }
 
 bool HostBookmarkStore::replaceAll(const QVector<HostBookmark> &bookmarks)
@@ -177,29 +197,21 @@ bool HostBookmarkStore::replaceAll(const QVector<HostBookmark> &bookmarks)
 bool HostBookmarkStore::save(const HostBookmark &bookmark)
 {
     QVector<HostBookmark> bookmarks = all();
-    bool replaced = false;
-    for (HostBookmark &b : bookmarks) {
-        if (sameHost(b, bookmark.user, bookmark.host, bookmark.port)) {
-            b = bookmark;
-            replaced = true;
-            break;
-        }
-    }
-    if (!replaced)
+    const int at = indexOfName(bookmarks, bookmark.displayName());
+    if (at >= 0)
+        bookmarks[at] = bookmark; // replaced in place: the list order does not shift
+    else
         bookmarks.append(bookmark);
     return replaceAll(bookmarks);
 }
 
-bool HostBookmarkStore::remove(const QString &user, const QString &host, int port)
+bool HostBookmarkStore::remove(const QString &name)
 {
     QVector<HostBookmark> bookmarks = all();
-    const auto it = std::remove_if(bookmarks.begin(), bookmarks.end(),
-                                   [&](const HostBookmark &b) {
-                                       return sameHost(b, user, host, port);
-                                   });
-    if (it == bookmarks.end())
+    const int at = indexOfName(bookmarks, name);
+    if (at < 0)
         return true; // nothing to do
-    bookmarks.erase(it, bookmarks.end());
+    bookmarks.removeAt(at);
     return replaceAll(bookmarks);
 }
 

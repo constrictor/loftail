@@ -41,7 +41,8 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
     auto *savedButtons = new QHBoxLayout;
     auto *saveButton = new QPushButton(QStringLiteral("Save"), savedBox);
     auto *removeButton = new QPushButton(QStringLiteral("Remove"), savedBox);
-    saveButton->setToolTip(QStringLiteral("Remember the host on the right"));
+    saveButton->setToolTip(
+        QStringLiteral("Remember the host on the right, replacing any saved under the same name"));
     savedButtons->addWidget(saveButton);
     savedButtons->addWidget(removeButton);
     savedLayout->addLayout(savedButtons);
@@ -52,7 +53,8 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
     auto *form = new QFormLayout(detailBox);
 
     m_label = new QLineEdit(detailBox);
-    m_label->setPlaceholderText(QStringLiteral("optional, e.g. prod-web"));
+    m_label->setObjectName(QStringLiteral("remoteNameField"));
+    m_label->setPlaceholderText(QStringLiteral("optional — the host name if left blank"));
     form->addRow(QStringLiteral("&Name:"), m_label);
 
     m_user = new QLineEdit(detailBox);
@@ -255,28 +257,41 @@ void OpenRemoteDialog::saveCurrentAsBookmark()
     if (b.host.isEmpty())
         return;
 
-    // Keep every path already remembered for this host and add the current one, so
-    // saving a second log on a known host does not forget the first.
-    bool found = false;
-    for (const HostBookmark &existing : m_bookmarks) {
+    // A saved host is identified by its name, so this overwrites the entry of that name
+    // outright and asks nothing: the name in the form is the user saying which entry
+    // they mean. Confirming it would be asking whether they meant what they typed.
+    const int existingRow = HostBookmarkStore::indexOfName(m_bookmarks, b.displayName());
+    if (existingRow >= 0) {
+        const HostBookmark &existing = m_bookmarks.at(existingRow);
+        // Everything the form does not carry is inherited only when the entry still
+        // points at the same machine. Keep every path already remembered there and add
+        // the current one, so saving a second log under one name does not forget the
+        // first; and let a password already stored survive an edit that set no new one.
+        // Repointed at another host, the name is being reused for something else, and
+        // neither the old paths nor the old secret belong to it.
         if (existing.user == b.user && existing.host == b.host && existing.port == b.port) {
-            found = true;
             QStringList paths = existing.paths;
             for (const QString &p : b.paths) {
                 if (!paths.contains(p))
                     paths.append(p);
             }
             b.paths = paths;
-            // A password already stored for this host survives an edit that did not
-            // set a new one.
             if (b.savePassword && b.password.isEmpty())
                 b.password = existing.password;
-            break;
         }
     }
-    Q_UNUSED(found);
     m_store->save(b);
     reloadBookmarks();
+
+    // Show which entry the save landed on — the only visible sign that an overwrite
+    // happened rather than an append. Blocked, because selecting a row otherwise
+    // reloads the form from the bookmark and would shuffle the fields underneath the
+    // user (the path shown becomes the host's first remembered one, not theirs).
+    const int savedRow = HostBookmarkStore::indexOfName(m_bookmarks, b.displayName());
+    if (savedRow >= 0) {
+        const QSignalBlocker block(m_list);
+        m_list->setCurrentRow(savedRow);
+    }
 }
 
 void OpenRemoteDialog::removeCurrentBookmark()
@@ -284,8 +299,7 @@ void OpenRemoteDialog::removeCurrentBookmark()
     const int row = m_list->currentRow();
     if (!m_store || row < 0 || row >= m_bookmarks.size())
         return;
-    const HostBookmark &b = m_bookmarks.at(row);
-    m_store->remove(b.user, b.host, b.port);
+    m_store->remove(m_bookmarks.at(row).displayName());
     reloadBookmarks();
 }
 

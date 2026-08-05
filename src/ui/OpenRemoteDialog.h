@@ -29,6 +29,10 @@ namespace loftail {
 // The dialog accepts a pasted ssh:// URL as readily as filled-in fields: paste one
 // into User, Host or Path and it is split across all of them.
 //
+// One name, one saved host: Save replaces the entry of that name silently, because the
+// list is a list of names and two rows reading the same cannot be told apart or removed
+// separately (HostBookmarkStore::save).
+//
 // There is deliberately NO "Address" row showing the assembled URL. It used to be the
 // first field in the form, and it was every other field concatenated — it could show
 // nothing the rows below it did not already say, so it cost a row of the dialog to

@@ -65,18 +65,33 @@ public:
     // much of a warning.
     QString filePath() const;
 
+    // Name-unique and in saved order. A file written before names became the identity
+    // may hold duplicates, so later ones are dropped here rather than shown as list
+    // entries that cannot be told apart or removed individually.
     QVector<HostBookmark> all() const;
 
-    // Create or replace the bookmark whose (user, host, port) matches, keeping the
-    // list stable otherwise. Returns false on a write failure.
+    // Create or replace the bookmark with the same NAME, keeping the list stable
+    // otherwise. Returns false on a write failure.
+    //
+    // The name is the identity because it is what the list shows: two entries reading
+    // the same are indistinguishable to the person picking one, whatever differs
+    // underneath. Saving therefore overwrites silently — there is nothing to confirm,
+    // since the user named the thing they are saving.
     bool save(const HostBookmark &bookmark);
-    bool remove(const QString &user, const QString &host, int port);
+    bool remove(const QString &name);
+
+    // Names are compared trimmed and case-insensitively: "Prod" and "prod " are the
+    // same entry, for the same reason as above.
+    static bool sameName(const QString &a, const QString &b);
+    static int indexOfName(const QVector<HostBookmark> &bookmarks, const QString &name);
 
     // Replace the whole list — what the Open Remote dialog does on OK.
     bool replaceAll(const QVector<HostBookmark> &bookmarks);
 
-    // The bookmark matching a location, if any, so an open can pick up its auth
-    // choice, poll cadence and remembered password.
+    // The FIRST bookmark matching a location, if any, so an open can pick up its auth
+    // choice, poll cadence and remembered password. Uniqueness is by name, so one
+    // connection may be saved under several names; an ssh:// address carries no name,
+    // and all of them describe the same connection, so the first will do.
     static HostBookmark find(const QVector<HostBookmark> &bookmarks,
                              const RemoteLocation &location, bool *found = nullptr);
 
