@@ -119,6 +119,16 @@ private:
     // lives here and core must never hold one (invariant #3).
     void resumeWaitingDocument(DocumentContext *ctx);
 
+    // A saved host's remembered password, handed to the transport the only way core will
+    // take one: through the per-target cache it already consults (SshPrompter.h). This is
+    // what gives HostBookmarkStore::find() a call site at all — it had none in src/ before
+    // M14, so a bookmark's password was written and never read back at connect time.
+    //
+    // Here rather than in SshSession::authenticate() because that would bury an
+    // AppConfigLocation read inside a network auth routine, in a class whose header says
+    // it knows nothing but a RemoteLocation (ARCHITECTURE.md §6.3.2).
+    void primeRemoteCredentials(const QString &path);
+
     void buildMenus();
     // The exclusive timestamp-display group offered on the Date column's header menu
     // (SPEC.md §4). Built once and owned by the window; showColumnMenu borrows it,

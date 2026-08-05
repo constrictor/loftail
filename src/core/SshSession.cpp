@@ -1,6 +1,7 @@
 #include "SshSession.h"
 
 #include "SshPrompter.h"
+#include "SecretStore.h"
 #include "SocketDetach.h"
 #include "SshExecCommands.h"
 
@@ -492,6 +493,36 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
         return false;
     }
 
+    // A password this machine's keychain is holding for this host (M14, §6.3.2).
+    //
+    // AFTER the agent and the key files above, so a host that signs in with a key never
+    // causes a keychain read at all — which on KDE or macOS can mean an unlock dialog for
+    // a credential that was not needed.
+    //
+    // AFTER the null-prompter bail just above, which is the whole threading rule: a
+    // keychain read is non-interactive under CredRead but CAN raise a dialog on a locked
+    // KWallet or for a macOS item whose ACL does not list loftail. A dialog on the fetcher
+    // thread for a log opened hours ago is precisely what reconnect() forbids (§6.3,
+    // §6.5), so the existing "is there anybody to ask" test guards this too.
+    QString stored;
+    if (secretStore()->read(sshSecretKey(target), &stored) == SecretStore::Result::Ok) {
+        QByteArray raw = stored.toUtf8();
+        const bool ok = tryPassword(raw);
+        raw.fill('\0');
+        if (ok) {
+            SshCredentialCache::remember(target, stored);
+            stored.fill(QChar(u'\0'));
+            return true;
+        }
+        stored.fill(QChar(u'\0'));
+        // Erased, exactly as SshCredentialCache::forget() erases a stale cache entry, and
+        // for a sharper reason than tidiness: sshd counts failed attempts against
+        // MaxAuthTries (6 by default) and this chain already spends an agent identity,
+        // several key files and up to three prompts. A stored password the server rejects
+        // would burn one of those on every future connect, forever.
+        forgetSshPassword(target);
+    }
+
     for (int attempt = 0; attempt < 3; ++attempt) {
         QString password;
         bool remember = false;
@@ -504,6 +535,9 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
         raw.fill('\0');
         if (ok) {
             SshCredentialCache::remember(target, password);
+            // Only now, with the server's yes in hand — and the prompter decides where it
+            // goes, because it drew the checkbox that named the destination.
+            prompter->passwordAccepted(target, password, remember);
             password.fill(QChar(u'\0'));
             return true;
         }

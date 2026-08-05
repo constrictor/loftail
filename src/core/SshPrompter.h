@@ -45,6 +45,25 @@ public:
     virtual bool askPassword(const QString &target, const QString &promptText,
                              QString *password, bool *remember) = 0;
 
+    // The password the server has just ACCEPTED for `target`, with `remember` exactly as
+    // this prompter answered it from askPassword(). Called once, and only after the server
+    // said yes, so a rejected password is never written anywhere.
+    //
+    // The decision of WHERE it goes belongs here rather than in SshSession, because this
+    // object drew the checkbox and wrote the label naming the destination — it is the only
+    // one that knows what the user actually consented to. See SecretStore.h for the two
+    // destinations and the rule that keeps them from being swapped.
+    //
+    // Non-pure with a no-op default, the shape LogSource::wasReplaced() and isComplete()
+    // both took: a scripted prompter that stores nothing should not have to say so.
+    virtual void passwordAccepted(const QString &target, const QString &password,
+                                  bool remember)
+    {
+        Q_UNUSED(target);
+        Q_UNUSED(password);
+        Q_UNUSED(remember);
+    }
+
     // Progress narration for a connect that is taking a while ("Connecting to …",
     // "Authenticating…"). Advisory; an implementation may ignore it.
     virtual void progress(const QString &message) = 0;

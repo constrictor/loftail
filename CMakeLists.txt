@@ -153,6 +153,91 @@ else()
                    "libarchive, or vcpkg install libarchive)")
 endif()
 
+# --- M14: the OS keychain for remembered passwords, via QtKeychain ---------
+# Auto-detected and never REQUIRED, like the two above. Without it loftail builds, tests
+# and runs exactly as before, and a password the user asks to keep falls back to the
+# plain-text file it has always used — named in the dialog, so the fallback is something
+# the user is told about rather than something chosen behind their back (SPEC.md §3).
+#
+# One dependency covers all four backends — KWallet and GNOME Keyring through the
+# freedesktop Secret Service, the Windows Credential Manager, the macOS Keychain — which
+# is why it beats writing three platform implementations against libsecret, wincred and
+# Security.framework, on two platforms this project cannot currently test.
+option(LOFTAIL_WITH_KEYCHAIN "Store remembered SSH passwords in the OS keychain (needs QtKeychain)" ON)
+# Off by default so ordinary and offline builds stay hermetic, exactly like
+# LOFTAIL_SSH_FETCH. The Windows CI job turns it on; see the argument below.
+option(LOFTAIL_KEYCHAIN_FETCH "Build QtKeychain from source if it is not installed" OFF)
+
+set(LOFTAIL_HAVE_KEYCHAIN OFF)
+if(LOFTAIL_WITH_KEYCHAIN)
+    # 0.14 is the floor, and a real one: QKeychain::isAvailable() arrived there, and it is
+    # the cheap negative the availability probe starts from. Both Ubuntu legs clear it
+    # (24.04 ships 0.14.2, 26.04 ships 0.15.0).
+    find_package(Qt6Keychain 0.14 CONFIG QUIET)
+    if(TARGET Qt6Keychain::Qt6Keychain)
+        set(LOFTAIL_KEYCHAIN_TARGET Qt6Keychain::Qt6Keychain)
+    endif()
+
+    if(NOT LOFTAIL_KEYCHAIN_TARGET)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(QT6KEYCHAIN QUIET IMPORTED_TARGET qt6keychain)
+            if(TARGET PkgConfig::QT6KEYCHAIN)
+                set(LOFTAIL_KEYCHAIN_TARGET PkgConfig::QT6KEYCHAIN)
+            endif()
+        endif()
+    endif()
+
+    # A build-from-source fallback IS warranted here, unlike libarchive, and the reason is
+    # the mirror image of libarchive's. libarchive has none because it is only useful WITH
+    # codecs it locates in MODULE mode, so a source build silently produces a library that
+    # reports itself found and cannot decompress anything. QtKeychain has no codecs and no
+    # equivalent trap: on Windows it is a thin wrapper over the Credential Store with no
+    # external dependency at all, so a source build there is complete by construction —
+    # the libssh2/WinCNG situation exactly.
+    #
+    # And the Windows CI job NEEDS it: that runner has no package manager, and vcpkg's
+    # qtkeychain-qt6 port depends on vcpkg's OWN qtbase and qttools. Installing it would
+    # build Qt from source for hours and then sit beside the install-qt-action Qt the rest
+    # of the job uses — two Qt6Cores, one ABI.
+    if(NOT LOFTAIL_KEYCHAIN_TARGET AND LOFTAIL_KEYCHAIN_FETCH)
+        include(FetchContent)
+        set(BUILD_TEST_APPLICATION OFF CACHE BOOL "" FORCE)
+        set(BUILD_QTQUICK_DEMO OFF CACHE BOOL "" FORCE)
+        # Translations need Qt LinguistTools, which the reference Qt install may not carry
+        # and which loftail does not ship anyway.
+        set(BUILD_TRANSLATIONS OFF CACHE BOOL "" FORCE)
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE) # no extra DLL in the portable zip
+        FetchContent_Declare(qtkeychain
+            GIT_REPOSITORY https://github.com/frankosterfeld/qtkeychain.git
+            GIT_TAG v0.15.0
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(qtkeychain)
+        # Both spellings are probed because an installed QtKeychain exports the namespaced
+        # alias while its own build tree defines the lowercase target, and which one a
+        # given tag provides is not worth depending on.
+        if(TARGET Qt6Keychain::Qt6Keychain)
+            set(LOFTAIL_KEYCHAIN_TARGET Qt6Keychain::Qt6Keychain)
+        elseif(TARGET qt6keychain)
+            set(LOFTAIL_KEYCHAIN_TARGET qt6keychain)
+        endif()
+    endif()
+
+    if(LOFTAIL_KEYCHAIN_TARGET)
+        set(LOFTAIL_HAVE_KEYCHAIN ON)
+    endif()
+endif()
+
+if(LOFTAIL_HAVE_KEYCHAIN)
+    message(STATUS "OS keychain for passwords: ENABLED (${LOFTAIL_KEYCHAIN_TARGET})")
+else()
+    message(STATUS "OS keychain for passwords: DISABLED "
+                   "(QtKeychain not found; install qtkeychain-qt6-dev, brew install "
+                   "qtkeychain, or configure with -DLOFTAIL_KEYCHAIN_FETCH=ON — a "
+                   "remembered password then falls back to plain text in hosts.json)")
+endif()
+
 enable_testing()
 
 add_subdirectory(src)

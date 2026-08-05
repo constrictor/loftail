@@ -73,6 +73,19 @@ set(CPACK_DEBIAN_FILE_NAME "DEB-DEFAULT")
 # "SSH remote sources: ENABLED" grep guards against at configure time).
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 
+# The one dependency shlibdeps CANNOT find, because it is not linked. QtKeychain
+# reaches libsecret through QLibrary("secret-1") — a dlopen at runtime — so there is
+# no DT_NEEDED entry to derive, and on a machine without it a remembered password
+# quietly falls back to the plain-text file instead of the keychain.
+#
+# Recommends rather than Depends because that is the honest strength: loftail works
+# without it and says so in the dialog, and apt installs Recommends by default, so
+# the ordinary install gets the keychain and a deliberate --no-install-recommends
+# still gets a working program. Hardcoded rather than derived for the reason above;
+# it is also correct in a build with no keychain support, where it costs a package
+# nobody uses rather than a missing one somebody needs.
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "libsecret-1-0")
+
 # The extended description ONLY — the synopsis is CPACK_PACKAGE_DESCRIPTION_SUMMARY
 # above, which CPackDeb puts on the Description: line before this body. Repeating
 # the summary here would print it twice. Written without the Debian leading space;

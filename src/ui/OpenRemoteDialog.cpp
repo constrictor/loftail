@@ -1,6 +1,7 @@
 #include "OpenRemoteDialog.h"
 
 #include "RemoteLocation.h"
+#include "SecretStore.h"
 #include "UiColors.h"
 #include "SshFetcher.h"
 
@@ -93,11 +94,20 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
     form->addRow(QString(), m_remember);
 
     // Shown only while password authentication is selected — see setPasswordAuth().
+    //
+    // Which destination it names is the same question the ad-hoc prompt asks
+    // (SshPromptDialogs), answered the same way and worded to match: a keychain holds it
+    // and there is no ⚠, or the file does and there is.
+    const QString backend = secretStore()->backendName();
     m_warning = new QLabel(
-        QStringLiteral("<span style='color:%1'>⚠ A remembered password is stored as "
-                       "<b>plain text</b> in %2 — not encrypted.</span>")
-            .arg(warningColor(palette()).name(),
-                 (store ? store->filePath() : QString()).toHtmlEscaped()),
+        backend.isEmpty()
+            ? QStringLiteral("<span style='color:%1'>⚠ A remembered password is stored as "
+                             "<b>plain text</b> in %2 — not encrypted.</span>")
+                  .arg(warningColor(palette()).name(),
+                       (store ? store->filePath() : QString()).toHtmlEscaped())
+            : QStringLiteral("A remembered password goes to %1 — nothing is written to a "
+                             "file here.")
+                  .arg(backend.toHtmlEscaped()),
         detailBox);
     m_warning->setTextFormat(Qt::RichText);
     m_warning->setWordWrap(true);

@@ -29,7 +29,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
-            libssh2-1-dev libarchive-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev \
             libfuse2 file desktop-file-utils
 
       - name: Configure + build (Debug) and test
@@ -44,6 +44,11 @@ jobs:
           # tests from the run entirely, so the suite would shrink and still go green.
           grep -q "Archived log sources: ENABLED" configure.log \
             || { echo "::error::libarchive was not detected; archived log support is off"; exit 1; }
+          # And for QtKeychain, where the silent failure is the worst of the three: it
+          # would not shrink the suite or drop a feature, it would change WHERE a
+          # remembered password is written — from the OS keychain to a plain-text file.
+          grep -q "OS keychain for passwords: ENABLED" configure.log \
+            || { echo "::error::QtKeychain was not detected; remembered passwords fall back to plain text"; exit 1; }
           cmake --build build
           QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 
@@ -64,11 +69,29 @@ jobs:
       - name: Configure + build + test with neither optional dependency
         run: |
           cmake -S . -B build-bare -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-            -DLOFTAIL_WITH_SSH=OFF -DLOFTAIL_WITH_ARCHIVE=OFF 2>&1 | tee configure-bare.log
+            -DLOFTAIL_WITH_SSH=OFF -DLOFTAIL_WITH_ARCHIVE=OFF -DLOFTAIL_WITH_KEYCHAIN=OFF \
+            2>&1 | tee configure-bare.log
           grep -q "Archived log sources: DISABLED" configure-bare.log \
             || { echo "::error::-DLOFTAIL_WITH_ARCHIVE=OFF did not disable archives"; exit 1; }
+          grep -q "OS keychain for passwords: DISABLED" configure-bare.log \
+            || { echo "::error::-DLOFTAIL_WITH_KEYCHAIN=OFF did not disable the keychain"; exit 1; }
           cmake --build build-bare
           QT_QPA_PLATFORM=offscreen ctest --test-dir build-bare --output-on-failure
+
+      # SSH built, keychain not. The one configuration where the plain-text fallback is
+      # the ONLY place a remembered password can go — and the one most users on a server
+      # or a minimal desktop actually get. build-bare above does not cover it: with SSH
+      # off it never reaches the credential code at all.
+      - name: Configure + build + test with SSH but no keychain
+        run: |
+          cmake -S . -B build-nokeychain -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DLOFTAIL_WITH_KEYCHAIN=OFF 2>&1 | tee configure-nokeychain.log
+          grep -q "SSH remote sources: ENABLED" configure-nokeychain.log \
+            || { echo "::error::this leg is meaningless without SSH; libssh2 was not detected"; exit 1; }
+          grep -q "OS keychain for passwords: DISABLED" configure-nokeychain.log \
+            || { echo "::error::-DLOFTAIL_WITH_KEYCHAIN=OFF did not disable the keychain"; exit 1; }
+          cmake --build build-nokeychain
+          QT_QPA_PLATFORM=offscreen ctest --test-dir build-nokeychain --output-on-failure
 
       - name: Build AppImage
         run: packaging/linux/build-appimage.sh Release
@@ -87,13 +110,21 @@ jobs:
           # --version smoke test does not open a remote log, so a missing library
           # would only surface for a user, on the first ssh:// open.
           APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMG" --appimage-extract >/dev/null
-          for lib in libssh2 libarchive; do
+          #
+          # libqt6keychain is genuinely linked, so ldd finds it. libsecret DELIBERATELY
+          # is not listed: QtKeychain dlopen()s it (its libsecret.cpp constructs a
+          # QLibrary("secret-1")), so ldd cannot see it and linuxdeploy will not bundle
+          # it. The consequence is real and documented rather than discovered — inside
+          # the AppImage, on a host with no libsecret-1.so.0, available() is false and
+          # loftail falls back to plain text and says so in the dialog.
+          for lib in libssh2 libarchive libqt6keychain; do
             if ! ls squashfs-root/usr/lib/$lib.so* >/dev/null 2>&1; then
               echo "::error::$lib was not bundled into the AppImage"
               exit 1
             fi
           done
-          ls -l squashfs-root/usr/lib/libssh2.so* squashfs-root/usr/lib/libarchive.so*
+          ls -l squashfs-root/usr/lib/libssh2.so* squashfs-root/usr/lib/libarchive.so* \
+                squashfs-root/usr/lib/libqt6keychain.so*
           rm -rf squashfs-root
 
       # As the .deb job: upload the AppImage itself, not a zip of it. Doubly pointless
@@ -145,7 +176,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
-            libssh2-1-dev libarchive-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev \
             file desktop-file-utils
 
       - name: Configure + build (Release) and test
@@ -154,7 +185,8 @@ jobs:
           # Both are auto-detected and both were just installed, so DISABLED here means
           # the setup broke — and it would go on to produce a package that silently
           # lacks the feature, since shlibdeps only reports what was actually linked.
-          for want in "SSH remote sources: ENABLED" "Archived log sources: ENABLED"; do
+          for want in "SSH remote sources: ENABLED" "Archived log sources: ENABLED" \
+                      "OS keychain for passwords: ENABLED"; do
             grep -q "$want" configure-deb.log \
               || { echo "::error::the packaged build reported '$want' missing"; exit 1; }
           done
@@ -185,7 +217,12 @@ jobs:
           # are in Depends. dpkg-shlibdeps writes a thin, valid-looking Depends just as
           # happily when a library was auto-detected off.
           DEPENDS=$(dpkg -f "$DEB" Depends)
-          for lib in libqt6 libssh2 libarchive; do
+          #
+          # libqt6keychain is in this list and libsecret is NOT, for the same reason the
+          # AppImage bundles one and not the other: QtKeychain links the first and
+          # dlopen()s the second, and shlibdeps only sees what was linked. libsecret is
+          # a Recommends instead — see packaging/linux/deb.cmake.
+          for lib in libqt6 libssh2 libarchive libqt6keychain; do
             echo "$DEPENDS" | grep -q "$lib" \
               || { echo "::error::Depends does not mention $lib: $DEPENDS"; exit 1; }
           done
@@ -287,11 +324,21 @@ jobs:
           #
           # libarchive comes from the vcpkg toolchain installed above;
           # LOFTAIL_ARCHIVE_STATIC tells our own sources that its API is not dllimport.
+          #
+          # QtKeychain is built from source too, and DELIBERATELY NOT from vcpkg like
+          # libarchive: vcpkg's qtkeychain-qt6 port depends on vcpkg's own qtbase and
+          # qttools, so installing it would build Qt from source for hours and then sit
+          # beside the install-qt-action Qt the rest of this job uses — two Qt6Cores, one
+          # ABI. It is safe to build from source for the reason libarchive is not: on
+          # Windows QtKeychain is a thin wrapper over the Credential Store with no
+          # external dependency, so a source build is complete by construction. Static,
+          # so the portable zip stays free of extra DLLs — advapi32 is all it needs.
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
             -DLOFTAIL_ARCHIVE_STATIC=ON `
-            -DLOFTAIL_SSH_FETCH=ON 2>&1 | Tee-Object configure.log
+            -DLOFTAIL_SSH_FETCH=ON `
+            -DLOFTAIL_KEYCHAIN_FETCH=ON 2>&1 | Tee-Object configure.log
           # Neither is optional on this job — libssh2 is built from source and
           # libarchive was just installed — so "not found" means the setup broke, and a
           # silent DISABLED would shrink the suite and still go green.
@@ -300,6 +347,9 @@ jobs:
           }
           if (-not (Select-String -Path configure.log -Pattern "Archived log sources: ENABLED" -Quiet)) {
             Write-Host "::error::libarchive was not built; archived log support is off"; exit 1
+          }
+          if (-not (Select-String -Path configure.log -Pattern "OS keychain for passwords: ENABLED" -Quiet)) {
+            Write-Host "::error::QtKeychain was not built; remembered passwords fall back to plain text"; exit 1
           }
           cmake --build build
           $env:QT_QPA_PLATFORM = "offscreen"
@@ -359,12 +409,14 @@ jobs:
               "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake",
               "-DVCPKG_TARGET_TRIPLET=x64-windows-static-md",
               "-DLOFTAIL_ARCHIVE_STATIC=ON",
-              "-DLOFTAIL_SSH_FETCH=ON"
+              "-DLOFTAIL_SSH_FETCH=ON",
+              "-DLOFTAIL_KEYCHAIN_FETCH=ON"
           )
           # Assert on the PACKAGED build, not just the tested one: a DISABLED here
           # means the shipped zip is missing a feature the whole run just proved works.
           $log = Get-Content configure-portable.log -Raw
-          foreach ($want in @("SSH remote sources: ENABLED", "Archived log sources: ENABLED")) {
+          foreach ($want in @("SSH remote sources: ENABLED", "Archived log sources: ENABLED",
+                              "OS keychain for passwords: ENABLED")) {
             if ($log -notmatch [regex]::Escape($want)) {
               Write-Host "::error::the portable zip was built without '$want'"; exit 1
             }
@@ -407,8 +459,11 @@ jobs:
     # runner and pin Xcode 14.3.1 (macOS 13.3 SDK), which still ships AGL, so
     # the reference Qt 6.4 links.
     #
-    # If re-enabled: `brew install libssh2` gives remote log support here too, and
-    # macdeployqt will need the same bundling check the AppImage step does.
+    # If re-enabled: `brew install libssh2 qtkeychain` gives remote log support and the
+    # OS keychain here too, and macdeployqt will need the same bundling check the
+    # AppImage step does. macOS is the one platform where a keychain is unconditionally
+    # there — Security.framework, no daemon and no session bus — so unlike the Linux
+    # legs, a DISABLED there would only ever mean the package is missing.
     runs-on: macos-13
     steps:
       - uses: actions/checkout@v7

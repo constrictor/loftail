@@ -1,5 +1,7 @@
 #include "SshPromptDialogs.h"
 
+#include "HostBookmarkStore.h"
+#include "SecretStore.h"
 #include "UiColors.h"
 
 #include <QAction>
@@ -255,21 +257,56 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
     addRevealToggle(field);
     layout->addWidget(field);
 
-    auto *save = new QCheckBox(QStringLiteral("Remember this password"), &dialog);
+    // Where a remembered password would go, decided BEFORE the box can be ticked.
+    //
+    // available() is evaluated here rather than once at startup for two reasons: it keeps
+    // a D-Bus round trip out of launch, and it is more correct, because a wallet may have
+    // been unlocked since. We are about to block on the network anyway.
+    const QString backend = secretStore()->backendName();
+    const bool haveKeychain = !backend.isEmpty();
+    const HostBookmarkStore bookmarks(m_bookmarkDir);
+    const bool haveBookmark =
+        HostBookmarkStore::indexOfTarget(bookmarks.all(), target) >= 0;
+
+    auto *save = new QCheckBox(
+        haveKeychain ? QStringLiteral("Remember this password in %1").arg(backend)
+                     : QStringLiteral("Remember this password"),
+        &dialog);
     save->setObjectName(QStringLiteral("sshRememberPassword"));
+    save->setEnabled(haveKeychain || haveBookmark);
     layout->addWidget(save);
 
-    // The warning is always visible, not revealed on tick: someone deciding whether
-    // to tick the box needs it BEFORE they decide, and it names the actual file.
-    const QString where = m_passwordStorePath.isEmpty()
-        ? QStringLiteral("loftail's configuration directory")
-        : m_passwordStorePath;
-    auto *warning = new QLabel(
-        QStringLiteral("<span style='color:%1'>⚠ Stored as <b>plain text</b> in "
-                       "%2 — not encrypted. Anyone who can read your home directory can "
-                       "read it. An SSH key or agent is safer.</span>")
-            .arg(warningColor(dialog.palette()).name(), where.toHtmlEscaped()),
-        &dialog);
+    // The note is always visible, not revealed on tick: someone deciding whether to tick
+    // the box needs it BEFORE they decide, and it names the actual destination. Same rule
+    // in all three states — only the destination differs.
+    QString note;
+    if (haveKeychain) {
+        // No ⚠ here, and that is the point of the whole feature: this is the case where
+        // loftail is NOT writing a secret to a file it owns.
+        note = QStringLiteral("%1 holds it, not loftail — nothing is written to a file "
+                              "here. Remove it with your system's keychain manager.")
+                   .arg(backend.toHtmlEscaped());
+    } else if (haveBookmark) {
+        const QString where = bookmarks.filePath().isEmpty()
+            ? QStringLiteral("loftail's configuration directory")
+            : bookmarks.filePath();
+        note = QStringLiteral(
+                   "<span style='color:%1'>⚠ Stored as <b>plain text</b> in %2 — not "
+                   "encrypted. Anyone who can read your home directory can read it. An "
+                   "SSH key or agent is safer.</span>")
+                   .arg(warningColor(dialog.palette()).name(), where.toHtmlEscaped());
+    } else {
+        // The honest rendering of what already happened silently before M14: with no
+        // keychain and no saved host there is nowhere to put it, so the box did nothing.
+        // Saying so beats letting someone tick it and believe it worked.
+        note = QStringLiteral("There is no keychain on this machine and no saved host for "
+                              "%1 to keep a password in. Save the host under "
+                              "File ▸ Open Remote… first.")
+                   .arg(target.toHtmlEscaped());
+    }
+
+    auto *warning = new QLabel(note, &dialog);
+    warning->setObjectName(QStringLiteral("sshRememberNote"));
     warning->setTextFormat(Qt::RichText);
     warning->setWordWrap(true);
     layout->addWidget(warning);
@@ -312,6 +349,60 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
     *remember = save->isChecked();
     field->clear();
     return true;
+}
+
+void GuiSshPrompter::passwordAccepted(const QString &target, const QString &password,
+                                      bool remember)
+{
+    if (!remember)
+        return;
+
+    QString message;
+    switch (rememberSshPassword(target, password, &message)) {
+    case RememberOutcome::StoredInKeychain:
+        return;
+    case RememberOutcome::Failed:
+        // There IS a keychain, the user was shown its name on the checkbox, and it
+        // refused. Reported, never substituted: writing plain text here would put a secret
+        // in a file the user was never told about, from the one dialog whose whole job is
+        // to say where the secret goes.
+        reportRememberFailure(target, message);
+        return;
+    case RememberOutcome::UseFileFallback:
+        break;
+    }
+
+    // No keychain here — which is what the checkbox's own label and note said when it was
+    // ticked, so this is the destination the user consented to.
+    HostBookmarkStore store(m_bookmarkDir);
+    QVector<HostBookmark> all = store.all();
+    const int at = HostBookmarkStore::indexOfTarget(all, target);
+    if (at < 0) {
+        // Cannot normally happen: with neither a keychain nor a bookmark the box is
+        // disabled. Reachable only if the host was deleted between the prompt and the
+        // server's answer, and inventing a bookmark from a connect would make an entry
+        // appear under File ▸ Remote Hosts that nobody saved.
+        return;
+    }
+    all[at].savePassword = true;
+    all[at].password = password;
+    store.replaceAll(all); // writePrivate, now that anySecret is true
+}
+
+void GuiSshPrompter::reportRememberFailure(const QString &target, const QString &message)
+{
+    // Restoring a session reopens every remote file at once, and one wallet that will not
+    // unlock is one problem however many tabs hit it. Same reasoning as the bulk-restore
+    // skip buttons above.
+    if (m_bulkRestore && m_lastRememberFailure == message)
+        return;
+    m_lastRememberFailure = message;
+
+    QMessageBox::warning(
+        m_parent, QStringLiteral("Could not remember the password"),
+        QStringLiteral("%1\n\nThe password works and will be used for %2 until loftail "
+                       "closes, but it has not been saved anywhere.")
+            .arg(message, target));
 }
 
 void GuiSshPrompter::progress(const QString &message)

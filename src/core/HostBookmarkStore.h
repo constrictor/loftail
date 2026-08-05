@@ -32,6 +32,13 @@ struct HostBookmark
     // (SshPromptDialogs). Nothing here is encrypted and nothing pretends to be:
     // an encryption key stored beside the thing it encrypts is theatre, and calling
     // it "saved securely" would be a lie a user might act on.
+    //
+    // An OS KEYCHAIN is the real answer to that objection, and is preferred wherever
+    // one will answer (SecretStore.h, M14) — it holds the key somewhere loftail cannot
+    // reach, which is exactly what a key sitting beside its ciphertext does not. This
+    // field is what remains when there is none: a fallback the user is told about BY
+    // NAME before they consent to it, never a substitute chosen behind their back. A
+    // keychain that is present and refuses does NOT land here; it is reported instead.
     bool    savePassword = false;
     QString password;
 
@@ -94,6 +101,16 @@ public:
     // and all of them describe the same connection, so the first will do.
     static HostBookmark find(const QVector<HostBookmark> &bookmarks,
                              const RemoteLocation &location, bool *found = nullptr);
+
+    // The bookmark keyed by the string the credential cache and the keychain are BOTH
+    // keyed on — RemoteLocation::target(). What passwordAccepted() needs, since it is
+    // handed a target and nothing else.
+    //
+    // Compares FORWARDS — locationFor({}).target() == target — rather than parsing
+    // "user@host:port" back apart, which target() does not support: it emits "host:port"
+    // with no '@' when there is no user, and an IPv6 literal carries colons of its own.
+    // Forward comparison cannot get either wrong. Returns -1 when there is none.
+    static int indexOfTarget(const QVector<HostBookmark> &bookmarks, const QString &target);
 
 private:
     QString m_dir;

@@ -117,7 +117,7 @@ MainWindow::MainWindow(QWidget *parent)
     // answers them. Installed unconditionally: in a build without SSH nothing ever
     // calls it, and having it here means the two builds differ in one place only.
     m_sshPrompter = std::make_unique<GuiSshPrompter>(this);
-    m_sshPrompter->setPasswordStorePath(HostBookmarkStore(HostBookmarkStore::defaultDir()).filePath());
+    m_sshPrompter->setBookmarkDir(HostBookmarkStore::defaultDir());
     setSshPrompter(m_sshPrompter.get());
 
     m_progressBar = new QProgressBar(this);
@@ -764,6 +764,32 @@ void MainWindow::closeAllDocuments()
     updateActionStates();
 }
 
+void MainWindow::primeRemoteCredentials(const QString &path)
+{
+    if (!RemoteLocation::isRemote(path))
+        return;
+    const auto location = RemoteLocation::parse(path);
+    if (!location)
+        return;
+
+    const HostBookmarkStore store(HostBookmarkStore::defaultDir());
+    bool found = false;
+    const HostBookmark bookmark = HostBookmarkStore::find(store.all(), *location, &found);
+    if (!found || !bookmark.savePassword || bookmark.password.isEmpty())
+        return;
+
+    // Never overwrite one the server has already accepted this session.
+    const QString target = location->target();
+    if (!SshCredentialCache::has(target))
+        SshCredentialCache::remember(target, bookmark.password);
+
+    // Only the FILE is primed here, deliberately. The cache is consulted after the agent
+    // and the key files, so priming cannot cause a stored password to be sent to a host
+    // that would have signed in with a key — and reading hosts.json is a silent local
+    // file read. A keychain read is neither: it can raise an unlock dialog, so it stays
+    // where the auth chain puts it, behind the agent (SshSession::authenticate).
+}
+
 void MainWindow::openFile(const QString &rawPath, const QString &pattern)
 {
     // Normalize a remote URL to its one spelling FIRST, before it becomes a Document
@@ -772,6 +798,12 @@ void MainWindow::openFile(const QString &rawPath, const QString &pattern)
     // two spellings of one remote file would otherwise open two tabs on it and
     // remember its format twice. A local path passes through untouched.
     const QString path = normalizeLogPath(rawPath);
+
+    // A saved host's remembered password, before anything tries to connect. Here because
+    // openFile() is the single funnel every entry point goes through — the Open dialog,
+    // Open Remote, the Remote Hosts menu, recent files, drag-and-drop, the command line
+    // and session restore.
+    primeRemoteCredentials(path);
 
     // An archive naming no member cannot be opened, so ask which log is wanted —
     // EXACTLY HERE and nowhere else. Document::prepare(), rescan() and session restore
