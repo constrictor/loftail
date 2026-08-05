@@ -206,7 +206,13 @@ void LiveController::checkNow()
             m_vanishedSince.start();
         if (m_vanishedSince.elapsed() < m_vanishGraceMs)
             return;
-        beginWaiting(waitingForText(m_document->path(), WaitCause::Gone));
+        // The transport's own words where it has any (a dropped link, a log removed on
+        // the far end), because "is no longer there" is a guess this end cannot make
+        // about a machine it can no longer reach.
+        const QString reported = sourceStatusText(*src, m_document->path());
+        beginWaiting(reported.isEmpty()
+                         ? waitingForText(m_document->path(), WaitCause::Gone)
+                         : reported);
         return;
     }
     m_vanishedSince.invalidate();

@@ -195,6 +195,14 @@ if(NOT WIN32)
     add_test(NAME tst_waiting COMMAND tst_waiting)
 endif()
 
+# Why the SSH transport takes its socket away from Qt. UNGATED and network-free
+# (loopback only): the behaviour worked around is Qt's own, so it must be pinned in a
+# build with no SSH support too — and a Qt that stopped doing it would make the whole
+# workaround unnecessary, which is worth being told by a failing test.
+qt_add_executable(tst_socketdetach tst_socketdetach.cpp)
+target_link_libraries(tst_socketdetach PRIVATE loftail_core Qt6::Test Qt6::Network)
+add_test(NAME tst_socketdetach COMMAND tst_socketdetach)
+
 # Chrome colours on a dark theme: the placeholder role Qt leaves unset (which rendered
 # every hint black on a dark field), and the error/warning/muted hues that used to be
 # hardcoded against a light theme. Needs a QApplication — offscreen.

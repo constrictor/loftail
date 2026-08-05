@@ -1,6 +1,7 @@
 #include "SshSession.h"
 
 #include "SshPrompter.h"
+#include "SocketDetach.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -127,7 +128,8 @@ void kbdIntCallback(const char *, int, const char *, int, int numPrompts,
 
 struct SshSession::Impl
 {
-    QTcpSocket        socket;
+    QTcpSocket        socket;   // resolves, connects, times out — then hands the fd over
+    qintptr           fd = -1;  // OURS, not Qt's; see SocketDetach.h
     LIBSSH2_SESSION  *session = nullptr;
     LIBSSH2_SFTP     *sftp = nullptr;
     LIBSSH2_SFTP_HANDLE *file = nullptr;
@@ -151,6 +153,10 @@ struct SshSession::Impl
             libssh2_session_free(session);
             session = nullptr;
         }
+        // The descriptor goes LAST: libssh2_session_disconnect above writes a farewell
+        // packet, and it needs a socket to write it to.
+        closeDetachedSocket(fd);
+        fd = -1;
         if (socket.state() != QAbstractSocket::UnconnectedState)
             socket.disconnectFromHost();
     }
@@ -474,6 +480,15 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
         return false;
     }
 
+    // Connected — now take the socket off Qt before a single SSH byte moves, because
+    // from here on libssh2 must be its only reader (detachFromQt).
+    d->fd = detachSocketFromQt(d->socket);
+    if (d->fd < 0) {
+        err = QStringLiteral("Cannot take over the connection to %1.").arg(location.host);
+        d->teardown();
+        return false;
+    }
+
     d->session = libssh2_session_init();
     if (!d->session) {
         err = QStringLiteral("Cannot start an SSH session.");
@@ -485,7 +500,7 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     // indefinitely — this runs on the thread that opened the document.
     libssh2_session_set_timeout(d->session, timeoutMs);
 
-    if (libssh2_session_handshake(d->session, static_cast<libssh2_socket_t>(d->socket.socketDescriptor()))) {
+    if (libssh2_session_handshake(d->session, static_cast<libssh2_socket_t>(d->fd))) {
         err = sessionError(d->session, QStringLiteral("SSH handshake with %1 failed")
                                            .arg(location.host));
         d->teardown();

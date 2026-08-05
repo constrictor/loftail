@@ -123,6 +123,15 @@ if(NOT WIN32)
     target_sources(loftail_core PRIVATE MappedLogSource.cpp)
 endif()
 
+# Taking a connected socket away from Qt so a third-party library can be its only
+# reader. ALWAYS compiled although only the SSH transport uses it: the behaviour it
+# works around is Qt's, not libssh2's, so tst_socketdetach pins it in every build.
+target_sources(loftail_core PRIVATE
+    SocketDetach.cpp
+    SocketDetach.h
+)
+target_link_libraries(loftail_core PRIVATE Qt6::Network)
+
 # M11 — the only libssh2-touching translation units. Same shape as the POSIX-only
 # source above: the seam is always compiled, one implementation is conditional.
 # PUBLIC on the definition so loftail_ui and the tests see the same feature state.

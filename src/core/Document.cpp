@@ -6,6 +6,7 @@
 #include "ManualFormatProvider.h"
 #include "PatternCompiler.h"
 #include "RemoteLocation.h"
+#include "SpooledLogSource.h"
 #include "TimestampParser.h"
 
 #include <QRegularExpression>
@@ -124,7 +125,14 @@ bool Document::prepare(const QString &rawPath,
     // empty, and the fetcher behind it is retrying. That is the remote and archived
     // form of the same wait, and it is the source, not the path, that can say so.
     if (m_source->originVanished()) {
-        enterWaiting(waitingForText(path, WaitCause::NotYet));
+        // Prefer the TRANSPORT's own words. "app.log has not appeared yet" is right for
+        // a local path we just stat'd and wrong for a remote one, where the log may be
+        // sitting there perfectly well and the trouble is reaching it — a host that is
+        // down, a login that needs a person, an SFTP subsystem that timed out. Only the
+        // fetcher knows which, and saying the wrong one sends the user looking in the
+        // wrong place.
+        const QString reported = sourceStatusText(*m_source, path);
+        enterWaiting(reported.isEmpty() ? waitingForText(path, WaitCause::NotYet) : reported);
         return true;
     }
 
