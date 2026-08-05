@@ -519,12 +519,30 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
         return false;
     }
 
-    // Past the host key and the credentials: the server is who it claims to be and has
-    // let us in, so a failure here is the service, not the trust, and comes back.
-    kind = Failure::Unreachable;
     d->sftp = libssh2_sftp_init(d->session);
     if (!d->sftp) {
-        err = sessionError(d->session, QStringLiteral("Cannot start SFTP on %1").arg(location.host));
+        // Signed in, and then no SFTP. The two ways that happens want OPPOSITE
+        // treatment, so they are told apart rather than lumped together:
+        //
+        //  * a TIMEOUT is transient — a loaded server, a slow subsystem launch — and is
+        //    worth retrying, so it stays Unreachable;
+        //  * anything else means the server WILL NOT do SFTP, usually because sshd has
+        //    no `Subsystem sftp` line or the account is restricted to a shell that
+        //    cannot start one. That never becomes true later, and retrying it on a
+        //    timer would leave a tab waiting forever for something that cannot arrive.
+        //    Refused, with a message that names the actual cause instead of the symptom.
+        const int code = libssh2_session_last_errno(d->session);
+        const bool transient =
+            code == LIBSSH2_ERROR_TIMEOUT || code == LIBSSH2_ERROR_SOCKET_TIMEOUT;
+        kind = transient ? Failure::Unreachable : Failure::Refused;
+        err = transient
+            ? sessionError(d->session,
+                           QStringLiteral("Cannot start SFTP on %1").arg(location.host))
+            : QStringLiteral(
+                  "%1 signed in but would not start SFTP, which is how loftail reads a "
+                  "remote log. The server may not offer it — sshd needs a `Subsystem "
+                  "sftp` line, and the account must be allowed to run it.")
+                  .arg(location.host);
         d->teardown();
         return false;
     }
