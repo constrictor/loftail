@@ -2,19 +2,181 @@
 
 #include "UiColors.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QGuiApplication>
+#include <QIcon>
+#include <QIconEngine>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPainterPathStroker>
+#include <QPixmap>
 #include <QPushButton>
 #include <QVBoxLayout>
 
 namespace loftail {
+
+namespace {
+
+// A "show password" eye, drawn rather than loaded.
+//
+// There is no icon to load. Qt has no QStyle::SP_ for this — the standard pixmaps are
+// dialog and file-manager furniture — and QIcon::fromTheme() answers only where a
+// freedesktop icon theme is installed, so it is empty on Windows and macOS and
+// theme-dependent on Linux. A control that silently becomes an invisible zero-size
+// button on two of the three platforms is not a control. It is also the dependency
+// AppStyle just took OFF the dialog buttons, so reintroducing it here would be
+// contradictory.
+//
+// Drawn at whatever size it is asked for, the same way PaneTitleStyle draws the dock
+// title glyphs and for the same reason: this lands in a ~16 px box, and every fixed
+// pixmap size would therefore be a downscale of a thin two-curve mark.
+constexpr qreal kStrokeRatio = 0.085;
+constexpr qreal kMinStroke = 1.1;
+constexpr qreal kInsetRatio = 0.08;
+
+void paintEye(QPainter *painter, const QRectF &bounds, bool struck, const QColor &color)
+{
+    const qreal side = qMin(bounds.width(), bounds.height());
+    if (side <= 0)
+        return;
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+
+    QPen pen(color);
+    pen.setWidthF(qMax(kMinStroke, side * kStrokeRatio));
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    painter->setPen(pen);
+    painter->setBrush(Qt::NoBrush);
+
+    const QPointF center = bounds.center();
+    const qreal half = side / 2 - side * kInsetRatio - pen.widthF() / 2;
+    if (half <= 0) {
+        painter->restore();
+        return;
+    }
+
+    // Two quadratic curves meeting at the corners. A quadratic's peak is halfway to its
+    // control point, so the lid offset is twice the eye's half-height. 1.2 is measured,
+    // not chosen: at 16 px the stroke itself eats about 1.4 px of lid top and bottom, and
+    // the first cut's flatter 0.78 left an interior the pupil filled completely — an eye
+    // that rendered as a solid lens.
+    const qreal lid = half * 1.2;
+    QPainterPath eye;
+    eye.moveTo(center.x() - half, center.y());
+    eye.quadTo(center.x(), center.y() - lid, center.x() + half, center.y());
+    eye.quadTo(center.x(), center.y() + lid, center.x() - half, center.y());
+
+    // Filled, not stroked: at this size an outlined pupil is a ring one pixel wide that
+    // antialiasing turns into a grey smudge.
+    const qreal pupil = qMax(pen.widthF() * 0.75, half * 0.2);
+
+    const QLineF slash(center.x() - half * 0.68, center.y() - half * 0.68,
+                       center.x() + half * 0.68, center.y() + half * 0.68);
+
+    if (struck) {
+        // Clear a gap around the slash before drawing the eye, so the slash reads as
+        // lying ON the eye rather than as a third curve crossing it — the difference
+        // between a recognisable mark and a knot at this size. Done by clipping rather
+        // than by CompositionMode_Clear, which needs an alpha-backed device and would
+        // therefore work only when the engine is asked for a pixmap.
+        QPainterPath slashPath;
+        slashPath.moveTo(slash.p1());
+        slashPath.lineTo(slash.p2());
+        QPainterPathStroker stroker;
+        stroker.setWidth(pen.widthF() * 2.2);
+        stroker.setCapStyle(Qt::RoundCap);
+        QPainterPath keep;
+        keep.addRect(bounds.adjusted(-1, -1, 1, 1));
+        painter->setClipPath(keep.subtracted(stroker.createStroke(slashPath)));
+    }
+
+    painter->drawPath(eye);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(color);
+    painter->drawEllipse(center, pupil, pupil);
+
+    if (struck) {
+        painter->setClipping(false);
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawLine(slash);
+    }
+
+    painter->restore();
+}
+
+class EyeIconEngine final : public QIconEngine
+{
+public:
+    EyeIconEngine(bool struck, QColor color) : m_struck(struck), m_color(std::move(color)) {}
+
+    void paint(QPainter *painter, const QRect &rect, QIcon::Mode, QIcon::State) override
+    {
+        paintEye(painter, rect, m_struck, m_color);
+    }
+
+    QSize actualSize(const QSize &size, QIcon::Mode, QIcon::State) override { return size; }
+
+    QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override
+    {
+        QPixmap pixmap(size);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        paint(&painter, QRect(QPoint(0, 0), size), mode, state);
+        return pixmap;
+    }
+
+    QIconEngine *clone() const override { return new EyeIconEngine(m_struck, m_color); }
+
+private:
+    bool   m_struck;
+    QColor m_color;
+};
+
+// Hang a reveal toggle inside `field`'s trailing edge.
+//
+// The colour is taken from the field's palette at build time rather than tracked, which
+// is sound only because this is a modal dialog that lives for one prompt; a long-lived
+// field would need the icon rebuilt on PaletteChange.
+void addRevealToggle(QLineEdit *field)
+{
+    const QColor color = mutedColor(field->palette());
+
+    QAction *reveal = field->addAction(QIcon(new EyeIconEngine(false, color)),
+                                       QLineEdit::TrailingPosition);
+    reveal->setObjectName(QStringLiteral("sshRevealPassword"));
+    reveal->setCheckable(true);
+    reveal->setToolTip(QStringLiteral("Show password (Ctrl+Shift+H)"));
+
+    // QLineEdit's own action buttons take no focus, so without this the control would be
+    // mouse-only — in the one dialog where the keyboard is the whole interaction. The
+    // context confines it to the field, so it cannot collide with anything in the window,
+    // and Ctrl+Shift+H rather than Ctrl+H because Ctrl+H is Backspace in a QLineEdit
+    // under macOS's standard key bindings.
+    reveal->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_H));
+    reveal->setShortcutContext(Qt::WidgetShortcut);
+
+    QObject::connect(reveal, &QAction::toggled, field, [field, reveal, color](bool shown) {
+        field->setEchoMode(shown ? QLineEdit::Normal : QLineEdit::Password);
+        // Struck while the password is visible: the glyph shows what clicking does next,
+        // which is the convention every browser's password box uses.
+        reveal->setIcon(QIcon(new EyeIconEngine(shown, color)));
+        reveal->setToolTip(shown ? QStringLiteral("Hide password (Ctrl+Shift+H)")
+                                 : QStringLiteral("Show password (Ctrl+Shift+H)"));
+    });
+}
+
+} // namespace
 
 SshPrompter::HostKeyChoice GuiSshPrompter::confirmHostKey(const HostKeyInfo &info)
 {
@@ -90,6 +252,7 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
     auto *field = new QLineEdit(&dialog);
     field->setEchoMode(QLineEdit::Password);
     field->setObjectName(QStringLiteral("sshPasswordField"));
+    addRevealToggle(field);
     layout->addWidget(field);
 
     auto *save = new QCheckBox(QStringLiteral("Remember this password"), &dialog);
