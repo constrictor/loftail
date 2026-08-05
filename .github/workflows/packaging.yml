@@ -96,10 +96,14 @@ jobs:
           ls -l squashfs-root/usr/lib/libssh2.so* squashfs-root/usr/lib/libarchive.so*
           rm -rf squashfs-root
 
+      # As the .deb job: upload the AppImage itself, not a zip of it. Doubly pointless
+      # here — an AppImage is a compressed squashfs, so the wrapper cost transfer time
+      # and gained nothing.
       - uses: actions/upload-artifact@v7
         with:
-          name: loftail-linux-appimage
           path: dist/*.AppImage
+          archive: false
+          if-no-files-found: error
 
   deb:
     # Ubuntu packages, one per release. NOT one package built once: 24.04 has
@@ -206,10 +210,19 @@ jobs:
           desktop-file-validate /usr/share/applications/loftail.desktop
           sudo apt-get remove -y loftail
 
+      # archive: false uploads the .deb ITSELF rather than a zip containing it —
+      # the artifact API zipped everything until upload-artifact v7 added this, so a
+      # 450 KB package arrived as a zip you had to unpack to get a package. It takes
+      # a single file only and names the artifact after it, ignoring `name:`, which
+      # is why the version carries the release: loftail_0.1.0~ubuntu24.04_amd64.deb
+      # and its 26.04 twin are distinct names within the run without help.
+      # if-no-files-found: error because the default only WARNS — a glob that stops
+      # matching would otherwise pass a green job with nothing attached to it.
       - uses: actions/upload-artifact@v7
         with:
-          name: loftail-deb-ubuntu-${{ matrix.release }}
           path: build-deb/*.deb
+          archive: false
+          if-no-files-found: error
 
   windows:
     # Pin windows-2022 (VS 2022 / MSVC 14.4x). windows-latest now ships a much
@@ -377,10 +390,13 @@ jobs:
             exit 1
           }
 
+      # This one was a zip INSIDE a zip: the portable build is already a zip, and the
+      # artifact API wrapped it in another. archive: false uploads the real one.
       - uses: actions/upload-artifact@v7
         with:
-          name: loftail-windows-portable
           path: dist/*.zip
+          archive: false
+          if-no-files-found: error
 
   macos:
     # Temporarily disabled. Flip `if` back to true (or delete this line) to
@@ -421,7 +437,9 @@ jobs:
         run: |
           ./build-macos/src/loftail.app/Contents/MacOS/loftail --version
 
+      # Same as the other three, for whenever this job is re-enabled.
       - uses: actions/upload-artifact@v7
         with:
-          name: loftail-macos-dmg
           path: dist/*.dmg
+          archive: false
+          if-no-files-found: error
