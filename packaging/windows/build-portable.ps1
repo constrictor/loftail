@@ -62,12 +62,17 @@ if ($QtDir -ne "") {
 }
 
 Write-Host ">> Configuring ($Config)"
-$cmakeArgs = @("-S", $RepoRoot, "-B", $BuildDir, "-DCMAKE_BUILD_TYPE=$Config")
-if ($QtDir -ne "") { $cmakeArgs += "-DCMAKE_PREFIX_PATH=$QtDir" }
+# NOT named $cmakeArgs: PowerShell variable names are CASE-INSENSITIVE, so that would
+# be the same variable as the $CMakeArgs parameter — the assignment below would discard
+# the caller's flags and then append the list to itself. It did exactly that once, and
+# the only sign was a packaged build quietly missing its optional dependencies.
+$configureArgs = @("-S", $RepoRoot, "-B", $BuildDir, "-DCMAKE_BUILD_TYPE=$Config")
+if ($QtDir -ne "") { $configureArgs += "-DCMAKE_PREFIX_PATH=$QtDir" }
 # Ninja if available, otherwise the default (Visual Studio) generator.
-if (Get-Command ninja -ErrorAction SilentlyContinue) { $cmakeArgs += @("-G", "Ninja") }
-if ($CMakeArgs.Count -gt 0) { $cmakeArgs += $CMakeArgs }
-cmake @cmakeArgs 2>&1 | Tee-Object (Join-Path $RepoRoot "configure-portable.log")
+if (Get-Command ninja -ErrorAction SilentlyContinue) { $configureArgs += @("-G", "Ninja") }
+if ($CMakeArgs.Count -gt 0) { $configureArgs += $CMakeArgs }
+Write-Host ">> cmake $($configureArgs -join ' ')"
+cmake @configureArgs 2>&1 | Tee-Object (Join-Path $RepoRoot "configure-portable.log")
 
 # The optional dependencies are what the caller most easily gets wrong here, because
 # this is a SEPARATE build tree from whatever was tested. Say what the artifact will
