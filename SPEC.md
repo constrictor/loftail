@@ -48,6 +48,18 @@ It runs on Windows, macOS, and Linux.
 - If the file is rotated or truncated by the writing application, loftail detects this and reloads rather than showing stale or corrupt data. This happens silently — no notice is shown.
 - Because loftail always holds the file open for reading, it must never prevent the writing application from appending to, rotating, or truncating it. Observing a log must not disturb the process producing it.
 
+### Logs that are not there
+
+A log that does not exist yet is opened the same way as one that does, and so is one that goes away while you are reading it. This follows from the same reasoning as live updates: loftail cannot know whether a log is finished, and it equally cannot know whether one is late.
+
+- **A log that has not been written yet opens anyway.** Point loftail at a path before the application has created it — a service about to start, a log rotated out from under you, a machine still booting — and it opens a tab that says it is waiting. The moment the log appears it is read and followed, with no reopening and nothing to press. This is unconditional and there is no switch for it: an address that is not available yet is simply a log that has not turned up.
+- **A log deleted while open is waited for too.** The tab empties and says the log is no longer there, keeping its filters, highlighters, log format and run pattern; when the log comes back it fills in again. A rotation is not this — that is detected as a rotation and reloads silently, as it always has.
+- **The tab says which it is.** A waiting tab is marked in the tab bar, the view says what it is waiting for, and the status bar says why — "the host is unreachable", "no such file there". Nothing is popped up.
+- **A remote log on a host that is down opens and keeps trying.** loftail reconnects in the background using your SSH agent, your usual keys, or a password you have already given it this session. If the host comes back needing a password it cannot ask for unprompted, it says so and **File ▸ Reconnect** asks again.
+- **The remembered session keeps a log that is not available.** A file that could not be opened at launch comes back as a waiting tab rather than being dropped, so an unmounted share or a host that was down for an afternoon does not cost you the tab permanently.
+- **Only a genuine refusal still fails to open.** An address that names no log, an archive without a chosen log inside it, a host whose key has changed, a rejected password, or a feature this build does not include: these get the same answer however long loftail waits, so they are reported and no tab is opened.
+- **A log that arrives is not asked about.** loftail applies the format it remembers for that file, or your default. If neither fits, the log shows as plain text and the status bar points at **Log ▸ Format…** — it will not raise a dialog for a log that turned up while you were reading something else.
+
 ### Remote logs
 
 - **A remote log behaves exactly like a local one.** It opens at its end and follows; filters, highlighters, runs, the log format and the remembered session all work identically. Rotation and truncation on the far end are detected and reloaded silently, just as they are locally.
@@ -57,7 +69,7 @@ It runs on Windows, macOS, and Linux.
 - **Unknown hosts are confirmed, changed keys are refused.** A host not in your `known_hosts` shows its SHA256 fingerprint and can be accepted once or accepted and remembered; nothing is sent to it until you do. If a host's key has *changed*, loftail will not connect at all, because that is indistinguishable from an intercepted connection.
 - **A remembered password is stored as plain text.** It is off by default, and the option says so plainly and names the file it would be written to. The file is readable only by its owner. Nothing is encrypted, and loftail does not claim otherwise — an SSH key or agent is the safer choice.
 - **The log is cached locally while you read it.** The copy lives in the system cache directory, is removed when the log is closed, and is what makes scrolling and searching a remote log as quick as a local one. A very large log can be opened from its end only, in which case the status bar says the beginning is not shown.
-- **Connection trouble is reported, not popped up.** A failure while opening explains itself in the status bar; one that happens while following shows there too, and loftail keeps trying to reconnect. Following a flaky link never produces a dialog.
+- **Connection trouble is reported, not popped up.** A failure while opening explains itself in the status bar; one that happens while following shows there too, and loftail keeps trying to reconnect. Following a flaky link never produces a dialog. **A host that is simply unreachable opens anyway** and is waited for — see "Logs that are not there" above.
 - **A build without SSH support** says so: the remote menu entries are visible but disabled and explain why.
 
 ### Compressed and archived logs
@@ -247,7 +259,7 @@ On relaunch, loftail restores:
 
 **Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is keyed by file, so instances viewing different logs never conflict. For genuinely global state — window layout, and which files to restore on next launch — **the last instance to close wins**.
 
-If a file from the last session is missing or unreadable, loftail restores the rest and reports the ones it could not open, rather than showing an error dialog on every launch. If none can be opened, it starts with an empty view.
+If a file from the last session is not there, its tab comes back **waiting for it** (§3) — so a log on an unmounted share, or a host that is down for an afternoon, keeps its place and is picked up when it returns rather than being quietly forgotten. Only a file that is actively refused — an address that names no log, a host whose key has changed, an archive without a chosen log inside it — is left out, and those are listed rather than raising an error dialog on every launch. If none can be opened, loftail starts with an empty view.
 
 ## 11. Non-goals
 

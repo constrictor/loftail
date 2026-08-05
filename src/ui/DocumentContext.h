@@ -92,6 +92,14 @@ public:
     // expanded in another tab must not overwrite what this one says.
     QString sourceStatus;
 
+    // A one-off notice about this file's FORMAT, for the status bar. Set in exactly one
+    // situation (M13): a log that was being waited for has arrived and the remembered
+    // pattern does not fit it. That cannot raise the Log Format dialog — it happens on
+    // a watch tick, possibly for a tab that is not on screen — so it says so here and
+    // leaves the log readable as plain text. Kept apart from sourceStatus so the two
+    // cannot overwrite each other; a fetcher publishing its progress must not erase it.
+    QString formatNotice;
+
     // The views showing this file. Non-owning: each view is owned by its dock.
     QVector<DocumentView *> views;
 };

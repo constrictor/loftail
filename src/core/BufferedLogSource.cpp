@@ -28,6 +28,16 @@ bool BufferedLogSource::wasReplaced() const
     return current != 0 && m_pathIdentity != 0 && current != m_pathIdentity;
 }
 
+bool BufferedLogSource::originVanished() const
+{
+    // Deliberately NOT pathIdentity() == 0, which is how MappedLogSource answers this.
+    // On Windows pathIdentity() is a stub that returns 0 unconditionally, so routing
+    // through it would report every open file as vanished the instant the watch ticked —
+    // and this is the Windows source. Ask the filesystem the question directly instead;
+    // it is the same stat either way and it is honest on both platforms (§6.5).
+    return !QFileInfo::exists(m_file.fileName());
+}
+
 quint64 BufferedLogSource::computeIdentity() const
 {
     // Portable stand-in for the platform file-identity token. On POSIX this is a

@@ -248,6 +248,23 @@ void MainWindow::buildMenus()
     m_closeAllAction->setEnabled(false);
     connect(m_closeAllAction, &QAction::triggered, this, &MainWindow::closeAllDocuments);
 
+    // Ask a spooled log's fetcher to try again NOW rather than at its next backoff.
+    // The one case it is required for, rather than merely convenient: a reconnect that
+    // needs a password cannot prompt from the fetcher thread, so it stops trying and
+    // says so — and this is how the user says "ask me again" (§6.5).
+    m_reconnectAction = fileMenu->addAction(QStringLiteral("&Reconnect"));
+    m_reconnectAction->setObjectName(QStringLiteral("reconnectAction")); // findChild, for tests
+    m_reconnectAction->setEnabled(false);
+    connect(m_reconnectAction, &QAction::triggered, this, [this]() {
+        DocumentContext *ctx = activeContext();
+        if (!ctx || !ctx->doc)
+            return;
+        if (auto *spooled = dynamic_cast<SpooledLogSource *>(ctx->doc->source())) {
+            if (const auto &spool = spooled->spool())
+                spool->poke();
+        }
+    });
+
     fileMenu->addSeparator();
     m_formatAction = fileMenu->addAction(QStringLiteral("&Log Format..."));
     m_formatAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
@@ -585,8 +602,17 @@ void MainWindow::updateActionStates()
         m_copyAction->setEnabled(hasFile);
     if (m_copyColumnsAction)
         m_copyColumnsAction->setEnabled(hasFile);
+    // The format dialog samples the source's first 64 KB, and a waiting document has
+    // no source and no bytes to show — there is literally nothing to configure a format
+    // against. It settles its own format from the log when it arrives, and the action
+    // comes back with it (SPEC.md §3, §4).
     if (m_formatAction)
-        m_formatAction->setEnabled(hasFile);
+        m_formatAction->setEnabled(hasFile && !ctx->doc->isWaiting());
+    // Only a spooled log has a fetcher to poke; a local one is watched, not connected.
+    if (m_reconnectAction) {
+        m_reconnectAction->setEnabled(
+            hasFile && dynamic_cast<SpooledLogSource *>(ctx->doc->source()) != nullptr);
+    }
     if (m_closeTabAction)
         m_closeTabAction->setEnabled(hasFile);
     if (m_closeAllAction)
@@ -806,6 +832,17 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     // re-prompts rather than silently showing plain text).
     bool persist = !promptIfNoMatch;
 
+    // A log that is not there yet has no bytes to preview, autodetect from, or seed a
+    // dialog with — and asking about a format before anyone has seen a line of the file
+    // would be asking the user to guess too. It opens as a waiting tab and settles its
+    // format from the bytes that actually arrive (Document::resume). Nothing is
+    // persisted either: a pattern never checked against a line of the log is not
+    // knowledge, and remembering it would suppress the format prompt forever.
+    if (doc->isWaiting()) {
+        promptIfNoMatch = false;
+        persist = false;
+    }
+
     if (promptIfNoMatch) {
         const qint64 sampleLen = qMin<qint64>(64 * 1024, doc->source()->size());
         const QByteArray sample = sampleLen > 0
@@ -879,6 +916,11 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
 
     LogView *logView = view->logView();
     logView->setWrapMode(m_wrapMode);
+    // A view made for a document that is ALREADY waiting — the first view of a waiting
+    // open, a restored tab, or a second view onto one — needs the message now; the
+    // waitingChanged signal it would otherwise learn from has already fired.
+    if (ctx->doc->isWaiting())
+        logView->setPlaceholderText(ctx->doc->waitReason());
     // Reflect follow state in the View menu (M6): the checkbox tracks the ACTIVE
     // view, and the overlay button/scroll gestures keep them in sync.
     connect(logView, &LogView::followingChanged, this, [this, view](bool following) {
@@ -1111,9 +1153,14 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
     // in its own tab title instead.
     QString name = logSourceDisplayName(ctx->doc->path());
     name.replace(u'&', QLatin1String("&&")); // the tab bar reads '&' as a mnemonic
-    const QString base = ctx->indexing
-        ? QStringLiteral("%1 — indexing %2%").arg(name).arg(ctx->progressPercent)
-        : name;
+    QString base = name;
+    if (ctx->indexing)
+        base = QStringLiteral("%1 — indexing %2%").arg(name).arg(ctx->progressPercent);
+    else if (ctx->doc->isWaiting())
+        // A tab with no records in it, so that a glance at the tab bar tells a log
+        // that is empty from one that is not there (SPEC.md §3). The tooltip carries
+        // the sentence; the title only has room for the mark.
+        base = QStringLiteral("◦ %1").arg(name);
     // Several views onto one file are numbered, so two identically-named tabs are
     // still tellable apart. The numbering runs left to right along the tab bar, not
     // in creation order, so a dragged tab does not end up as [2] left of [1].
@@ -1128,7 +1175,11 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
     for (int i = 0; i < indices.size(); ++i) {
         m_tabs->setTabText(indices.at(i),
                            numbered ? QStringLiteral("%1 [%2]").arg(base).arg(i + 1) : base);
-        m_tabs->setTabToolTip(indices.at(i), ctx->doc->path());
+        m_tabs->setTabToolTip(indices.at(i),
+                              ctx->doc->isWaiting()
+                                  ? QStringLiteral("%1\n%2").arg(ctx->doc->path(),
+                                                                 ctx->doc->waitReason())
+                                  : ctx->doc->path());
     }
 }
 
@@ -1238,6 +1289,20 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
                     ctx->sourceStatus = text;
                     updateStatus();
                 });
+        // The log this document is waiting for is back. The pattern lives here, not in
+        // core, so this is where the provider gets built and resume() gets called
+        // (invariant #3). resume() may decline — the log can go again between the
+        // check and the open — in which case the document stays waiting and the next
+        // tick tries once more.
+        connect(ctx->live, &LiveController::resumeRequested, this,
+                [this, ctx]() { resumeWaitingDocument(ctx); });
+        connect(ctx->live, &LiveController::waitingChanged, this,
+                [this, ctx](bool, const QString &reason) {
+                    for (DocumentView *v : std::as_const(ctx->views))
+                        v->logView()->setPlaceholderText(reason);
+                    updateTabTitles(ctx);
+                    updateStatus();
+                });
         connect(ctx->live, &LiveController::rescanned, this, [this, ctx]() {
             // Rotation/truncation reloaded silently (SPEC.md §3): refresh the panes
             // against the fresh index and keep following if we were.
@@ -1257,6 +1322,79 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
         });
         ctx->live->start();
     }
+}
+
+// The log `ctx` has been waiting for is back (M13, SPEC.md §3). Reopen it, index it,
+// and — if this document has never yet seen a byte of it — settle its format from the
+// bytes that have now arrived.
+//
+// This lives here rather than in LiveController because the PATTERN lives here: core
+// holds a compiled LogFormat and never a pattern string (invariant #3), so only the
+// window can build the provider that resume() needs.
+void MainWindow::resumeWaitingDocument(DocumentContext *ctx)
+{
+    Document *doc = ctx->doc.get();
+    const bool settleFormat = !doc->formatSettled();
+    ManualFormatProvider provider(ctx->settings.pattern);
+
+    ctx->model->beginFilterReset();
+    const bool ok = doc->resume(provider);
+    if (ok) {
+        // The intern tables were built from scratch, exactly as after a rotation.
+        doc->resolveHighlighters();
+        if (doc->filters().anyActive() || doc->viewRestricted())
+            doc->applyFilters();
+    }
+    ctx->model->endFilterReset();
+
+    // The log can go again between the watch tick that saw it and this open. That is
+    // ordinary, not an error: the document is still waiting and the next tick retries.
+    if (!ok)
+        return;
+
+    for (DocumentView *v : std::as_const(ctx->views)) {
+        v->logView()->setPlaceholderText(QString());
+        if (v->logView()->following())
+            v->logView()->followTail();
+    }
+
+    if (settleFormat) {
+        // Whether the remembered pattern actually fits, decided the same way an
+        // ordinary open decides it (openWithSettings) so the two cannot disagree.
+        const qint64 sampleLen = qMin<qint64>(64 * 1024, doc->source()->size());
+        const QByteArray sample =
+            sampleLen > 0 ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
+        Decoder decoder = Decoder::detect(sample, ctx->settings.encoding);
+        const PreviewResult pv = FormatPreview::build(doc->format(), sample, decoder);
+
+        if (pv.matchedCount > 0) {
+            // It fits, and it has now been checked against real lines rather than
+            // assumed — which is exactly the point at which it becomes worth
+            // remembering. The waiting open deliberately persisted nothing.
+            persistFormat(doc->path(), ctx->settings);
+            ctx->formatNotice.clear();
+        } else {
+            // It does not, and there is NO DIALOG here on purpose: this runs from a
+            // watch tick for a tab that may not even be on screen, which is the
+            // "behind the user's back" case openFile() takes such care to avoid. The
+            // log stays readable as plain text and the status bar says where to fix
+            // it; nothing is persisted, so reopening still offers the dialog properly.
+            ctx->formatNotice = QStringLiteral("format not recognised — Log ▸ Format…");
+        }
+    }
+
+    // The panes describe the ACTIVE document only; a log arriving in a background tab
+    // must not repopulate the subsystem lists of the one being read.
+    if (ctx == activeContext()) {
+        if (m_filterPane)
+            m_filterPane->refreshDiscoveredLists();
+        if (m_highlighterPane)
+            m_highlighterPane->refreshDiscoveredLists();
+        if (m_runPane)
+            m_runPane->refresh();
+    }
+    updateTabTitles(ctx);
+    updateStatus();
 }
 
 void MainWindow::applyFiltersFor(DocumentContext *ctx)
@@ -1425,6 +1563,16 @@ void MainWindow::updateStatus()
         m_statusLabel->setText(QStringLiteral("No file open"));
         return;
     }
+    if (doc->isWaiting()) {
+        // A record count for a log that is not there would be an honest zero and a
+        // useless one. Say what is actually going on instead (SPEC.md §3).
+        QString text = doc->waitReason();
+        if (const DocumentContext *ctx = activeContext(); ctx && !ctx->sourceStatus.isEmpty())
+            text += QStringLiteral("  |  ") + ctx->sourceStatus;
+        m_statusLabel->setText(text);
+        return;
+    }
+
     const int total = doc->index().records.size();
     // Filtered/total counts (SPEC.md §5, §6): show the shown-vs-total pair only
     // when a filter narrows the view, otherwise a plain record count.
@@ -1443,8 +1591,14 @@ void MainWindow::updateStatus()
     // What the source is doing, when it is doing anything worth mentioning: expanding
     // an archive, priming a remote log, or having failed at either. Appended rather
     // than replacing, so the record count stays visible throughout.
-    if (const DocumentContext *ctx = activeContext(); ctx && !ctx->sourceStatus.isEmpty())
-        text += QStringLiteral("  |  ") + ctx->sourceStatus;
+    if (const DocumentContext *ctx = activeContext()) {
+        if (!ctx->sourceStatus.isEmpty())
+            text += QStringLiteral("  |  ") + ctx->sourceStatus;
+        // A log that arrived while being waited for, whose remembered pattern did not
+        // fit it. Separate from sourceStatus so a fetcher's progress cannot erase it.
+        if (!ctx->formatNotice.isEmpty())
+            text += QStringLiteral("  |  ") + ctx->formatNotice;
+    }
 
     m_statusLabel->setText(text);
 }
@@ -1718,15 +1872,16 @@ void MainWindow::restoreSession()
 
         DocumentContext *ctx = byDocument.value(sv.documentIndex, nullptr);
         if (!ctx) {
-            // A missing/unreadable file must not error every launch (SPEC.md §10):
-            // skip it with an inline notice, no dialog. Its tab simply never appears.
-            // For a remote path this check is optimistic and non-blocking — an
-            // unreachable host surfaces as an open failure below, not as a stall here.
-            if (!logSourceAvailable(d->path)) {
-                if (!missing.contains(d->path))
-                    missing.append(d->path);
-                continue;
-            }
+            // A file that is not there is no longer dropped from the restore. It comes
+            // back as a WAITING tab, and the reason is not tidiness: saveSession()
+            // writes only the files that are open, so a file skipped at launch was
+            // silently forgotten at the next quit — an unmounted share or a host that
+            // was down for an afternoon cost you the tab permanently. Waiting for it
+            // keeps it in the session and picks it up when it returns (SPEC.md §3, §10).
+            //
+            // prepareContext() reaches Document::prepare(), which decides waitable vs
+            // fatal for itself, so there is nothing to pre-check here any more.
+
             // The user asked to stop reopening remote logs: honor it for the rest of
             // the restore instead of asking again per file.
             if (RemoteLocation::isRemote(d->path) && m_sshPrompter
@@ -1737,9 +1892,11 @@ void MainWindow::restoreSession()
             }
             ctx = prepareContext(*d);
             if (!ctx) {
-                // A remote log whose host refused, timed out or was skipped: listed
-                // with the rest rather than erroring, exactly as a missing file is.
-                if (RemoteLocation::isRemote(d->path) && !missing.contains(d->path))
+                // Genuinely refused rather than merely absent — a changed host key, an
+                // archive naming no member, a dependency not built in. Listed rather
+                // than errored, exactly as before. This now covers LOCAL failures too:
+                // one used to vanish here without appearing in the list at all.
+                if (!missing.contains(d->path))
                     missing.append(d->path);
                 continue;
             }
@@ -1773,10 +1930,13 @@ void MainWindow::restoreSession()
         shown.reserve(missing.size());
         for (const QString &p : std::as_const(missing))
             shown.append(logSourceDisplayPath(p));
+        // "Could not be reopened", not "no longer available" — a file that is merely
+        // absent now restores as a waiting tab and never reaches this list, so
+        // everything in it was actively refused.
         m_placeholder->setText(QStringLiteral("%1\n%2")
                                    .arg(anyRemote
                                             ? QStringLiteral("These logs could not be reopened:")
-                                            : QStringLiteral("These files are no longer available:"),
+                                            : QStringLiteral("These files could not be reopened:"),
                                         shown.join(u'\n')));
         m_statusLabel->setText(
             QStringLiteral("%1 file(s) from the last session unavailable").arg(missing.size()));

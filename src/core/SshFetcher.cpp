@@ -29,6 +29,11 @@ constexpr qint64 kPrimeBytes = 128 * 1024;
 // the handle. Only ever read on suspicion, never on the ordinary poll path.
 constexpr qint64 kHeadProbeBytes = 4096;
 
+// Ceiling on an UNATTENDED reconnect's own timeout (M13). Not a patience setting: the
+// worker thread is joined by stop(), which the GUI thread reaches when the last tab on
+// a log closes, so this is the worst case for closing a tab on a host that is down.
+constexpr int kRetryTimeoutMs = 5000;
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -70,6 +75,9 @@ public:
     {
         QMutexLocker lock(&m_mutex);
         m_poked = true;
+        // An explicit ask is the one thing that clears a refusal: the user has been
+        // told why loftail stopped trying and has decided to try again anyway.
+        m_reconnectRefused = false;
         m_wake.wakeAll();
     }
 
@@ -86,10 +94,13 @@ private:
 
     void tailLoop();
     void pollOnce();
+    bool establish(SshPrompter *prompter, QString *error, SshSession::Failure *failure);
+    void reconnect();
     bool fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset);
     void beginGeneration(qint64 remoteSize);
     bool remoteHeadDiffersFromSpool();
     void setError(const QString &message);
+    void setWaiting(const QString &message);
     void setState(FetchStatus::State state);
 
     RemoteLocation  m_location;
@@ -104,26 +115,47 @@ private:
     FetchStatus    m_status;
     bool           m_stopping = false;
     bool           m_poked = false;
+    // Latched when a reconnect was REFUSED rather than merely unsuccessful — a changed
+    // host key, rejected credentials, or a password needed with nobody to ask. The loop
+    // then stops attempting reconnects and only waits, because retrying gets the same
+    // answer forever. pokeNow() (File ▸ Reconnect, which does have a prompter) clears
+    // it, so the user can always ask again; nothing else can.
+    bool           m_reconnectRefused = false;
 
     // Fetcher-thread only, so no lock: the last stat, used by the rotation fallback.
     qint64 m_lastMtime = 0;
     qint64 m_lastSize = 0;
 };
 
-bool SshFetcher::start(const QString &spoolDir, QString *error)
+// Connect, open the remote file, and prime enough of it for a format sample. On success
+// the session is live and the state is Live. Shared by start(), which runs on the thread
+// that opened the document and may prompt, and by the worker's reconnect, which may not
+// — the only difference between the two is the prompter, which is why this takes one.
+bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Failure *failure)
 {
-    m_spoolDir = spoolDir;
-    setState(FetchStatus::State::Connecting);
+    // An unattended retry is IMPATIENT where the first attempt is patient, and that is
+    // about closing rather than about connecting. stop() joins this thread, and it is
+    // reached from the GUI thread when the last tab on a log closes — so however long a
+    // connect blocks for is how long closing a tab on a dead host freezes the window.
+    // A retry has nothing to lose by giving up early: the next one is seconds away.
+    const int timeout = prompter ? m_options.timeoutMs
+                                 : qMin(m_options.timeoutMs, kRetryTimeoutMs);
+
+    // A retry out of Waiting stays Waiting until it actually gets somewhere. Announcing
+    // "connecting…" on every attempt would flap the state several times a minute, and
+    // because originVanished() reads it, the document upstream would bounce out of the
+    // waiting state and straight back into it — a flickering view for a log that has
+    // not moved. "Connecting" is for the first attempt, which a person is watching.
+    if (status().state != FetchStatus::State::Waiting)
+        setState(FetchStatus::State::Connecting);
 
     m_session = std::make_unique<SshSession>();
-    if (!m_session->connectTo(m_location, sshPrompter(), m_options.timeoutMs, error)) {
+    if (!m_session->connectTo(m_location, prompter, timeout, error, failure)) {
         m_session.reset();
-        setState(FetchStatus::State::Error);
         return false;
     }
-    if (!m_session->openFile(error)) {
+    if (!m_session->openFile(error, failure)) {
         m_session.reset();
-        setState(FetchStatus::State::Error);
         return false;
     }
 
@@ -131,8 +163,10 @@ bool SshFetcher::start(const QString &spoolDir, QString *error)
     if (!attrs.valid) {
         if (error)
             *error = QStringLiteral("Cannot read %1 on %2.").arg(m_location.path, m_location.host);
+        // Connected, authenticated, opened — and then could not stat it. Whatever that
+        // is, it is about the file rather than the trust, so it is worth trying again.
+        *failure = SshSession::Failure::NoSuchFile;
         m_session.reset();
-        setState(FetchStatus::State::Error);
         return false;
     }
     m_lastMtime = attrs.mtime;
@@ -146,14 +180,42 @@ bool SshFetcher::start(const QString &spoolDir, QString *error)
     const qint64 base = status().baseOffset;
     const qint64 primeTo = qMin(attrs.size, base + kPrimeBytes);
     if (primeTo > base && !fetchForward(base, primeTo)) {
-        const FetchStatus current = status();
         if (error)
-            *error = current.error;
+            *error = status().error;
+        *failure = SshSession::Failure::Unreachable; // the transfer died mid-prime
         m_session.reset();
         return false;
     }
 
     setState(FetchStatus::State::Live);
+    *failure = SshSession::Failure::None;
+    return true;
+}
+
+bool SshFetcher::start(const QString &spoolDir, QString *error)
+{
+    m_spoolDir = spoolDir;
+
+    SshSession::Failure failure = SshSession::Failure::None;
+    if (!establish(sshPrompter(), error, &failure)) {
+        // A host that is down and a log that has not been written yet are NOT failures
+        // to open — they are the ordinary way a waiting log starts (SPEC.md §3, §6.5).
+        // Return success with an empty spool and let the worker keep trying: the
+        // document opens, says it is waiting, and fills in when the log turns up.
+        //
+        // Everything else really is a refusal — a changed host key, rejected
+        // credentials, a cancelled prompt, or an unattended context that cannot ask —
+        // and retrying it on a timer would get the same answer forever while hammering
+        // a host loftail has just declined to talk to.
+        if (failure != SshSession::Failure::Unreachable
+            && failure != SshSession::Failure::NoSuchFile) {
+            setState(FetchStatus::State::Error);
+            return false;
+        }
+        setWaiting(error && !error->isEmpty() ? *error
+                                              : QStringLiteral("Cannot reach %1.").arg(m_location.host));
+    }
+
     m_worker = std::make_unique<Worker>(this);
     m_worker->start();
     return true;
@@ -181,7 +243,8 @@ void SshFetcher::setState(FetchStatus::State state)
 {
     QMutexLocker lock(&m_mutex);
     m_status.state = state;
-    if (state != FetchStatus::State::Error)
+    // Waiting carries its explanation the same way Error does, so neither clears it.
+    if (state != FetchStatus::State::Error && state != FetchStatus::State::Waiting)
         m_status.error.clear();
 }
 
@@ -189,6 +252,16 @@ void SshFetcher::setError(const QString &message)
 {
     QMutexLocker lock(&m_mutex);
     m_status.state = FetchStatus::State::Error;
+    m_status.error = message;
+}
+
+void SshFetcher::setWaiting(const QString &message)
+{
+    // Not an error: the host or the log is not there, and this fetcher is still trying.
+    // SpooledLogSource::originVanished() reads this, which is how the document upstream
+    // knows to show itself as waiting rather than as broken (§6.5).
+    QMutexLocker lock(&m_mutex);
+    m_status.state = FetchStatus::State::Waiting;
     m_status.error = message;
 }
 
@@ -306,10 +379,21 @@ void SshFetcher::pollOnce()
 {
     const SshSession::Attrs byName = m_session->statPath();
     if (!byName.valid) {
-        // The path is gone — mid-rotation, most likely. Say so and try again next
-        // tick rather than tearing anything down.
-        setError(QStringLiteral("%1 is not readable on %2 right now.")
-                     .arg(m_location.path, m_location.host));
+        if (!m_session->isConnected()) {
+            // The connection dropped, not the file. Let go of the dead session so the
+            // next turn of the loop re-establishes it — before M13 nothing ever did,
+            // and a link that blipped stayed broken until the log was reopened.
+            m_session.reset();
+            setWaiting(QStringLiteral("Lost the connection to %1 — reconnecting…")
+                           .arg(m_location.host));
+            return;
+        }
+        // Connected, and the path is not there: mid-rotation, or the log really has
+        // been removed on the far end. Either way it is a WAIT — the next poll
+        // resolves a rotation, and a removal is what the document upstream shows as
+        // waiting (§6.5). Nothing is torn down either way.
+        setWaiting(QStringLiteral("%1 is not readable on %2 right now.")
+                       .arg(m_location.path, m_location.host));
         return;
     }
 
@@ -340,8 +424,14 @@ void SshFetcher::pollOnce()
     if (rotated) {
         m_session->closeFile();
         QString openError;
-        if (!m_session->openFile(&openError)) {
-            setError(openError);
+        SshSession::Failure openFailure = SshSession::Failure::None;
+        if (!m_session->openFile(&openError, &openFailure)) {
+            // Mid-rotation the new file may not exist for a moment, and after a removal
+            // it never will: both are a wait, and the next poll sorts out which.
+            if (openFailure == SshSession::Failure::NoSuchFile)
+                setWaiting(openError);
+            else
+                setError(openError);
             return;
         }
         const SshSession::Attrs fresh = m_session->statPath();
@@ -360,30 +450,77 @@ void SshFetcher::pollOnce()
         return;
     }
 
-    // No change. Clear a previous error so a blip does not stick in the status bar.
-    if (current.state == FetchStatus::State::Error)
+    // No change. Clear a previous error or wait so a blip does not stick in the status
+    // bar, and so a log that reappeared stops reporting itself as missing.
+    if (current.state == FetchStatus::State::Error
+        || current.state == FetchStatus::State::Waiting) {
         setState(FetchStatus::State::Live);
+    }
+}
+
+// One unattended attempt to (re)establish the session, from the worker thread.
+//
+// NO PROMPTER, deliberately and without exception. A prompt is a modal dialog on the
+// GUI thread, and marshalling one out of here would mean a dialog appearing while the
+// user is doing something else, for a log they may have opened hours ago. So a retry
+// gets the SSH agent, the usual key files, and any password already accepted for this
+// host — the common case, and entirely automatic. Anything that genuinely needs a
+// person says so and waits to be asked again through File ▸ Reconnect, which runs on
+// the GUI thread and does have a prompter (§6.3, §6.5).
+void SshFetcher::reconnect()
+{
+    QString error;
+    SshSession::Failure failure = SshSession::Failure::None;
+    if (establish(nullptr, &error, &failure))
+        return;
+
+    if (failure == SshSession::Failure::Unreachable
+        || failure == SshSession::Failure::NoSuchFile) {
+        setWaiting(error);
+        return;
+    }
+
+    // Refused, or needing a person there is nobody to be. Either way the next hundred
+    // attempts get the same answer, so stop making them and say why; the state stays
+    // Waiting for NeedsPerson, because from the user's side the log is still coming
+    // once they sign in, and Error for a genuine refusal.
+    if (failure == SshSession::Failure::NeedsPerson)
+        setWaiting(error);
+    else
+        setError(error);
+    QMutexLocker lock(&m_mutex);
+    m_reconnectRefused = true;
 }
 
 void SshFetcher::tailLoop()
 {
     forever {
+        bool refused = false;
         {
             QMutexLocker lock(&m_mutex);
             if (m_stopping)
                 return;
+            refused = m_reconnectRefused;
         }
 
-        pollOnce();
+        if (m_session)
+            pollOnce();
+        else if (!refused)
+            reconnect();
+        // else: loftail has been told no. Sleep until poked (File ▸ Reconnect) or
+        // stopped, rather than asking a host that has already refused.
 
         QMutexLocker lock(&m_mutex);
         if (m_stopping)
             return;
         if (!m_poked) {
-            // A failing connection backs off rather than hammering the host.
-            const int wait = m_status.state == FetchStatus::State::Error
-                ? qMax(m_options.pollMs, 5000)
-                : m_options.pollMs;
+            // A connection that is failing, or a log that is not there yet, backs off
+            // rather than hammering the host. Waiting paces with Error because it is
+            // the same network cost — the difference between them is what the user is
+            // told, not how often loftail tries.
+            const bool slow = m_status.state == FetchStatus::State::Error
+                || m_status.state == FetchStatus::State::Waiting;
+            const int wait = slow ? qMax(m_options.pollMs, 5000) : m_options.pollMs;
             m_wake.wait(&m_mutex, static_cast<unsigned long>(wait));
         }
         m_poked = false;

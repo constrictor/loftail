@@ -102,6 +102,12 @@ private:
     // re-applies its own filters without disturbing the active one.
     void applyFiltersFor(DocumentContext *ctx);
 
+    // The log a waiting document has been waiting for has turned up (M13, SPEC.md §3):
+    // reopen it, index it, and settle its format from the bytes that have now arrived.
+    // Wired to LiveController::resumeRequested — it lives here because the pattern
+    // lives here and core must never hold one (invariant #3).
+    void resumeWaitingDocument(DocumentContext *ctx);
+
     void buildMenus();
     // The exclusive timestamp-display group offered on the Date column's header menu
     // (SPEC.md §4). Built once and owned by the window; showColumnMenu borrows it,
@@ -230,6 +236,7 @@ private:
     QAction *m_copyAction = nullptr;
     QAction *m_copyColumnsAction = nullptr;
     QAction *m_formatAction = nullptr;
+    QAction *m_reconnectAction = nullptr;
     QAction *m_followAction = nullptr; // View ▸ Follow Tail (return-to-bottom, M6)
     // The timestamp-column header submenu and its five exclusive actions, indexed by
     // TimeDisplay. Owned by the window (see buildTimeDisplayMenu).

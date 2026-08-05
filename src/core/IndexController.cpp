@@ -16,6 +16,11 @@ void IndexWorker::run()
 {
     LogSource *source = m_document->source();
     if (!source) {
+        // Nothing to scan. Since M13 this is the ordinary case rather than a broken
+        // one: a document WAITING for a log that has not been written yet has no
+        // source, and finishing immediately is what lets it flow through the owner's
+        // normal post-index path and get its LiveController — which is the thing that
+        // will eventually bring the log in (§6.5).
         emit finished(false);
         return;
     }

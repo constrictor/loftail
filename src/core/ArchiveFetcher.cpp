@@ -92,12 +92,28 @@ private:
     {
     public:
         explicit Worker(ArchiveFetcher *owner) : m_owner(owner) {}
-        void run() override { m_owner->expandRest(); }
+        void run() override
+        {
+            // Ordinarily start() has already opened the member and primed it, and
+            // there is only the rest to expand. The exception is a container that was
+            // NOT THERE when the log was opened — a `.gz` on a host that is down —
+            // where opening it is itself the thing that has to wait, and waiting on
+            // the GUI thread is not an option (§6.5).
+            if (!m_owner->m_stream && !m_owner->awaitContainer())
+                return;
+            m_owner->expandRest();
+        }
 
     private:
         ArchiveFetcher *m_owner;
     };
 
+    // Open the member, check the space, and prime enough for a format sample. Called
+    // from start() when the container is readable, and from the worker when it was not.
+    bool beginExpansion(QString *error);
+    // Block until the container's transport has something to give, then beginExpansion().
+    // Worker thread only. False if the fetcher was stopped or the open failed.
+    bool awaitContainer();
     void expandRest();
     bool checkFreeSpace(qint64 expandedSize, QString *error) const;
     // Expands at most `limit` bytes (0 meaning "to the end"). Returns false on error;
@@ -142,6 +158,72 @@ bool ArchiveFetcher::start(const QString &spoolDir, QString *error)
         return false;
     }
 
+    // The container is not there YET — a `.gz` on a host that is down, or one that has
+    // not been written. Opening it is what has to wait, and this runs on the thread that
+    // opened the document, so it cannot be what waits: hand the whole opening to the
+    // worker and report Waiting meanwhile. Without this the await below spins on the
+    // GUI thread forever, because the transport underneath never reaches a terminal
+    // state — it is retrying, which is exactly what it should be doing (§6.5).
+    if (m_input->originVanished()) {
+        {
+            QMutexLocker lock(&m_mutex);
+            m_status.state = FetchStatus::State::Waiting;
+            m_status.error = sourceStatusText(*m_input, m_location.container);
+        }
+        m_worker = std::make_unique<Worker>(this);
+        m_worker->start();
+        return true;
+    }
+
+    QString beginError;
+    if (!beginExpansion(&beginError)) {
+        if (error)
+            *error = beginError;
+        return false;
+    }
+
+    if (!m_stream) {
+        // A small member expanded entirely during the prime. There is no work left for
+        // a worker thread to do, and the stream ends here.
+        return true;
+    }
+
+    // Stays in Priming — "the initial bulk fetch into the spool" — until Complete.
+    // Never Live, which means "following the input for more bytes": an expansion has a
+    // fixed amount of work and then stops, so there is nothing to follow. That is also
+    // what lets the status bar show expansion progress while staying quiet during a
+    // healthy remote tail, with no extra flag to distinguish the two.
+    m_worker = std::make_unique<Worker>(this);
+    m_worker->start();
+    return true;
+}
+
+// Wait for a container that was not there when the log was opened, then open it. Worker
+// thread only — this is the part of start() that can block for an unbounded time.
+bool ArchiveFetcher::awaitContainer()
+{
+    forever {
+        if (stopping())
+            return false;
+        if (!m_input) // stop() got here first
+            return false;
+        m_input->refreshSize();
+        if (!m_input->originVanished())
+            break;
+        QMutexLocker lock(&m_mutex);
+        if (m_stopping)
+            return false;
+        m_wake.wait(&m_mutex, QDeadlineTimer(kAwaitSliceMs));
+    }
+
+    QString beginError;
+    if (!beginExpansion(&beginError))
+        return false;
+    return m_stream != nullptr; // false when the prime finished the whole member
+}
+
+bool ArchiveFetcher::beginExpansion(QString *error)
+{
     // A local container is whole the moment it is opened, so it needs no await and is
     // handed to the reader as seekable. Only a container still being fetched from
     // another machine gets one — and pays for it by being read as a stream.
@@ -199,20 +281,13 @@ bool ArchiveFetcher::start(const QString &spoolDir, QString *error)
 
     if (finished) {
         // A small member expanded entirely during the prime. There is no work left for
-        // a worker thread to do, and the stream ends here.
+        // a worker thread to do, and the stream ends here. The null m_stream is what
+        // tells the caller so — start() then spawns no worker, and awaitContainer()
+        // returns having nothing left to hand on to expandRest().
         m_stream.reset();
         m_input.reset();
         publishComplete();
-        return true;
     }
-
-    // Stays in Priming — "the initial bulk fetch into the spool" — until Complete.
-    // Never Live, which means "following the input for more bytes": an expansion has a
-    // fixed amount of work and then stops, so there is nothing to follow. That is also
-    // what lets the status bar show expansion progress while staying quiet during a
-    // healthy remote tail, with no extra flag to distinguish the two.
-    m_worker = std::make_unique<Worker>(this);
-    m_worker->start();
     return true;
 }
 
@@ -250,7 +325,8 @@ void ArchiveFetcher::setState(FetchStatus::State state)
 {
     QMutexLocker lock(&m_mutex);
     m_status.state = state;
-    if (state != FetchStatus::State::Error)
+    // Waiting carries its explanation the same way Error does, so neither clears it.
+    if (state != FetchStatus::State::Error && state != FetchStatus::State::Waiting)
         m_status.error.clear();
 }
 
@@ -290,6 +366,12 @@ bool ArchiveFetcher::awaitInput()
         case FetchStatus::State::Disconnected:
         case FetchStatus::State::Complete:
             exhausted = true;
+            break;
+        case FetchStatus::State::Waiting:
+            // The container is not there — the host is down, or it has not been written
+            // yet. That is a WAIT, not an end: the transport is still trying, and when it
+            // succeeds these bytes arrive. Treating it as exhausted would finish the
+            // expansion as an empty log and never revisit it (§6.5).
             break;
         case FetchStatus::State::Connecting:
         case FetchStatus::State::Priming:

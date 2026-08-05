@@ -1,6 +1,7 @@
 #include "SpooledLogSource.h"
 
 #include "ArchiveLocation.h"
+#include "RemoteLocation.h"
 #include "SourceSpool.h"
 
 #include <QLocale>
@@ -46,6 +47,18 @@ bool SpooledLogSource::wasReplaced() const
     // generation rather than rewriting the one under us, so the bytes this source
     // holds are still intact — they just no longer describe the remote file.
     return m_spool && m_spool->status().generation != m_generation;
+}
+
+bool SpooledLogSource::originVanished() const
+{
+    // A spooled source cannot answer this from a path — there is no local path to stat,
+    // and for a remote one the answer costs a round trip. The fetcher already knows,
+    // because it is the thing that failed to find the input, so it publishes the answer
+    // and this reads it (§6.5).
+    //
+    // The bytes already spooled stay readable throughout, exactly as an unlinked local
+    // file's mapping does. What the caller does about that is its business.
+    return m_spool && m_spool->status().state == FetchStatus::State::Waiting;
 }
 
 bool SpooledLogSource::isComplete() const
@@ -119,6 +132,14 @@ QString sourceStatusText(const LogSource &source, const QString &path)
 
     case FetchStatus::State::Error:
         return status.error;
+
+    case FetchStatus::State::Waiting:
+        // The fetcher's own words where it has any — "the host is down", "no such file
+        // there" — because it knows which of those it hit and this does not. The bare
+        // fallback is for a fetcher that only managed to say "not there".
+        return status.error.isEmpty()
+            ? QStringLiteral("waiting for %1 to appear").arg(logSourceDisplayName(path))
+            : status.error;
 
     case FetchStatus::State::Connecting:
         return QStringLiteral("connecting…");

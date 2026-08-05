@@ -96,4 +96,15 @@ QString logSourceDisplayPath(const QString &path);
 // member is there would cost as much as expanding it.
 bool logSourceAvailable(const QString &path);
 
+// Whether `path` NAMES A LOG AT ALL — pure string work, no I/O, and a much weaker
+// question than logSourceAvailable() above. `/var/log/nope.log` is well-formed and
+// unavailable; `ssh://` is neither.
+//
+// This is the line between waiting and failing (M13, §6.5). A well-formed address that
+// is not available is a log that has not turned up yet, and loftail waits for it; an
+// address that names no log will not start naming one however long it waits, so that
+// stays a refusal. Without the distinction a typo like "ssh://" opens a tab that waits
+// forever for something that cannot exist.
+bool logPathIsWellFormed(const QString &path);
+
 } // namespace loftail

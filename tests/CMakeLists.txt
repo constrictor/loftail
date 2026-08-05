@@ -185,7 +185,22 @@ if(NOT WIN32)
     qt_add_executable(tst_tail tst_tail.cpp)
     target_link_libraries(tst_tail PRIVATE loftail_core Qt6::Test)
     add_test(NAME tst_tail COMMAND tst_tail)
+
+    # M13 — a log that is not there: opening a path before it exists, a log deleted
+    # while open, and the grace period that keeps a rotation from flashing an empty
+    # view. Beside tst_tail and NOT WIN32 for the same reason — it leans on POSIX
+    # mmap + unlink semantics, and Windows must be exercised separately.
+    qt_add_executable(tst_waiting tst_waiting.cpp)
+    target_link_libraries(tst_waiting PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_waiting COMMAND tst_waiting)
 endif()
+
+# M13 — the same waiting contract for a SPOOLED log: a host that is down, and one that
+# goes away mid-tail. Ungated and network-free, over the fake fetcher — the transport
+# is the only fake part, exactly as tst_remotetail arranges it.
+qt_add_executable(tst_waitingremote tst_waitingremote.cpp)
+target_link_libraries(tst_waitingremote PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_waitingremote COMMAND tst_waitingremote)
 
 # Run selection — a run-start regexp splits a file into runs; detection, subset
 # restriction + sourceRow mapping, composition with filters, and the live cases

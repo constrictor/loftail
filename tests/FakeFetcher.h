@@ -36,8 +36,47 @@ public:
     // The content the file has when it is first opened. Set before opening.
     void setInitialContent(const QByteArray &bytes) { m_initial = bytes; }
 
-    // Make start() fail, as an unreachable host or a refused password would.
+    // Make start() FAIL, as a refused password or a changed host key would — a
+    // refusal, which opens no document at all. Contrast setInitiallyUnavailable().
     void setStartFailure(const QString &message) { m_startFailure = message; }
+
+    // Make start() SUCCEED into State::Waiting with no spool file, as a real fetcher
+    // does for a host that is down or a log that has not been written yet (M13, §6.5).
+    // The distinction from setStartFailure() above is the whole point of the state: a
+    // refusal has nothing to wait for, an absence does.
+    void setInitiallyUnavailable(const QString &message)
+    {
+        m_unavailable = true;
+        m_unavailableMessage = message;
+    }
+
+    // The wait ended: the host came back, or the log was finally written. Publishes
+    // the initial content as generation 1 and goes Live, which is what start() would
+    // have done had it succeeded.
+    void becomeAvailable()
+    {
+        m_unavailable = false;
+        writeWhole(pathFor(1), m_initial);
+
+        QMutexLocker lock(&m_mutex);
+        m_written = m_initial.size();
+        m_status.generation = 1;
+        m_status.committedSize = m_written;
+        m_status.totalSize = m_written;
+        m_status.error.clear();
+        m_status.state = FetchStatus::State::Live;
+    }
+
+    // The log went away mid-tail — deleted on the far end, or the connection dropped.
+    // The spool keeps every byte it already had; only the state changes, which is
+    // exactly what a real fetcher does (it never rewrites a live generation).
+    void becomeUnavailable(const QString &message)
+    {
+        m_unavailable = true;
+        QMutexLocker lock(&m_mutex);
+        m_status.state = FetchStatus::State::Waiting;
+        m_status.error = message;
+    }
 
     // Append and publish: the ordinary "the writer wrote another line" case.
     void append(const QByteArray &bytes)
@@ -117,6 +156,16 @@ public:
             return false;
         }
         m_dir = spoolDir;
+        if (m_unavailable) {
+            // Started successfully with nothing to show: the spool exists and is empty,
+            // and the fetcher behind it keeps trying. This is the shape a real
+            // SshFetcher takes for an unreachable host — the open succeeds, the
+            // document opens WAITING, and the log arrives when it arrives.
+            QMutexLocker lock(&m_mutex);
+            m_status.state = FetchStatus::State::Waiting;
+            m_status.error = m_unavailableMessage;
+            return true;
+        }
         writeWhole(pathFor(1), m_initial);
 
         QMutexLocker lock(&m_mutex);
@@ -183,6 +232,8 @@ private:
     QString        m_dir;
     QByteArray     m_initial;
     QString        m_startFailure;
+    bool           m_unavailable = false;
+    QString        m_unavailableMessage;
     qint64         m_written = 0;
     int            m_startCount = 0;
     int            m_stopCount = 0;

@@ -172,4 +172,23 @@ bool logSourceAvailable(const QString &path)
     return plainAvailable(path);
 }
 
+bool logPathIsWellFormed(const QString &path)
+{
+    // An archive is well-formed when its container address is; whether the member is
+    // really inside is the same unanswerable-without-expanding question as above, and a
+    // missing one surfaces as an open failure rather than as an endless wait.
+    const auto archive = ArchiveLocation::split(path);
+    const QString address = archive ? archive->container : path;
+
+    // A remote address either parses into a host and a path or it does not. "ssh://"
+    // does not, and no amount of waiting will give it a host.
+    if (RemoteLocation::isRemote(address))
+        return RemoteLocation::parse(address).has_value();
+
+    // Any non-empty local path names a file that could exist. Deliberately not
+    // isAbsolute(): a relative path is resolved against the working directory and is a
+    // perfectly ordinary thing to pass on the command line.
+    return !address.isEmpty();
+}
+
 } // namespace loftail

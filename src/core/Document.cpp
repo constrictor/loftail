@@ -25,6 +25,14 @@ Document::Document()
 
 Document::~Document() = default;
 
+QString waitingForText(const QString &path, WaitCause cause)
+{
+    const QString name = logSourceDisplayName(path);
+    return cause == WaitCause::Gone
+        ? QStringLiteral("%1 is no longer there — waiting for it to reappear").arg(name)
+        : QStringLiteral("%1 has not appeared yet — waiting for it").arg(name);
+}
+
 QTimeZone Document::inferSourceZone(const LogFormat &format)
 {
     // %d implies UTC, %D implies local (§5.1). Meaningful only when there is a
@@ -67,42 +75,81 @@ bool Document::prepare(const QString &rawPath,
     const QString path = normalizeLogPath(rawPath);
 
     m_lastError.clear();
+    m_waitReason.clear();
+    m_waiting = false;
+    m_formatSettled = false;
     m_formatError = CompileError{};
-    m_index = RecordIndex();
-    m_filtered.clear(); // the previous subset indexed records that no longer exist
     m_format = LogFormat(); // empty == plain text until the provider succeeds
 
     // Run selection is per-file; a fresh prepare() starts with no runs. The caller
     // re-applies the file's remembered run-start pattern via setRunStart() after
     // this returns (and after indexing, detectRuns() rebuilds the list).
-    m_runs.clear();
-    m_selectedRun = -1;
     m_runStartActive = false;
     m_runStartMatcher = TextMatcher();
-    recomputeViewBounds();
-    invalidateTimeBaselines();
+    clearIndex();
+
+    m_path = path;
+    m_requestedEncoding = requestedEncoding;
+    m_sourceZonePinned = sourceZone.isValid();
 
     // Interactive: a never-yet-connected remote path connects here, which may prompt
     // and may block for the connect timeout (§6.3). A local path never does either.
     QString openError;
-    m_source = openLogSource(path, OpenPolicy::Interactive, &openError);
-    if (!m_source) {
+    if (!openAndSettleFormat(provider, OpenPolicy::Interactive, &openError)) {
+        // Not there is not the same as broken. A well-formed address whose log simply
+        // is not available WAITS: the document keeps the path, holds an empty index,
+        // and the live seam brings it in the moment it appears (SPEC.md §3, §6.5).
+        // Everything else — a malformed address, an archive naming no member, a
+        // refused host key, a dependency that is not built in — is still a failure
+        // with no document to show.
+        //
+        // BOTH halves are needed. logSourceAvailable() alone says false for `ssh://`,
+        // which names no log and never will, and a tab waiting forever for it would be
+        // a typo turned into a hang.
+        if (logPathIsWellFormed(path) && !logSourceAvailable(path)) {
+            m_sourceZone = sourceZone.isValid() ? sourceZone : inferSourceZone(m_format);
+            recomputeDisplayZone();
+            enterWaiting(waitingForText(path, WaitCause::NotYet));
+            return true; // waiting, not open — see isWaiting()
+        }
         // A remote failure phrases itself ("host unreachable", "not built in"); a
         // local one has only the path to report, as before.
         m_lastError = openError.isEmpty() ? QStringLiteral("Cannot open file: %1").arg(path)
                                           : openError;
+        m_path.clear(); // an open that failed outright leaves no document behind
         return false;
     }
 
-    m_path = path;
-    m_requestedEncoding = requestedEncoding;
+    // A spooled source opens even when its input is not there — the spool is legal and
+    // empty, and the fetcher behind it is retrying. That is the remote and archived
+    // form of the same wait, and it is the source, not the path, that can say so.
+    if (m_source->originVanished()) {
+        enterWaiting(waitingForText(path, WaitCause::NotYet));
+        return true;
+    }
+
+    m_sourceZone = sourceZone.isValid() ? sourceZone : inferSourceZone(m_format);
+    recomputeDisplayZone(); // "as written" tracks whatever source zone just settled
+    return true;
+}
+
+// Open m_path and resolve the encoding and the format from the first ~64 KB of it.
+// Shared by prepare() and resume() so the two cannot drift about what "settled" means:
+// a log that was not there when it was opened settles its format from the bytes that
+// eventually arrive, and by exactly the same code that a present one does.
+bool Document::openAndSettleFormat(IFormatProvider &provider, OpenPolicy policy, QString *error)
+{
+    m_source = openLogSource(m_path, policy, error);
+    if (!m_source)
+        return false;
 
     // Resolve the encoding by sniffing the first ~64 KB (§6.1). The same sample is
     // handed to the provider — the manual provider ignores it, a detector uses it.
     const qint64 sampleLen = qMin<qint64>(64 * 1024, m_source->size());
     const QByteArrayView sample = sampleLen > 0 ? m_source->bytes(0, sampleLen) : QByteArrayView();
-    m_decoder = Decoder::detect(sample, requestedEncoding);
+    m_decoder = Decoder::detect(sample, m_requestedEncoding);
 
+    m_formatError = CompileError{};
     auto compiled = provider.formatFor(sample);
     if (compiled) {
         m_format = compiled.value();
@@ -113,10 +160,78 @@ bool Document::prepare(const QString &rawPath,
         // the Log Format dialog can point at the offending offset.
         m_formatError = compiled.error();
     }
+    // Settled means settled AGAINST REAL BYTES, which is why this is not simply "we got
+    // here". A spooled source whose input is not there opens perfectly well and hands
+    // back nothing, and a format derived from an empty sample is a guess about a log
+    // nobody has seen — so resume() has to do this again when the bytes arrive. An
+    // empty LOCAL file gets the same answer for the same reason; nothing reads the flag
+    // in that case, because a file that is present is never waiting.
+    m_formatSettled = sampleLen > 0;
+    return true;
+}
 
-    m_sourceZone = sourceZone.isValid() ? sourceZone : inferSourceZone(m_format);
-    recomputeDisplayZone(); // "as written" tracks whatever source zone just settled
-    m_index.rebuildBlockSums(); // empty index has a valid (zero) total
+void Document::clearIndex()
+{
+    m_index = RecordIndex();
+    m_filtered.clear(); // the previous subset indexed records that no longer exist
+    m_runs.clear();
+    m_selectedRun = -1;
+    recomputeViewBounds();
+    invalidateTimeBaselines();
+    m_index.rebuildBlockSums(); // an empty index still has a valid (zero) total
+}
+
+void Document::enterWaiting(const QString &reason)
+{
+    m_waiting = true;
+    m_waitReason = reason;
+    m_lastError.clear(); // waiting is a state, not a failure; nothing to report
+    clearIndex();
+
+    // Release a LOCAL source: there is nothing at the path any more, holding an
+    // unlinked inode open pins bytes nobody will read, and invariant #5 says observing
+    // a log must not disturb the process producing it.
+    //
+    // KEEP a spooled one. A SpooledLogSource owns the shared_ptr<SourceSpool>, and the
+    // spool owns the fetcher that is retrying the connection — dropping the source here
+    // would tear down the very thing doing the waiting, and the log would never come
+    // back (§6.5). The spool is also what the fetcher publishes its recovery through.
+    if (!logPathIsSpooled(m_path))
+        m_source.reset();
+}
+
+bool Document::resume(IFormatProvider &provider)
+{
+    // Reuse, not Interactive: this is reached from the watch tick on the GUI thread,
+    // where a connect could block the UI or prompt behind the user's back (§6.3). A
+    // spooled document's spool is already live — it is what did the waiting.
+    const bool settleFormat = !m_formatSettled;
+    QString openError;
+    if (settleFormat) {
+        if (!openAndSettleFormat(provider, OpenPolicy::Reuse, &openError))
+            return false;
+        // The zone is inferred from the format's DATE SPECIFIER, so a document that
+        // opened into waiting inferred it from an empty format — a guess about a log
+        // nobody had seen. Now there is a real format, so re-infer (§5.1). A zone the
+        // caller pinned is left exactly as it is.
+        if (!m_sourceZonePinned)
+            m_sourceZone = inferSourceZone(m_format);
+        recomputeDisplayZone();
+    } else {
+        // The format came from bytes we have already seen; keep it (invariant #3 —
+        // the pattern is not recompiled) exactly as rescan() does.
+        m_source = openLogSource(m_path, OpenPolicy::Reuse, &openError);
+        if (!m_source)
+            return false;
+    }
+
+    m_waiting = false;
+    m_waitReason.clear();
+
+    Indexer indexer(m_format, m_decoder, m_sourceZone);
+    m_index = indexer.index(*m_source);
+    detectRuns();
+    selectNewestRun();
     return true;
 }
 
@@ -166,11 +281,15 @@ bool Document::rescan()
     QString openError;
     m_source = openLogSource(m_path, OpenPolicy::Reuse, &openError);
     if (!m_source) {
-        m_index = RecordIndex();
-        m_index.rebuildBlockSums();
-        m_runs.clear();
-        m_selectedRun = -1;
-        recomputeViewBounds();
+        // Caught in the gap between a rotation's rename and its recreate, or the log
+        // really has gone. Where it is simply not there, that is a WAIT rather than an
+        // error: the live seam brings it back the moment it reappears (§6.5), instead
+        // of leaving a null source and an error string nobody reads.
+        if (!logSourceAvailable(m_path)) {
+            enterWaiting(waitingForText(m_path, WaitCause::Gone));
+            return false;
+        }
+        clearIndex();
         m_lastError = openError.isEmpty() ? QStringLiteral("Cannot reopen file: %1").arg(m_path)
                                           : openError;
         return false;

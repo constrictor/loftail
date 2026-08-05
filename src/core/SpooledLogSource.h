@@ -46,6 +46,7 @@ public:
     quint64 identity() const override { return m_generation; }
     bool wasTruncated() const override { return m_truncated; }
     bool wasReplaced() const override;
+    bool originVanished() const override;
     bool isComplete() const override;
 
     // The fetcher's view of the world, for the status bar: connecting, priming,
@@ -74,6 +75,7 @@ private:
 //   "fetching — 2.1 MB of 40 MB"      a remote log being primed
 //   "connecting…"                     before the first byte
 //   "prod-web: connection refused"    a failure, in the fetcher's own words
+//   "waiting for app.log to appear"   the input is not there; still trying (§6.5)
 //
 // `path` decides the verb, because the LogSource alone cannot tell an expansion from a
 // download. NEVER contains a credential: the text comes from FetchStatus::error, which

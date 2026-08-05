@@ -42,6 +42,14 @@ Two things the entry did not anticipate, both worth recording:
 
 **Shipped in M11**; the behavior is in `SPEC.md` §3 and the design in `ARCHITECTURE.md` §6.3. The accommodation that paid off was *not* the one this entry named. `isRandomAccess()` was expected to become false for a remote source, and it did not: fetching forward into a local spool file makes a remote log randomly seekable after all, so the paint path needed no change whatsoever. What actually made this additive was the **single-forward-pass indexer** — because the indexer only ever scans forward and never seeks back, the spool can be filled and indexed at the same time, which is what turns a remote log into a live one rather than a download. The `LogSource` interface itself held up exactly as intended: two of its six methods gained a remote implementation and nothing above it changed.
 
+## ~~Logs that are not there~~ — shipped
+
+**Shipped in M13**, and it was never in this file, which is the point worth recording. Opening a log before it exists, and keeping one that is deleted while open, were not on the roadmap at all — they were asked for as a question about what loftail *did* when a file was missing, and the honest answer was "refuses, with a message". The behaviour is in `SPEC.md` §3 and the design in `ARCHITECTURE.md` §6.5.
+
+No accommodation was named in advance, and yet it was additive anyway, for a reason worth carrying forward: the **non-pure-virtual seam on `LogSource`** absorbed it, exactly as it had absorbed `wasReplaced()` in M11 and `isComplete()` in M12. Three features, three questions only some sources can answer, one shape. That is now enough of a pattern to be treated as the intended way to extend the interface rather than a coincidence — and it is the accommodation to protect, more than any particular flag.
+
+The prediction this file would have got wrong, had it made one, is where the work landed. It looks like a `LogSource` feature ("a source for a file that is not there") and is not one: what changes is not how bytes are read but whether there are any yet, which is the live controller's existing question. Waiting is a state of the live seam, and no new source type exists.
+
 ## Bookmarks
 
 Mark records of interest and jump between them, so a spot found once can be returned to without re-searching. Bookmarks would be per file and part of the remembered session, and would add a pane alongside filters, highlighters, and presets.
@@ -54,4 +62,4 @@ Mark records of interest and jump between them, so a spot found once can be retu
 
 - `SPEC.md` — what has shipped. When a feature here ships, its user-visible behavior moves into `SPEC.md` and its entry here is struck through, as "Multiple open files" now is.
 - `ARCHITECTURE.md` — the accommodations referenced above are implemented, not deferred.
-- `PLAN.md` — milestone M8 implemented format autodetection, M9 multiple open files (including the move from dock widgets to a document area), M11 remote logs over SSH, and M12 compressed and archived logs. The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.
+- `PLAN.md` — milestone M8 implemented format autodetection, M9 multiple open files (including the move from dock widgets to a document area), M11 remote logs over SSH, M12 compressed and archived logs, and M13 logs that are not there. The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.

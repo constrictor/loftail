@@ -126,10 +126,19 @@ void LiveController::syncBaseline()
 
 void LiveController::start()
 {
-    if (m_started || !m_document || !m_document->source())
+    // A document with no source is not a broken one any more: it may be WAITING for a
+    // log that has not been written yet, in which case this watch is the only thing
+    // that will ever bring it in (§6.5). Only a document with no path at all — nothing
+    // to watch and nothing to wait for — is refused.
+    if (m_started || !m_document || m_document->path().isEmpty())
         return;
     m_started = true;
     syncBaseline();
+    // Publish once up front rather than leaving the status line blank until the first
+    // poll tick 750 ms later. It matters most for a document that opens WAITING, where
+    // the fetcher's explanation of why the log is not there is the only thing there is
+    // to say about it.
+    publishSourceStatus();
     m_watcher->watch(m_document->path());
 }
 
@@ -144,13 +153,19 @@ void LiveController::checkNow()
 {
     if (m_completed)
         return; // the stream ended; there is nothing left that could change
+    if (!m_document)
+        return;
 
-    LogSource *src = m_document ? m_document->source() : nullptr;
+    if (m_document->isWaiting()) {
+        checkWhileWaiting();
+        return;
+    }
+
+    LogSource *src = m_document->source();
     if (!src) {
-        // The source is gone (a previous rescan hit a moment when the path did not
-        // exist — the gap between a rotate's rename and recreate). If the path is
-        // back, reload it silently; otherwise wait for the next tick.
-        if (m_document && logSourceAvailable(m_document->path()))
+        // No source and not waiting: a rescan failed for a reason other than the log
+        // being absent (it is there but unreadable). Retry on the next tick, as before.
+        if (logSourceAvailable(m_document->path()))
             doRescan();
         return;
     }
@@ -175,9 +190,26 @@ void LiveController::checkNow()
     const bool truncated = src->wasTruncated() || newSize < m_lastSize;
 
     if (replaced || truncated) {
+        m_vanishedSince.invalidate(); // something IS at the origin: a rotation, not a deletion
         doRescan();
         return;
     }
+
+    // Vanished is checked AFTER replaced, and the order is the contract: a completed
+    // rotation reads as replaced and rescans silently, and only a path with nothing at
+    // it at all reaches here. The grace period covers the gap in a rotation that has
+    // renamed but not yet recreated — without it, a check landing in that gap would
+    // blank the view for a tick and then reload it, which is exactly the flicker
+    // SPEC.md §3 promises rotation does not produce.
+    if (src->originVanished()) {
+        if (!m_vanishedSince.isValid())
+            m_vanishedSince.start();
+        if (m_vanishedSince.elapsed() < m_vanishGraceMs)
+            return;
+        beginWaiting(waitingForText(m_document->path(), WaitCause::Gone));
+        return;
+    }
+    m_vanishedSince.invalidate();
 
     if (newSize > m_lastSize)
         ingestAppended();
@@ -196,6 +228,55 @@ void LiveController::checkNow()
         m_started = false;
         emit completed();
     }
+}
+
+// One tick of a document that is waiting for its log: is it back yet, and if so, hand
+// off to the owner to resume it.
+void LiveController::checkWhileWaiting()
+{
+    LogSource *src = m_document->source();
+
+    // Two different questions, because the two kinds of waiting know different things.
+    // A LOCAL log has no source while it waits, so the path is all there is to ask; a
+    // SPOOLED one keeps its source precisely so its fetcher can go on trying, and the
+    // fetcher — not the path — is what knows whether it got through.
+    const bool back = src ? !src->originVanished()
+                          : logSourceAvailable(m_document->path());
+
+    // Keep the status line current either way: a spooled source spends this whole time
+    // publishing why it cannot reach the log, which is the one thing worth showing.
+    publishSourceStatus();
+    if (!back)
+        return;
+
+    m_vanishedSince.invalidate();
+    // The owner has the pattern and therefore the provider; it calls Document::resume()
+    // (invariant #3). It may decline — the log can vanish again between this check and
+    // that open — in which case the document is still waiting and the next tick tries
+    // again, which is why this does not assume success.
+    emit resumeRequested();
+    if (m_document->isWaiting())
+        return;
+
+    syncBaseline();
+    emit waitingChanged(false, QString());
+    emit rescanned(); // the visible set was replaced wholesale, exactly as a rotation
+}
+
+void LiveController::beginWaiting(const QString &reason)
+{
+    // A full model reset: the visible set is being emptied wholesale, which is the same
+    // signal doRescan() uses for the same reason.
+    m_model->beginFilterReset();
+    m_document->enterWaiting(reason);
+    m_model->endFilterReset();
+
+    m_lastSize = 0;
+    m_vanishedSince.invalidate();
+    // Watching deliberately continues. Waiting is the one state where the watch is the
+    // only thing making progress — stopping it here is how the log would never come
+    // back (contrast completed(), where there is genuinely nothing left to look at).
+    emit waitingChanged(true, reason);
 }
 
 void LiveController::publishSourceStatus()

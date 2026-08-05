@@ -17,6 +17,17 @@ struct FetchStatus
         Error,        // last operation failed; `error` says how. Retried with backoff
         Disconnected, // stopped, deliberately
 
+        // The input is NOT THERE — the host is down, or the path does not exist (yet).
+        // Retried with the same backoff Error uses, and it is the ordinary way out of
+        // this state: a log that has not been written yet starts here and goes Live the
+        // moment it appears (SPEC.md §3, §6.5).
+        //
+        // Distinct from Error, and the distinction is user-visible: Error is trouble
+        // with a source that EXISTS and reads as a failure; Waiting is a source that
+        // does not exist and reads as "not yet". Both retry, but only one is a fault.
+        // `error` carries the explanation either way, and still never a credential.
+        Waiting,
+
         // Every byte has been delivered and committed, and there will never be another.
         // PUBLISHED LAST, after the final committedSize — the same ordering rule
         // `generation` follows, and for the same reason: a reader that observes

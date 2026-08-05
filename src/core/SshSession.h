@@ -36,12 +36,34 @@ public:
         qint64 mtime = 0;
     };
 
+    // Why a connect or an open failed, in the only terms the caller cares about: is it
+    // worth trying again on its own (M13, §6.5)?
+    //
+    // The split is not about severity, it is about whether ANYTHING WILL CHANGE without
+    // somebody doing something. A host that is down comes back by itself; a host key
+    // that has changed will still have changed in five minutes' time, and retrying it
+    // would be hammering a host loftail has just refused to talk to.
+    enum class Failure {
+        None,
+        // Retryable, unattended: the host was unreachable, or it answered and the path
+        // is not there. Both resolve themselves — a machine reboots, a log gets written.
+        Unreachable,
+        NoSuchFile,
+        // Retryable only after a PERSON acts: a password is needed and there was nobody
+        // to ask, or the host is not in known_hosts. An unattended retry gets the same
+        // answer forever, so the caller must surface it and wait to be asked again.
+        NeedsPerson,
+        // Not retryable: a changed host key, credentials rejected, the user cancelled,
+        // or the server offers no method that could work.
+        Refused,
+    };
+
     // Connect, verify the host key, and authenticate. Blocking, bounded by
     // `timeoutMs`. `prompter` may be null, in which case anything needing a person
     // fails rather than waits. Returns false and fills `error` — never with anything
     // derived from a credential.
     bool connectTo(const RemoteLocation &location, SshPrompter *prompter, int timeoutMs,
-                   QString *error);
+                   QString *error, Failure *failure = nullptr);
 
     void close();
     bool isConnected() const;
@@ -49,7 +71,7 @@ public:
     // Open the remote file named by the location this session connected for. Keeping
     // the handle open is what makes rotation detectable: fstat() follows the file the
     // handle refers to, while stat() re-resolves the name (see fstatTracksHandle()).
-    bool openFile(QString *error);
+    bool openFile(QString *error, Failure *failure = nullptr);
     void closeFile();
     bool hasFile() const;
 

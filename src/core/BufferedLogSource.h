@@ -31,6 +31,7 @@ public:
     quint64 identity() const override { return m_identity; }
     bool wasTruncated() const override { return m_truncated; }
     bool wasReplaced() const override;
+    bool originVanished() const override;
 
 private:
     BufferedLogSource() = default;

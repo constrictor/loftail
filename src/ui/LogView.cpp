@@ -539,8 +539,19 @@ void LogView::paintEvent(QPaintEvent *event)
 
     const RecordIndex &idx = geom();
     const int n = idx.records.size();
-    if (n == 0)
+    if (n == 0) {
+        // An empty grid is indistinguishable from an empty log, so a view with nothing
+        // in it says WHY when it has something to say — "app.log has not appeared yet"
+        // (SPEC.md §3). Drawn here rather than as a swapped-in widget because the tab
+        // is a real, live view throughout: it keeps its filters, its column layout and
+        // its place in the session, and gains rows the moment the log turns up.
+        if (!m_placeholderText.isEmpty()) {
+            p.setPen(palette().color(QPalette::Disabled, QPalette::Text));
+            p.drawText(viewport()->rect(), Qt::AlignCenter | Qt::TextWordWrap,
+                       m_placeholderText);
+        }
         return;
+    }
 
     const int lh = lineHeight();
 
@@ -825,6 +836,14 @@ void LogView::copySelectionAsColumns() const
 // ---------------------------------------------------------------------------
 // Wrap mode, column state, model signals
 // ---------------------------------------------------------------------------
+
+void LogView::setPlaceholderText(const QString &text)
+{
+    if (m_placeholderText == text)
+        return;
+    m_placeholderText = text;
+    viewport()->update();
+}
 
 void LogView::setWrapMode(WrapMode mode)
 {

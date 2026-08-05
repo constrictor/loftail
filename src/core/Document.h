@@ -7,6 +7,7 @@
 #include "FilteredIndex.h"
 #include "Highlight.h"
 #include "LogFormat.h"
+#include "LogSource.h"
 #include "RecordIndex.h"
 #include "TimeDisplay.h"
 
@@ -19,8 +20,20 @@
 
 namespace loftail {
 
-class LogSource;
 class IFormatProvider;
+
+// Why a document is waiting. The two read differently to a user and must not be
+// conflated: one log has never existed, the other was being read a moment ago.
+enum class WaitCause {
+    NotYet, // it has not been written yet, or the host holding it is unreachable
+    Gone,   // it was open and has been deleted
+};
+
+// The user-facing sentence for a waiting document, e.g.
+//   "app.log has not appeared yet"      /  "app.log is no longer there"
+// Uses logSourceDisplayName(), so a remote or archived log names itself the same way
+// it does in a tab title.
+QString waitingForText(const QString &path, WaitCause cause);
 
 // All per-file state for one open log (invariant #7, ARCHITECTURE.md §12). The
 // main window holds a std::vector<std::unique_ptr<Document>> plus an active
@@ -41,7 +54,8 @@ public:
 
     // Open `path`, obtain the LogFormat from `provider`, resolve the encoding, and
     // build the index synchronously. Returns false ONLY when the file cannot be
-    // opened. A bad/empty/uncompilable pattern is NOT a failure: the file still
+    // opened AND cannot be waited for (see isWaiting()). A bad/empty/uncompilable
+    // pattern is NOT a failure: the file still
     // opens with unparsed lines as plain text (SPEC.md §4), and the compile error
     // is left in formatError() for the Log Format dialog to surface.
     //
@@ -107,6 +121,51 @@ public:
 
     const QString &path() const { return m_path; }
     const QString &lastError() const { return m_lastError; }
+
+    // ---- Waiting for a log that is not there (M13, SPEC.md §3, §6.5) ------------
+    //
+    // A well-formed address that is not currently openable is NOT an error. The
+    // Document takes the path, holds an empty index, and waits — for a log that has
+    // not been written yet, a host that is down, or a file that was deleted while
+    // open. There is no mode and no switch: waiting is a state the document passes
+    // through, exactly as an empty file is a file that has not been appended to yet.
+    //
+    // A waiting document has NO SOURCE when the log is local (nothing stale is held
+    // and the writer is not pinned) but KEEPS its source when the log is spooled —
+    // a SpooledLogSource owns the shared spool, and dropping it would tear down the
+    // very fetcher that is retrying. Callers must therefore check isWaiting() rather
+    // than source() to ask "is this document showing a log".
+    bool isWaiting() const { return m_waiting; }
+
+    // Why, in the user's terms: "…has not appeared yet", "…is no longer there".
+    // Empty when not waiting.
+    const QString &waitReason() const { return m_waitReason; }
+
+    // False until the format and encoding have been resolved against REAL BYTES. A
+    // document that opened into waiting has neither — there was nothing to sample —
+    // so resume() must settle them when the log finally arrives. Distinct from
+    // formatError(), which reports on a pattern that WAS compiled.
+    bool formatSettled() const { return m_formatSettled; }
+
+    // Enter the waiting state from an open document: drop the index, the runs and the
+    // filtered subset, and release the source unless it is spooled (see above). Keeps
+    // the format, decoder, zones, filters and highlighters — those are per-file state
+    // and the file is coming back (invariant #7). The caller wraps this in a model
+    // reset, exactly as it wraps rescan().
+    void enterWaiting(const QString &reason);
+
+    // Leave it: (re)open the source and index it. When the format has never been
+    // settled, this is also where encoding detection and the provider run, over the
+    // first 64 KB of the bytes that have now arrived — which is the whole reason this
+    // takes a provider rather than Document remembering a pattern (invariant #3).
+    //
+    // OpenPolicy::Reuse, like rescan(): this runs from the watch tick on the GUI
+    // thread, so it must never turn into a connect. A spooled document's spool is
+    // already live — that is what was doing the waiting.
+    //
+    // Returns false and stays waiting if the open did not stick (the file appeared
+    // and vanished again between the check and the open, which is ordinary).
+    bool resume(IFormatProvider &provider);
 
     LogSource *source() const { return m_source.get(); }
     const LogFormat &format() const { return m_format; }
@@ -257,7 +316,9 @@ public:
     // SPEC.md §3, invariant #5). The pattern is NOT recompiled (invariant #3: the
     // format is already resolved). Clears the filtered subset; the caller re-applies
     // filters and re-resolves highlighters against the new intern tables. Returns
-    // false only if the file cannot be reopened, leaving an empty, valid index.
+    // false only if the file cannot be reopened, leaving an empty, valid index — and
+    // where it could not be reopened because it is simply NOT THERE, the document
+    // enters the waiting state instead of sitting on an error nobody reads (§6.5).
     bool rescan();
 
     // The zone inferred from a compiled format's date specifier (§5.1): UTC for a
@@ -290,8 +351,23 @@ private:
     // the message tail; byte-range decode only (invariant #8).
     QString recordFirstLine(const Record &rec) const;
 
+    // Open the source for m_path and settle the encoding + format from its first
+    // 64 KB. Shared by prepare() and resume() so the two cannot drift about what
+    // "settled" means. Leaves m_source null and returns false if the open failed.
+    bool openAndSettleFormat(IFormatProvider &provider, OpenPolicy policy, QString *error);
+    // Drop the index, runs and filtered subset, leaving a valid empty index.
+    void clearIndex();
+
     QString                    m_path;
     QString                    m_lastError;
+    QString                    m_waitReason;
+    bool                       m_waiting = false;
+    bool                       m_formatSettled = false;
+    // Whether the source zone was PINNED by the caller rather than inferred from the
+    // format. A document that opened into waiting inferred it from an empty format,
+    // which is a guess about a log nobody has seen yet; resume() must re-infer once a
+    // real format exists — but must not overwrite a zone the user chose (§5.1).
+    bool                       m_sourceZonePinned = false;
     std::unique_ptr<LogSource> m_source;
     LogFormat                  m_format;
     Decoder                    m_decoder;

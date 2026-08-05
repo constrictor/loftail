@@ -275,19 +275,32 @@ void TestSpooledSource::openFailureReportsTheTransportError()
 
 void TestSpooledSource::unconfiguredRemoteReportsNotBuiltIn()
 {
-    // No farm installed, so the registry falls back to its default factory. In a
-    // build without libssh2 that says so plainly; in one with it, the attempt fails
-    // against a host that does not exist. Either way: no crash, and an explanation.
+    // No farm installed, so the registry falls back to its default factory. The two
+    // builds answer differently, and both answers are correct.
     SourceSpoolRegistry::instance().clear();
     SourceSpoolRegistry::instance().setFetcherFactory(nullptr);
 
     QString error;
     auto src = openLogSource(QStringLiteral("ssh://nonexistent.invalid/var/log/a.log"),
                              OpenPolicy::Interactive, &error);
+#if defined(LOFTAIL_HAVE_SSH)
+    // M13: a host that cannot be reached is not a failure to open any more — it is a
+    // log that is not there YET. The source exists, is empty, and reports its origin
+    // vanished so the document upstream shows itself as waiting while the fetcher keeps
+    // trying (§6.5).
+    QVERIFY(src);
+    QCOMPARE(src->size(), 0);
+    QVERIFY(src->originVanished());
+    src.reset(); // drop the spool (and its retrying fetcher) before the next case
+#else
+    // Without libssh2 there is nothing to wait FOR: no fetcher can ever be built for
+    // this address, so it stays a plain refusal that says why.
     QVERIFY(!src);
     QVERIFY(!error.isEmpty());
+#endif
 
-    // A malformed remote address is rejected before any of that.
+    // A malformed remote address is rejected before any of that, in both builds: there
+    // is no log here to wait for, only a string that names none.
     QString badError;
     QVERIFY(!openLogSource(QStringLiteral("ssh://"), OpenPolicy::Interactive, &badError));
     QVERIFY(!badError.isEmpty());

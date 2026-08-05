@@ -65,6 +65,19 @@ public:
     WrapMode wrapMode() const { return m_wrapMode; }
     void setWrapMode(WrapMode mode);
 
+    // What an EMPTY view says instead of showing a blank grid — "app.log has not
+    // appeared yet" for a log that is being waited for (SPEC.md §3, M13). Empty by
+    // default, which is the right answer for an empty log: there is nothing wrong with
+    // it and nothing to explain. Only drawn when there are no records, so it costs the
+    // paint path nothing.
+    void setPlaceholderText(const QString &text);
+    const QString &placeholderText() const { return m_placeholderText; }
+
+    // How many records are IN VIEW — the filtered subset when a filter is active, the
+    // whole index otherwise (invariant #6). Public so a caller can tell an empty view
+    // from a populated one without reaching through to the model.
+    int recordCount() const;
+
     // Column layout persistence (SPEC.md §5): the QHeaderView's own state carries
     // section order, sizes, and hidden flags. M5 folds this into full session
     // restore; the round-trip itself lives here.
@@ -135,7 +148,6 @@ private slots:
 private:
     int lineHeight() const;
     int visibleLines() const;
-    int recordCount() const;
 
     // The RecordIndex the view scrolls over: the filtered subset when a filter is
     // active, the full index (identity) otherwise (M4, invariant #6). Every
@@ -200,6 +212,7 @@ private:
     QItemSelectionModel *m_selection;
 
     WrapMode m_wrapMode = WrapMode::Off;
+    QString  m_placeholderText; // drawn centred when there are no records at all
     int      m_current = -1;   // focused record (drives keyboard nav + wrap)
     int      m_anchor = -1;    // range-selection anchor
     int      m_selWrapCache = -1; // memoized selWrapLines() for the current width

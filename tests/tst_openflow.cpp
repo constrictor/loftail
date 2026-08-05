@@ -70,6 +70,7 @@ private slots:
     void escapeWithNothingOpenLeavesEmptyView();
     void escapeCancelsOpenAndKeepsCurrentFile();
     void acceptedPatternOpensTheFile();
+    void absentFileOpensAWaitingTabWithNoDialog();
 };
 
 void TestOpenFlow::init()
@@ -167,6 +168,41 @@ void TestOpenFlow::acceptedPatternOpensTheFile()
     QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
     QTest::qWait(200);
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — weird.log"));
+    w.close();
+}
+
+void TestOpenFlow::absentFileOpensAWaitingTabWithNoDialog()
+{
+    // M13, and this case belongs HERE because it is about the dialog: a log that is not
+    // there has no bytes to preview, autodetect from or seed a dialog with, so opening
+    // one must not prompt. It opens a waiting tab, and settles its format later against
+    // the bytes that actually arrive — still with no dialog, because that happens on a
+    // watch tick and could land while the user is reading another tab (SPEC.md §3, §4).
+    const QString absent = m_dir.filePath(QStringLiteral("notyet.log"));
+    QVERIFY(!QFile::exists(absent));
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape); // fires only if a dialog appears, which it must not
+    w.openFile(absent);
+    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QVERIFY2(!d.seen, "the format dialog was shown for a log with no bytes in it");
+
+    LogView *view = w.findChild<LogView *>();
+    QVERIFY(view);
+    QCOMPARE(view->recordCount(), 0);
+    QVERIFY(!view->placeholderText().isEmpty());
+
+    // The log turns up. The real watcher and poll timer bring it in — no reopening, no
+    // dialog — and it parses, because the format was settled from these bytes rather
+    // than guessed at the empty open.
+    QVERIFY(write(absent, "2026-07-21 10:00:00,000 [main] INFO  net.io - at last\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() == 1, 5000);
+    QVERIFY2(!d.seen, "the format dialog was shown when the log arrived");
+    QCOMPARE(w.windowTitle(), QStringLiteral("loftail — notyet.log"));
     w.close();
 }
 

@@ -103,6 +103,19 @@ bool MappedLogSource::wasReplaced() const
     return current != 0 && m_identity != 0 && current != m_identity;
 }
 
+bool MappedLogSource::originVanished() const
+{
+    // Nothing is at the path any more. This is the OTHER reading of the stat that
+    // wasReplaced() above discards as "unknown": between the two of them every outcome
+    // of stat'ing the path now has a meaning — a different inode is a rotation, no
+    // inode at all is a deletion, the same inode is business as usual (§6.5).
+    //
+    // Our fd still holds the unlinked inode and can still be read, which is exactly why
+    // this cannot be inferred from size() or refreshSize(): they go on answering
+    // correctly about a file that is no longer reachable by name.
+    return pathIdentity(m_path) == 0;
+}
+
 QByteArrayView MappedLogSource::bytes(qint64 offset, qint64 length)
 {
     if (offset < 0 || length <= 0 || !m_map)

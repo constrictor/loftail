@@ -58,6 +58,28 @@ public:
     // say the obviously-correct "no".
     virtual bool wasReplaced() const { return false; }
 
+    // True when the thing this source was opened FROM is no longer there AT ALL — the
+    // local path was deleted, the remote file has gone missing, the container an
+    // expansion is reading was removed.
+    //
+    // The distinction from wasReplaced() is the whole point, and the two are checked in
+    // that order: REPLACED means something ELSE is at the origin now, which is a
+    // rotation and rescans; VANISHED means NOTHING is, which is a wait. A source cannot
+    // be both, and a rotation that has completed reads as replaced, never as vanished.
+    //
+    // This is an OBSERVATION, not the guess invariant #5 forbids. "The file is gone" is
+    // a fact a stat answers; "the file is finished" is not, which is why isComplete()
+    // needs loftail to have produced the bytes and this does not.
+    //
+    // Only the source can answer it, for the same reason wasReplaced() is here: what has
+    // to be re-resolved differs per source — a local path is re-stat'd, a spooled one
+    // asks its fetcher, and neither can be derived from the other (§6.5).
+    //
+    // Non-pure on purpose, the third arrival by that route after wasReplaced() (M11) and
+    // isComplete() (M12): the fakes need no boilerplate to say the obviously-correct
+    // "no", and a source that cannot tell must say "no" rather than guess.
+    virtual bool originVanished() const { return false; }
+
     // True when this source's byte stream is provably FINISHED — every byte has been
     // delivered and there will never be another.
     //

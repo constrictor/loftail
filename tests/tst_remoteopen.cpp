@@ -79,7 +79,8 @@ private slots:
     void remoteOpenIsRemembered();
     void sessionRoundTripsARemoteDocument();
     void menuEntriesExist();
-    void unreachableRemoteReportsWithoutOpeningATab();
+    void refusedRemoteReportsWithoutOpeningATab();
+    void unreachableRemoteOpensAWaitingTab();
 };
 
 void TestRemoteOpen::opensARemoteUrlAsATab()
@@ -212,10 +213,13 @@ void TestRemoteOpen::menuEntriesExist()
 #endif
 }
 
-void TestRemoteOpen::unreachableRemoteReportsWithoutOpeningATab()
+void TestRemoteOpen::refusedRemoteReportsWithoutOpeningATab()
 {
+    // A REFUSAL — a changed host key, a rejected password — which is what
+    // setStartFailure() models. It gets the same answer however long loftail waits, so
+    // it stays an open failure with no tab, exactly as a malformed path does.
     FakeRemoteFarm farm;
-    farm.at(url())->setStartFailure(QStringLiteral("web1: Connection timed out"));
+    farm.at(url())->setStartFailure(QStringLiteral("Authentication to deploy@web1 failed."));
 
     MainWindow window;
     window.openFile(url(), QString::fromLatin1(kPattern));
@@ -224,8 +228,40 @@ void TestRemoteOpen::unreachableRemoteReportsWithoutOpeningATab()
     // A failed open leaves the window exactly as it was — the same contract a bad
     // local path has — and explains itself in the status bar rather than a dialog.
     QCOMPARE(tabCount(window), 0);
-    QVERIFY(statusText(window).contains(QStringLiteral("Connection timed out")));
+    QVERIFY(statusText(window).contains(QStringLiteral("Authentication")));
     QVERIFY(statusText(window).contains(QStringLiteral("app.log (web1)")));
+}
+
+void TestRemoteOpen::unreachableRemoteOpensAWaitingTab()
+{
+    // M13, and the contrast with the case above is the whole point: a host that is
+    // DOWN is not a host that says no. The tab opens, says it is waiting, and picks the
+    // log up when the host comes back — without the user reopening anything.
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(sampleLog());
+    remote->setInitiallyUnavailable(QStringLiteral("Cannot reach web1:22 — Connection refused"));
+
+    MainWindow window;
+    window.openFile(url(), QString::fromLatin1(kPattern));
+    settle(200);
+
+    QCOMPARE(tabCount(window), 1);
+    // Marked in the tab bar, so a log that is not there is tellable from an empty one.
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log (web1)"));
+    QVERIFY(statusText(window).contains(QStringLiteral("Connection refused")));
+
+    auto *view = window.findChild<LogView *>();
+    QVERIFY(view);
+    QCOMPARE(view->recordCount(), 0);
+    QVERIFY(!view->placeholderText().isEmpty()); // and it says so in the view itself
+
+    // The host comes back. The watch tick — a real one, on the real 750 ms timer —
+    // brings the log in with no reopening and no dialog.
+    remote->becomeAvailable();
+    QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() > 0, 5000);
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log (web1)"));
+    QVERIFY(statusText(window).contains(QStringLiteral("2 records")));
 }
 
 int main(int argc, char *argv[])

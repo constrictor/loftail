@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QAction>
 #include <QTemporaryDir>
 
 #include <QComboBox>
@@ -63,7 +64,7 @@ private:
 private slots:
     void initTestCase();
     void roundTripRestoresFileFiltersHighlighters();
-    void missingLastFileIsGraceful();
+    void missingLastFileRestoresAsWaiting();
     void runSelectionThroughUiAndPersists();
 };
 
@@ -135,16 +136,31 @@ void TestSessionGui::roundTripRestoresFileFiltersHighlighters()
     }
 }
 
-void TestSessionGui::missingLastFileIsGraceful()
+void TestSessionGui::missingLastFileRestoresAsWaiting()
 {
     // The session now points at m_sample; delete it and relaunch. Restore must not
-    // error or crash — it shows an empty view with an inline notice (SPEC.md §10).
+    // error, crash or raise a dialog (SPEC.md §10).
+    //
+    // M13: it comes back as a WAITING tab rather than as no tab at all. The old
+    // behaviour dropped the file, and since saveSession() writes only the files that
+    // are open, that forgot it permanently at the next quit.
     QVERIFY(QFile::remove(m_sample));
 
     MainWindow w;
     w.show();
     QTest::qWait(100);
-    QCOMPARE(w.findChildren<LogView *>().size(), 0); // empty view, no file, no dialog
+    QCOMPARE(w.findChildren<LogView *>().size(), 1); // the tab is there, and waiting
+    auto *view = w.findChild<LogView *>();
+    QVERIFY(view);
+    QCOMPARE(view->recordCount(), 0);
+    QVERIFY(!view->placeholderText().isEmpty()); // it says why, in the view itself
+
+    // Close it so the session this test leaves behind names no file — the cases after
+    // this one open their own, and a waiting tab would now persist across all of them.
+    auto *closeAll = w.findChild<QAction *>(QStringLiteral("closeAllAction"));
+    QVERIFY(closeAll);
+    closeAll->trigger();
+    QTRY_COMPARE(w.findChildren<LogView *>().size(), 0);
     w.close();
 }
 

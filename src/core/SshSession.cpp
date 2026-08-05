@@ -156,15 +156,19 @@ struct SshSession::Impl
     }
 
     // Host-key verification, before a single credential is sent.
-    bool verifyHostKey(SshPrompter *prompter, QString *error);
-    bool authenticate(SshPrompter *prompter, QString *error);
+    bool verifyHostKey(SshPrompter *prompter, QString *error, SshSession::Failure *failure);
+    bool authenticate(SshPrompter *prompter, QString *error, SshSession::Failure *failure);
     bool tryAgent();
     bool tryDefaultKeys();
     bool tryPassword(const QByteArray &password);
 };
 
-bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error)
+bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error,
+                                    SshSession::Failure *failure)
 {
+    // Default for every exit below that does not say otherwise: a host-key problem is
+    // a refusal, and refusals are not retried.
+    *failure = SshSession::Failure::Refused;
     size_t keyLength = 0;
     int keyType = 0;
     const char *key = libssh2_session_hostkey(session, &keyLength, &keyType);
@@ -219,6 +223,9 @@ bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error)
     }
 
     if (!prompter) {
+        // An unattended retry cannot accept a key on the user's behalf, and must never
+        // be made to — this is the one decision that has to be a person's (§6.5).
+        *failure = SshSession::Failure::NeedsPerson;
         libssh2_knownhost_free(hosts);
         *error = QStringLiteral(
             "%1 is not in ~/.ssh/known_hosts and there is no way to ask about it here. "
@@ -339,8 +346,10 @@ bool SshSession::Impl::tryPassword(const QByteArray &password)
     return rc == 0;
 }
 
-bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error)
+bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
+                                    SshSession::Failure *failure)
 {
+    *failure = SshSession::Failure::Refused;
     if (location.user.isEmpty()) {
         // No user in the URL and no ~/.ssh/config parsing yet: fall back to the local
         // account name, which is what ssh does absent a User directive.
@@ -387,6 +396,10 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error)
     }
 
     if (!prompter) {
+        // Reached by an unattended retry with nothing usable cached. Retrying on a
+        // timer would ask the same question forever; the caller surfaces this and waits
+        // for the user to reconnect, which does have a prompter (§6.5).
+        *failure = SshSession::Failure::NeedsPerson;
         *error = QStringLiteral("%1 needs a password and there is no way to ask for one here.")
                      .arg(target);
         return false;
@@ -439,10 +452,14 @@ bool SshSession::fstatTracksHandle() const
 }
 
 bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter, int timeoutMs,
-                           QString *error)
+                           QString *error, Failure *failure)
 {
     QString scratch;
     QString &err = error ? *error : scratch;
+    Failure ignored = Failure::None;
+    Failure &kind = failure ? *failure : ignored;
+    // Everything up to the host key is the host not answering, which fixes itself.
+    kind = Failure::Unreachable;
 
     d->teardown();
     d->location = location;
@@ -475,24 +492,28 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
         return false;
     }
 
-    if (!d->verifyHostKey(prompter, &err)) {
+    if (!d->verifyHostKey(prompter, &err, &kind)) {
         d->teardown();
         return false;
     }
 
     if (prompter)
         prompter->progress(QStringLiteral("Authenticating to %1…").arg(location.host));
-    if (!d->authenticate(prompter, &err)) {
+    if (!d->authenticate(prompter, &err, &kind)) {
         d->teardown();
         return false;
     }
 
+    // Past the host key and the credentials: the server is who it claims to be and has
+    // let us in, so a failure here is the service, not the trust, and comes back.
+    kind = Failure::Unreachable;
     d->sftp = libssh2_sftp_init(d->session);
     if (!d->sftp) {
         err = sessionError(d->session, QStringLiteral("Cannot start SFTP on %1").arg(location.host));
         d->teardown();
         return false;
     }
+    kind = Failure::None;
     return true;
 }
 
@@ -501,9 +522,13 @@ void SshSession::close()
     d->teardown();
 }
 
-bool SshSession::openFile(QString *error)
+bool SshSession::openFile(QString *error, Failure *failure)
 {
+    Failure ignored = Failure::None;
+    Failure &kind = failure ? *failure : ignored;
+
     if (!d->sftp) {
+        kind = Failure::Unreachable;
         if (error)
             *error = QStringLiteral("Not connected.");
         return false;
@@ -515,10 +540,19 @@ bool SshSession::openFile(QString *error)
                                    static_cast<unsigned int>(path.size()), LIBSSH2_FXF_READ, 0,
                                    LIBSSH2_SFTP_OPENFILE);
     if (!d->file) {
+        const unsigned long sftpError = libssh2_sftp_last_error(d->sftp);
+        // "Not there" and "not readable by me" are both things that change on their own
+        // — a log gets written, a permission gets fixed — and both are what a LOCAL
+        // path answers "unavailable" to, so they wait for the same reason (§6.5).
+        // Anything else is the server saying something we did not ask about.
+        kind = (sftpError == LIBSSH2_FX_NO_SUCH_FILE || sftpError == LIBSSH2_FX_NO_SUCH_PATH
+                || sftpError == LIBSSH2_FX_PERMISSION_DENIED)
+            ? Failure::NoSuchFile
+            : Failure::Refused;
         if (error) {
             *error = QStringLiteral("Cannot open %1 on %2 (%3)")
                          .arg(d->location.path, d->location.host)
-                         .arg(libssh2_sftp_last_error(d->sftp));
+                         .arg(sftpError);
         }
         return false;
     }

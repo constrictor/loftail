@@ -90,7 +90,7 @@ private slots:
     // start from a clean store or it would restore the previous case's windows.
     void init();
     void tabOrderAndPerViewStateRestore();
-    void missingFileIsSkippedAndTheRestStillRestores();
+    void missingFileRestoresAsWaitingAndTheRestStillOpen();
 };
 
 void TestTabSession::init()
@@ -172,10 +172,15 @@ void TestTabSession::tabOrderAndPerViewStateRestore()
     QVERIFY(sibling->header()->sectionSize(0) != 321); // independent of its twin
 }
 
-void TestTabSession::missingFileIsSkippedAndTheRestStillRestores()
+void TestTabSession::missingFileRestoresAsWaitingAndTheRestStillOpen()
 {
     // A file that has gone away between sessions must not take the others down with
     // it, and must not raise a dialog every launch (SPEC.md §10).
+    //
+    // M13 CHANGED WHAT "not taking the others down" MEANS, and the change is the point
+    // of the case: the missing file used to be dropped from the restore, which — since
+    // saveSession() writes only the files that are open — silently forgot it at the
+    // next quit. Now it comes back as a WAITING tab and picks the log up if it returns.
     const QString doomed = m_dir.filePath(QStringLiteral("doomed.log"));
     writeLog(doomed, 10);
 
@@ -194,12 +199,22 @@ void TestTabSession::missingFileIsSkippedAndTheRestStillRestores()
 
     MainWindow w;
     w.show();
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1); // a.log survives alone
+    QTRY_COMPARE(w.findChildren<LogView *>().size(), 2); // both tabs, one of them waiting
     waitUntilIndexed(w);
-    QCOMPARE(tabTitles(w), QStringList({QStringLiteral("a.log")}));
-    // The saved active view was the one that vanished; the survivor takes over rather
-    // than leaving the window pointed at nothing.
-    QCOMPARE(tabs(w)->currentIndex(), 0);
+    // The waiting tab is marked, so the tab bar tells a log that is empty from one that
+    // is not there.
+    QCOMPARE(tabTitles(w),
+             QStringList({QStringLiteral("a.log"), QStringLiteral("◦ doomed.log")}));
+    QCOMPARE(tabs(w)->currentIndex(), 1); // the saved active view, still active
+
+    // And it is genuinely waiting rather than merely empty: write the log again and it
+    // fills in on the watch tick, with no reopening and no dialog.
+    writeLog(doomed, 4);
+    LogView *waiting = viewInTab(w, 1);
+    QVERIFY(waiting);
+    QTRY_VERIFY_WITH_TIMEOUT(waiting->recordCount() > 0, 5000);
+    QCOMPARE(tabTitles(w),
+             QStringList({QStringLiteral("a.log"), QStringLiteral("doomed.log")}));
 }
 
 int main(int argc, char *argv[])
