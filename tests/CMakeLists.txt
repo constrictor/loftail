@@ -132,6 +132,36 @@ qt_add_executable(tst_hostbookmarks tst_hostbookmarks.cpp)
 target_link_libraries(tst_hostbookmarks PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_hostbookmarks COMMAND tst_hostbookmarks)
 
+# M14 — the seam a remembered password goes through. UNGATED, and for the same reason
+# tst_sshexec is: what it pins is a rule about CONSENT — a keychain that refuses is
+# reported, never quietly downgraded to a plain-text file — and a rule tested in one build
+# configuration is a rule that holds in one build configuration. Nothing here needs
+# QtKeychain; the backend is FakeSecretStore.h.
+qt_add_executable(tst_secretstore tst_secretstore.cpp)
+target_link_libraries(tst_secretstore PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_secretstore COMMAND tst_secretstore)
+
+# M14 — the password prompt's three destinations and where a ticked box actually writes.
+# UNGATED for the same reason as the above: the backend is FakeSecretStore.h, so none of
+# this needs QtKeychain, and the wording that tells a user where their secret is going has
+# to read the same in every build.
+qt_add_executable(tst_sshcredentials tst_sshcredentials.cpp)
+target_link_libraries(tst_sshcredentials PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_sshcredentials COMMAND tst_sshcredentials)
+set_tests_properties(tst_sshcredentials PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# M14 — the live keychain harness, and the ONLY place QtKeychain is exercised beyond
+# linking. Gated twice, exactly like tst_sshlive: not built without keychain support, and
+# it QSKIPs unless LOFTAIL_TEST_KEYCHAIN is set — it writes to the developer's real
+# keyring. CI never runs it, and could not: the runners are headless with no session bus,
+# so nothing there would answer. Say so plainly rather than letting a green pipeline imply
+# the backends were tested (PLAN.md M14 risk).
+if(LOFTAIL_HAVE_KEYCHAIN)
+    qt_add_executable(tst_keychainlive tst_keychainlive.cpp)
+    target_link_libraries(tst_keychainlive PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_keychainlive COMMAND tst_keychainlive)
+endif()
+
 # M11 — the live SSH harness, and the ONLY place libssh2 is exercised beyond linking.
 # Gated twice: it is not built without SSH support, and it QSKIPs unless
 # LOFTAIL_TEST_SSH_URL names a disposable remote path. CI never runs it, so the

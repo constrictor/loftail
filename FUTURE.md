@@ -36,6 +36,14 @@ Two things the entry did not anticipate, both worth recording:
 - **A compressed source needs a way to say its stream is finished**, which no other source needs and which nothing in `LogSource` could express. It arrived as a non-pure `isComplete()`, by exactly the route `wasReplaced()` took in M11 — the same pattern twice is now evidence that the interface's non-pure-virtual seam is the right shape for "only some sources can answer this".
 - **An archive composes with a transport.** A log can be compressed *and* on another machine, and the two are orthogonal — a file type and a way of reaching a file. That fell out for free once the archive fetcher's input was itself an ordinary `LogSource`, but only because the address was spelled as a nested path rather than as a scheme of its own; `archive://` would have needed `archive+ssh://` next.
 
+## Key files and key passphrases
+
+`HostBookmark::keyFile` and `HostBookmark::Auth::KeyFile` have existed since M11 and are **dead**: nothing reads `keyFile` at connect time, and the Open Remote dialog's auth combo does not even offer the option. `SshSession::tryDefaultKeys()` walks `id_ed25519`, `id_ecdsa` and `id_rsa` with a deliberately **empty** passphrase, on the reasoning that a passphrase-protected key belongs in the agent and prompting for one would be a second, differently-shaped password dialog. So today a user whose key is not in an agent and does have a passphrase cannot use it at all, and has to fall back to password auth.
+
+The accommodation that makes this cheap is already in place. M14's `SecretStore` is exactly what a passphrase needs — a place to keep a secret that is not the plain-text bookmark file — and `SshPrompter` already owns "ask a person for a secret, and decide where the answer is kept". The work is a named-key path through `authenticate()`, a second `askPassword()` shape whose prompt says *passphrase* and whose key in the store is the key file rather than the host, and the combo entry that has been missing since M11. Nothing about the seam changes.
+
+Worth doing when someone actually hits it; recorded here because two persisted fields that no code reads look like an oversight rather than a decision, and because the M14 seam is the reason this is now additive.
+
 ## ~~Remote log sources (SSH)~~ — shipped
 
 ~~Retrieve and follow logs from remote hosts over SSH, rather than only local files. Live updates work the same way — the remote file is polled or streamed for appends.~~

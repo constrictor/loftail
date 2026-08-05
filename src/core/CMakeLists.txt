@@ -52,6 +52,12 @@ add_library(loftail_core STATIC
     SshPrompter.h
     SshFetcher.h
     SshFetchOptions.cpp
+    # M14 — where a remembered password lives. The seam and the null implementation are
+    # compiled in EVERY configuration for the same reason SshPrompter is: the checkbox
+    # wording, the auth chain's ordering and the consent rule must not differ between
+    # builds, and only the answer to available() may.
+    SecretStore.cpp
+    SecretStore.h
     # Saved hosts. A file rather than QSettings because it may hold a password the
     # user chose to keep, and a file can be restricted to its owner.
     HostBookmarkStore.cpp
@@ -170,6 +176,23 @@ if(LOFTAIL_HAVE_ARCHIVE)
     if(LOFTAIL_ARCHIVE_STATIC)
         target_compile_definitions(loftail_core PUBLIC LIBARCHIVE_STATIC)
     endif()
+endif()
+
+# M14 — the only QtKeychain-touching translation unit, gated exactly as SshSession.cpp and
+# ArchiveReader.cpp are. PUBLIC on the definition for the same reason again: the dialog
+# wording in loftail_ui and the assertions in the tests must see the same feature state.
+#
+# PRIVATE linkage is the point of the second line. On Linux this pulls a transitive
+# Qt6::DBus in behind loftail_core, but nothing of loftail's own includes a DBus header and
+# the rule here is "never QtWidgets", not "QtCore only in the linker" — QtGui is already
+# linked below for QColor.
+if(LOFTAIL_HAVE_KEYCHAIN)
+    target_sources(loftail_core PRIVATE
+        KeychainSecretStore.cpp
+        KeychainSecretStore.h
+    )
+    target_compile_definitions(loftail_core PUBLIC LOFTAIL_HAVE_KEYCHAIN=1)
+    target_link_libraries(loftail_core PRIVATE ${LOFTAIL_KEYCHAIN_TARGET})
 endif()
 
 # QtGui (not QtWidgets) for QColor: the highlight palette stores concrete colors and

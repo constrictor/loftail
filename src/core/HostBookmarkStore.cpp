@@ -232,4 +232,14 @@ HostBookmark HostBookmarkStore::find(const QVector<HostBookmark> &bookmarks,
     return HostBookmark{};
 }
 
+int HostBookmarkStore::indexOfTarget(const QVector<HostBookmark> &bookmarks,
+                                     const QString &target)
+{
+    for (int i = 0; i < bookmarks.size(); ++i) {
+        if (bookmarks.at(i).locationFor(QString()).target() == target)
+            return i;
+    }
+    return -1;
+}
+
 } // namespace loftail

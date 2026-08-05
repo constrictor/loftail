@@ -6,8 +6,10 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 
+#include "FakeSecretStore.h"
 #include "HostBookmarkStore.h"
 #include "RemoteLocation.h"
+#include "SecretStore.h"
 #include "SshPrompter.h"
 
 using namespace loftail;
@@ -53,6 +55,10 @@ private slots:
     void bookmarkBuildsItsLocationAndOptions();
     void credentialCacheAsksOncePerHost();
     void aPasswordNeverLeaksIntoAPathString();
+    // M14 — the keychain, and what it does and does not change about the file above.
+    void indexOfTargetMatchesTheCacheKey();
+    void aKeychainKeepsThePasswordOutOfTheFile();
+    void aRefusedKeychainNeverFallsBackToPlainText();
 };
 
 void TestHostBookmarks::roundTripsABookmark()
@@ -355,6 +361,107 @@ void TestHostBookmarks::aPasswordNeverLeaksIntoAPathString()
     QVERIFY(!RemoteLocation::normalize(withSecret).contains(QStringLiteral("hunter2")));
     QVERIFY(!logSourceDisplayName(withSecret).contains(QStringLiteral("hunter2")));
     QVERIFY(!logSourceDisplayPath(withSecret).contains(QStringLiteral("hunter2")));
+}
+
+// passwordAccepted() is handed a target and nothing else, so the store must be reachable
+// by the same string the credential cache and the keychain are keyed on. Comparing
+// forwards is what makes the two spellings of target() — with and without a user — both
+// work, where parsing "user@host:port" apart would have to guess.
+void TestHostBookmarks::indexOfTargetMatchesTheCacheKey()
+{
+    HostBookmark withUser = sample();
+
+    HostBookmark noUser;
+    noUser.label = QStringLiteral("bare");
+    noUser.host = QStringLiteral("logs.internal");
+    noUser.port = 2222;
+
+    HostBookmark sixSix;
+    sixSix.label = QStringLiteral("v6");
+    sixSix.user = QStringLiteral("root");
+    sixSix.host = QStringLiteral("fd00::1");
+    sixSix.port = 22;
+
+    const QVector<HostBookmark> all{withUser, noUser, sixSix};
+
+    QCOMPARE(HostBookmarkStore::indexOfTarget(all, QStringLiteral("deploy@web1.example.com:22")), 0);
+    // No '@' at all — the spelling target() uses when there is no user.
+    QCOMPARE(noUser.locationFor(QString()).target(), QStringLiteral("logs.internal:2222"));
+    QCOMPARE(HostBookmarkStore::indexOfTarget(all, QStringLiteral("logs.internal:2222")), 1);
+    // Colons of the address's own, which is why nothing here splits on one.
+    QCOMPARE(HostBookmarkStore::indexOfTarget(all, sixSix.locationFor(QString()).target()), 2);
+
+    QCOMPARE(HostBookmarkStore::indexOfTarget(all, QStringLiteral("nobody@nowhere:22")), -1);
+    // The port is part of the identity: the same host on another port is another host.
+    QCOMPARE(HostBookmarkStore::indexOfTarget(all, QStringLiteral("logs.internal:22")), -1);
+}
+
+// With a keychain present the file is not the destination at all, so the secret must not
+// be in it — the same assertion withoutSavePasswordNoPasswordKeyIsWritten() makes about
+// the bytes, for the other reason a password can be absent from them.
+void TestHostBookmarks::aKeychainKeepsThePasswordOutOfTheFile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    HostBookmarkStore store(dir.path());
+    QVERIFY(store.save(sample()));
+
+    FakeSecretStore keychain;
+    keychain.setAvailable(true);
+    keychain.setBackendName(QStringLiteral("KWallet"));
+    InstalledSecretStore installed(&keychain);
+
+    const QString target = sample().locationFor(QString()).target();
+    QString message;
+    QCOMPARE(rememberSshPassword(target, QStringLiteral("hunter2"), &message),
+             RememberOutcome::StoredInKeychain);
+
+    QCOMPARE(keychain.contents().value(sshSecretKey(target)), QStringLiteral("hunter2"));
+
+    // The file was never touched, and could not have been: the outcome above is the only
+    // thing that authorises writing to it.
+    QFile file(store.filePath());
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QByteArray bytes = file.readAll();
+    QVERIFY(!bytes.contains("hunter2"));
+    // The key, not the word: "auth":"password" is a legitimate VALUE in this file and
+    // says nothing about a secret being in it.
+    QVERIFY(!bytes.contains("\"password\":"));
+}
+
+// THE consent rule, in the file that owns credential containment.
+//
+// A keychain is there, the user was shown its name on the checkbox, and it refuses. The
+// answer must be Failed and the file must stay clean — a fallback here would put a secret
+// somewhere the user was never told about, which is worse than not saving it at all.
+void TestHostBookmarks::aRefusedKeychainNeverFallsBackToPlainText()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    HostBookmarkStore store(dir.path());
+    QVERIFY(store.save(sample()));
+
+    FakeSecretStore keychain;
+    keychain.setAvailable(true);
+    keychain.setBackendName(QStringLiteral("KWallet"));
+    keychain.failNext(SecretStore::Result::Denied, QStringLiteral("the wallet is locked"));
+    InstalledSecretStore installed(&keychain);
+
+    const QString target = sample().locationFor(QString()).target();
+    QString message;
+    QCOMPARE(rememberSshPassword(target, QStringLiteral("hunter2"), &message),
+             RememberOutcome::Failed);
+
+    QFile file(store.filePath());
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QVERIFY(!file.readAll().contains("hunter2"));
+
+    // And the bookmark on disk still says the password was not kept, so a later open does
+    // not prime the cache with something that was never stored.
+    const QVector<HostBookmark> all = store.all();
+    QCOMPARE(all.size(), 1);
+    QVERIFY(!all.first().savePassword);
+    QVERIFY(all.first().password.isEmpty());
 }
 
 QTEST_APPLESS_MAIN(TestHostBookmarks)
