@@ -52,6 +52,10 @@ add_library(loftail_ui STATIC
     # already carries it, and title-bar buttons that can be seen and hit
     PaneTitleStyle.cpp
     PaneTitleStyle.h
+    # The application-wide style: the desktop's own, minus the themed icons Qt puts on
+    # standard dialog buttons
+    AppStyle.cpp
+    AppStyle.h
 )
 
 target_link_libraries(loftail_ui PUBLIC

@@ -2,6 +2,7 @@
 #include <QCommandLineParser>
 #include <QCoreApplication>
 
+#include "AppStyle.h"
 #include "MainWindow.h"
 #include "Version.h"
 
@@ -34,6 +35,11 @@ int main(int argc, char *argv[])
 #endif
 
     QApplication app(argc, argv);
+
+    // The desktop's own style, minus the themed icons Qt hangs on standard dialog
+    // buttons (AppStyle.h). Installed before any window exists so nothing is polished
+    // twice; the palette is untouched, so a dark theme stays dark.
+    QApplication::setStyle(new loftail::AppStyle);
 
     // Organization/application names must be set before any QSettings is
     // constructed so settings resolve to the right location (CLAUDE.md: no
