@@ -709,9 +709,12 @@ void MainWindow::refreshRemoteHostsMenu()
             });
             continue;
         }
-        QMenu *hostMenu = m_remoteHostsMenu->addMenu(host.displayName());
+        // One flat entry per remembered log rather than a submenu per host: a host
+        // usually has one or two logs worth reopening, and a submenu that deep costs
+        // a hover and a second aim for what is a single click's worth of choice.
         for (const QString &path : host.paths) {
-            QAction *action = hostMenu->addAction(path);
+            QAction *action = m_remoteHostsMenu->addAction(
+                QStringLiteral("%1: %2").arg(host.displayName(), path));
             const QString url = host.locationFor(path).toString();
             connect(action, &QAction::triggered, this, [this, url, host, path] {
                 // Carry this host's poll cadence and tail-start choice into the

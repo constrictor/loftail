@@ -12,6 +12,7 @@
 #include <QTabWidget>
 
 #include "FakeFetcher.h"
+#include "HostBookmarkStore.h"
 #include "LogView.h"
 #include "MainWindow.h"
 #include "RemoteLocation.h"
@@ -79,6 +80,7 @@ private slots:
     void remoteOpenIsRemembered();
     void sessionRoundTripsARemoteDocument();
     void menuEntriesExist();
+    void savedHostsAreOneFlatLevel();
     void refusedRemoteReportsWithoutOpeningATab();
     void unreachableRemoteOpensAWaitingTab();
 };
@@ -211,6 +213,38 @@ void TestRemoteOpen::menuEntriesExist()
     QVERIFY(!openRemote->isEnabled());
     QVERIFY(openRemote->toolTip().contains(QStringLiteral("without SSH support")));
 #endif
+}
+
+void TestRemoteOpen::savedHostsAreOneFlatLevel()
+{
+    // Every remembered log is one entry in Remote Hosts — "host: /path" — rather than
+    // a per-host submenu holding its paths. A host with nothing remembered is still
+    // listed on its own, because it reopens the form pre-filled.
+    HostBookmarkStore store(HostBookmarkStore::defaultDir());
+    HostBookmark web1;
+    web1.user = QStringLiteral("deploy");
+    web1.host = QStringLiteral("web1");
+    web1.paths = {QStringLiteral("/var/log/app.log"), QStringLiteral("/var/log/other.log")};
+    HostBookmark db1;
+    db1.host = QStringLiteral("db1");
+    db1.label = QStringLiteral("Database");
+    QVERIFY(store.replaceAll({web1, db1}));
+
+    MainWindow window;
+    auto *hosts = window.findChild<QMenu *>(QStringLiteral("remoteHostsMenu"));
+    QVERIFY(hosts);
+
+    QStringList texts;
+    for (QAction *action : hosts->actions()) {
+        QVERIFY(!action->menu()); // nothing here opens a second level
+        texts << action->text();
+    }
+    QCOMPARE(texts,
+             QStringList({QStringLiteral("web1: /var/log/app.log"),
+                          QStringLiteral("web1: /var/log/other.log"),
+                          QStringLiteral("Database...")}));
+
+    QVERIFY(store.replaceAll({})); // leave the store as the other cases expect it
 }
 
 void TestRemoteOpen::refusedRemoteReportsWithoutOpeningATab()
