@@ -195,6 +195,14 @@ if(NOT WIN32)
     add_test(NAME tst_waiting COMMAND tst_waiting)
 endif()
 
+# The side panes' title-bar chrome: no name repeated under the tab that already carries
+# it, and the measured Qt constraints that made repainting the bar the only option
+# (a dock drags only from its own title bar). Needs a QApplication — offscreen.
+qt_add_executable(tst_panechrome tst_panechrome.cpp)
+target_link_libraries(tst_panechrome PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_panechrome COMMAND tst_panechrome)
+set_tests_properties(tst_panechrome PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # M13 — the same waiting contract for a SPOOLED log: a host that is down, and one that
 # goes away mid-tail. Ungated and network-free, over the fake fetcher — the transport
 # is the only fake part, exactly as tst_remotetail arranges it.

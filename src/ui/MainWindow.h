@@ -33,6 +33,7 @@ class FilterPane;
 class HighlighterPane;
 class PresetPane;
 class RunPane;
+class PaneTitleStyle;
 
 // The application's top-level window. Per-file state lives in Document and the
 // machinery around it in DocumentContext; the window holds the context vector and
@@ -249,7 +250,10 @@ private:
     HighlighterPane *m_highlighterPane = nullptr; // M5 highlighters side pane
     PresetPane      *m_presetPane = nullptr;      // M5 presets side pane
     RunPane         *m_runPane = nullptr;         // run selection side pane (§3a)
-    QVector<QDockWidget *> m_paneDocks;           // the four above, for View ▸ Panes
+    QVector<QDockWidget *> m_paneDocks;                     // the four above, for View ▸ Panes
+    // How those docks' title bars are painted (PaneTitleStyle.h). Shared by all four
+    // and parented to the window, so it outlives every dock that points at it.
+    PaneTitleStyle        *m_paneStyle = nullptr;
 
     // The centre of the window: the document well. The tabs and the "no file open"
     // notice take turns in the stack, so the centre is never an empty tab frame.

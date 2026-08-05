@@ -25,6 +25,7 @@
 #include "SpooledLogSource.h"
 #include "OpenRemoteDialog.h"
 #include "PresetPane.h"
+#include "PaneTitleStyle.h"
 #include "RemoteLocation.h"
 #include "RunPane.h"
 #include "SshFetcher.h"
@@ -422,6 +423,16 @@ QDockWidget *MainWindow::addPaneDock(QWidget *pane, const QString &objectName,
     auto *dock = new QDockWidget(title, this);
     dock->setObjectName(objectName); // restoreState() keys off this
     dock->setWidget(pane);
+
+    // Painted by PaneTitleStyle: the panes ship tabbed, so the title bar would
+    // otherwise repeat the tab's own label a row below it, above two hairline buttons
+    // that are hard to see and harder to hit. Installed on the DOCK, never on the
+    // window, so nothing outside the panes inherits any of it (PaneTitleStyle.h
+    // explains why the bar cannot simply be hidden — Qt only starts a drag from its
+    // own title bar).
+    if (!m_paneStyle)
+        m_paneStyle = new PaneTitleStyle(this);
+    dock->setStyle(m_paneStyle);
     // Left or right only. SPEC.md §8 offers a pane "on either side", and a pane
     // dropped as a full-width strip above or below the log is a drag people make by
     // accident, not on purpose. (Restricting areas used to be forbidden here because

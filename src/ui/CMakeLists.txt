@@ -44,6 +44,10 @@ add_library(loftail_ui STATIC
     # Run selection side pane (a run-start regexp splits the file into runs)
     RunPane.cpp
     RunPane.h
+    # How the side panes' title bars are painted: no name repeated under the tab that
+    # already carries it, and title-bar buttons that can be seen and hit
+    PaneTitleStyle.cpp
+    PaneTitleStyle.h
 )
 
 target_link_libraries(loftail_ui PUBLIC
