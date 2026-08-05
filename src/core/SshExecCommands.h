@@ -47,6 +47,14 @@ QString readCommand(const QString &path, qint64 offset, qint64 length);
 QString probeCommand();
 QByteArray probeMarker();
 
+// The last non-empty line of `output`, trimmed; empty if there is none.
+//
+// Every answer the exec transport reads goes through this, because on the machines this
+// transport exists for stdout is not private: a login banner, a `/etc/profile` notice or
+// a warning from a shell that echoes what it was given all arrive BEFORE the answer. The
+// answer is what the command printed last.
+QByteArray lastNonEmptyLine(const QByteArray &output);
+
 // Parse what statCommand() printed. `ok` is false for empty, malformed or negative
 // output — which is what a missing file, a permission denial and a shell error message
 // all look like from here, and all of which must read as "no attributes" rather than as

@@ -609,26 +609,44 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     d->mode = Mode::Sftp;
     d->sftp = libssh2_sftp_init(d->session);
     if (!d->sftp) {
-        // Signed in, and then no SFTP. A TIMEOUT is transient — a loaded server, a slow
-        // subsystem launch — and is worth retrying as it stands, so it is not a reason
-        // to change transport.
+        // Signed in, and then no SFTP. There are two shapes of that and THE ERROR CODE
+        // DOES NOT TELL THEM APART, which is worth spelling out because the obvious
+        // reading of the code is wrong:
+        //
+        //  - the server answers the subsystem request with a refusal — sshd with no
+        //    `Subsystem sftp` line, or an account confined to a shell that cannot start
+        //    one. libssh2 reports a channel failure, promptly.
+        //  - the server ACCEPTS the channel and then nothing on the far end ever speaks
+        //    SFTP, because the `sftp-server` binary the config names is not installed.
+        //    Common on embedded systems, where the sshd config is generic and the
+        //    filesystem is not. libssh2 has nothing to report: it waits for the version
+        //    packet that is never coming and gives up with a plain TIMEOUT, "Timed out
+        //    waiting on socket", after a perfectly successful login.
+        //
+        // Both mean the same thing to us — this server will not do SFTP, and will not
+        // start doing it in five minutes' time — so neither is classified from the code.
+        // ASK INSTEAD: if a command runs on this session, the session is healthy and it
+        // is SFTP that is missing, whatever the code said. Fall back to reading the log
+        // with `stat` and `tail` over a plain exec channel (§6.3.1).
         const int code = libssh2_session_last_errno(d->session);
-        if (code == LIBSSH2_ERROR_TIMEOUT || code == LIBSSH2_ERROR_SOCKET_TIMEOUT) {
-            kind = Failure::Unreachable;
-            err = sessionError(d->session,
-                               QStringLiteral("Cannot start SFTP on %1").arg(location.host));
-            d->teardown();
-            return false;
-        }
+        const bool timedOut = (code == LIBSSH2_ERROR_TIMEOUT
+                               || code == LIBSSH2_ERROR_SOCKET_TIMEOUT);
 
-        // Anything else means this server will not do SFTP — sshd with no `Subsystem
-        // sftp` line, or an account confined to a shell that cannot start one. That
-        // never becomes true later, so rather than retry it, fall back to reading the
-        // log with `stat` and `tail` over a plain exec channel (§6.3.1).
+        // A session that has just gone silent for the whole timeout gets a shorter leash
+        // for the probe: it has already cost the user that wait once, connecting blocks
+        // the thread that opened the document, and a box that will answer a one-line
+        // command answers it in a round trip rather than in twenty seconds.
+        if (timedOut)
+            libssh2_session_set_timeout(d->session, qMax(2000, timeoutMs / 4));
         QByteArray probe;
         int exitCode = -1;
         const bool ran = d->runCommand(probeCommand(), &probe, &exitCode);
-        if (ran && probe.trimmed() == probeMarker()) {
+        libssh2_session_set_timeout(d->session, timeoutMs);
+
+        // Compared on the LAST non-empty line, for the reason parseStatOutput() is: a
+        // login banner on stdout is common, and on the small images this fallback exists
+        // for it is close to universal.
+        if (ran && lastNonEmptyLine(probe) == probeMarker()) {
             d->mode = Mode::Exec;
             // No handle exists in this mode, so the inode substitute is unavailable and
             // SshFetcher's weaker mtime/head-compare rotation check is what applies.
@@ -637,13 +655,39 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
             return true;
         }
 
-        kind = Failure::Refused;
-        err = QStringLiteral(
-                  "%1 signed in but offers neither SFTP nor a shell that can run `stat` "
-                  "and `tail`, which are the two ways loftail can read a remote log. "
-                  "sshd needs a `Subsystem sftp` line, or the account needs to be able "
-                  "to run commands.")
-                  .arg(location.host);
+        // Neither subsystem nor command got us a transport. `ran` is asked FIRST and the
+        // error code second, for the same reason the probe outranked the code above: a
+        // command that ran is direct evidence the session is alive, and it beats an
+        // earlier timeout that only ever said something about the SFTP subsystem.
+        if (ran) {
+            // A command RAN and did not print the marker: there is a shell, it is the
+            // two utilities that are missing. Worth saying separately — it is the usual
+            // answer from a stripped-down embedded image, and it names something the
+            // user can actually go and install.
+            kind = Failure::Refused;
+            err = QStringLiteral(
+                      "%1 does not offer SFTP, and its shell has no `stat` and `tail`, "
+                      "which is the only other way loftail can read a remote log. "
+                      "sshd needs a `Subsystem sftp` line pointing at an sftp-server "
+                      "that is actually installed, or the account needs those two "
+                      "commands on its PATH.")
+                      .arg(location.host);
+        } else if (timedOut) {
+            // Nothing ran and nothing replied: the link itself went quiet, which is the
+            // one case here that comes back on its own and is therefore worth retrying.
+            kind = Failure::Unreachable;
+            err = QStringLiteral("%1 signed in and then stopped answering: neither SFTP "
+                                 "nor a shell command replied before the timeout.")
+                      .arg(location.host);
+        } else {
+            kind = Failure::Refused;
+            err = QStringLiteral(
+                      "%1 signed in but offers neither SFTP nor a shell that can run "
+                      "`stat` and `tail`, which are the two ways loftail can read a "
+                      "remote log. sshd needs a `Subsystem sftp` line, or the account "
+                      "needs to be able to run commands.")
+                      .arg(location.host);
+        }
         d->teardown();
         return false;
     }

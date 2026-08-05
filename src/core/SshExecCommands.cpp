@@ -59,21 +59,24 @@ QString probeCommand()
         .arg(QString::fromLatin1(probeMarker()));
 }
 
+QByteArray lastNonEmptyLine(const QByteArray &output)
+{
+    const QList<QByteArray> lines = output.split('\n');
+    for (auto it = lines.crbegin(); it != lines.crend(); ++it) {
+        const QByteArray trimmed = it->trimmed();
+        if (!trimmed.isEmpty())
+            return trimmed;
+    }
+    return QByteArray();
+}
+
 ExecAttrs parseStatOutput(const QByteArray &output)
 {
     ExecAttrs out;
     // Both stat flavours print one line, but a server may prepend a banner or a warning
     // on stdout. Take the LAST non-empty line: the answer is what the command printed
     // last, and anything before it is somebody else's noise.
-    const QList<QByteArray> lines = output.split('\n');
-    QByteArray line;
-    for (auto it = lines.crbegin(); it != lines.crend(); ++it) {
-        const QByteArray trimmed = it->trimmed();
-        if (!trimmed.isEmpty()) {
-            line = trimmed;
-            break;
-        }
-    }
+    const QByteArray line = lastNonEmptyLine(output);
     if (line.isEmpty())
         return out;
 

@@ -59,6 +59,7 @@ private slots:
     void statReportsSizeAndMtime();
     void readHonoursTheOneBasedOffset();
     void statOutputParsingRejectsRubbish();
+    void theProbeSurvivesAChattyLogin();
 };
 
 void TestSshExec::quotingNeutralisesShellMetacharacters()
@@ -155,6 +156,35 @@ void TestSshExec::statOutputParsingRejectsRubbish()
     const ExecAttrs banner = parseStatOutput("Welcome to prod-web!\nLast login: today\n77 12345\n");
     QVERIFY(banner.ok);
     QCOMPARE(banner.size, 77);
+}
+
+void TestSshExec::theProbeSurvivesAChattyLogin()
+{
+    // The probe decides whether the exec transport is available AT ALL, and it is only
+    // ever reached on servers with no working SFTP — which in practice are the small,
+    // heavily-customised ones whose shells greet you. Comparing the whole of stdout
+    // against the marker would have failed on every one of them.
+    QCOMPARE(lastNonEmptyLine(probeMarker() + "\n"), probeMarker());
+    QCOMPARE(lastNonEmptyLine("Welcome to the router\n\n" + probeMarker() + "\n"),
+             probeMarker());
+    QCOMPARE(lastNonEmptyLine("  " + probeMarker() + "  "), probeMarker());
+    // No trailing newline at all, which is what a shell that does not add one gives.
+    QCOMPARE(lastNonEmptyLine("banner\n" + probeMarker()), probeMarker());
+
+    // And it must still be able to say no: a shell that answered without running the
+    // utilities prints its own last line, not ours.
+    QVERIFY(lastNonEmptyLine(QByteArray()).isEmpty());
+    QVERIFY(lastNonEmptyLine("\n \n\t\n").isEmpty());
+    QVERIFY(lastNonEmptyLine("Welcome to the router\n") != probeMarker());
+
+    if (!haveShell())
+        QSKIP("no /bin/sh to run the probe through");
+    // The real command, through a real shell, on a machine that does have tail and stat.
+    QCOMPARE(lastNonEmptyLine(runSh(probeCommand())), probeMarker());
+    // And with a banner in front of it, the way a login shell would deliver it.
+    QCOMPARE(lastNonEmptyLine(runSh(QStringLiteral("echo 'MOTD: be careful'; %1")
+                                        .arg(probeCommand()))),
+             probeMarker());
 }
 
 QTEST_GUILESS_MAIN(TestSshExec)
