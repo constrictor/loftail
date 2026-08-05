@@ -117,19 +117,20 @@ jobs:
     # §1) and nothing so far proves the CEILING — this is the only job that compiles
     # loftail with a much newer Qt and GCC.
     strategy:
+      # Not fail-fast: a break on one release must not cancel the other's package.
+      # They fail for different reasons — 24.04 for the Qt floor, 26.04 for the
+      # ceiling — and each leg's answer is worth having even when the other is red.
       fail-fast: false
       matrix:
-        include:
-          - release: "24.04"
-            experimental: false
-          # ubuntu-26.04 is a PUBLIC PREVIEW runner image (announced 2026-06-11):
-          # usable by everyone, but with longer queues at peak and tool versions
-          # that still move. Non-blocking until it has run green a few times —
-          # flip `experimental` to false then, and this becomes a required check.
-          - release: "26.04"
-            experimental: true
+        # ubuntu-26.04 is a PUBLIC PREVIEW runner image (announced 2026-06-11) and
+        # was non-blocking to begin with. It is a required check now: it has run
+        # green with no preview-side trouble, and it is the only job in the workflow
+        # that compiles against a Qt newer than the 6.4 floor, so letting it fail
+        # quietly would mean the ceiling is untested exactly when it breaks.
+        # To make a future preview release non-blocking, give this job
+        # `continue-on-error` on a matrix flag rather than reaching for `if:`.
+        release: ["24.04", "26.04"]
     runs-on: ubuntu-${{ matrix.release }}
-    continue-on-error: ${{ matrix.experimental }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7

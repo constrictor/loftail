@@ -221,7 +221,7 @@ loftail against a much newer Qt and GCC — the **ceiling** nothing else tests. 
 runs the full suite for that reason, not only `cpack`.
 
 `ubuntu-26.04` is a **public preview** runner image (announced 2026-06-11): available
-to everyone, but with longer queues at peak and tool versions that still move. That
-leg is therefore `continue-on-error` for now, so a preview-side breakage cannot block
-master; the result is still reported. Flip `experimental: false` in the matrix once it
-has run green a few times and it becomes a required check like the rest.
+to everyone, but with tool versions that still move. That leg started non-blocking and
+is now a required check like the rest — it has run green with no preview-side trouble,
+and since it is the only job compiling against a Qt newer than the floor, letting it
+fail quietly would leave the ceiling untested at exactly the moment it broke.
