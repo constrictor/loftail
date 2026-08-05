@@ -157,3 +157,7 @@ enable_testing()
 
 add_subdirectory(src)
 add_subdirectory(tests)
+
+# Distro packaging. Included last, because CPack packs the install() rules the
+# subdirectories above declare. It is a no-op off Linux; see packaging/README.md.
+include(packaging/linux/deb.cmake)
