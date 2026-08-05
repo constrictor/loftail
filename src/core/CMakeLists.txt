@@ -129,6 +129,12 @@ endif()
 target_sources(loftail_core PRIVATE
     SocketDetach.cpp
     SocketDetach.h
+    # The shell commands used on a server that will not do SFTP, and the parsing of what
+    # they print. Always compiled, like RemoteLocation: the quoting in it is a security
+    # boundary, and one that exists in only one build configuration is one that gets
+    # tested in only one build configuration.
+    SshExecCommands.cpp
+    SshExecCommands.h
 )
 target_link_libraries(loftail_core PRIVATE Qt6::Network)
 

@@ -64,6 +64,14 @@ struct FetchStatus
 
     // User-facing failure text for State::Error. NEVER contains a credential.
     QString error;
+
+    // A standing, non-error remark about HOW this source is being read — currently only
+    // "this server would not do SFTP, so its log is being read with shell commands"
+    // (§6.3.1). Shown when there is nothing more pressing to say, because a transport
+    // that costs a process per read and detects rotation more weakly is something the
+    // user should be able to discover rather than have to deduce. Empty in the ordinary
+    // case, and never a credential either.
+    QString note;
 };
 
 // Fills a local spool file forward from somewhere else, and keeps following it.

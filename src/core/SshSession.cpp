@@ -2,6 +2,7 @@
 
 #include "SshPrompter.h"
 #include "SocketDetach.h"
+#include "SshExecCommands.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -16,6 +17,7 @@
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
+#include <cstring>
 #include <mutex>
 
 namespace loftail {
@@ -135,8 +137,17 @@ struct SshSession::Impl
     LIBSSH2_SFTP_HANDLE *file = nullptr;
     RemoteLocation    location;
     bool              fstatTracks = false;
+    SshSession::Mode  mode = SshSession::Mode::Sftp;
+    bool              execFileOpen = false; // Mode::Exec has no handle, only this flag
 
     ~Impl() { teardown(); }
+
+    // Run `command` on the server and collect its stdout. Blocking, bounded by the
+    // session timeout like everything else here. Returns false when the channel could
+    // not be opened or the command could not be started; a command that RAN and failed
+    // returns true with whatever it printed, because "stat said nothing" and "stat
+    // could not be launched" want different handling upstream.
+    bool runCommand(const QString &command, QByteArray *stdOut, int *exitCode);
 
     void teardown()
     {
@@ -163,11 +174,81 @@ struct SshSession::Impl
 
     // Host-key verification, before a single credential is sent.
     bool verifyHostKey(SshPrompter *prompter, QString *error, SshSession::Failure *failure);
+    // Read `length` bytes at `offset` by running a command. Mode::Exec's readAt().
+    qint64 execRead(qint64 offset, char *buffer, qint64 length, QString *error);
     bool authenticate(SshPrompter *prompter, QString *error, SshSession::Failure *failure);
     bool tryAgent();
     bool tryDefaultKeys();
     bool tryPassword(const QByteArray &password);
 };
+
+bool SshSession::Impl::runCommand(const QString &command, QByteArray *stdOut, int *exitCode)
+{
+    if (!session)
+        return false;
+
+    LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(session);
+    if (!channel)
+        return false;
+
+    const QByteArray line = command.toUtf8();
+    if (libssh2_channel_exec(channel, line.constData()) != 0) {
+        libssh2_channel_free(channel);
+        return false;
+    }
+
+    // Drain stdout to EOF. stderr is drained too and DISCARDED: a server that prints a
+    // warning there must not wedge the channel by filling its window, but its complaint
+    // is not the answer we asked for — a command that failed is recognised by what it
+    // did not print on stdout, and by its exit status.
+    QByteArray out;
+    char buffer[8192];
+    forever {
+        const ssize_t n = libssh2_channel_read(channel, buffer, sizeof(buffer));
+        if (n > 0) {
+            out.append(buffer, int(n));
+            continue;
+        }
+        ssize_t err = 0;
+        do {
+            err = libssh2_channel_read_stderr(channel, buffer, sizeof(buffer));
+        } while (err > 0);
+        if (n == 0 && libssh2_channel_eof(channel))
+            break;
+        if (n < 0)
+            break; // timeout or transport error; whatever arrived is what we have
+    }
+
+    libssh2_channel_close(channel);
+    libssh2_channel_wait_closed(channel);
+    if (exitCode)
+        *exitCode = libssh2_channel_get_exit_status(channel);
+    libssh2_channel_free(channel);
+
+    if (stdOut)
+        *stdOut = out;
+    return true;
+}
+
+qint64 SshSession::Impl::execRead(qint64 offset, char *buffer, qint64 length, QString *error)
+{
+    QByteArray out;
+    int exitCode = 0;
+    if (!runCommand(readCommand(location.path, offset, length), &out, &exitCode)) {
+        if (error) {
+            *error = QStringLiteral("Reading %1 from %2 failed: the server would not run a "
+                                    "command.")
+                         .arg(location.path, location.host);
+        }
+        return -1;
+    }
+    // A short read is not an error: it is EOF, which is the ordinary answer while
+    // tailing a log that has not grown since the size was taken.
+    const qint64 got = qMin<qint64>(out.size(), length);
+    if (got > 0)
+        std::memcpy(buffer, out.constData(), size_t(got));
+    return got;
+}
 
 bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error,
                                     SshSession::Failure *failure)
@@ -444,11 +525,17 @@ SshSession::~SshSession() = default;
 
 bool SshSession::isConnected() const
 {
-    return d->session != nullptr && d->sftp != nullptr;
+    // An exec session never has an SFTP handle, so "connected" has to mean the session
+    // rather than the subsystem. Getting this wrong would make the reconnect loop treat
+    // a perfectly healthy exec session as a dropped link, forever.
+    return d->session != nullptr
+        && (d->mode == Mode::Exec || d->sftp != nullptr);
 }
 
 bool SshSession::hasFile() const
 {
+    if (d->mode == Mode::Exec)
+        return d->execFileOpen;
     return d->file != nullptr;
 }
 
@@ -519,35 +606,54 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
         return false;
     }
 
+    d->mode = Mode::Sftp;
     d->sftp = libssh2_sftp_init(d->session);
     if (!d->sftp) {
-        // Signed in, and then no SFTP. The two ways that happens want OPPOSITE
-        // treatment, so they are told apart rather than lumped together:
-        //
-        //  * a TIMEOUT is transient — a loaded server, a slow subsystem launch — and is
-        //    worth retrying, so it stays Unreachable;
-        //  * anything else means the server WILL NOT do SFTP, usually because sshd has
-        //    no `Subsystem sftp` line or the account is restricted to a shell that
-        //    cannot start one. That never becomes true later, and retrying it on a
-        //    timer would leave a tab waiting forever for something that cannot arrive.
-        //    Refused, with a message that names the actual cause instead of the symptom.
+        // Signed in, and then no SFTP. A TIMEOUT is transient — a loaded server, a slow
+        // subsystem launch — and is worth retrying as it stands, so it is not a reason
+        // to change transport.
         const int code = libssh2_session_last_errno(d->session);
-        const bool transient =
-            code == LIBSSH2_ERROR_TIMEOUT || code == LIBSSH2_ERROR_SOCKET_TIMEOUT;
-        kind = transient ? Failure::Unreachable : Failure::Refused;
-        err = transient
-            ? sessionError(d->session,
-                           QStringLiteral("Cannot start SFTP on %1").arg(location.host))
-            : QStringLiteral(
-                  "%1 signed in but would not start SFTP, which is how loftail reads a "
-                  "remote log. The server may not offer it — sshd needs a `Subsystem "
-                  "sftp` line, and the account must be allowed to run it.")
+        if (code == LIBSSH2_ERROR_TIMEOUT || code == LIBSSH2_ERROR_SOCKET_TIMEOUT) {
+            kind = Failure::Unreachable;
+            err = sessionError(d->session,
+                               QStringLiteral("Cannot start SFTP on %1").arg(location.host));
+            d->teardown();
+            return false;
+        }
+
+        // Anything else means this server will not do SFTP — sshd with no `Subsystem
+        // sftp` line, or an account confined to a shell that cannot start one. That
+        // never becomes true later, so rather than retry it, fall back to reading the
+        // log with `stat` and `tail` over a plain exec channel (§6.3.1).
+        QByteArray probe;
+        int exitCode = -1;
+        const bool ran = d->runCommand(probeCommand(), &probe, &exitCode);
+        if (ran && probe.trimmed() == probeMarker()) {
+            d->mode = Mode::Exec;
+            // No handle exists in this mode, so the inode substitute is unavailable and
+            // SshFetcher's weaker mtime/head-compare rotation check is what applies.
+            d->fstatTracks = false;
+            kind = Failure::None;
+            return true;
+        }
+
+        kind = Failure::Refused;
+        err = QStringLiteral(
+                  "%1 signed in but offers neither SFTP nor a shell that can run `stat` "
+                  "and `tail`, which are the two ways loftail can read a remote log. "
+                  "sshd needs a `Subsystem sftp` line, or the account needs to be able "
+                  "to run commands.")
                   .arg(location.host);
         d->teardown();
         return false;
     }
     kind = Failure::None;
     return true;
+}
+
+SshSession::Mode SshSession::mode() const
+{
+    return d->mode;
 }
 
 void SshSession::close()
@@ -559,6 +665,30 @@ bool SshSession::openFile(QString *error, Failure *failure)
 {
     Failure ignored = Failure::None;
     Failure &kind = failure ? *failure : ignored;
+
+    if (d->mode == Mode::Exec) {
+        // Nothing to open: every read runs its own command. "Opening" therefore means
+        // confirming the log is there and readable, which is the same question the
+        // SFTP branch answers by opening a handle — and it is asked the same way the
+        // poll will ask it, so a path that stats now will stat later.
+        closeFile();
+        const Attrs attrs = statPath();
+        if (!attrs.valid) {
+            // Indistinguishable from here: absent, or present and unreadable. Both are
+            // things that change on their own, so both wait (§6.5) — the same answer
+            // the SFTP branch gives for NO_SUCH_FILE and PERMISSION_DENIED.
+            kind = Failure::NoSuchFile;
+            if (error) {
+                *error = QStringLiteral("Cannot read %1 on %2 — it is missing, or the "
+                                        "account cannot read it.")
+                             .arg(d->location.path, d->location.host);
+            }
+            return false;
+        }
+        d->execFileOpen = true;
+        d->fstatTracks = false; // no handle exists to compare against the path
+        return true;
+    }
 
     if (!d->sftp) {
         kind = Failure::Unreachable;
@@ -601,6 +731,7 @@ bool SshSession::openFile(QString *error, Failure *failure)
 
 void SshSession::closeFile()
 {
+    d->execFileOpen = false;
     if (d->file) {
         libssh2_sftp_close(d->file);
         d->file = nullptr;
@@ -610,6 +741,17 @@ void SshSession::closeFile()
 SshSession::Attrs SshSession::statPath() const
 {
     Attrs out;
+    if (d->mode == Mode::Exec) {
+        QByteArray printed;
+        int exitCode = 0;
+        if (!d->runCommand(statCommand(d->location.path), &printed, &exitCode))
+            return out;
+        const ExecAttrs parsed = parseStatOutput(printed);
+        out.valid = parsed.ok;
+        out.size = parsed.size;
+        out.mtime = parsed.mtime;
+        return out;
+    }
     if (!d->sftp)
         return out;
     LIBSSH2_SFTP_ATTRIBUTES attrs{};
@@ -628,7 +770,10 @@ SshSession::Attrs SshSession::statPath() const
 SshSession::Attrs SshSession::statHandle() const
 {
     Attrs out;
-    if (!d->file)
+    // Mode::Exec has no handle to stat, and must not pretend otherwise: reporting the
+    // path's attributes here would make the two agree by construction and silently
+    // defeat the rotation check that compares them.
+    if (d->mode == Mode::Exec || !d->file)
         return out;
     LIBSSH2_SFTP_ATTRIBUTES attrs{};
     if (libssh2_sftp_fstat_ex(d->file, &attrs, 0) != 0)
@@ -641,7 +786,11 @@ SshSession::Attrs SshSession::statHandle() const
 
 qint64 SshSession::readAt(qint64 offset, char *buffer, qint64 length, QString *error)
 {
-    if (!d->file || length <= 0)
+    if (length <= 0)
+        return 0;
+    if (d->mode == Mode::Exec)
+        return d->execFileOpen ? d->execRead(offset, buffer, length, error) : 0;
+    if (!d->file)
         return 0;
 
     libssh2_sftp_seek64(d->file, static_cast<libssh2_uint64_t>(offset));

@@ -127,8 +127,10 @@ QString sourceStatusText(const LogSource &source, const QString &path)
     case FetchStatus::State::Complete:
     case FetchStatus::State::Disconnected:
         // A healthy tail, a finished expansion and a closed source are all the ordinary
-        // case. Saying so would be noise that trains the user to ignore the line.
-        return QString();
+        // case. Saying so would be noise that trains the user to ignore the line — so
+        // the only thing reported here is a standing remark about HOW the log is being
+        // read, which is empty unless the transport had to fall back (§6.3.1).
+        return status.note;
 
     case FetchStatus::State::Error:
         return status.error;

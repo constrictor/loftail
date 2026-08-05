@@ -228,6 +228,22 @@ Two rules keep them apart, and there is no mutex between the GUI and the fetcher
 
 **The transport sits behind `SourceFetcher`**, and that seam is what makes the feature testable: `tst_spooledsource`, `tst_remotetail` and `tst_remoteopen` drive the whole application — opening, indexing, tailing, rotation, session restore — against a fake fetcher, with no network and no libssh2 linked. CI exercises no libssh2 call beyond linking; the handshake, host-key and authentication paths are covered by `tst_sshlive`, which runs by hand against a real server.
 
+#### 6.3.1 The exec fallback, for a server that will not do SFTP
+
+Some servers sign you in and then refuse SFTP — sshd with no `Subsystem sftp` line, or an account confined to a shell that cannot start one. Before this, that was where a remote log stopped. `SshSession` now has two modes, chosen at connect: SFTP, and failing that, `stat` and `tail` over a plain exec channel. `SshFetcher` and everything above it are unchanged, because the five operations they use (`openFile`, `statPath`, `statHandle`, `readAt`, `fstatTracksHandle`) are the same five either way.
+
+**SCP was considered and is not usable**, which is worth recording because it is the obvious suggestion. The transport needs to read from an arbitrary offset, re-`stat` the path on every poll, and `fstat` an open handle to tell a same-size rotate from an append. SCP offers none of the three: it hands over a whole file from byte 0, with its size fixed at open and no handle to interrogate. An SCP-backed tail would re-download the entire log on every poll. `tail -c +N` gives genuine forward reads, which is the one property the single-forward-pass indexer actually needs (invariant #9).
+
+The fallback is **automatic but not silent**. It is only reached once SFTP has already refused, so there is nothing to lose by trying it, and `FetchStatus::note` carries a standing "reading with shell commands — <host> does not offer SFTP" into the status bar. Three costs come with it, and none is hidden:
+
+- **A process per read.** Every `readAt` is a channel plus a `tail | head` on the far end, where SFTP reuses one handle. Chunked at 256 KB, so a prime is round-trip-bound rather than pathological.
+- **Weaker rotation detection.** There is no handle, so `statHandle()` deliberately reports *invalid* rather than quietly returning the path's attributes — which would make the two agree by construction and defeat the very check that compares them. `fstatTracksHandle()` is false, and `SshFetcher`'s existing mtime/head-compare fallback (§6.3) is what runs.
+- **A shell, and therefore quoting.** The remote path reaches a command line, so `shellQuote()` is a security boundary rather than a formatting detail: a path containing `'; rm -rf ~; '` is otherwise remote code execution. Single quotes, with the one escape POSIX allows (`'\''`).
+
+`SshExecCommands` — the quoting, the command construction and the parsing of what comes back — is **always compiled**, like `RemoteLocation` and `ArchiveLocation`, while the transport that uses it is gated. A security boundary compiled in one configuration is a security boundary tested in one configuration. `tst_sshexec` is ungated and runs the generated commands through a real `/bin/sh` against real files, with a canary file the injection cases must fail to create; comparing strings would only prove the quoting matches what the author expected, not that a shell agrees.
+
+Parsing is defensive for the same reason the classification in §6.5 is: a wrong size here would truncate or over-read a log, so anything that is not exactly two non-negative integers reads as "no attributes". The answer is taken from the **last** non-empty line, because a login banner on stdout is common and is somebody else's noise.
+
 ### 6.4 Archived sources (M12)
 
 A compressed or archived log is a **second fetcher behind the same spool**, exactly as `FUTURE.md` predicted from the beginning. `ArchiveFetcher` decompresses one member forward into a spool file; `SpooledLogSource` reads it back. Nothing above the fetcher changed.

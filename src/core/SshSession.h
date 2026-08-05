@@ -68,6 +68,19 @@ public:
     void close();
     bool isConnected() const;
 
+    // How this session reads the remote file.
+    enum class Mode {
+        Sftp, // the normal one: a real handle, real fstat, random access
+        Exec, // the fallback: `stat` and `tail` over a plain exec channel (§6.3.1)
+    };
+
+    // Which of the two connectTo() settled on. Sftp unless the server refused it, in
+    // which case the fallback was tried before giving up. Worth surfacing rather than
+    // hiding: the exec transport spends a process per read on the far end and detects
+    // rotation more weakly, so a user seeing odd behaviour deserves to know which one
+    // they are on.
+    Mode mode() const;
+
     // Open the remote file named by the location this session connected for. Keeping
     // the handle open is what makes rotation detectable: fstat() follows the file the
     // handle refers to, while stat() re-resolves the name (see fstatTracksHandle()).
@@ -84,6 +97,9 @@ public:
     // re-resolving the path. Probed once at connect: OpenSSH's sftp-server does, and
     // that is what stands in for a POSIX inode when detecting a rotation. A server
     // that does not forces the weaker size/head-compare fallback in SshFetcher.
+    //
+    // Always false in Mode::Exec — there is no handle to stat, only a path re-resolved
+    // per command — so that fallback is what an exec session always uses.
     bool fstatTracksHandle() const;
 
     // Read up to `length` bytes at `offset` of the open file. Returns the number of

@@ -195,6 +195,14 @@ if(NOT WIN32)
     add_test(NAME tst_waiting COMMAND tst_waiting)
 endif()
 
+# The exec transport's commands and parsing, for a server that will not do SFTP.
+# UNGATED: the quoting is a security boundary and must be tested in every build, and the
+# injection cases run the generated commands through a real /bin/sh rather than merely
+# comparing strings. Needs Qt6::Test only — no libssh2, no network.
+qt_add_executable(tst_sshexec tst_sshexec.cpp)
+target_link_libraries(tst_sshexec PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_sshexec COMMAND tst_sshexec)
+
 # Why the SSH transport takes its socket away from Qt. UNGATED and network-free
 # (loopback only): the behaviour worked around is Qt's own, so it must be pinned in a
 # build with no SSH support too — and a Qt that stopped doing it would make the whole

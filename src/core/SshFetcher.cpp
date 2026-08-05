@@ -188,6 +188,16 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
     }
 
     setState(FetchStatus::State::Live);
+    // Standing remark, not an error: this server would not do SFTP, so the log is being
+    // read by running commands on it. Slower, and rotation is detected the weaker way,
+    // so say which transport is in use rather than leaving it to be deduced (§6.3.1).
+    {
+        QMutexLocker lock(&m_mutex);
+        m_status.note = m_session->mode() == SshSession::Mode::Exec
+            ? QStringLiteral("reading with shell commands — %1 does not offer SFTP")
+                  .arg(m_location.host)
+            : QString();
+    }
     *failure = SshSession::Failure::None;
     return true;
 }

@@ -12,8 +12,10 @@
 #include "LogModel.h"
 #include "LogSource.h"
 #include "RemoteLocation.h"
+#include "SshExecCommands.h"
 #include "SourceSpool.h"
 #include "SshPrompter.h"
+#include "SshSession.h"
 
 using namespace loftail;
 
@@ -58,6 +60,25 @@ private:
         if (!ssh.waitForFinished(30000))
             return false;
         return ssh.exitStatus() == QProcess::NormalExit && ssh.exitCode() == 0;
+    }
+
+    // Same, but hands back what the command printed. The exec-fallback case needs the
+    // OUTPUT of the very commands the transport builds, not just their exit status.
+    QByteArray remoteShellOutput(const QString &command)
+    {
+        QStringList args;
+        args << QStringLiteral("-o") << QStringLiteral("BatchMode=yes");
+        if (m_location.port != RemoteLocation::kDefaultPort)
+            args << QStringLiteral("-p") << QString::number(m_location.port);
+        args << (m_location.user.isEmpty() ? m_location.host
+                                           : m_location.user + u'@' + m_location.host);
+        args << command;
+
+        QProcess ssh;
+        ssh.start(QStringLiteral("ssh"), args);
+        if (!ssh.waitForFinished(30000))
+            return {};
+        return ssh.readAllStandardOutput();
     }
 
     bool writeRemote(const QByteArray &content)
@@ -107,6 +128,7 @@ private slots:
     void followsAppendsFromTheRealServer();
     void detectsRealRotation();
     void reportsAnUnreachableHostClearly();
+    void theExecFallbackReadsTheSameBytes();
 };
 
 void TestSshLive::initTestCase()
@@ -126,6 +148,50 @@ void TestSshLive::initTestCase()
     setSshPrompter(nullptr);
     QVERIFY2(remoteShell(QStringLiteral("true")),
              "Cannot reach the test host non-interactively (agent or key auth needed)");
+}
+
+void TestSshLive::theExecFallbackReadsTheSameBytes()
+{
+    // The exec transport against a REAL server (ARCHITECTURE.md §6.3.1). Everything
+    // above SshSession is identical either way, so the claim worth checking here is the
+    // narrow one: driven directly, the exec mode's five operations return what the SFTP
+    // mode's do. Reached by talking to SshSession itself, since a server that offers
+    // SFTP will never choose the fallback on its own.
+    const QByteArray content =
+        "2026-07-21 00:00:01,000 [t0] INFO  logger.a - exec channel line one\n"
+        "2026-07-21 00:00:02,000 [t1] WARN  logger.b - exec channel line two\n";
+    QVERIFY(writeRemote(content));
+
+    SshSession sftp;
+    QString error;
+    QVERIFY2(sftp.connectTo(m_location, nullptr, 20000, &error), qPrintable(error));
+    QCOMPARE(sftp.mode(), SshSession::Mode::Sftp);
+    QVERIFY2(sftp.openFile(&error), qPrintable(error));
+    const SshSession::Attrs viaSftp = sftp.statPath();
+    QVERIFY(viaSftp.valid);
+    QCOMPARE(viaSftp.size, qint64(content.size()));
+
+    QByteArray sftpBytes(content.size(), '\0');
+    QCOMPARE(sftp.readAt(0, sftpBytes.data(), sftpBytes.size(), &error), qint64(content.size()));
+    QCOMPARE(sftpBytes, content);
+    sftp.close();
+
+    // Now the same file through the fallback. execShell() runs the very commands the
+    // transport builds, so this also proves they work on THIS server's stat and tail
+    // rather than only on the author's.
+    const ExecAttrs viaExec = parseStatOutput(remoteShellOutput(statCommand(m_remotePath)));
+    QVERIFY2(viaExec.ok, "this server's stat matched neither the GNU nor the BSD form");
+    QCOMPARE(viaExec.size, viaSftp.size);
+    // mtime granularity is seconds on both sides, so they must agree exactly.
+    QCOMPARE(viaExec.mtime, viaSftp.mtime);
+
+    // Reads at an offset, which is the property SCP could not have provided.
+    QCOMPARE(remoteShellOutput(readCommand(m_remotePath, 0, 20)), content.left(20));
+    QCOMPARE(remoteShellOutput(readCommand(m_remotePath, 20, 30)), content.mid(20, 30));
+    QCOMPARE(remoteShellOutput(readCommand(m_remotePath, content.size(), 10)), QByteArray());
+
+    // And the probe agrees this server could host the fallback at all.
+    QCOMPARE(remoteShellOutput(probeCommand()).trimmed(), probeMarker());
 }
 
 void TestSshLive::cleanup()
