@@ -21,7 +21,7 @@ jobs:
     # separately-installed Qt.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install toolchain + system Qt 6
         run: |
@@ -96,7 +96,7 @@ jobs:
           ls -l squashfs-root/usr/lib/libssh2.so* squashfs-root/usr/lib/libarchive.so*
           rm -rf squashfs-root
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: loftail-linux-appimage
           path: dist/*.AppImage
@@ -132,7 +132,7 @@ jobs:
     continue-on-error: ${{ matrix.experimental }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install toolchain + system Qt 6
         run: |
@@ -205,7 +205,7 @@ jobs:
           desktop-file-validate /usr/share/applications/loftail.desktop
           sudo apt-get remove -y loftail
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: loftail-deb-ubuntu-${{ matrix.release }}
           path: build-deb/*.deb
@@ -222,7 +222,7 @@ jobs:
     # Cap the whole job so any such hang fails fast.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Qt 6 (MSVC)
         uses: jurplel/install-qt-action@v4
@@ -236,6 +236,12 @@ jobs:
       # flags, so activate the MSVC toolchain (puts cl.exe on PATH, exports the
       # env to later steps) before configuring. Constrain it to VS 2022 so a
       # newer side-by-side toolset can't be selected.
+      #
+      # Still on node20 and so still annotated as deprecated, unlike the actions/*
+      # ones bumped to v7: v1.13.0 is its latest release and it is node20 too, so
+      # there is no version to move to. Left alone deliberately — the runner forces
+      # it onto node24 and it works; pinning a fork or vendoring the two lines of
+      # vcvarsall it wraps would cost more than the warning does.
       - name: Set up MSVC toolchain
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -370,7 +376,7 @@ jobs:
             exit 1
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: loftail-windows-portable
           path: dist/*.zip
@@ -388,7 +394,7 @@ jobs:
     # macdeployqt will need the same bundling check the AppImage step does.
     runs-on: macos-13
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Select Xcode 14.3.1 (SDK that still ships AGL)
         uses: maxim-lobanov/setup-xcode@v1
@@ -414,7 +420,7 @@ jobs:
         run: |
           ./build-macos/src/loftail.app/Contents/MacOS/loftail --version
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: loftail-macos-dmg
           path: dist/*.dmg
