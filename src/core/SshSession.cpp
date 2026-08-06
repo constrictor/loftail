@@ -1,5 +1,6 @@
 #include "SshSession.h"
 
+#include "ExecSizeProbe.h"
 #include "SshPrompter.h"
 #include "SecretStore.h"
 #include "SocketDetach.h"
@@ -153,8 +154,33 @@ struct SshSession::Impl
     bool              fstatTracks = false;
     SshSession::Mode  mode = SshSession::Mode::Sftp;
     bool              execFileOpen = false; // Mode::Exec has no handle, only this flag
+    ExecTools         execTools;            // what the connect-time probe found
+    SizeSource        execSize = SizeSource::None; // settled at openFile(), per open
 
     ~Impl() { teardown(); }
+
+    // The ladder, wired to this session. Built fresh per use — it holds no state worth
+    // keeping and two std::functions cost nothing beside a round trip.
+    //
+    // The read seam binds execRead() and NOT SshSession::readAt(), which gates on
+    // execFileOpen. Settling happens BEFORE that flag is set, so going through the
+    // public method would make every validation read return zero bytes, reject every
+    // rung, and disable the exec fallback entirely — silently, and only on the servers
+    // it exists for.
+    ExecSizeProbe sizeProbe()
+    {
+        return ExecSizeProbe(
+            location.path, execTools,
+            [this](const QString &command, QByteArray *out) {
+                int exitCode = 0;
+                return runCommand(command, out, &exitCode);
+            },
+            [this](qint64 offset, qint64 length) {
+                QByteArray buffer;
+                buffer.resize(int(length));
+                return execRead(offset, buffer.data(), length, nullptr);
+            });
+    }
 
     // Run `command` on the server and collect its stdout. Blocking, bounded by the
     // session timeout like everything else here. Returns false when the channel could
@@ -674,7 +700,7 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
         // start doing it in five minutes' time — so neither is classified from the code.
         // ASK INSTEAD: if a command runs on this session, the session is healthy and it
         // is SFTP that is missing, whatever the code said. Fall back to reading the log
-        // with `stat` and `tail` over a plain exec channel (§6.3.1).
+        // with ordinary shell commands over a plain exec channel (§6.3.1).
         const int code = libssh2_session_last_errno(d->session);
         const bool timedOut = (code == LIBSSH2_ERROR_TIMEOUT
                                || code == LIBSSH2_ERROR_SOCKET_TIMEOUT);
@@ -690,11 +716,13 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
         const bool ran = d->runCommand(probeCommand(), &probe, &exitCode);
         libssh2_session_set_timeout(d->session, timeoutMs);
 
-        // Compared on the LAST non-empty line, for the reason parseStatOutput() is: a
-        // login banner on stdout is common, and on the small images this fallback exists
-        // for it is close to universal.
-        if (ran && lastNonEmptyLine(probe) == probeMarker()) {
+        // Read on the LAST non-empty line, for the reason parseStatOutput() is: a login
+        // banner on stdout is common, and on the small images this fallback exists for it
+        // is close to universal.
+        const ExecTools tools = parseProbeOutput(probe);
+        if (ran && tools.ok && tools.anySizeTool()) {
             d->mode = Mode::Exec;
+            d->execTools = tools;
             // No handle exists in this mode, so the inode substitute is unavailable and
             // SshFetcher's weaker mtime/head-compare rotation check is what applies.
             d->fstatTracks = false;
@@ -706,14 +734,25 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
         // error code second, for the same reason the probe outranked the code above: a
         // command that ran is direct evidence the session is alive, and it beats an
         // earlier timeout that only ever said something about the SFTP subsystem.
-        if (ran) {
+        if (ran && tools.ok) {
+            // The shell is fine and it can READ the log — what it cannot do is MEASURE
+            // it, and the transport needs both. Said separately from the case below
+            // because the remedy is different and much smaller: any one of three
+            // utilities is enough, and one of them is on practically every system.
+            kind = Failure::Refused;
+            err = Tr::tr(
+                      "%1 does not offer SFTP, and its shell can read the log but "
+                      "cannot measure it: none of `stat`, `ls` or `wc` is on the "
+                      "account's PATH. Any one of the three is enough.")
+                      .arg(location.host);
+        } else if (ran) {
             // A command RAN and did not print the marker: there is a shell, it is the
             // two utilities that are missing. Worth saying separately — it is the usual
             // answer from a stripped-down embedded image, and it names something the
             // user can actually go and install.
             kind = Failure::Refused;
             err = Tr::tr(
-                      "%1 does not offer SFTP, and its shell has no `stat` and `tail`, "
+                      "%1 does not offer SFTP, and its shell has no `tail` and `head`, "
                       "which is the only other way loftail can read a remote log. "
                       "sshd needs a `Subsystem sftp` line pointing at an sftp-server "
                       "that is actually installed, or the account needs those two "
@@ -730,7 +769,7 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
             kind = Failure::Refused;
             err = Tr::tr(
                       "%1 signed in but offers neither SFTP nor a shell that can run "
-                      "`stat` and `tail`, which are the two ways loftail can read a "
+                      "`tail` and `head`, which are the two ways loftail can read a "
                       "remote log. sshd needs a `Subsystem sftp` line, or the account "
                       "needs to be able to run commands.")
                       .arg(location.host);
@@ -747,6 +786,11 @@ SshSession::Mode SshSession::mode() const
     return d->mode;
 }
 
+SizeSource SshSession::sizeSource() const
+{
+    return d->execSize;
+}
+
 void SshSession::close()
 {
     d->teardown();
@@ -759,12 +803,36 @@ bool SshSession::openFile(QString *error, Failure *failure)
 
     if (d->mode == Mode::Exec) {
         // Nothing to open: every read runs its own command. "Opening" therefore means
-        // confirming the log is there and readable, which is the same question the
-        // SFTP branch answers by opening a handle — and it is asked the same way the
-        // poll will ask it, so a path that stats now will stat later.
+        // settling on a way to measure this file and confirming it answers — which is
+        // the same question the SFTP branch answers by opening a handle, and it is
+        // asked the way the poll will ask it, so a path that measures now measures later.
+        //
+        // The ladder runs FIRST and its success is the existence proof, rather than the
+        // other way round: statPath() has nothing to dispatch on until a rung is
+        // settled. That is not a compromise — "no rung answered" and "the file is not
+        // there" are the same observation from out here, and they want the same answer.
+        //
+        // Settled on EVERY open, which means on every rotation too. Settling once per
+        // session would let a rotated-to file the chosen rung cannot parse make
+        // statPath() invalid for good, and the fetcher would then report the log as
+        // waiting on every poll — indistinguishable from one that was deleted.
         closeFile();
-        const Attrs attrs = statPath();
-        if (!attrs.valid) {
+        d->execSize = SizeSource::None;
+
+        ExecSizeProbe probe = d->sizeProbe();
+        const SizeSource source = probe.settle();
+        if (source == SizeSource::None) {
+            // A dead channel is not a missing file. Both are worth retrying, but only
+            // one of them is fixed by reconnecting, and SshFetcher tells them apart by
+            // this code alone.
+            if (probe.channelDied()) {
+                kind = Failure::Unreachable;
+                if (error) {
+                    *error = Tr::tr("Lost the connection to %1 while opening %2.")
+                                 .arg(d->location.host, d->location.path);
+                }
+                return false;
+            }
             // Indistinguishable from here: absent, or present and unreadable. Both are
             // things that change on their own, so both wait (§6.5) — the same answer
             // the SFTP branch gives for NO_SUCH_FILE and PERMISSION_DENIED.
@@ -776,6 +844,7 @@ bool SshSession::openFile(QString *error, Failure *failure)
             }
             return false;
         }
+        d->execSize = source;
         d->execFileOpen = true;
         d->fstatTracks = false; // no handle exists to compare against the path
         return true;
@@ -833,11 +902,12 @@ SshSession::Attrs SshSession::statPath() const
 {
     Attrs out;
     if (d->mode == Mode::Exec) {
-        QByteArray printed;
-        int exitCode = 0;
-        if (!d->runCommand(statCommand(d->location.path), &printed, &exitCode))
+        // Whichever rung openFile() settled on. No re-validation here: that question was
+        // answered once, and asking it again would double the cost of every poll.
+        if (d->execSize == SizeSource::None)
             return out;
-        const ExecAttrs parsed = parseStatOutput(printed);
+        ExecSizeProbe probe = d->sizeProbe();
+        const ExecAttrs parsed = probe.query(d->execSize);
         out.valid = parsed.ok;
         out.size = parsed.size;
         out.mtime = parsed.mtime;

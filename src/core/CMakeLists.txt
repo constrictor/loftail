@@ -144,6 +144,12 @@ target_sources(loftail_core PRIVATE
     # tested in only one build configuration.
     SshExecCommands.cpp
     SshExecCommands.h
+    # M16 — which of those commands can measure the file on THIS server, and the proof
+    # that the answer is usable before anything relies on it. Always compiled for the
+    # same reason and one more: it is the only decision in the exec transport, and the
+    # transport itself is reachable in one build configuration on one kind of server.
+    ExecSizeProbe.cpp
+    ExecSizeProbe.h
 )
 target_link_libraries(loftail_core PRIVATE Qt6::Network)
 

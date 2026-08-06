@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RemoteLocation.h"
+#include "SshExecCommands.h" // SizeSource, kUnknownMtime — no libssh2, always compiled
 
 #include <QString>
 
@@ -33,7 +34,11 @@ public:
     {
         bool   valid = false;
         qint64 size = 0;
-        qint64 mtime = 0;
+        // kUnknownMtime when this server has no way to report one — an exec session
+        // measuring with `ls` or `wc` (§6.3.1). READ IT BY NAME: -1 compares as less
+        // than every real mtime, so a caller that only ever asks "did it advance?" would
+        // conclude "no" forever and stop detecting rotation without ever saying so.
+        qint64 mtime = kUnknownMtime;
     };
 
     // Why a connect or an open failed, in the only terms the caller cares about: is it
@@ -81,6 +86,14 @@ public:
     // they are on.
     Mode mode() const;
 
+    // How an exec session measures the file, settled at openFile() by probing this
+    // server rather than by assuming (§6.3.1). SizeSource::None in Mode::Sftp, where the
+    // question does not arise, and before the first successful open.
+    //
+    // Worth surfacing for the same reason mode() is, and one more: the `Wc` rung reads
+    // the whole file to answer, so the fetcher slows its poll down when it is in use.
+    SizeSource sizeSource() const;
+
     // Open the remote file named by the location this session connected for. Keeping
     // the handle open is what makes rotation detectable: fstat() follows the file the
     // handle refers to, while stat() re-resolves the name (see fstatTracksHandle()).
@@ -99,7 +112,10 @@ public:
     // that does not forces the weaker size/head-compare fallback in SshFetcher.
     //
     // Always false in Mode::Exec — there is no handle to stat, only a path re-resolved
-    // per command — so that fallback is what an exec session always uses.
+    // per command — so that fallback is what an exec session always uses. Which of the
+    // two forms of it applies depends on whether Attrs::mtime is known: an mtime that
+    // advanced without the size growing, or, with no mtime at all, a size that has
+    // stalled, checked on a timer rather than on every poll.
     bool fstatTracksHandle() const;
 
     // Read up to `length` bytes at `offset` of the open file. Returns the number of

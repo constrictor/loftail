@@ -32,15 +32,35 @@ QString statCommand(const QString &path)
         .arg(quoted);
 }
 
+QString lsSizeCommand(const QString &path)
+{
+    // No 2>/dev/null: the caller drains and discards stderr already, and statCommand()'s
+    // redirect exists only to keep its first attempt's complaint out of its second's
+    // answer, which this command has no equivalent of.
+    return QStringLiteral("LC_ALL=C BLOCK_SIZE=1 LS_BLOCK_SIZE=1 QUOTING_STYLE=literal "
+                          "ls -lnLd %1")
+        .arg(shellQuote(path));
+}
+
+QString wcSizeCommand(const QString &path)
+{
+    return QStringLiteral("wc -c < %1").arg(shellQuote(path));
+}
+
 QString readCommand(const QString &path, qint64 offset, qint64 length)
 {
-    const QString quoted = shellQuote(path);
     // +1 because `tail -c +N` is 1-BASED: +1 is the whole file, not "skip one byte".
     const qint64 from = qMax<qint64>(0, offset) + 1;
+    // ONE arg() call with three arguments, and the numbers converted by hand. Chaining
+    // arg() is wrong here and was: the second call rescans the WHOLE string, including
+    // the path the first one just substituted in, so a path containing a literal %1 —
+    // legal, and what a URL-decoded %251 arrives as — had that token replaced by the
+    // length. And the tempting `.arg(from, quoted, length)` with the numbers left as
+    // integers binds to arg(qlonglong, int fieldWidth, int base) instead, which means
+    // something else entirely.
     return QStringLiteral("tail -c +%1 %2 | head -c %3")
-        .arg(from)
-        .arg(quoted)
-        .arg(qMax<qint64>(0, length));
+        .arg(QString::number(from), shellQuote(path),
+             QString::number(qMax<qint64>(0, length)));
 }
 
 QByteArray probeMarker()
@@ -50,13 +70,46 @@ QByteArray probeMarker()
 
 QString probeCommand()
 {
-    // Checks the two utilities the transport actually needs rather than merely that a
-    // shell answered: an account confined to a restricted shell can exit 0 having run
-    // nothing at all, and finding that out here is much cheaper than finding it out
-    // once a log is supposedly open.
-    return QStringLiteral("command -v tail >/dev/null 2>&1 && command -v stat >/dev/null 2>&1 "
-                          "&& echo %1")
+    // Asks the two questions the transport has, and keeps them apart.
+    //
+    // READING needs `tail` AND `head`, and both are checked because `readCommand()` uses
+    // both: a box with `tail` and no `head` used to pass this probe, open the file, and
+    // then return zero bytes from every read — which is indistinguishable from EOF, so
+    // the log opened empty and never said why.
+    //
+    // MEASURING is a separate question with three acceptable answers, so the probe
+    // reports which of them exist rather than insisting on one. It used to insist on
+    // `stat`, which is exactly the utility a stripped-down embedded image leaves out.
+    //
+    // All on one line, and the marker first, so lastNonEmptyLine() still finds the answer
+    // under a login banner and the parse has a fixed head to anchor on.
+    return QStringLiteral(
+               "command -v tail >/dev/null 2>&1 && command -v head >/dev/null 2>&1 "
+               "&& { r=%1; for t in stat ls wc; do command -v \"$t\" >/dev/null 2>&1 "
+               "&& r=\"$r $t\"; done; echo \"$r\"; }")
         .arg(QString::fromLatin1(probeMarker()));
+}
+
+ExecTools parseProbeOutput(const QByteArray &output)
+{
+    ExecTools out;
+    const QList<QByteArray> fields = lastNonEmptyLine(output).simplified().split(' ');
+    if (fields.isEmpty() || fields.constFirst() != probeMarker())
+        return out;
+
+    out.ok = true;
+    for (qsizetype i = 1; i < fields.size(); ++i) {
+        const QByteArray &tool = fields.at(i);
+        // Unknown names are ignored rather than rejected: a later loftail that probes for
+        // a fourth utility must not be defeated by an older one's answer, or the reverse.
+        if (tool == "stat")
+            out.hasStat = true;
+        else if (tool == "ls")
+            out.hasLs = true;
+        else if (tool == "wc")
+            out.hasWc = true;
+    }
+    return out;
 }
 
 QByteArray lastNonEmptyLine(const QByteArray &output)
@@ -94,6 +147,65 @@ ExecAttrs parseStatOutput(const QByteArray &output)
     out.ok = true;
     out.size = size;
     out.mtime = mtime;
+    return out;
+}
+
+ExecAttrs parseLsSizeOutput(const QByteArray &output)
+{
+    ExecAttrs out;
+    const QList<QByteArray> fields = lastNonEmptyLine(output).simplified().split(' ');
+    // mode links uid gid size month day time-or-year name — nine on GNU, busybox, BSD and
+    // toybox alike, once LC_ALL=C has pinned the date to its three fields. A floor rather
+    // than a count, because a name containing spaces adds more. A line with fewer than
+    // nine is not a short answer, it is a different answer: the columns are not where
+    // this parser is about to look for them.
+    if (fields.size() < 9)
+        return out;
+
+    // A regular file, AFTER -L has dereferenced. This one character is what rejects a
+    // directory, a dangling symlink, a FIFO and a device — and a device is the case that
+    // matters most, because its size column is "1, 3" and field 4 alone would parse the
+    // major number as a byte count.
+    if (!fields.constFirst().startsWith('-'))
+        return out;
+
+    // Link count, uid and gid, all numeric because of -n. Cheap, and it is the only
+    // evidence available that the columns are where they are expected to be.
+    for (int i = 1; i <= 3; ++i) {
+        bool numeric = false;
+        const qint64 value = fields.at(i).toLongLong(&numeric);
+        if (!numeric || value < 0)
+            return out;
+    }
+
+    bool sizeOk = false;
+    const qint64 size = fields.at(4).toLongLong(&sizeOk);
+    if (!sizeOk || size < 0)
+        return out;
+
+    out.ok = true;
+    out.size = size;
+    out.mtime = kUnknownMtime; // ls prints a human date, and an old file loses the clock
+    return out;
+}
+
+ExecAttrs parseWcSizeOutput(const QByteArray &output)
+{
+    ExecAttrs out;
+    const QList<QByteArray> fields = lastNonEmptyLine(output).simplified().split(' ');
+    // Exactly one field. `wc -c < FILE` prints the count alone; anything else came from
+    // something other than the command we asked for.
+    if (fields.size() != 1)
+        return out;
+
+    bool sizeOk = false;
+    const qint64 size = fields.constFirst().toLongLong(&sizeOk);
+    if (!sizeOk || size < 0)
+        return out;
+
+    out.ok = true;
+    out.size = size;
+    out.mtime = kUnknownMtime;
     return out;
 }
 

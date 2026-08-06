@@ -5,6 +5,7 @@
 
 #include <QCoreApplication>
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QHash>
 #include <QMutex>
@@ -47,6 +48,19 @@ constexpr qint64 kHeadProbeBytes = 4096;
 // worker thread is joined by stop(), which the GUI thread reaches when the last tab on
 // a log closes, so this is the worst case for closing a tab on a host that is down.
 constexpr int kRetryTimeoutMs = 5000;
+
+// How often the head compare may run when a STALLED SIZE is the only rotation signal
+// there is — a server with no `stat`, and therefore no mtime (M16, §6.3.1). Paced by the
+// clock rather than by the poll because a stalled size is also exactly what an idle log
+// looks like, and an idle log must not cost a read per second forever.
+constexpr qint64 kStallProbeMs = 30000;
+
+// The `wc` rung reads the whole file to answer, so a log measured that way is polled far
+// more slowly than one that can be stat'd, and abandoned outright once it is large. Both
+// numbers are about the SERVER: observing a log must not disturb the machine producing
+// it (invariant #5), and a note in the status bar is not a substitute for not doing it.
+constexpr int    kWcMinPollMs = 15000;
+constexpr qint64 kWcAbandonBytes = 64 * 1024 * 1024;
 
 } // namespace
 
@@ -113,6 +127,7 @@ private:
     bool fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset);
     void beginGeneration(qint64 remoteSize);
     bool remoteHeadDiffersFromSpool();
+    bool stallProbeDue();
     void setError(const QString &message);
     void setWaiting(const QString &message);
     void setState(FetchStatus::State state);
@@ -137,8 +152,13 @@ private:
     bool           m_reconnectRefused = false;
 
     // Fetcher-thread only, so no lock: the last stat, used by the rotation fallback.
-    qint64 m_lastMtime = 0;
+    qint64 m_lastMtime = kUnknownMtime;
     qint64 m_lastSize = 0;
+    // Fetcher-thread only. Left INVALID so the first stall probes at once; restarted only
+    // when a compare actually runs, and deliberately not reset when the log grows — a
+    // bursty log alternates growing and stalling, and resetting on growth would fire the
+    // compare on every other poll, which is the whole thing this exists to prevent.
+    QElapsedTimer m_stallProbe;
 };
 
 // Connect, open the remote file, and prime enough of it for a format sample. On success
@@ -205,12 +225,35 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
     // Standing remark, not an error: this server would not do SFTP, so the log is being
     // read by running commands on it. Slower, and rotation is detected the weaker way,
     // so say which transport is in use rather than leaving it to be deduced (§6.3.1).
+    // How MUCH weaker depends on what the server can be measured with, so the note says
+    // that too. Set once here: a re-settle on a later rotation can leave it slightly
+    // stale, which is worth less than a status bar that rewrites itself mid-tail.
     {
         QMutexLocker lock(&m_mutex);
-        m_status.note = m_session->mode() == SshSession::Mode::Exec
-            ? Tr::tr("reading with shell commands — %1 does not offer SFTP")
-                  .arg(m_location.host)
-            : QString();
+        if (m_session->mode() != SshSession::Mode::Exec) {
+            m_status.note.clear();
+        } else {
+            switch (m_session->sizeSource()) {
+            case SizeSource::Wc:
+                m_status.note = Tr::tr("reading with shell commands — %1 offers neither "
+                                       "SFTP nor `stat` nor `ls`, so the log is measured "
+                                       "by reading all of it and is checked rarely")
+                                    .arg(m_location.host);
+                break;
+            case SizeSource::Ls:
+                m_status.note = Tr::tr("reading with shell commands — %1 offers neither "
+                                       "SFTP nor `stat`, so a rotation is noticed within "
+                                       "about half a minute rather than at once")
+                                    .arg(m_location.host);
+                break;
+            case SizeSource::Stat:
+            case SizeSource::None:
+                m_status.note = Tr::tr("reading with shell commands — %1 does not offer "
+                                       "SFTP")
+                                    .arg(m_location.host);
+                break;
+            }
+        }
     }
     *failure = SshSession::Failure::None;
     return true;
@@ -378,6 +421,16 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
     return true;
 }
 
+bool SshFetcher::stallProbeDue()
+{
+    if (m_stallProbe.isValid() && m_stallProbe.elapsed() < kStallProbeMs)
+        return false;
+    // start(), not restart(): restart() on a timer that was never started reports a
+    // meaningless elapsed value, and this one is deliberately invalid to begin with.
+    m_stallProbe.start();
+    return true;
+}
+
 bool SshFetcher::remoteHeadDiffersFromSpool()
 {
     const FetchStatus current = status();
@@ -421,6 +474,19 @@ void SshFetcher::pollOnce()
         return;
     }
 
+    // Measured by reading the whole file, and now large enough that doing so once every
+    // kWcMinPollMs is no longer a reasonable thing to do to somebody else's machine.
+    // Reported rather than quietly throttled further: the remedy is one utility away.
+    if (m_session->sizeSource() == SizeSource::Wc && byName.size > kWcAbandonBytes) {
+        setError(Tr::tr("%1 has grown past %2 MB, and %3 offers no way to measure it "
+                        "except by reading all of it. Installing `stat` or `ls` on the "
+                        "server fixes this.")
+                     .arg(m_location.path)
+                     .arg(kWcAbandonBytes / (1024 * 1024))
+                     .arg(m_location.host));
+        return;
+    }
+
     const FetchStatus current = status();
     const qint64 consumed = current.baseOffset + current.committedSize;
 
@@ -435,6 +501,20 @@ void SshFetcher::pollOnce()
         const SshSession::Attrs byHandle = m_session->statHandle();
         if (byHandle.valid && byHandle.size != byName.size)
             rotated = true;
+    } else if (byName.mtime == kUnknownMtime) {
+        // This server has no `stat`, so "it changed without growing" cannot be asked at
+        // all — there is no mtime to ask it about. What is left is a size that has
+        // STALLED, which is also exactly what an idle log looks like, so the compare is
+        // paced by the clock instead: at most one small read every kStallProbeMs.
+        //
+        // THIS BRANCH MUST COME BEFORE THE ONE BELOW. kUnknownMtime is -1, and -1 > -1
+        // is false, so falling through to the mtime comparison would silently switch
+        // rotation detection off on exactly the servers that need it most.
+        //
+        // A growing log never reaches here — the size test below is false while it
+        // grows — so the standing cost is paid only by a log nobody is writing to.
+        if (byName.size == m_lastSize && stallProbeDue())
+            rotated = remoteHeadDiffersFromSpool();
     } else if (byName.mtime > m_lastMtime && byName.size == m_lastSize) {
         // FSTAT cannot be trusted on this server. Fall back to comparing the head of
         // the file — but only on suspicion (it changed without growing), never as
@@ -451,14 +531,23 @@ void SshFetcher::pollOnce()
         SshSession::Failure openFailure = SshSession::Failure::None;
         if (!m_session->openFile(&openError, &openFailure)) {
             // Mid-rotation the new file may not exist for a moment, and after a removal
-            // it never will: both are a wait, and the next poll sorts out which.
-            if (openFailure == SshSession::Failure::NoSuchFile)
+            // it never will: both are a wait, and the next poll sorts out which. So is a
+            // link that died while reopening, which an exec session can now report from
+            // here — everything Failure calls retryable-unattended waits rather than
+            // erroring, because an error is a claim that waiting will not help.
+            if (openFailure == SshSession::Failure::NoSuchFile
+                || openFailure == SshSession::Failure::Unreachable)
                 setWaiting(openError);
             else
                 setError(openError);
             return;
         }
         const SshSession::Attrs fresh = m_session->statPath();
+        // The assignment above recorded the size of the file we have just rotated AWAY
+        // from. Under the stalled-size rule that would read as a stall on the next poll
+        // and spend a head compare answering a question nobody asked.
+        if (fresh.valid)
+            m_lastSize = fresh.size;
         beginGeneration(fresh.valid ? fresh.size : 0);
         setState(FetchStatus::State::Priming);
         const FetchStatus started = status();
@@ -544,7 +633,13 @@ void SshFetcher::tailLoop()
             // told, not how often loftail tries.
             const bool slow = m_status.state == FetchStatus::State::Error
                 || m_status.state == FetchStatus::State::Waiting;
-            const int wait = slow ? qMax(m_options.pollMs, 5000) : m_options.pollMs;
+            int wait = slow ? qMax(m_options.pollMs, 5000) : m_options.pollMs;
+            // A log that can only be measured by reading all of it is polled far more
+            // slowly than the user asked for, and that is not a tuning decision to leave
+            // to them: the default is once a second, and once a second is a whole log
+            // re-read every second on the machine being observed (invariant #5).
+            if (m_session && m_session->sizeSource() == SizeSource::Wc)
+                wait = qMax(wait, kWcMinPollMs);
             m_wake.wait(&m_mutex, static_cast<unsigned long>(wait));
         }
         m_poked = false;
