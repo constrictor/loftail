@@ -1,5 +1,6 @@
 #include "LiveController.h"
 
+#include "ContextEmitter.h"
 #include "Decoder.h"
 #include "Document.h"
 #include "FilteredIndex.h"
@@ -13,6 +14,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
+#include <QPair>
 #include <QTimer>
 
 #include <cstring>
@@ -392,38 +394,70 @@ void LiveController::ingestAppended()
         // the boundary — no already-admitted rows to remove ("stay on current run").
         m_document->updateRunsAfterAppend(oldCount);
 
-        // If the provisional record changed and was visible, drop its (last) view
-        // row so it can be re-evaluated against the filter along with the new tail.
-        int candidateStart = firstTailNew; // by default skip the unchanged provisional
+        // Where to resume the emission from, and therefore what to un-emit first.
+        //
+        // Without filter context this is the row the provisional record itself
+        // occupies: it is the only record whose bytes can have changed, so at most
+        // its own view row can be wrong. With leading context (-B) configured it can
+        // also have PULLED IN neighbours: a provisional that was a match dragged up
+        // to `before` records in with it, and if it stops matching those rows are
+        // orphaned. So the resume point widens to base - before.
+        //
+        // It widens only on a genuine FLIP of the provisional's emission class,
+        // because that is the only case where re-emitting produces something
+        // different. If it was and still is a match, popping just it leaves the
+        // emitter at lastEmitted == base-1 (the suffix invariant, ContextEmitter.h),
+        // so the re-emit writes zero context rows and re-appends it unchanged — and
+        // paying `before`+1 row removals per tick for that would churn the tail and
+        // shift a detached reader's scroll position on every append.
+        //
+        // Note the resume point and the pop point are the SAME row, deliberately: a
+        // match inside the popped window that the scan did not restart far enough to
+        // reach would be dropped from the view for good.
+        const int before = m_document->contextBefore();
+        const int after = m_document->contextAfter();
+
+        int candidateStart = base + 1; // skip the unchanged provisional
         if (provisionalChanged) {
-            if (filtered.lastVisibleSource() == base) {
-                m_model->beginRemoveTail(1);
+            const bool wasMatch = filtered.lastMatchSource() == base;
+            const bool nowMatch = m_document->acceptsInView(idx.records.at(base));
+            candidateStart = (before > 0 && wasMatch != nowMatch) ? qMax(0, base - before) : base;
+        }
+        if (oldCount == 0)
+            candidateStart = 0; // nothing was emitted yet; the whole tail is new
+
+        const int popCount = filtered.trailingCountFrom(candidateStart);
+        if (popCount > 0) {
+            m_model->beginRemoveTail(popCount);
+            for (int i = 0; i < popCount; ++i)
                 filtered.popLastVisible();
-                filtered.extendCompactSums(filtered.recordCount());
-                m_model->endRemoveTail();
-            }
-            candidateStart = 0; // re-consider tail[0] (== source row `base`)
+            filtered.extendCompactSums(filtered.recordCount());
+            m_model->endRemoveTail();
         }
 
         // Evaluate the candidate records against the active filter; integer axes
-        // first, message text last (invariant #4) — same predicate as the initial
-        // pass, so appended records pass through the filters unchanged.
-        QVector<int> passing;
-        passing.reserve(tail.size());
-        for (int j = candidateStart; j < tail.size(); ++j) {
-            const int srcRow = base + j;
-            const Record &rec = idx.records.at(srcRow);
-            // Same predicate as the initial pass (run bound + filters), so appended
-            // records enter the view exactly as a one-shot scan would place them.
-            if (m_document->acceptsInView(rec))
-                passing.append(srcRow);
-        }
+        // first, message text last (invariant #4) — the SAME emitter the initial pass
+        // runs, resumed from whatever survived the pop, so appended records enter the
+        // view exactly where a one-shot scan would have put them. Nothing about the
+        // resume state is cached: both fields are read back off the visible subset,
+        // which is why a rescan or a wait needs no bookkeeping here.
+        ContextState st;
+        st.lastEmitted = filtered.lastVisibleSource();
+        st.lastMatch = filtered.lastMatchSource();
+
+        QVector<QPair<int, bool>> passing; // (source row, is context)
+        passing.reserve(tail.size() + before);
+        emitWithContext(
+            candidateStart, idx.records.size() - 1, before, after, st,
+            [this, &idx](int row) { return m_document->inRunBound(idx.records.at(row)); },
+            [this, &idx](int row) { return m_document->matchesFilters(idx.records.at(row)); },
+            [&passing](int row, bool isContext) { passing.append({row, isContext}); });
 
         if (!passing.isEmpty()) {
             const int firstViewRow = filtered.recordCount();
             m_model->beginAppendRows(passing.size());
-            for (int srcRow : passing)
-                filtered.appendVisible(srcRow, idx.records.at(srcRow));
+            for (const auto &p : passing)
+                filtered.appendVisible(p.first, idx.records.at(p.first), p.second);
             filtered.extendCompactSums(firstViewRow);
             m_model->endAppendRows();
         }

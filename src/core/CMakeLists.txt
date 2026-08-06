@@ -83,6 +83,9 @@ add_library(loftail_core STATIC
     Filter.cpp
     Filter.h
     FilteredIndex.h
+    # M15 — filter context (grep -B/-A): the one forward pass that widens the visible
+    # subset to each match's neighbours, shared by the one-shot and the live path.
+    ContextEmitter.h
     # The portable (name/level/wall-clock) form of those same five axes, shared by
     # the Filters pane and by every highlight rule so the two cannot drift apart.
     MatchCriteria.cpp

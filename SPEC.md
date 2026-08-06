@@ -224,6 +224,18 @@ Filtering removes non-matching records from the view. The underlying file is nev
 - **Combination semantics:** within one axis, selected values are OR-ed (any of these subsystems); across axes, AND (matching subsystem **and** matching priority).
 - The subsystem list supports select-all / select-none / invert, and a text box to narrow long lists.
 
+### Context
+
+Filtering to the ERRORs also hides everything that led to them, which is usually the thing worth reading. **Context** brings the neighbours back: two spinners, *Before* and *After*, ask for that many records either side of every match — `grep -B` and `-A`.
+
+- Context records are **shown dimmed**, so a match is still distinguishable at a glance from what was pulled in around it. A dimmed record that also carries a highlight color (§7) keeps that color, softened.
+- They are ordinary rows in every other respect: selectable, copyable (§5), reachable by Find (§5), and the record menu on one acts on *that* record.
+- Overlapping windows do not repeat a record, and a record that is itself a match is shown as a match even when it also falls inside a neighbour's window.
+- Context never reaches **outside the selected run** (§3a): the lead-up to the first error of a run is what that run logged, not the tail of the run before it.
+- Context alone hides nothing and shows nothing extra: with no filter active there is nothing for it to be context *to*, and the view is unchanged.
+- Both values are **per file**, like the filters themselves, and travel with a saved preset and a restored session (§9, §10).
+- With context on, the record count in the status bar says how much of what is shown is context rather than match.
+
 ## 7. Highlighting
 
 Highlighting colors matching records without removing anything, for spotting events in context.

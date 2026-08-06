@@ -5,6 +5,7 @@
 #include "Document.h"
 #include "LogFormat.h"
 #include "LogModel.h"
+#include "Priority.h"
 
 using namespace loftail;
 
@@ -44,6 +45,10 @@ private slots:
     void timeDisplayRunSecondsSkipsUnparsedRunStart();
     void timeDisplayLeavesUnparsedCellEmpty();
     void timeDisplayRunSecondsSurvivesReparse();
+
+    // M15 — the seam LogView dims through. Core has no palette, so the model's whole
+    // contribution is this one question about a view row.
+    void rowIsContextTracksTheFilteredSubset();
 };
 
 namespace {
@@ -370,6 +375,40 @@ void TestLogModel::timeDisplayRunSecondsSurvivesReparse()
     doc.reparseTimestamps(QTimeZone(2 * 3600));
     QCOMPARE(cell(0), QStringLiteral("0.000"));
     QCOMPARE(cell(1), QStringLiteral("1.250"));
+}
+
+void TestLogModel::rowIsContextTracksTheFilteredSubset()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 10:00:00,000 [main] INFO  svc - a\n"
+        "2026-07-21 10:00:01,000 [main] INFO  svc - b\n"
+        "2026-07-21 10:00:02,000 [main] ERROR svc - c\n"
+        "2026-07-21 10:00:03,000 [main] INFO  svc - d\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    LogModel model(&doc);
+
+    // No filter: the identity view, where nothing can be context.
+    QCOMPARE(model.rowCount(), 4);
+    for (int row = 0; row < 4; ++row)
+        QVERIFY(!model.rowIsContext(row));
+
+    doc.filters().priorityEnabled = true;
+    doc.filters().minPriority = Priority::Error;
+    doc.setContext(1, 1);
+    doc.applyFilters();
+
+    // Rows 1, 2, 3 of the file are now view rows 0, 1, 2: context, match, context.
+    QCOMPARE(model.rowCount(), 3);
+    QVERIFY(model.rowIsContext(0));
+    QVERIFY(!model.rowIsContext(1));
+    QVERIFY(model.rowIsContext(2));
+    QVERIFY(!model.rowIsContext(3)); // out of range, not a crash
 }
 
 QTEST_GUILESS_MAIN(TestLogModel)

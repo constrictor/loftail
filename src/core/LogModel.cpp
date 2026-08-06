@@ -251,6 +251,11 @@ void LogModel::rowColors(int row, QColor &background, QColor &foreground) const
     foreground = HighlightPalette::color(rule.foreground, m_darkTheme);
 }
 
+bool LogModel::rowIsContext(int row) const
+{
+    return m_document && m_document->filtered().isContext(row);
+}
+
 QColor LogModel::highlightColor(int row, bool background) const
 {
     QColor bg, fg;

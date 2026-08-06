@@ -192,7 +192,25 @@ public:
     // view (no subset materialized). A single linear pass; §11 repaint budget.
     // With a run selected (see below) the pass ALSO restricts to that run's
     // byte-offset interval, composing the run bound with the filter predicate.
+    // With filter context configured (see below) the pass also WIDENS the subset to
+    // the neighbours of each match, which is the one thing the predicate cannot
+    // express on its own — see ContextEmitter.h.
     void applyFilters();
+
+    // Filter context (M15, SPEC.md §6): show `before` records ahead of and `after`
+    // records behind every match, tagged as context so the view dims them — grep's
+    // -B/-A. Per-FILE state, beside the filters themselves (invariant #7).
+    //
+    // Context NEVER makes the FilteredIndex active on its own: with no filter and no
+    // run there is nothing to be context TO, so applyFilters() keeps its
+    // allocation-free identity early-out and a file with no filter costs nothing.
+    //
+    // Setting it does not re-apply; the caller wraps applyFilters() in a model reset,
+    // exactly as it does for a filter edit.
+    static constexpr int kMaxContext = 1000;
+    int  contextBefore() const { return m_contextBefore; }
+    int  contextAfter() const { return m_contextAfter; }
+    void setContext(int before, int after);
 
     // Run selection (SPEC.md §3a). A log file often concatenates several app runs;
     // a user-supplied "run-start" regexp splits it into runs and the user views one
@@ -268,6 +286,13 @@ public:
     // the filter chain. Used by BOTH applyFilters() and the live-append path so run
     // restriction applies identically on initial load and on tail.
     bool acceptsInView(const Record &r) const;
+
+    // The two halves of it, separately. Filter context needs them apart: a context
+    // record is one the FILTERS rejected but the run bound still admits, so a
+    // neighbour is pulled in from inside the run and never from across its boundary.
+    // inRunBound() is integer comparisons only; matchesFilters() may decode.
+    bool inRunBound(const Record &r) const;
+    bool matchesFilters(const Record &r) const;
 
     // Highlighting (M5, SPEC.md §7). The HighlighterSet is the per-file highlight
     // state (invariant #7): an ordered rule list, first-match-wins, each rule
@@ -374,6 +399,8 @@ private:
     RecordIndex                m_index;
     FilterSet                  m_filters;
     FilteredIndex              m_filtered;
+    int                        m_contextBefore = 0;
+    int                        m_contextAfter = 0;
     HighlighterSet             m_highlighters;
     QTimeZone                  m_sourceZone;
     QTimeZone                  m_displayZone;   // derived; see recomputeDisplayZone()

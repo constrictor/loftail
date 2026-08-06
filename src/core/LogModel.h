@@ -79,6 +79,13 @@ public:
     // prefer rowColors() on the paint path.
     QColor highlightColor(int row, bool background) const;
 
+    // True when this view row is present only because a nearby record matched the
+    // filter (M15, SPEC.md §6). The VIEW decides what that looks like: dimming needs
+    // the resolved base and text colours, which live in the widget palette, and core
+    // links QtCore only. data()'s Background/Foreground roles are deliberately left
+    // undimmed — they are the QTableView prototype path, not the paint path.
+    bool rowIsContext(int row) const;
+
 private:
     // The matched rule for a view row, or -1. Supplies HighlighterSet::match with the
     // lazy message decode so the text axis costs nothing until a rule's integer axes

@@ -65,6 +65,18 @@ qt_add_executable(tst_filter tst_filter.cpp)
 target_link_libraries(tst_filter PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_filter COMMAND tst_filter)
 
+# M15 — filter with context (grep -B/-A): the pure emitter, Document::applyFilters
+# over real bytes (including composition with a selected run), and the LIVE path,
+# where the incremental emitter has to reach the same answer as a one-shot scan
+# across arbitrary write boundaries. Core-only, GUILESS.
+#
+# UNGATED, unlike tst_tail beside which the live cases would otherwise sit: nothing
+# here needs mmap-sees-appends, an unlink or a rename — only appends, which
+# BufferedLogSource serves too — and the emission rule must hold on Windows.
+qt_add_executable(tst_filtercontext tst_filtercontext.cpp)
+target_link_libraries(tst_filtercontext PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_filtercontext COMMAND tst_filtercontext)
+
 # M5 — highlight core (palette-index persistence, first-match-wins roles with the
 # default fallback), the preset store (schema-versioned JSON, atomic writes,
 # export/import portability), and the session `documents`-array round-trip. All

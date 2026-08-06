@@ -13,6 +13,14 @@ namespace {
 // to read as a hint rather than as typed content, not so far that it disappears.
 constexpr qreal kPlaceholderMix = 0.45;
 
+// How far a filter-context row recedes. Less than a placeholder: this is real log text
+// that the user asked to see, not a hint — it must stay comfortably readable while
+// still losing against the matches it surrounds. The fill moves further than the text
+// because a highlight rule's background is a large, saturated area and half of it is
+// still plainly the same hue.
+constexpr qreal kContextTextMix = 0.35;
+constexpr qreal kContextFillMix = 0.55;
+
 // The contrast a placeholder must already have against its field before this leaves the
 // theme alone. Expressed as a WCAG contrast ratio; 4.5 is the bound for body text and
 // 3.0 for large text, so a hint is allowed to sit below both — but Qt's unset default
@@ -95,6 +103,16 @@ QColor mutedColor(const QPalette &palette)
 QColor placeholderColor(const QPalette &palette)
 {
     return mix(palette.color(QPalette::Text), palette.color(QPalette::Base), kPlaceholderMix);
+}
+
+QColor contextTextColor(const QColor &fg, const QColor &bg)
+{
+    return mix(fg, bg, kContextTextMix);
+}
+
+QColor contextFillColor(const QColor &ruleBg, const QColor &base)
+{
+    return mix(ruleBg, base, kContextFillMix);
 }
 
 void ensureReadablePlaceholder(QWidget *widget)
