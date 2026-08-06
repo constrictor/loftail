@@ -7,6 +7,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -158,7 +159,9 @@ void addRevealToggle(QLineEdit *field)
                                        QLineEdit::TrailingPosition);
     reveal->setObjectName(QStringLiteral("sshRevealPassword"));
     reveal->setCheckable(true);
-    reveal->setToolTip(QStringLiteral("Show password (Ctrl+Shift+H)"));
+    // Not a member, so the context is named for the class this control is built for.
+    reveal->setToolTip(
+        QCoreApplication::translate("loftail::GuiSshPrompter", "Show password (Ctrl+Shift+H)"));
 
     // QLineEdit's own action buttons take no focus, so without this the control would be
     // mouse-only — in the one dialog where the keyboard is the whole interaction. The
@@ -173,8 +176,11 @@ void addRevealToggle(QLineEdit *field)
         // Struck while the password is visible: the glyph shows what clicking does next,
         // which is the convention every browser's password box uses.
         reveal->setIcon(QIcon(new EyeIconEngine(shown, color)));
-        reveal->setToolTip(shown ? QStringLiteral("Hide password (Ctrl+Shift+H)")
-                                 : QStringLiteral("Show password (Ctrl+Shift+H)"));
+        reveal->setToolTip(
+            shown ? QCoreApplication::translate("loftail::GuiSshPrompter",
+                                                "Hide password (Ctrl+Shift+H)")
+                  : QCoreApplication::translate("loftail::GuiSshPrompter",
+                                                "Show password (Ctrl+Shift+H)"));
     });
 }
 
@@ -193,9 +199,9 @@ SshPrompter::HostKeyChoice GuiSshPrompter::confirmHostKey(const HostKeyInfo &inf
         // looked like it might help would be a lie.
         QMessageBox box(m_parent);
         box.setIcon(QMessageBox::Critical);
-        box.setWindowTitle(QStringLiteral("Host key changed"));
-        box.setText(QStringLiteral("The host key for %1 has CHANGED.").arg(where));
-        box.setInformativeText(QStringLiteral(
+        box.setWindowTitle(tr("Host key changed"));
+        box.setText(tr("The host key for %1 has CHANGED.").arg(where));
+        box.setInformativeText(tr(
             "This can happen when a server is rebuilt — but it is also exactly what "
             "an intercepted connection looks like.\n\n"
             "%1 key now offered:\n%2\n\n"
@@ -210,9 +216,9 @@ SshPrompter::HostKeyChoice GuiSshPrompter::confirmHostKey(const HostKeyInfo &inf
 
     QMessageBox box(m_parent);
     box.setIcon(QMessageBox::Warning);
-    box.setWindowTitle(QStringLiteral("Unknown host"));
-    box.setText(QStringLiteral("%1 is not in your known_hosts file.").arg(where));
-    box.setInformativeText(QStringLiteral(
+    box.setWindowTitle(tr("Unknown host"));
+    box.setText(tr("%1 is not in your known_hosts file.").arg(where));
+    box.setInformativeText(tr(
         "Its %1 key fingerprint is:\n\n%2\n\n"
         "Check that against the server (ssh-keygen -lf on its host key) before "
         "accepting. Accepting means loftail will send your credentials to whatever "
@@ -220,9 +226,9 @@ SshPrompter::HostKeyChoice GuiSshPrompter::confirmHostKey(const HostKeyInfo &inf
                                .arg(info.keyType, info.fingerprintSha256));
 
     QPushButton *remember =
-        box.addButton(QStringLiteral("Accept and Remember"), QMessageBox::AcceptRole);
-    QPushButton *once = box.addButton(QStringLiteral("Accept Once"), QMessageBox::AcceptRole);
-    QPushButton *reject = box.addButton(QStringLiteral("Cancel"), QMessageBox::RejectRole);
+        box.addButton(tr("Accept and Remember"), QMessageBox::AcceptRole);
+    QPushButton *once = box.addButton(tr("Accept Once"), QMessageBox::AcceptRole);
+    QPushButton *reject = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
     box.setDefaultButton(reject); // the safe answer is the one you get by pressing Enter
     box.exec();
 
@@ -240,7 +246,7 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
         return false; // the user already asked to stop reopening remote files
 
     QDialog dialog(m_parent);
-    dialog.setWindowTitle(QStringLiteral("Password for %1").arg(target));
+    dialog.setWindowTitle(tr("Password for %1").arg(target));
     dialog.setModal(true);
 
     auto *layout = new QVBoxLayout(&dialog);
@@ -269,8 +275,8 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
         HostBookmarkStore::indexOfTarget(bookmarks.all(), target) >= 0;
 
     auto *save = new QCheckBox(
-        haveKeychain ? QStringLiteral("Remember this password in %1").arg(backend)
-                     : QStringLiteral("Remember this password"),
+        haveKeychain ? tr("Remember this password in %1").arg(backend)
+                     : tr("Remember this password"),
         &dialog);
     save->setObjectName(QStringLiteral("sshRememberPassword"));
     save->setEnabled(haveKeychain || haveBookmark);
@@ -283,14 +289,14 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
     if (haveKeychain) {
         // No ⚠ here, and that is the point of the whole feature: this is the case where
         // loftail is NOT writing a secret to a file it owns.
-        note = QStringLiteral("%1 holds it, not loftail — nothing is written to a file "
+        note = tr("%1 holds it, not loftail — nothing is written to a file "
                               "here. Remove it with your system's keychain manager.")
                    .arg(backend.toHtmlEscaped());
     } else if (haveBookmark) {
         const QString where = bookmarks.filePath().isEmpty()
-            ? QStringLiteral("loftail's configuration directory")
+            ? tr("loftail's configuration directory")
             : bookmarks.filePath();
-        note = QStringLiteral(
+        note = tr(
                    "<span style='color:%1'>⚠ Stored as <b>plain text</b> in %2 — not "
                    "encrypted. Anyone who can read your home directory can read it. An "
                    "SSH key or agent is safer.</span>")
@@ -299,7 +305,7 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
         // The honest rendering of what already happened silently before M14: with no
         // keychain and no saved host there is nowhere to put it, so the box did nothing.
         // Saying so beats letting someone tick it and believe it worked.
-        note = QStringLiteral("There is no keychain on this machine and no saved host for "
+        note = tr("There is no keychain on this machine and no saved host for "
                               "%1 to keep a password in. Save the host under "
                               "File ▸ Open Remote… first.")
                    .arg(target.toHtmlEscaped());
@@ -312,12 +318,13 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
     layout->addWidget(warning);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    QAbstractButton *skipAll = nullptr;
     if (m_bulkRestore) {
         // Restoring a session reopens everything at once. Without these, a host that
         // needs a password and is not available turns into an unskippable queue of
         // dialogs at launch.
-        buttons->addButton(QStringLiteral("Skip This Host"), QDialogButtonBox::DestructiveRole);
-        buttons->addButton(QStringLiteral("Skip All Remaining"), QDialogButtonBox::RejectRole);
+        buttons->addButton(tr("Skip This Host"), QDialogButtonBox::DestructiveRole);
+        skipAll = buttons->addButton(tr("Skip All Remaining"), QDialogButtonBox::RejectRole);
     }
     layout->addWidget(buttons);
 
@@ -328,8 +335,13 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
                          const auto role = buttons->buttonRole(button);
                          if (role == QDialogButtonBox::AcceptRole) {
                              accepted = true;
-                         } else if (role == QDialogButtonBox::RejectRole
-                                    && button->text().contains(QStringLiteral("Remaining"))) {
+                         } else if (role == QDialogButtonBox::RejectRole && button == skipAll) {
+                             // By identity, not by label. This matched
+                             // text().contains("Remaining") until the tr() sweep, at which
+                             // point the first translated build would have quietly turned
+                             // "Skip All Remaining" back into a plain Cancel — the two
+                             // share a role, and the label was the only thing telling
+                             // them apart.
                              cancelRemaining = true;
                          }
                          dialog.close();
@@ -399,8 +411,8 @@ void GuiSshPrompter::reportRememberFailure(const QString &target, const QString 
     m_lastRememberFailure = message;
 
     QMessageBox::warning(
-        m_parent, QStringLiteral("Could not remember the password"),
-        QStringLiteral("%1\n\nThe password works and will be used for %2 until loftail "
+        m_parent, tr("Could not remember the password"),
+        tr("%1\n\nThe password works and will be used for %2 until loftail "
                        "closes, but it has not been saved anywhere.")
             .arg(message, target));
 }

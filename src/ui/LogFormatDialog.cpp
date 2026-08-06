@@ -9,6 +9,7 @@
 #include "PatternCompiler.h"
 
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -36,14 +37,19 @@ int encodingToIndex(Encoding e)
     return 0;
 }
 
+// Not a member, so there is no tr() in scope; the context is named explicitly so these
+// land in the catalogue beside the dialog's other strings rather than in one of their
+// own. The encoding NAMES are proper nouns and a translator will mostly leave them, but
+// "Auto-detect" and "System 8-bit" are prose and the context is what tells them apart.
 QString encodingName(Encoding e)
 {
     switch (e) {
-    case Encoding::Auto:    return QStringLiteral("Auto-detect");
-    case Encoding::Utf8:    return QStringLiteral("UTF-8");
-    case Encoding::Utf16LE: return QStringLiteral("UTF-16 LE");
-    case Encoding::Utf16BE: return QStringLiteral("UTF-16 BE");
-    case Encoding::System:  return QStringLiteral("System 8-bit");
+    case Encoding::Auto:    return QCoreApplication::translate("loftail::LogFormatDialog", "Auto-detect");
+    case Encoding::Utf8:    return QCoreApplication::translate("loftail::LogFormatDialog", "UTF-8");
+    case Encoding::Utf16LE: return QCoreApplication::translate("loftail::LogFormatDialog", "UTF-16 LE");
+    case Encoding::Utf16BE: return QCoreApplication::translate("loftail::LogFormatDialog", "UTF-16 BE");
+    case Encoding::System:  return QCoreApplication::translate("loftail::LogFormatDialog",
+                                                               "System 8-bit");
     }
     return QString();
 }
@@ -62,8 +68,8 @@ LogFormatDialog::LogFormatDialog(const QString &fileName,
 
 void LogFormatDialog::buildUi(const QString &fileName)
 {
-    setWindowTitle(fileName.isEmpty() ? QStringLiteral("Log Format")
-                                      : QStringLiteral("Log Format — %1").arg(fileName));
+    setWindowTitle(fileName.isEmpty() ? tr("Log Format")
+                                      : tr("Log Format — %1").arg(fileName));
     resize(760, 560);
 
     auto *outer = new QVBoxLayout(this);
@@ -78,11 +84,11 @@ void LogFormatDialog::buildUi(const QString &fileName)
     patRow->addWidget(m_patternEdit, 1);
     // M8: re-run autodetection over the sample and fill the pattern field. It only
     // pre-fills — the user still confirms via OK, so nothing is applied silently.
-    m_detectButton = new QPushButton(QStringLiteral("&Detect"), this);
-    m_detectButton->setToolTip(QStringLiteral("Guess the pattern from the sample lines"));
+    m_detectButton = new QPushButton(tr("&Detect"), this);
+    m_detectButton->setToolTip(tr("Guess the pattern from the sample lines"));
     m_detectButton->setEnabled(!m_sample.isEmpty());
     patRow->addWidget(m_detectButton);
-    form->addRow(QStringLiteral("Conversion &pattern:"), patRow);
+    form->addRow(tr("Conversion &pattern:"), patRow);
     connect(m_patternEdit, &QLineEdit::textChanged, this, &LogFormatDialog::refresh);
     connect(m_detectButton, &QPushButton::clicked, this, &LogFormatDialog::detect);
 
@@ -113,25 +119,25 @@ void LogFormatDialog::buildUi(const QString &fileName)
         QStringLiteral("color: %1;").arg(mutedColor(palette()).name()));
     encRow->addWidget(m_detectedLabel);
     encRow->addStretch();
-    form->addRow(QStringLiteral("&Encoding:"), encRow);
+    form->addRow(tr("&Encoding:"), encRow);
     connect(m_encodingCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
             &LogFormatDialog::refresh);
 
     // --- Source time zone --------------------------------------------------
     auto *srcRow = new QHBoxLayout;
     m_sourceZoneCombo = new QComboBox(this);
-    m_sourceZoneCombo->addItem(QStringLiteral("Infer from pattern")); // Default
-    m_sourceZoneCombo->addItem(QStringLiteral("Local time"));         // Local
-    m_sourceZoneCombo->addItem(QStringLiteral("UTC"));                // Utc
-    m_sourceZoneCombo->addItem(QStringLiteral("Fixed offset"));       // FixedOffset
+    m_sourceZoneCombo->addItem(tr("Infer from pattern")); // Default
+    m_sourceZoneCombo->addItem(tr("Local time"));         // Local
+    m_sourceZoneCombo->addItem(tr("UTC"));                // Utc
+    m_sourceZoneCombo->addItem(tr("Fixed offset"));       // FixedOffset
     srcRow->addWidget(m_sourceZoneCombo);
     m_offsetSpin = new QSpinBox(this);
     m_offsetSpin->setRange(-720, 840); // minutes east of UTC (−12:00 … +14:00)
-    m_offsetSpin->setSuffix(QStringLiteral(" min"));
-    m_offsetSpin->setToolTip(QStringLiteral("Offset east of UTC, in minutes"));
+    m_offsetSpin->setSuffix(tr(" min"));
+    m_offsetSpin->setToolTip(tr("Offset east of UTC, in minutes"));
     srcRow->addWidget(m_offsetSpin);
     srcRow->addStretch();
-    form->addRow(QStringLiteral("&Source time zone:"), srcRow);
+    form->addRow(tr("&Source time zone:"), srcRow);
     connect(m_sourceZoneCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this]() {
         m_offsetSpin->setVisible(m_sourceZoneCombo->currentIndex()
                                  == int(ZoneChoice::Kind::FixedOffset));
@@ -143,7 +149,7 @@ void LogFormatDialog::buildUi(const QString &fileName)
     // zone modes alongside the two seconds modes (SPEC.md §4).
 
     // --- Live preview ------------------------------------------------------
-    outer->addWidget(new QLabel(QStringLiteral("Preview (sample lines split into fields):"), this));
+    outer->addWidget(new QLabel(tr("Preview (sample lines split into fields):"), this));
     m_previewTable = new QTableWidget(this);
     // Same fixed-pitch font as the record view, so the preview shows the sample
     // lines the way the table will render them (and column contents line up).
@@ -167,8 +173,8 @@ void LogFormatDialog::buildUi(const QString &fileName)
     // on a non-English desktop leaves a dialog that is English everywhere else
     // reading half-translated. loftail ships no translations, so state the text
     // explicitly and keep one language on screen.
-    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("OK"));
-    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Cancel"));
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("OK"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     outer->addWidget(buttons);
@@ -224,20 +230,20 @@ void LogFormatDialog::refresh()
 
         QStringList warns;
         if (format.prioGroup <= 0)
-            warns << QStringLiteral("no %p — priority filtering will be unavailable");
+            warns << tr("no %p — priority filtering will be unavailable");
         if (format.loggerGroup <= 0)
-            warns << QStringLiteral("no %c — subsystem filtering will be unavailable");
+            warns << tr("no %c — subsystem filtering will be unavailable");
         if (warns.isEmpty()) {
             m_warnLabel->setVisible(false);
         } else {
-            m_warnLabel->setText(QStringLiteral("Warning: ") + warns.join(QStringLiteral("; ")));
+            m_warnLabel->setText(tr("Warning: %1").arg(warns.join(QStringLiteral("; "))));
             m_warnLabel->setVisible(true);
         }
     } else {
         const CompileError &e = compiled.error();
         const QString where = e.offset >= 0
-            ? QStringLiteral("Error at position %1: %2").arg(e.offset).arg(e.message)
-            : QStringLiteral("Error: %1").arg(e.message);
+            ? tr("Error at position %1: %2").arg(e.offset).arg(e.message)
+            : tr("Error: %1").arg(e.message);
         m_errorLabel->setText(where);
         m_errorLabel->setVisible(true);
         m_warnLabel->setVisible(false);
@@ -247,14 +253,14 @@ void LogFormatDialog::refresh()
     const Encoding enc = currentEncoding();
     const Decoder decoder = Decoder::detect(m_sample, enc);
     m_detectedLabel->setText(enc == Encoding::Auto
-        ? QStringLiteral("(detected: %1)").arg(encodingName(decoder.resolvedEncoding()))
+        ? tr("(detected: %1)").arg(encodingName(decoder.resolvedEncoding()))
         : QString());
 
     // Build the live preview over the sample.
     const PreviewResult pv = FormatPreview::build(format, m_sample, decoder);
 
     const QStringList headers =
-        pv.headers.isEmpty() ? QStringList{QStringLiteral("Text (unparsed)")} : pv.headers;
+        pv.headers.isEmpty() ? QStringList{tr("Text (unparsed)")} : pv.headers;
     const int cols = headers.size();
     m_previewTable->clear();
     m_previewTable->setColumnCount(cols);
@@ -285,9 +291,9 @@ void LogFormatDialog::refresh()
     m_previewTable->resizeRowsToContents();
 
     if (pv.totalCount == 0)
-        m_matchLabel->setText(QStringLiteral("No sample lines to preview."));
+        m_matchLabel->setText(tr("No sample lines to preview."));
     else
-        m_matchLabel->setText(QStringLiteral("%1 of %2 sample records matched the pattern.")
+        m_matchLabel->setText(tr("%1 of %2 sample records matched the pattern.")
                                   .arg(pv.matchedCount)
                                   .arg(pv.totalCount));
 }
@@ -304,7 +310,7 @@ void LogFormatDialog::detect()
     if (r.detected)
         m_patternEdit->setText(r.pattern);
     else
-        m_matchLabel->setText(QStringLiteral("No log format could be detected — enter the pattern manually."));
+        m_matchLabel->setText(tr("No log format could be detected — enter the pattern manually."));
 }
 
 } // namespace loftail

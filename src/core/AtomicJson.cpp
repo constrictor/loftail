@@ -1,5 +1,6 @@
 #include "AtomicJson.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -7,13 +8,26 @@
 
 namespace loftail {
 
+namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::AtomicJson)
+};
+} // namespace
+
+
 bool AtomicJson::write(const QString &path, const QJsonDocument &doc, QString *error)
 {
     const QFileInfo info(path);
     const QDir dir = info.absoluteDir();
     if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
         if (error)
-            *error = QStringLiteral("Cannot create directory: %1").arg(dir.absolutePath());
+            *error = Tr::tr("Cannot create directory: %1").arg(dir.absolutePath());
         return false;
     }
 
@@ -50,7 +64,7 @@ bool AtomicJson::writePrivate(const QString &path, const QJsonDocument &doc, QSt
     // — the caller wrote a secret expecting it to be unreadable by others.
     if (!QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner)) {
         if (error)
-            *error = QStringLiteral("Cannot restrict permissions on %1").arg(path);
+            *error = Tr::tr("Cannot restrict permissions on %1").arg(path);
         return false;
     }
     return true;

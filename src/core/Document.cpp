@@ -10,12 +10,26 @@
 #include "SpooledLogSource.h"
 #include "TimestampParser.h"
 
+#include <QCoreApplication>
 #include <QRegularExpression>
 
 #include <algorithm>
 #include <limits>
 
 namespace loftail {
+
+namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::Document)
+};
+} // namespace
+
 
 Document::Document()
 {
@@ -31,8 +45,8 @@ QString waitingForText(const QString &path, WaitCause cause)
 {
     const QString name = logSourceDisplayName(path);
     return cause == WaitCause::Gone
-        ? QStringLiteral("%1 is no longer there — waiting for it to reappear").arg(name)
-        : QStringLiteral("%1 has not appeared yet — waiting for it").arg(name);
+        ? Tr::tr("%1 is no longer there — waiting for it to reappear").arg(name)
+        : Tr::tr("%1 has not appeared yet — waiting for it").arg(name);
 }
 
 QTimeZone Document::inferSourceZone(const LogFormat &format)
@@ -116,7 +130,7 @@ bool Document::prepare(const QString &rawPath,
         }
         // A remote failure phrases itself ("host unreachable", "not built in"); a
         // local one has only the path to report, as before.
-        m_lastError = openError.isEmpty() ? QStringLiteral("Cannot open file: %1").arg(path)
+        m_lastError = openError.isEmpty() ? Tr::tr("Cannot open file: %1").arg(path)
                                           : openError;
         m_path.clear(); // an open that failed outright leaves no document behind
         return false;
@@ -299,7 +313,7 @@ bool Document::rescan()
             return false;
         }
         clearIndex();
-        m_lastError = openError.isEmpty() ? QStringLiteral("Cannot reopen file: %1").arg(m_path)
+        m_lastError = openError.isEmpty() ? Tr::tr("Cannot reopen file: %1").arg(m_path)
                                           : openError;
         return false;
     }

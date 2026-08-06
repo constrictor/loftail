@@ -3,6 +3,7 @@
 #include "SshPrompter.h"
 #include "SshSession.h"
 
+#include <QCoreApplication>
 #include <QByteArray>
 #include <QFile>
 #include <QHash>
@@ -12,6 +13,19 @@
 #include <QWaitCondition>
 
 namespace loftail {
+
+namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::SshFetcher)
+};
+} // namespace
+
 
 namespace {
 
@@ -162,7 +176,7 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
     const SshSession::Attrs attrs = m_session->statPath();
     if (!attrs.valid) {
         if (error)
-            *error = QStringLiteral("Cannot read %1 on %2.").arg(m_location.path, m_location.host);
+            *error = Tr::tr("Cannot read %1 on %2.").arg(m_location.path, m_location.host);
         // Connected, authenticated, opened — and then could not stat it. Whatever that
         // is, it is about the file rather than the trust, so it is worth trying again.
         *failure = SshSession::Failure::NoSuchFile;
@@ -194,7 +208,7 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
     {
         QMutexLocker lock(&m_mutex);
         m_status.note = m_session->mode() == SshSession::Mode::Exec
-            ? QStringLiteral("reading with shell commands — %1 does not offer SFTP")
+            ? Tr::tr("reading with shell commands — %1 does not offer SFTP")
                   .arg(m_location.host)
             : QString();
     }
@@ -223,7 +237,7 @@ bool SshFetcher::start(const QString &spoolDir, QString *error)
             return false;
         }
         setWaiting(error && !error->isEmpty() ? *error
-                                              : QStringLiteral("Cannot reach %1.").arg(m_location.host));
+                                              : Tr::tr("Cannot reach %1.").arg(m_location.host));
     }
 
     m_worker = std::make_unique<Worker>(this);
@@ -293,7 +307,7 @@ void SshFetcher::beginGeneration(qint64 remoteSize)
     const QString path = spoolPath(next);
     QFile spool(path);
     if (!spool.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        setError(QStringLiteral("Cannot write the local cache file %1.").arg(path));
+        setError(Tr::tr("Cannot write the local cache file %1.").arg(path));
         return;
     }
     spool.close();
@@ -311,7 +325,7 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
     const QString path = spoolPath(generation);
     QFile spool(path);
     if (!spool.open(QIODevice::Append)) {
-        setError(QStringLiteral("Cannot append to the local cache file %1.").arg(path));
+        setError(Tr::tr("Cannot append to the local cache file %1.").arg(path));
         return false;
     }
 
@@ -336,7 +350,7 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
         if (got < 0) {
             spool.close();
             setError(readError.isEmpty()
-                         ? QStringLiteral("Lost the connection to %1.").arg(m_location.host)
+                         ? Tr::tr("Lost the connection to %1.").arg(m_location.host)
                          : readError);
             return false;
         }
@@ -345,7 +359,7 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
 
         if (spool.write(buffer.constData(), got) != got || !spool.flush()) {
             spool.close();
-            setError(QStringLiteral("Cannot write to the local cache file %1.").arg(path));
+            setError(Tr::tr("Cannot write to the local cache file %1.").arg(path));
             return false;
         }
         offset += got;
@@ -394,7 +408,7 @@ void SshFetcher::pollOnce()
             // next turn of the loop re-establishes it — before M13 nothing ever did,
             // and a link that blipped stayed broken until the log was reopened.
             m_session.reset();
-            setWaiting(QStringLiteral("Lost the connection to %1 — reconnecting…")
+            setWaiting(Tr::tr("Lost the connection to %1 — reconnecting…")
                            .arg(m_location.host));
             return;
         }
@@ -402,7 +416,7 @@ void SshFetcher::pollOnce()
         // been removed on the far end. Either way it is a WAIT — the next poll
         // resolves a rotation, and a removal is what the document upstream shows as
         // waiting (§6.5). Nothing is torn down either way.
-        setWaiting(QStringLiteral("%1 is not readable on %2 right now.")
+        setWaiting(Tr::tr("%1 is not readable on %2 right now.")
                        .arg(m_location.path, m_location.host));
         return;
     }

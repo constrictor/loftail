@@ -31,14 +31,35 @@ constexpr qreal kMinPlaceholderContrast = 2.0;
 // The light values are the ones that were previously hardcoded at each call site; the
 // dark ones are lifted toward the light end of the same hue so they carry on a dark
 // field instead of sinking into it.
+//
+// Every one of these is held to WCAG 4.5:1 against its theme's Window by
+// tst_uicolors::chromeColoursCarryOnBothThemes. That bound is deliberately the BODY-TEXT
+// one rather than the 3.0 allowed for large text: these colours are only ever used on
+// ordinary-sized sentences, and the sentence they were introduced for is the one saying
+// a password is about to be written to disk in the clear.
+//
+// kWarningLight was #b9770e until that assertion was tightened — a pleasant amber that
+// measured 3.2:1 on a light dialog and failed. Darkening it is the whole fix; the hue is
+// unchanged, and the dark variant already measured 7.6:1 and was left alone.
 constexpr QRgb kErrorLight = 0xffc0392b;
 constexpr QRgb kErrorDark = 0xffff7b6e;
-constexpr QRgb kWarningLight = 0xffb9770e;
+constexpr QRgb kWarningLight = 0xff8f5c00;
 constexpr QRgb kWarningDark = 0xffffb454;
 
-// WCAG relative luminance, which is what a contrast ratio is defined in terms of. Not
-// QColor::lightness(): that is an HSL coordinate and says a saturated blue and a
-// saturated yellow are equally light, which is exactly wrong for legibility.
+QColor mix(const QColor &from, const QColor &to, qreal amount)
+{
+    return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * amount,
+                            from.greenF() + (to.greenF() - from.greenF()) * amount,
+                            from.blueF() + (to.blueF() - from.blueF()) * amount);
+}
+
+} // namespace
+
+bool isDarkPalette(const QPalette &palette)
+{
+    return palette.color(QPalette::Base).lightness() < palette.color(QPalette::Text).lightness();
+}
+
 qreal relativeLuminance(const QColor &color)
 {
     const auto channel = [](qreal value) {
@@ -55,10 +76,7 @@ qreal contrastRatio(const QColor &a, const QColor &b)
     return (qMax(la, lb) + 0.05) / (qMin(la, lb) + 0.05);
 }
 
-// `over` composited onto `under`, honouring alpha. Qt's default PlaceholderText is
-// 50% alpha, so comparing it against the field without compositing would measure a
-// colour that is never actually drawn.
-QColor flatten(const QColor &over, const QColor &under)
+QColor compositeOver(const QColor &over, const QColor &under)
 {
     const qreal alpha = over.alphaF();
     if (alpha >= 1.0)
@@ -66,20 +84,6 @@ QColor flatten(const QColor &over, const QColor &under)
     return QColor::fromRgbF(over.redF() * alpha + under.redF() * (1 - alpha),
                             over.greenF() * alpha + under.greenF() * (1 - alpha),
                             over.blueF() * alpha + under.blueF() * (1 - alpha));
-}
-
-QColor mix(const QColor &from, const QColor &to, qreal amount)
-{
-    return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * amount,
-                            from.greenF() + (to.greenF() - from.greenF()) * amount,
-                            from.blueF() + (to.blueF() - from.blueF()) * amount);
-}
-
-} // namespace
-
-bool isDarkPalette(const QPalette &palette)
-{
-    return palette.color(QPalette::Base).lightness() < palette.color(QPalette::Text).lightness();
 }
 
 QColor errorColor(const QPalette &palette)
@@ -123,7 +127,7 @@ void ensureReadablePlaceholder(QWidget *widget)
     QPalette palette = widget->palette();
     const QColor base = palette.color(QPalette::Active, QPalette::Base);
     const QColor current =
-        flatten(palette.color(QPalette::Active, QPalette::PlaceholderText), base);
+        compositeOver(palette.color(QPalette::Active, QPalette::PlaceholderText), base);
     if (contrastRatio(current, base) >= kMinPlaceholderContrast)
         return; // the theme filled the role in sensibly — leave it entirely alone
 

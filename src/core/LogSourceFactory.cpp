@@ -8,12 +8,26 @@
 #if defined(Q_OS_WIN)
 #else
 #include "MappedLogSource.h"
+#include <QCoreApplication>
 #include <QFile>
 #include <sys/stat.h>
 #include <sys/types.h>
 #endif
 
 namespace loftail {
+
+namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::LogSourceFactory)
+};
+} // namespace
+
 
 namespace {
 
@@ -46,13 +60,13 @@ std::unique_ptr<LogSource> openRemote(const QString &path, OpenPolicy policy, QS
     const auto location = RemoteLocation::parse(path);
     if (!location) {
         if (error)
-            *error = QStringLiteral("Not a valid remote log address: %1").arg(path);
+            *error = Tr::tr("Not a valid remote log address: %1").arg(path);
         return nullptr;
     }
     // The registry keys on the normalized address string, not on the parsed value: it
     // holds spools for several kinds of source and understands none of them.
     return openSpooled(location->toString(),
-                       QStringLiteral("Not connected to %1.").arg(location->target()),
+                       Tr::tr("Not connected to %1.").arg(location->target()),
                        policy, error);
 }
 
@@ -64,7 +78,7 @@ std::unique_ptr<LogSource> openArchive(const ArchiveLocation &location, OpenPoli
         // opened. The member is picked once, at the interactive entry point, so
         // reaching here means an address was persisted or typed without one.
         if (error) {
-            *error = QStringLiteral("%1 holds several logs; open it again and choose one.")
+            *error = Tr::tr("%1 holds several logs; open it again and choose one.")
                          .arg(logSourceDisplayPath(location.container));
         }
         return nullptr;
@@ -74,7 +88,7 @@ std::unique_ptr<LogSource> openArchive(const ArchiveLocation &location, OpenPoli
     // expansion (SourceSpool.h).
     const QString address = location.toString();
     return openSpooled(expandedSpoolKey(address),
-                       QStringLiteral("%1 is no longer expanded.").arg(address), policy,
+                       Tr::tr("%1 is no longer expanded.").arg(address), policy,
                        error);
 }
 

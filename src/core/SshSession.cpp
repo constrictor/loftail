@@ -24,6 +24,19 @@
 namespace loftail {
 
 namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::SshSession)
+};
+} // namespace
+
+
+namespace {
 
 // libssh2 wants global init exactly once per process.
 void ensureLibraryInit()
@@ -237,7 +250,7 @@ qint64 SshSession::Impl::execRead(qint64 offset, char *buffer, qint64 length, QS
     int exitCode = 0;
     if (!runCommand(readCommand(location.path, offset, length), &out, &exitCode)) {
         if (error) {
-            *error = QStringLiteral("Reading %1 from %2 failed: the server would not run a "
+            *error = Tr::tr("Reading %1 from %2 failed: the server would not run a "
                                     "command.")
                          .arg(location.path, location.host);
         }
@@ -261,13 +274,13 @@ bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error,
     int keyType = 0;
     const char *key = libssh2_session_hostkey(session, &keyLength, &keyType);
     if (!key) {
-        *error = QStringLiteral("%1 offered no host key.").arg(location.host);
+        *error = Tr::tr("%1 offered no host key.").arg(location.host);
         return false;
     }
 
     LIBSSH2_KNOWNHOSTS *hosts = libssh2_knownhost_init(session);
     if (!hosts) {
-        *error = QStringLiteral("Cannot read known hosts.");
+        *error = Tr::tr("Cannot read known hosts.");
         return false;
     }
     const QString knownHosts = knownHostsPath();
@@ -302,7 +315,7 @@ bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error,
         if (prompter)
             prompter->confirmHostKey(info);
         libssh2_knownhost_free(hosts);
-        *error = QStringLiteral(
+        *error = Tr::tr(
             "The host key for %1 has CHANGED since it was recorded (%2). This may be a "
             "server rebuild, or it may be an interception. loftail will not connect. "
             "Verify the key, then remove the stale entry from ~/.ssh/known_hosts.")
@@ -315,7 +328,7 @@ bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error,
         // be made to — this is the one decision that has to be a person's (§6.5).
         *failure = SshSession::Failure::NeedsPerson;
         libssh2_knownhost_free(hosts);
-        *error = QStringLiteral(
+        *error = Tr::tr(
             "%1 is not in ~/.ssh/known_hosts and there is no way to ask about it here. "
             "Connect once with ssh to record its key, then reopen.")
                      .arg(location.host);
@@ -325,7 +338,7 @@ bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error,
     const SshPrompter::HostKeyChoice choice = prompter->confirmHostKey(info);
     if (choice == SshPrompter::HostKeyChoice::Reject) {
         libssh2_knownhost_free(hosts);
-        *error = QStringLiteral("Host key for %1 was not accepted.").arg(location.host);
+        *error = Tr::tr("Host key for %1 was not accepted.").arg(location.host);
         return false;
     }
 
@@ -457,7 +470,7 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
 
     if (available.contains(QLatin1String("publickey"))) {
         if (prompter)
-            prompter->progress(QStringLiteral("Trying SSH agent for %1…").arg(target));
+            prompter->progress(Tr::tr("Trying SSH agent for %1…").arg(target));
         if (tryAgent() || tryDefaultKeys())
             return true;
     }
@@ -465,10 +478,10 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
     const bool passwordOffered = available.contains(QLatin1String("password"))
         || available.contains(QLatin1String("keyboard-interactive"));
     if (!passwordOffered) {
-        *error = QStringLiteral(
+        *error = Tr::tr(
             "Could not authenticate to %1 with an SSH agent or key, and the server "
             "offers no password method (it allows: %2).")
-                     .arg(target, available.isEmpty() ? QStringLiteral("nothing") : available);
+                     .arg(target, available.isEmpty() ? Tr::tr("nothing") : available);
         return false;
     }
 
@@ -488,7 +501,7 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
         // timer would ask the same question forever; the caller surfaces this and waits
         // for the user to reconnect, which does have a prompter (§6.5).
         *failure = SshSession::Failure::NeedsPerson;
-        *error = QStringLiteral("%1 needs a password and there is no way to ask for one here.")
+        *error = Tr::tr("%1 needs a password and there is no way to ask for one here.")
                      .arg(target);
         return false;
     }
@@ -526,8 +539,8 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
     for (int attempt = 0; attempt < 3; ++attempt) {
         QString password;
         bool remember = false;
-        if (!prompter->askPassword(target, QStringLiteral("Password:"), &password, &remember)) {
-            *error = QStringLiteral("Cancelled while authenticating to %1.").arg(target);
+        if (!prompter->askPassword(target, Tr::tr("Password:"), &password, &remember)) {
+            *error = Tr::tr("Cancelled while authenticating to %1.").arg(target);
             return false;
         }
         QByteArray raw = password.toUtf8();
@@ -544,7 +557,7 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
         password.fill(QChar(u'\0'));
     }
 
-    *error = QStringLiteral("Authentication to %1 failed.").arg(target);
+    *error = Tr::tr("Authentication to %1 failed.").arg(target);
     return false;
 }
 
@@ -592,11 +605,11 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     d->location = location;
 
     if (prompter)
-        prompter->progress(QStringLiteral("Connecting to %1…").arg(location.host));
+        prompter->progress(Tr::tr("Connecting to %1…").arg(location.host));
 
     d->socket.connectToHost(location.host, static_cast<quint16>(location.port));
     if (!d->socket.waitForConnected(timeoutMs)) {
-        err = QStringLiteral("Cannot reach %1:%2 — %3")
+        err = Tr::tr("Cannot reach %1:%2 — %3")
                   .arg(location.host).arg(location.port).arg(d->socket.errorString());
         return false;
     }
@@ -605,14 +618,14 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     // from here on libssh2 must be its only reader (detachFromQt).
     d->fd = detachSocketFromQt(d->socket);
     if (d->fd < 0) {
-        err = QStringLiteral("Cannot take over the connection to %1.").arg(location.host);
+        err = Tr::tr("Cannot take over the connection to %1.").arg(location.host);
         d->teardown();
         return false;
     }
 
     d->session = libssh2_session_init();
     if (!d->session) {
-        err = QStringLiteral("Cannot start an SSH session.");
+        err = Tr::tr("Cannot start an SSH session.");
         d->teardown();
         return false;
     }
@@ -622,7 +635,7 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     libssh2_session_set_timeout(d->session, timeoutMs);
 
     if (libssh2_session_handshake(d->session, static_cast<libssh2_socket_t>(d->fd))) {
-        err = sessionError(d->session, QStringLiteral("SSH handshake with %1 failed")
+        err = sessionError(d->session, Tr::tr("SSH handshake with %1 failed")
                                            .arg(location.host));
         d->teardown();
         return false;
@@ -634,7 +647,7 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     }
 
     if (prompter)
-        prompter->progress(QStringLiteral("Authenticating to %1…").arg(location.host));
+        prompter->progress(Tr::tr("Authenticating to %1…").arg(location.host));
     if (!d->authenticate(prompter, &err, &kind)) {
         d->teardown();
         return false;
@@ -699,7 +712,7 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
             // answer from a stripped-down embedded image, and it names something the
             // user can actually go and install.
             kind = Failure::Refused;
-            err = QStringLiteral(
+            err = Tr::tr(
                       "%1 does not offer SFTP, and its shell has no `stat` and `tail`, "
                       "which is the only other way loftail can read a remote log. "
                       "sshd needs a `Subsystem sftp` line pointing at an sftp-server "
@@ -710,12 +723,12 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
             // Nothing ran and nothing replied: the link itself went quiet, which is the
             // one case here that comes back on its own and is therefore worth retrying.
             kind = Failure::Unreachable;
-            err = QStringLiteral("%1 signed in and then stopped answering: neither SFTP "
+            err = Tr::tr("%1 signed in and then stopped answering: neither SFTP "
                                  "nor a shell command replied before the timeout.")
                       .arg(location.host);
         } else {
             kind = Failure::Refused;
-            err = QStringLiteral(
+            err = Tr::tr(
                       "%1 signed in but offers neither SFTP nor a shell that can run "
                       "`stat` and `tail`, which are the two ways loftail can read a "
                       "remote log. sshd needs a `Subsystem sftp` line, or the account "
@@ -757,7 +770,7 @@ bool SshSession::openFile(QString *error, Failure *failure)
             // the SFTP branch gives for NO_SUCH_FILE and PERMISSION_DENIED.
             kind = Failure::NoSuchFile;
             if (error) {
-                *error = QStringLiteral("Cannot read %1 on %2 — it is missing, or the "
+                *error = Tr::tr("Cannot read %1 on %2 — it is missing, or the "
                                         "account cannot read it.")
                              .arg(d->location.path, d->location.host);
             }
@@ -771,7 +784,7 @@ bool SshSession::openFile(QString *error, Failure *failure)
     if (!d->sftp) {
         kind = Failure::Unreachable;
         if (error)
-            *error = QStringLiteral("Not connected.");
+            *error = Tr::tr("Not connected.");
         return false;
     }
     closeFile();
@@ -791,7 +804,7 @@ bool SshSession::openFile(QString *error, Failure *failure)
             ? Failure::NoSuchFile
             : Failure::Refused;
         if (error) {
-            *error = QStringLiteral("Cannot open %1 on %2 (%3)")
+            *error = Tr::tr("Cannot open %1 on %2 (%3)")
                          .arg(d->location.path, d->location.host)
                          .arg(sftpError);
         }
@@ -881,7 +894,7 @@ qint64 SshSession::readAt(qint64 offset, char *buffer, qint64 length, QString *e
             break; // EOF: the remote file has no more bytes right now
         if (n < 0) {
             if (error) {
-                *error = sessionError(d->session, QStringLiteral("Reading %1 from %2 failed")
+                *error = sessionError(d->session, Tr::tr("Reading %1 from %2 failed")
                                                       .arg(d->location.path, d->location.host));
             }
             return total > 0 ? total : -1;

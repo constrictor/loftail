@@ -2,16 +2,16 @@
 
 #include "UiColors.h"
 
-#include <QApplication>
 
 #include "Document.h"
 #include "Filter.h"
 #include "LogFormat.h"
 #include "Priority.h"
 #include "RecordIndex.h"
-
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDateTimeEdit>
 #include <QGroupBox>
@@ -58,10 +58,12 @@ AxisBox makeAxisBox(QWidget *parent, const QString &title, const QString &enable
 QHBoxLayout *makeListButtons(QWidget *parent, QPushButton *&all, QPushButton *&none,
                              QPushButton *&invert)
 {
+    // Not a member, so there is no tr() in scope — the context is named explicitly, and
+    // named for the class these buttons belong to.
     auto *btns = new QHBoxLayout;
-    all = new QPushButton(QStringLiteral("All"), parent);
-    none = new QPushButton(QStringLiteral("None"), parent);
-    invert = new QPushButton(QStringLiteral("Invert"), parent);
+    all = new QPushButton(QCoreApplication::translate("loftail::AxisEditor", "All"), parent);
+    none = new QPushButton(QCoreApplication::translate("loftail::AxisEditor", "None"), parent);
+    invert = new QPushButton(QCoreApplication::translate("loftail::AxisEditor", "Invert"), parent);
     btns->addWidget(all);
     btns->addWidget(none);
     btns->addWidget(invert);
@@ -100,13 +102,13 @@ void AxisEditor::buildUi(Defaults defaults)
         // ticked, which reads as a broken control. At the default TRACE the axis
         // narrows nothing, and the caller collapses that no-op state so it costs
         // nothing either. A highlight rule opts in instead.
-        AxisBox a = makeAxisBox(this, QStringLiteral("Priority"),
-                                QStringLiteral("Filter by minimum priority"),
+        AxisBox a = makeAxisBox(this, tr("Priority"),
+                                tr("Filter by minimum priority"),
                                 defaults.priorityOn);
         m_priorityEnable = a.enable;
         m_priorityBody = a.body;
         auto *row = new QHBoxLayout;
-        row->addWidget(new QLabel(QStringLiteral("Minimum:"), a.body));
+        row->addWidget(new QLabel(tr("Minimum:"), a.body));
         m_priorityCombo = new QComboBox(a.body);
         for (int i = 0; i < PriorityChoice::count(); ++i)
             m_priorityCombo->addItem(priorityName(PriorityChoice::at(i)));
@@ -121,12 +123,12 @@ void AxisEditor::buildUi(Defaults defaults)
 
     // --- Subsystem ----------------------------------------------------------
     {
-        AxisBox a = makeAxisBox(this, QStringLiteral("Subsystem"),
-                                QStringLiteral("Filter by subsystem"), defaults.loggerOn);
+        AxisBox a = makeAxisBox(this, tr("Subsystem"),
+                                tr("Filter by subsystem"), defaults.loggerOn);
         m_loggerEnable = a.enable;
         m_loggerBody = a.body;
         m_loggerNarrow = new QLineEdit(a.body);
-        m_loggerNarrow->setPlaceholderText(QStringLiteral("Narrow list..."));
+        m_loggerNarrow->setPlaceholderText(tr("Narrow list..."));
         ensureReadablePlaceholder(m_loggerNarrow);
         m_loggerNarrow->setClearButtonEnabled(true);
         a.bodyLayout->addWidget(m_loggerNarrow);
@@ -137,9 +139,9 @@ void AxisEditor::buildUi(Defaults defaults)
         a.bodyLayout->addLayout(makeListButtons(a.body, all, none, invert));
         auto *manualRow = new QHBoxLayout;
         m_loggerManual = new QLineEdit(a.body);
-        m_loggerManual->setPlaceholderText(QStringLiteral("Add subsystem manually..."));
+        m_loggerManual->setPlaceholderText(tr("Add subsystem manually..."));
         ensureReadablePlaceholder(m_loggerManual);
-        auto *add = new QPushButton(QStringLiteral("Add"), a.body);
+        auto *add = new QPushButton(tr("Add"), a.body);
         manualRow->addWidget(m_loggerManual, 1);
         manualRow->addWidget(add);
         a.bodyLayout->addLayout(manualRow);
@@ -178,12 +180,12 @@ void AxisEditor::buildUi(Defaults defaults)
 
     // --- Thread -------------------------------------------------------------
     {
-        AxisBox a = makeAxisBox(this, QStringLiteral("Thread"),
-                                QStringLiteral("Filter by thread"), false);
+        AxisBox a = makeAxisBox(this, tr("Thread"),
+                                tr("Filter by thread"), false);
         m_threadEnable = a.enable;
         m_threadBody = a.body;
         m_threadNarrow = new QLineEdit(a.body);
-        m_threadNarrow->setPlaceholderText(QStringLiteral("Narrow list..."));
+        m_threadNarrow->setPlaceholderText(tr("Narrow list..."));
         ensureReadablePlaceholder(m_threadNarrow);
         m_threadNarrow->setClearButtonEnabled(true);
         a.bodyLayout->addWidget(m_threadNarrow);
@@ -194,9 +196,9 @@ void AxisEditor::buildUi(Defaults defaults)
         a.bodyLayout->addLayout(makeListButtons(a.body, all, none, invert));
         auto *manualRow = new QHBoxLayout;
         m_threadManual = new QLineEdit(a.body);
-        m_threadManual->setPlaceholderText(QStringLiteral("Add thread manually..."));
+        m_threadManual->setPlaceholderText(tr("Add thread manually..."));
         ensureReadablePlaceholder(m_threadManual);
-        auto *add = new QPushButton(QStringLiteral("Add"), a.body);
+        auto *add = new QPushButton(tr("Add"), a.body);
         manualRow->addWidget(m_threadManual, 1);
         manualRow->addWidget(add);
         a.bodyLayout->addLayout(manualRow);
@@ -230,18 +232,18 @@ void AxisEditor::buildUi(Defaults defaults)
 
     // --- Message text -------------------------------------------------------
     {
-        AxisBox a = makeAxisBox(this, QStringLiteral("Message text"),
-                                QStringLiteral("Filter by message text"), false);
+        AxisBox a = makeAxisBox(this, tr("Message text"),
+                                tr("Filter by message text"), false);
         m_textEnable = a.enable;
         m_textBody = a.body;
         m_textEdit = new QLineEdit(a.body);
-        m_textEdit->setPlaceholderText(QStringLiteral("Substring or regex..."));
+        m_textEdit->setPlaceholderText(tr("Substring or regex..."));
         ensureReadablePlaceholder(m_textEdit);
         m_textEdit->setClearButtonEnabled(true);
         a.bodyLayout->addWidget(m_textEdit);
-        m_textRegex = new QCheckBox(QStringLiteral("Regular expression"), a.body);
-        m_textCase = new QCheckBox(QStringLiteral("Case sensitive"), a.body);
-        m_textNegate = new QCheckBox(QStringLiteral("Hide matching (negate)"), a.body);
+        m_textRegex = new QCheckBox(tr("Regular expression"), a.body);
+        m_textCase = new QCheckBox(tr("Case sensitive"), a.body);
+        m_textNegate = new QCheckBox(tr("Hide matching (negate)"), a.body);
         a.bodyLayout->addWidget(m_textRegex);
         a.bodyLayout->addWidget(m_textCase);
         a.bodyLayout->addWidget(m_textNegate);
@@ -257,20 +259,20 @@ void AxisEditor::buildUi(Defaults defaults)
 
     // --- Time range ---------------------------------------------------------
     {
-        AxisBox a = makeAxisBox(this, QStringLiteral("Time range"),
-                                QStringLiteral("Filter by time range"), false);
+        AxisBox a = makeAxisBox(this, tr("Time range"),
+                                tr("Filter by time range"), false);
         m_timeEnable = a.enable;
         m_timeBody = a.body;
         const QString fmt = QStringLiteral("yyyy-MM-dd HH:mm:ss");
         auto *startRow = new QHBoxLayout;
-        startRow->addWidget(new QLabel(QStringLiteral("Start:"), a.body));
+        startRow->addWidget(new QLabel(tr("Start:"), a.body));
         m_timeStart = new QDateTimeEdit(a.body);
         m_timeStart->setDisplayFormat(fmt);
         m_timeStart->setCalendarPopup(true);
         startRow->addWidget(m_timeStart, 1);
         a.bodyLayout->addLayout(startRow);
         auto *endRow = new QHBoxLayout;
-        endRow->addWidget(new QLabel(QStringLiteral("End:"), a.body));
+        endRow->addWidget(new QLabel(tr("End:"), a.body));
         m_timeEnd = new QDateTimeEdit(a.body);
         m_timeEnd->setDisplayFormat(fmt);
         m_timeEnd->setCalendarPopup(true);
@@ -339,7 +341,7 @@ void AxisEditor::updateTextValidity()
     pal.setColor(QPalette::Text,
                  bad ? errorColor(pal) : qApp->palette(m_textEdit).color(QPalette::Text));
     m_textEdit->setPalette(pal);
-    m_textEdit->setToolTip(bad ? QStringLiteral("Invalid regular expression — matches nothing.")
+    m_textEdit->setToolTip(bad ? tr("Invalid regular expression — matches nothing.")
                                : QString());
 }
 

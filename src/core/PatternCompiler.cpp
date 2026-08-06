@@ -1,8 +1,22 @@
 #include "PatternCompiler.h"
 
+#include <QCoreApplication>
 #include <QChar>
 
 namespace loftail {
+
+namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr(); Q_DECLARE_TR_FUNCTIONS is what lets lupdate file these under a
+// name that means something. Only the PROSE goes through it — every regex fragment,
+// Qt date code and log4cplus conversion character in this file stays a literal, and
+// mixing the two up would produce a compiler that cannot parse its own output.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::PatternCompiler)
+};
+} // namespace
+
 
 namespace {
 
@@ -84,7 +98,7 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
         if (i + 1 >= n) {
             return Expected<DateTranslation, CompileError>::makeError(
                 makeError(CompileError::Code::DanglingPercentInDate,
-                          QStringLiteral("Date format ends with a stray '%'"),
+                          Tr::tr("Date format ends with a stray '%'"),
                           baseOffset + i));
         }
 
@@ -105,7 +119,7 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
         default:
             return Expected<DateTranslation, CompileError>::makeError(
                 makeError(CompileError::Code::UnsupportedDateCode,
-                          QStringLiteral("Unsupported date code '%1' inside %d{...}").arg(specText(code)),
+                          Tr::tr("Unsupported date code '%1' inside %d{...}").arg(specText(code)),
                           baseOffset + i));
         }
         i += 2;
@@ -118,22 +132,22 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
 QString fieldName(FieldRole role)
 {
     switch (role) {
-    case FieldRole::Date:       return QStringLiteral("Time");
-    case FieldRole::Priority:   return QStringLiteral("Priority");
-    case FieldRole::Logger:     return QStringLiteral("Subsystem");
-    case FieldRole::Thread:     return QStringLiteral("Thread");
-    case FieldRole::Message:    return QStringLiteral("Message");
-    case FieldRole::FileName:   return QStringLiteral("File");
-    case FieldRole::LineNumber: return QStringLiteral("Line");
-    case FieldRole::Method:     return QStringLiteral("Method");
-    case FieldRole::Location:   return QStringLiteral("Location");
-    case FieldRole::ThreadName: return QStringLiteral("Thread name");
-    case FieldRole::ProcessId:  return QStringLiteral("PID");
-    case FieldRole::Hostname:   return QStringLiteral("Host");
-    case FieldRole::Elapsed:    return QStringLiteral("Elapsed");
-    case FieldRole::Ndc:        return QStringLiteral("NDC");
-    case FieldRole::Mdc:        return QStringLiteral("MDC");
-    case FieldRole::EnvVar:     return QStringLiteral("Env");
+    case FieldRole::Date:       return Tr::tr("Time");
+    case FieldRole::Priority:   return Tr::tr("Priority");
+    case FieldRole::Logger:     return Tr::tr("Subsystem");
+    case FieldRole::Thread:     return Tr::tr("Thread");
+    case FieldRole::Message:    return Tr::tr("Message");
+    case FieldRole::FileName:   return Tr::tr("File");
+    case FieldRole::LineNumber: return Tr::tr("Line");
+    case FieldRole::Method:     return Tr::tr("Method");
+    case FieldRole::Location:   return Tr::tr("Location");
+    case FieldRole::ThreadName: return Tr::tr("Thread name");
+    case FieldRole::ProcessId:  return Tr::tr("PID");
+    case FieldRole::Hostname:   return Tr::tr("Host");
+    case FieldRole::Elapsed:    return Tr::tr("Elapsed");
+    case FieldRole::Ndc:        return Tr::tr("NDC");
+    case FieldRole::Mdc:        return Tr::tr("MDC");
+    case FieldRole::EnvVar:     return Tr::tr("Env");
     }
     return QString();
 }
@@ -180,7 +194,7 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
 {
     if (pattern.isEmpty()) {
         return Expected<LogFormat, CompileError>::makeError(
-            makeError(CompileError::Code::EmptyPattern, QStringLiteral("Pattern is empty"), 0));
+            makeError(CompileError::Code::EmptyPattern, Tr::tr("Pattern is empty"), 0));
     }
 
     QVector<Piece> pieces;
@@ -212,7 +226,7 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
         if (j >= len) {
             return Expected<LogFormat, CompileError>::makeError(
                 makeError(CompileError::Code::DanglingPercent,
-                          QStringLiteral("Pattern ends with a stray '%'"), percentPos));
+                          Tr::tr("Pattern ends with a stray '%'"), percentPos));
         }
 
         bool hasMinWidth = false;
@@ -231,7 +245,7 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
         if (j >= len) {
             return Expected<LogFormat, CompileError>::makeError(
                 makeError(CompileError::Code::DanglingPercent,
-                          QStringLiteral("Modifier is not followed by a specifier"), percentPos));
+                          Tr::tr("Modifier is not followed by a specifier"), percentPos));
         }
 
         const QChar spec = pattern[j];
@@ -270,7 +284,7 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
         auto unterminatedBrace = [&](int at) {
             return Expected<LogFormat, CompileError>::makeError(
                 makeError(CompileError::Code::UnterminatedBrace,
-                          QStringLiteral("'%1{' has no closing '}'").arg(specText(spec)), at));
+                          Tr::tr("'%1{' has no closing '}'").arg(specText(spec)), at));
         };
 
         switch (spec.unicode()) {
@@ -290,7 +304,7 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
                 if (end >= len) {
                     return Expected<LogFormat, CompileError>::makeError(
                         makeError(CompileError::Code::UnterminatedDateBrace,
-                                  QStringLiteral("'%1{' has no closing '}'").arg(specText(spec)),
+                                  Tr::tr("'%1{' has no closing '}'").arg(specText(spec)),
                                   k));
                 }
                 innerFmt = pattern.sliced(braceContentStart, end - braceContentStart);
@@ -351,7 +365,7 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
             int dummy = -1;
             emitSimpleField(kFreeText, FieldRole::Mdc, dummy);
             if (!key.isEmpty())
-                pieces.last().name = QStringLiteral("MDC[%1]").arg(key);
+                pieces.last().name = Tr::tr("MDC[%1]").arg(key);
             i = k;
             continue;
         }
@@ -363,7 +377,7 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
             int dummy = -1;
             emitSimpleField(kFreeText, FieldRole::EnvVar, dummy);
             if (!var.isEmpty())
-                pieces.last().name = QStringLiteral("Env[%1]").arg(var);
+                pieces.last().name = Tr::tr("Env[%1]").arg(var);
             i = k;
             continue;
         }
@@ -377,7 +391,7 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
         default:
             return Expected<LogFormat, CompileError>::makeError(
                 makeError(CompileError::Code::UnknownSpecifier,
-                          QStringLiteral("Unknown conversion specifier '%1'").arg(specText(spec)), j));
+                          Tr::tr("Unknown conversion specifier '%1'").arg(specText(spec)), j));
         }
     }
 
@@ -417,7 +431,7 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
     if (!format.recordRe.isValid() || !format.recordStartRe.isValid()) {
         return Expected<LogFormat, CompileError>::makeError(
             makeError(CompileError::Code::InvalidRegex,
-                      QStringLiteral("Internal error: generated an invalid regular expression"), -1));
+                      Tr::tr("Internal error: generated an invalid regular expression"), -1));
     }
 
     return format;

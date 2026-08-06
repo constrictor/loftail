@@ -2,6 +2,8 @@
 
 #include "SshPrompter.h"
 
+#include <QCoreApplication>
+
 QT_BEGIN_NAMESPACE
 class QWidget;
 QT_END_NAMESPACE
@@ -17,6 +19,12 @@ namespace loftail {
 // starting on top of a connect in progress.
 class GuiSshPrompter final : public SshPrompter
 {
+    // Not a QObject — it implements a core interface and is owned by MainWindow — so
+    // tr() has to be declared rather than inherited. Every string this class shows is
+    // security-critical prose about where a password is going, so it is exactly the
+    // last thing that should be left untranslatable.
+    Q_DECLARE_TR_FUNCTIONS(loftail::GuiSshPrompter)
+
 public:
     explicit GuiSshPrompter(QWidget *parent = nullptr) : m_parent(parent) {}
 

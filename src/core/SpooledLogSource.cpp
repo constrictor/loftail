@@ -4,9 +4,23 @@
 #include "RemoteLocation.h"
 #include "SourceSpool.h"
 
+#include <QCoreApplication>
 #include <QLocale>
 
 namespace loftail {
+
+namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::SpooledLogSource)
+};
+} // namespace
+
 
 SpooledLogSource::~SpooledLogSource() = default;
 
@@ -140,25 +154,25 @@ QString sourceStatusText(const LogSource &source, const QString &path)
         // there" — because it knows which of those it hit and this does not. The bare
         // fallback is for a fetcher that only managed to say "not there".
         return status.error.isEmpty()
-            ? QStringLiteral("waiting for %1 to appear").arg(logSourceDisplayName(path))
+            ? Tr::tr("waiting for %1 to appear").arg(logSourceDisplayName(path))
             : status.error;
 
     case FetchStatus::State::Connecting:
-        return QStringLiteral("connecting…");
+        return Tr::tr("connecting…");
 
     case FetchStatus::State::Priming: {
         // Only the path can say which of the two this is: the source is a spool either
         // way, and a spool does not know who fills it.
         const QString verb = ArchiveLocation::isArchivePath(path)
-            ? QStringLiteral("expanding")
-            : QStringLiteral("fetching");
+            ? Tr::tr("expanding")
+            : Tr::tr("fetching");
         if (status.totalSize > status.committedSize) {
-            return QStringLiteral("%1 — %2 of %3")
+            return Tr::tr("%1 — %2 of %3")
                 .arg(verb, sized(status.committedSize), sized(status.totalSize));
         }
         // A raw compressed stream does not record its expanded length, so there is no
         // honest denominator to show. Say what is known rather than inventing one.
-        return QStringLiteral("%1 — %2 so far").arg(verb, sized(status.committedSize));
+        return Tr::tr("%1 — %2 so far").arg(verb, sized(status.committedSize));
     }
     }
     return QString();

@@ -8,11 +8,14 @@
 #include <QTemporaryDir>
 #include <QUrl>
 
+#include <QAbstractButton>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QTabWidget>
+#include <QTimer>
 
 #include "FakeFetcher.h"
 #include "HostBookmarkStore.h"
@@ -76,6 +79,28 @@ private:
 
     // Let the queued work of an open settle (the scan runs on a worker thread).
     static void settle(int ms = 600) { QTest::qWait(ms); }
+
+    // Click `button` on the next modal QMessageBox to appear. Armed BEFORE the call
+    // that raises it: QMessageBox::question() runs its own event loop and does not
+    // return until something answers, so there is no later moment to do this from.
+    // Polls rather than firing once, because the box is not up yet when this is armed.
+    static void answerNextMessageBox(QMessageBox::StandardButton button)
+    {
+        auto *timer = new QTimer(qApp);
+        timer->setInterval(10);
+        QObject::connect(timer, &QTimer::timeout, timer, [timer, button] {
+            auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+            if (!box)
+                return;
+            timer->stop();
+            timer->deleteLater();
+            if (QAbstractButton *b = box->button(button))
+                b->click();
+            else
+                box->reject();
+        });
+        timer->start();
+    }
 
 private slots:
     void opensARemoteUrlAsATab();
@@ -316,12 +341,12 @@ void TestRemoteOpen::savingOverwritesTheBookmarkOfTheSameName()
     auto *path = dialog.findChild<QLineEdit *>(QStringLiteral("remotePathField"));
     QVERIFY(list && name && host && path);
 
-    QPushButton *save = nullptr;
-    for (QPushButton *b : dialog.findChildren<QPushButton *>()) {
-        if (b->text() == QStringLiteral("Save"))
-            save = b;
-    }
-    QVERIFY(save);
+    // By object name, not by label: the button's text is now part of what it tells the
+    // user — it reads "Update" whenever pressing it would replace an existing row —
+    // and it carries an accelerator, so its text() is never the bare word either.
+    auto *save = dialog.findChild<QPushButton *>(QStringLiteral("remoteSaveButton"));
+    auto *remove = dialog.findChild<QPushButton *>(QStringLiteral("remoteRemoveButton"));
+    QVERIFY(save && remove);
 
     const auto fill = [&](const QString &n, const QString &h, const QString &p) {
         name->setText(n);
@@ -356,12 +381,15 @@ void TestRemoteOpen::savingOverwritesTheBookmarkOfTheSameName()
     save->click();
     QCOMPARE(list->count(), 2);
 
-    // Remove goes by the same identity, so it takes the row that was clicked.
+    // Remove goes by the same identity, so it takes the row that was clicked. It asks
+    // first — a saved host may be carrying a remembered password and there is no undo.
     list->setCurrentRow(0);
-    for (QPushButton *b : dialog.findChildren<QPushButton *>()) {
-        if (b->text() == QStringLiteral("Remove"))
-            b->click();
-    }
+    answerNextMessageBox(QMessageBox::No);
+    remove->click();
+    QCOMPARE(list->count(), 2); // declined: nothing removed
+
+    answerNextMessageBox(QMessageBox::Yes);
+    remove->click();
     QCOMPARE(list->count(), 1);
     QCOMPARE(list->item(0)->text(), QStringLiteral("staging"));
 }

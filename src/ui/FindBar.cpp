@@ -17,24 +17,24 @@ FindBar::FindBar(QWidget *parent) : QWidget(parent)
     auto *row = new QHBoxLayout(this);
     row->setContentsMargins(4, 2, 4, 2);
 
-    row->addWidget(new QLabel(QStringLiteral("Find:"), this));
+    row->addWidget(new QLabel(tr("Find:"), this));
     m_edit = new QLineEdit(this);
     m_edit->setClearButtonEnabled(true);
-    m_edit->setPlaceholderText(QStringLiteral("Search visible records..."));
+    m_edit->setPlaceholderText(tr("Search visible records..."));
     ensureReadablePlaceholder(m_edit);
     row->addWidget(m_edit, 1);
 
     auto *prev = new QToolButton(this);
     prev->setText(QStringLiteral("▲")); // up
-    prev->setToolTip(QStringLiteral("Find Previous (Shift+F3)"));
+    prev->setToolTip(tr("Find Previous (Shift+F3)"));
     auto *next = new QToolButton(this);
     next->setText(QStringLiteral("▼")); // down
-    next->setToolTip(QStringLiteral("Find Next (F3)"));
+    next->setToolTip(tr("Find Next (F3)"));
     row->addWidget(prev);
     row->addWidget(next);
 
-    m_regex = new QCheckBox(QStringLiteral("Regex"), this);
-    m_case = new QCheckBox(QStringLiteral("Case"), this);
+    m_regex = new QCheckBox(tr("Regex"), this);
+    m_case = new QCheckBox(tr("Case"), this);
     row->addWidget(m_regex);
     row->addWidget(m_case);
 
@@ -43,7 +43,7 @@ FindBar::FindBar(QWidget *parent) : QWidget(parent)
 
     auto *close = new QToolButton(this);
     close->setText(QStringLiteral("✕"));
-    close->setToolTip(QStringLiteral("Close (Esc)"));
+    close->setToolTip(tr("Close (Esc)"));
     row->addWidget(close);
 
     // Typing (or toggling an option) restarts the search from the top so the first

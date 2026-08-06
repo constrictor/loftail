@@ -4,7 +4,22 @@
 #include "KeychainSecretStore.h"
 #endif
 
+#include <QCoreApplication>
+
 namespace loftail {
+
+namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::SecretStore)
+};
+} // namespace
+
 
 namespace {
 
@@ -60,8 +75,8 @@ RememberOutcome rememberSshPassword(const QString &target, const QString &passwo
     // never told about. This is the whole reason UseFileFallback is not returned below.
     if (message) {
         *message = error.isEmpty()
-            ? QStringLiteral("%1 would not store the password.").arg(store->backendName())
-            : QStringLiteral("%1 would not store the password: %2")
+            ? Tr::tr("%1 would not store the password.").arg(store->backendName())
+            : Tr::tr("%1 would not store the password: %2")
                   .arg(store->backendName(), error);
     }
     return RememberOutcome::Failed;

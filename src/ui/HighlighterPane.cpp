@@ -8,6 +8,7 @@
 #include "RecordIndex.h"
 
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -34,20 +35,32 @@ QIcon swatchIcon(const QColor &c)
 
 // One axis's contribution to a rule's one-line summary, or an empty string when the
 // axis is off. Short by necessity: this is a row in a dock-width list.
+//
+// Not a member, so there is no tr() in scope; the context is named for the class these
+// summaries are shown in. The priority glyph, the regex slashes and the joining comma
+// stay literal — they are punctuation, and priorityName() is a log token that must
+// round-trip against the file (invariant #4).
 QString axisSummary(const MatchCriteria &c)
 {
+    const auto text = [](const char *s) {
+        return QCoreApplication::translate("loftail::HighlighterPane", s);
+    };
+
     QStringList parts;
     if (c.priorityEnabled)
         parts << QStringLiteral("≥%1").arg(QString(priorityName(c.minPriority)));
     if (c.loggerEnabled) {
         parts << (c.loggerNames.size() == 1
                       ? c.loggerNames.first()
-                      : QStringLiteral("%1 subsystems").arg(c.loggerNames.size()));
+                      : text(QT_TRANSLATE_NOOP("loftail::HighlighterPane", "%1 subsystems"))
+                            .arg(c.loggerNames.size()));
     }
     if (c.threadEnabled) {
         parts << (c.threadNames.size() == 1
-                      ? QStringLiteral("thread %1").arg(c.threadNames.first())
-                      : QStringLiteral("%1 threads").arg(c.threadNames.size()));
+                      ? text(QT_TRANSLATE_NOOP("loftail::HighlighterPane", "thread %1"))
+                            .arg(c.threadNames.first())
+                      : text(QT_TRANSLATE_NOOP("loftail::HighlighterPane", "%1 threads"))
+                            .arg(c.threadNames.size()));
     }
     if (c.text.active()) {
         // Slashes for a regex, quotes for a substring — the same visual shorthand the
@@ -55,10 +68,12 @@ QString axisSummary(const MatchCriteria &c)
         const QString pat = c.text.matcher.isRegex()
                                 ? QStringLiteral("/%1/").arg(c.text.matcher.pattern())
                                 : QStringLiteral("\"%1\"").arg(c.text.matcher.pattern());
-        parts << (c.text.negate ? QStringLiteral("not %1").arg(pat) : pat);
+        parts << (c.text.negate
+                      ? text(QT_TRANSLATE_NOOP("loftail::HighlighterPane", "not %1")).arg(pat)
+                      : pat);
     }
     if (c.timeEnabled)
-        parts << QStringLiteral("in time range");
+        parts << text(QT_TRANSLATE_NOOP("loftail::HighlighterPane", "in time range"));
     return parts.join(QStringLiteral(", "));
 }
 
@@ -80,7 +95,7 @@ QComboBox *HighlighterPane::makeSwatchCombo(QWidget *parent)
 {
     auto *combo = new QComboBox(parent);
     // Item 0 is the *default* sentinel: leave this role at the theme's normal color.
-    combo->addItem(QStringLiteral("Default"), HighlightPalette::kDefault);
+    combo->addItem(tr("Default"), HighlightPalette::kDefault);
     const bool dark = isDark();
     for (int i = 0; i < HighlightPalette::count(); ++i) {
         const PaletteSlot &s = HighlightPalette::slot(i);
@@ -110,10 +125,10 @@ void HighlighterPane::buildUi()
     root->addWidget(m_ruleList);
 
     auto *btnRow = new QHBoxLayout;
-    m_addBtn = new QPushButton(QStringLiteral("Add"), this);
-    m_removeBtn = new QPushButton(QStringLiteral("Remove"), this);
-    m_upBtn = new QPushButton(QStringLiteral("Up"), this);
-    m_downBtn = new QPushButton(QStringLiteral("Down"), this);
+    m_addBtn = new QPushButton(tr("Add"), this);
+    m_removeBtn = new QPushButton(tr("Remove"), this);
+    m_upBtn = new QPushButton(tr("Up"), this);
+    m_downBtn = new QPushButton(tr("Down"), this);
     btnRow->addWidget(m_addBtn);
     btnRow->addWidget(m_removeBtn);
     btnRow->addWidget(m_upBtn);
@@ -126,7 +141,7 @@ void HighlighterPane::buildUi()
     // in a scroll area and the AxisEditor collapses each axis to its title row until
     // that axis is enabled. A rule with two axes set therefore shows two open groups
     // and three one-line stubs.
-    m_editor = new QGroupBox(QStringLiteral("Selected rule"), this);
+    m_editor = new QGroupBox(tr("Selected rule"), this);
     auto *ev = new QVBoxLayout(m_editor);
 
     auto *scroll = new QScrollArea(m_editor);
@@ -148,13 +163,13 @@ void HighlighterPane::buildUi()
     cv->addWidget(m_axes);
 
     auto *bgRow = new QHBoxLayout;
-    bgRow->addWidget(new QLabel(QStringLiteral("Background:"), content));
+    bgRow->addWidget(new QLabel(tr("Background:"), content));
     m_bgCombo = makeSwatchCombo(content);
     bgRow->addWidget(m_bgCombo, 1);
     cv->addLayout(bgRow);
 
     auto *fgRow = new QHBoxLayout;
-    fgRow->addWidget(new QLabel(QStringLiteral("Text:"), content));
+    fgRow->addWidget(new QLabel(tr("Text:"), content));
     m_fgCombo = makeSwatchCombo(content);
     fgRow->addWidget(m_fgCombo, 1);
     cv->addLayout(fgRow);
@@ -243,13 +258,13 @@ QString HighlighterPane::ruleSummary(const HighlightRule &r) const
 {
     QString axes = axisSummary(r.match);
     if (axes.isEmpty())
-        axes = QStringLiteral("(no match set)");
+        axes = tr("(no match set)");
 
     auto slotName = [](int i) {
         return HighlightPalette::isSlot(i) ? QString(HighlightPalette::slot(i).name)
-                                           : QStringLiteral("default");
+                                           : tr("default");
     };
-    return QStringLiteral("%1  →  bg:%2 / text:%3")
+    return tr("%1  →  bg:%2 / text:%3")
         .arg(axes, slotName(r.background), slotName(r.foreground));
 }
 
