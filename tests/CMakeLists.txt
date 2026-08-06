@@ -264,6 +264,16 @@ qt_add_executable(tst_sshexec tst_sshexec.cpp)
 target_link_libraries(tst_sshexec PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_sshexec COMMAND tst_sshexec)
 
+# M16 — which of those commands can measure the file on THIS server, and the proof that
+# the answer is usable. UNGATED for the same reason and one stronger: this is the only
+# decision the exec transport makes, and the transport itself needs libssh2, a server
+# with no working SFTP, and — for the rungs below `stat` — a server missing a utility
+# every developer machine has. The two injected seams stand in for all of that, running
+# the real commands through a real /bin/sh against real files.
+qt_add_executable(tst_execsizeprobe tst_execsizeprobe.cpp)
+target_link_libraries(tst_execsizeprobe PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_execsizeprobe COMMAND tst_execsizeprobe)
+
 # Why the SSH transport takes its socket away from Qt. UNGATED and network-free
 # (loopback only): the behaviour worked around is Qt's own, so it must be pinned in a
 # build with no SSH support too — and a Qt that stopped doing it would make the whole

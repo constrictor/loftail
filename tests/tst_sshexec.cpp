@@ -58,8 +58,16 @@ private slots:
     void anInjectingPathCannotRunAnything();
     void statReportsSizeAndMtime();
     void readHonoursTheOneBasedOffset();
+    void readCommandSurvivesAPercentInThePath();
     void statOutputParsingRejectsRubbish();
-    void theProbeSurvivesAChattyLogin();
+    void lsReportsTheSizeOfARegularFile();
+    void lsFollowsASymlinkToTheLog();
+    void lsRejectsWhatIsNotAPlainFile();
+    void lsSizeParsingRejectsRubbish();
+    void wcReportsTheExactSize();
+    void wcSizeParsingRejectsRubbish();
+    void theProbeRequiresHeadAsWellAsTail();
+    void theProbeReportsWhichToolsExist();
 };
 
 void TestSshExec::quotingNeutralisesShellMetacharacters()
@@ -92,6 +100,12 @@ void TestSshExec::anInjectingPathCannotRunAnything()
     int code = 0;
     runSh(statCommand(hostile), &code);
     QVERIFY2(!QFileInfo::exists(canary), "shell injection through statCommand");
+
+    runSh(lsSizeCommand(hostile), &code);
+    QVERIFY2(!QFileInfo::exists(canary), "shell injection through lsSizeCommand");
+
+    runSh(wcSizeCommand(hostile), &code);
+    QVERIFY2(!QFileInfo::exists(canary), "shell injection through wcSizeCommand");
 
     runSh(readCommand(hostile, 0, 16), &code);
     QVERIFY2(!QFileInfo::exists(canary), "shell injection through readCommand");
@@ -135,6 +149,24 @@ void TestSshExec::readHonoursTheOneBasedOffset()
     QCOMPARE(runSh(readCommand(path, 8, 99)), QByteArray("89"));
 }
 
+void TestSshExec::readCommandSurvivesAPercentInThePath()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh");
+    // A percent is a legal filename character, and a URL-decoded %251 arrives here as a
+    // literal %1. Chaining arg() made the LENGTH argument substitute itself into the
+    // path — a different file, or none — because the second call rescans the whole
+    // string including what the first one inserted.
+    const QString path = write(QStringLiteral("%1-%2-%3.log"),
+                               QByteArrayLiteral("0123456789"));
+    QVERIFY(!path.isEmpty());
+
+    QCOMPARE(runSh(readCommand(path, 0, 4)), QByteArray("0123"));
+    QCOMPARE(runSh(readCommand(path, 4, 3)), QByteArray("456"));
+    // The path must appear in the command exactly as given, markers and all.
+    QVERIFY(readCommand(path, 0, 4).contains(QStringLiteral("%1-%2-%3.log")));
+}
+
 void TestSshExec::statOutputParsingRejectsRubbish()
 {
     // Everything a broken server can print has to read as "no attributes" rather than
@@ -158,7 +190,142 @@ void TestSshExec::statOutputParsingRejectsRubbish()
     QCOMPARE(banner.size, 77);
 }
 
-void TestSshExec::theProbeSurvivesAChattyLogin()
+void TestSshExec::lsReportsTheSizeOfARegularFile()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh");
+    // The same awkward name statReportsSizeAndMtime() uses: a space and a quote are
+    // legal, and they are what breaks command construction.
+    const QString path = write(QStringLiteral("od d app.log"), QByteArray(4321, 'x'));
+    QVERIFY(!path.isEmpty());
+
+    const ExecAttrs attrs = parseLsSizeOutput(runSh(lsSizeCommand(path)));
+    QVERIFY2(attrs.ok, "ls -lnLd output did not parse — what does this ls print?");
+    QCOMPARE(attrs.size, 4321);
+    // `ls` prints a human date, and an old file loses the clock from it entirely, so
+    // there is nothing here an mtime comparison could use.
+    QCOMPARE(attrs.mtime, kUnknownMtime);
+}
+
+void TestSshExec::lsFollowsASymlinkToTheLog()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh");
+    const QString target = write(QStringLiteral("real.log"), QByteArray(999, 'y'));
+    QVERIFY(!target.isEmpty());
+    const QString link = m_dir.filePath(QStringLiteral("current.log"));
+    if (!QFile::link(target, link))
+        QSKIP("this filesystem will not make a symlink");
+
+    // -L must beat -d. POSIX says it does; this pins it, because without -L the answer
+    // would be the LENGTH OF THE TARGET PATH — a plausible small number, and wrong.
+    const ExecAttrs attrs = parseLsSizeOutput(runSh(lsSizeCommand(link)));
+    QVERIFY2(attrs.ok, "a symlinked log was not dereferenced");
+    QCOMPARE(attrs.size, 999);
+}
+
+void TestSshExec::lsRejectsWhatIsNotAPlainFile()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh");
+    // A directory: -d stops it listing the contents, and the type char rejects it. Both
+    // are needed — without -d, lastNonEmptyLine() would take a member for the answer.
+    QVERIFY(!parseLsSizeOutput(runSh(lsSizeCommand(m_dir.path()))).ok);
+
+    // A character device, whose size column is not a byte count but "1, 3". Rejected on
+    // the type char, before the shifted column can be read as a size.
+    if (QFileInfo::exists(QStringLiteral("/dev/null")))
+        QVERIFY(!parseLsSizeOutput(runSh(lsSizeCommand(QStringLiteral("/dev/null")))).ok);
+
+    // A dangling symlink: -L falls back to lstat and prints an `l` line, which is right
+    // — there are no bytes there to read.
+    const QString dangling = m_dir.filePath(QStringLiteral("gone.log"));
+    if (QFile::link(m_dir.filePath(QStringLiteral("never-written.log")), dangling))
+        QVERIFY(!parseLsSizeOutput(runSh(lsSizeCommand(dangling))).ok);
+}
+
+void TestSshExec::lsSizeParsingRejectsRubbish()
+{
+    // A wrong size here would truncate or over-read a log, so everything a strange
+    // server can print has to read as "no attributes" rather than as a plausible number.
+    QVERIFY(!parseLsSizeOutput(QByteArray()).ok);
+    QVERIFY(!parseLsSizeOutput("Welcome to the router\n").ok);
+    QVERIFY(!parseLsSizeOutput("ls: /x: No such file or directory\n").ok);
+    // A human-readable size, which is what a remote /etc/profile setting BLOCK_SIZE
+    // produces. The command defends against it; the parser must refuse it regardless.
+    QVERIFY(!parseLsSizeOutput("-rw-r--r-- 1 0 0 1.0K Aug  6 10:00 /x.log\n").ok);
+    QVERIFY(!parseLsSizeOutput("drwxr-xr-x 2 0 0 4096 Aug  6 10:00 /var/log\n").ok);
+    QVERIFY(!parseLsSizeOutput("lrwxrwxrwx 1 0 0 11 Aug  6 10:00 /x -> /y\n").ok);
+    QVERIFY(!parseLsSizeOutput("crw-rw-rw- 1 0 0 1, 3 Jan  1 00:00 /dev/null\n").ok);
+    // Short of a full line: no time and no name, so the columns are not what they look
+    // like and field 4 is not necessarily a size.
+    QVERIFY(!parseLsSizeOutput("-rw-r--r-- 1 0 0 4096 Aug  6\n").ok);
+    QVERIFY(!parseLsSizeOutput("-rw-r--r-- 1 0 0 -5 Aug  6 10:00 /x.log\n").ok);
+    // Not numeric where -n guarantees numbers: the columns are not where they should be.
+    QVERIFY(!parseLsSizeOutput("-rw-r--r-- 1 root root 4096 Aug  6 10:00 /x.log\n").ok);
+
+    // Busybox pads its columns differently from GNU; simplified() is what makes the two
+    // the same parse. And an ACL or SELinux marker after the mode must not matter.
+    const ExecAttrs busybox =
+        parseLsSizeOutput("-rw-r--r--    1 0        0             8192 Aug  6 10:00 /x\n");
+    QVERIFY(busybox.ok);
+    QCOMPARE(busybox.size, 8192);
+    const ExecAttrs acl = parseLsSizeOutput("-rw-rw-r--+ 1 0 0 77 Aug  6 10:00 /x.log\n");
+    QVERIFY(acl.ok);
+    QCOMPARE(acl.size, 77);
+
+    // And a banner in front of the answer, the way a login shell delivers it.
+    const ExecAttrs banner =
+        parseLsSizeOutput("MOTD\n-rw-r--r-- 1 0 0 12 Aug  6 10:00 /x.log\n");
+    QVERIFY(banner.ok);
+    QCOMPARE(banner.size, 12);
+}
+
+void TestSshExec::wcReportsTheExactSize()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh");
+    const QString path = write(QStringLiteral("od d app.log"), QByteArray(2222, 'z'));
+    QVERIFY(!path.isEmpty());
+
+    const ExecAttrs attrs = parseWcSizeOutput(runSh(wcSizeCommand(path)));
+    QVERIFY(attrs.ok);
+    QCOMPARE(attrs.size, 2222);
+    QCOMPARE(attrs.mtime, kUnknownMtime);
+
+    // A missing file prints nothing on stdout — the shell's complaint goes to stderr —
+    // which is the whole reason this rung uses a redirect rather than an operand.
+    const QString missing = m_dir.filePath(QStringLiteral("not-there.log"));
+    QVERIFY(!parseWcSizeOutput(runSh(wcSizeCommand(missing))).ok);
+}
+
+void TestSshExec::wcSizeParsingRejectsRubbish()
+{
+    QVERIFY(!parseWcSizeOutput(QByteArray()).ok);
+    QVERIFY(!parseWcSizeOutput("\n \n").ok);
+    // Two fields means `wc` was given an operand rather than a redirect, so this is not
+    // the command we built and its first field is not necessarily what we think.
+    QVERIFY(!parseWcSizeOutput("1234 /var/log/app.log\n").ok);
+    QVERIFY(!parseWcSizeOutput("wc: /x: No such file\n").ok);
+    QVERIFY(!parseWcSizeOutput("-3\n").ok);
+
+    const ExecAttrs good = parseWcSizeOutput("   4096  \n");
+    QVERIFY(good.ok);
+    QCOMPARE(good.size, 4096);
+}
+
+void TestSshExec::theProbeRequiresHeadAsWellAsTail()
+{
+    // readCommand() is `tail -c +N ... | head -c L`, and for a long time the probe asked
+    // only about `tail`. A box with tail and no head passed, opened the log, and then
+    // returned zero bytes from every read — which is exactly what EOF looks like, so it
+    // opened empty and never said why.
+    const QString probe = probeCommand();
+    QVERIFY(probe.contains(QStringLiteral("command -v tail")));
+    QVERIFY(probe.contains(QStringLiteral("command -v head")));
+}
+
+void TestSshExec::theProbeReportsWhichToolsExist()
 {
     // The probe decides whether the exec transport is available AT ALL, and it is only
     // ever reached on servers with no working SFTP — which in practice are the small,
@@ -177,14 +344,49 @@ void TestSshExec::theProbeSurvivesAChattyLogin()
     QVERIFY(lastNonEmptyLine("\n \n\t\n").isEmpty());
     QVERIFY(lastNonEmptyLine("Welcome to the router\n") != probeMarker());
 
+    // Reading and measuring are separate questions. The marker alone answers the first
+    // and says no to the second, which is a server that gets its own message.
+    const ExecTools readOnly = parseProbeOutput(probeMarker() + "\n");
+    QVERIFY(readOnly.ok);
+    QVERIFY(!readOnly.anySizeTool());
+
+    const ExecTools noStat = parseProbeOutput("MOTD\n" + probeMarker() + " ls wc\n");
+    QVERIFY(noStat.ok);
+    QVERIFY(!noStat.hasStat);
+    QVERIFY(noStat.hasLs);
+    QVERIFY(noStat.hasWc);
+
+    // An unknown name is ignored rather than fatal, so an older loftail and a newer
+    // probe (or the reverse) do not refuse each other.
+    const ExecTools future = parseProbeOutput(probeMarker() + " stat perl\n");
+    QVERIFY(future.ok);
+    QVERIFY(future.hasStat);
+
+    QVERIFY(!parseProbeOutput(QByteArray()).ok);
+    QVERIFY(!parseProbeOutput("Welcome to the router\n").ok);
+    // The marker is the HEAD of the line, not somewhere in it: a shell echoing back the
+    // command it was given must not read as an answer.
+    QVERIFY(!parseProbeOutput("echo " + probeMarker() + "\n").ok);
+
     if (!haveShell())
         QSKIP("no /bin/sh to run the probe through");
-    // The real command, through a real shell, on a machine that does have tail and stat.
-    QCOMPARE(lastNonEmptyLine(runSh(probeCommand())), probeMarker());
+    // The real command, through a real shell. `ls` is asserted and `stat` deliberately
+    // is not: a box without stat is the case this whole ladder exists for.
+    const ExecTools real = parseProbeOutput(runSh(probeCommand()));
+    QVERIFY2(real.ok, "the probe did not find tail and head on this machine");
+    QVERIFY(real.hasLs);
+    QVERIFY(real.anySizeTool());
+
     // And with a banner in front of it, the way a login shell would deliver it.
-    QCOMPARE(lastNonEmptyLine(runSh(QStringLiteral("echo 'MOTD: be careful'; %1")
-                                        .arg(probeCommand()))),
-             probeMarker());
+    const ExecTools chatty = parseProbeOutput(
+        runSh(QStringLiteral("echo 'MOTD: be careful'; %1").arg(probeCommand())));
+    QVERIFY(chatty.ok);
+    QVERIFY(chatty.hasLs);
+
+    // With nothing on PATH it must still be able to say no rather than half-answer.
+    QVERIFY(!parseProbeOutput(runSh(QStringLiteral("PATH=/nonexistent; %1")
+                                        .arg(probeCommand())))
+                 .ok);
 }
 
 QTEST_GUILESS_MAIN(TestSshExec)

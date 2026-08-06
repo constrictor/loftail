@@ -129,6 +129,7 @@ private slots:
     void detectsRealRotation();
     void reportsAnUnreachableHostClearly();
     void theExecFallbackReadsTheSameBytes();
+    void theExecFallbackSizesWithoutStat();
 };
 
 void TestSshLive::initTestCase()
@@ -191,7 +192,45 @@ void TestSshLive::theExecFallbackReadsTheSameBytes()
     QCOMPARE(remoteShellOutput(readCommand(m_remotePath, content.size(), 10)), QByteArray());
 
     // And the probe agrees this server could host the fallback at all.
-    QCOMPARE(remoteShellOutput(probeCommand()).trimmed(), probeMarker());
+    const ExecTools tools = parseProbeOutput(remoteShellOutput(probeCommand()));
+    QVERIFY2(tools.ok, "this server has no tail and head for the fallback to use");
+    QVERIFY2(tools.anySizeTool(), "this server offers nothing to measure the log with");
+}
+
+void TestSshLive::theExecFallbackSizesWithoutStat()
+{
+    // The rungs below `stat`, against a REAL server (M16, §6.3.1). Nothing in CI has an
+    // `ls` other than this machine's, and the column layout is the one thing about this
+    // transport that varies by userland — so a real remote `ls` is worth the round trip
+    // even though the server under test almost certainly does have `stat`.
+    const QByteArray content =
+        "2026-07-21 00:00:01,000 [t0] INFO  logger.a - measured without stat\n";
+    QVERIFY(writeRemote(content));
+
+    SshSession sftp;
+    QString error;
+    QVERIFY2(sftp.connectTo(m_location, nullptr, 20000, &error), qPrintable(error));
+    QVERIFY2(sftp.openFile(&error), qPrintable(error));
+    const SshSession::Attrs viaSftp = sftp.statPath();
+    QVERIFY(viaSftp.valid);
+    sftp.close();
+
+    const ExecTools tools = parseProbeOutput(remoteShellOutput(probeCommand()));
+    if (tools.hasLs) {
+        const ExecAttrs viaLs =
+            parseLsSizeOutput(remoteShellOutput(lsSizeCommand(m_remotePath)));
+        QVERIFY2(viaLs.ok, "this server's ls -lnLd printed a shape the parser rejects");
+        QCOMPARE(viaLs.size, viaSftp.size);
+        // No epoch here, which is what puts SshFetcher on the stalled-size rotation rule.
+        QCOMPARE(viaLs.mtime, kUnknownMtime);
+    }
+    if (tools.hasWc) {
+        const ExecAttrs viaWc =
+            parseWcSizeOutput(remoteShellOutput(wcSizeCommand(m_remotePath)));
+        QVERIFY(viaWc.ok);
+        QCOMPARE(viaWc.size, viaSftp.size);
+        QCOMPARE(viaWc.mtime, kUnknownMtime);
+    }
 }
 
 void TestSshLive::cleanup()
