@@ -398,8 +398,10 @@ void TestLogModel::rowIsContextTracksTheFilteredSubset()
     for (int row = 0; row < 4; ++row)
         QVERIFY(!model.rowIsContext(row));
 
-    doc.filters().priorityEnabled = true;
-    doc.filters().minPriority = Priority::Error;
+    // A MESSAGE filter, because that is the only axis context widens (SPEC.md §6):
+    // only record "c" matches, and one record of lead-up and follow-up comes with it.
+    doc.filters().text.enabled = true;
+    doc.filters().text.matcher.set(QStringLiteral("c"), /*regex=*/false, Qt::CaseSensitive);
     doc.setContext(1, 1);
     doc.applyFilters();
 

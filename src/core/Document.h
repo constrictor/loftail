@@ -198,8 +198,15 @@ public:
     void applyFilters();
 
     // Filter context (M15, SPEC.md §6): show `before` records ahead of and `after`
-    // records behind every match, tagged as context so the view dims them — grep's
-    // -B/-A. Per-FILE state, beside the filters themselves (invariant #7).
+    // records behind every MESSAGE-TEXT match, tagged as context so the view dims
+    // them — grep's -B/-A. Per-FILE state, beside the filters themselves (invariant
+    // #7).
+    //
+    // It widens the message-text axis and nothing else: a context record is one the
+    // message filter rejected but every other axis — priority, subsystem, thread,
+    // time range — and the run bound still admit (see inContextStream() below). So
+    // with the text axis inactive there is nothing left for a record to fail, every
+    // in-bound record is a match, and context is inert with no gate anywhere.
     //
     // Context NEVER makes the FilteredIndex active on its own: with no filter and no
     // run there is nothing to be context TO, so applyFilters() keeps its
@@ -287,12 +294,29 @@ public:
     // restriction applies identically on initial load and on tail.
     bool acceptsInView(const Record &r) const;
 
-    // The two halves of it, separately. Filter context needs them apart: a context
-    // record is one the FILTERS rejected but the run bound still admits, so a
-    // neighbour is pulled in from inside the run and never from across its boundary.
-    // inRunBound() is integer comparisons only; matchesFilters() may decode.
+    // The two halves of it, separately. inRunBound() is integer comparisons only;
+    // matchesFilters() may decode.
     bool inRunBound(const Record &r) const;
     bool matchesFilters(const Record &r) const;
+
+    // The same predicate cut the OTHER way, which is the cut filter context needs
+    // (ContextEmitter.h): the stream being searched, and the search.
+    //
+    //   inContextStream()  the run bound AND every non-text axis — no decoding, and
+    //                      the set a context record must still belong to.
+    //   matchesTextAxis()  the message-text axis alone, decoding only when it is
+    //                      active (invariant #4).
+    //
+    // Their conjunction is exactly acceptsInView(), so context at 0 changes nothing.
+    bool inContextStream(const Record &r) const;
+    bool matchesTextAxis(const Record &r) const;
+
+    // The oldest ordinal in the leading (-B) window of a match at `row`: the
+    // `before`-th in-stream record before it, or 0. Integer comparisons only. The
+    // live path needs it to know how far back a flip of the trailing record can
+    // reach — `row - before` is wrong, because `before` counts in-stream records and
+    // those are not contiguous in ordinal space.
+    int contextWindowStart(int row, int before) const;
 
     // Highlighting (M5, SPEC.md §7). The HighlighterSet is the per-file highlight
     // state (invariant #7): an ordered rule list, first-match-wins, each rule

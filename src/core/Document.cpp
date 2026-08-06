@@ -402,12 +402,13 @@ void Document::applyFilters()
     // integer axes, then the message decode — reached ONLY for records the earlier
     // tests let through AND when the text axis is active (invariant #4). The context
     // widening rides on the same pass; with before == after == 0 the emitter reduces
-    // to exactly "emit every record acceptsInView() admits".
+    // to exactly "emit every record acceptsInView() admits", since inContextStream()
+    // and matchesTextAxis() are that predicate split in two.
     ContextState st;
     emitWithContext(
         0, n - 1, m_contextBefore, m_contextAfter, st,
-        [this](int row) { return inRunBound(m_index.records.at(row)); },
-        [this](int row) { return matchesFilters(m_index.records.at(row)); },
+        [this](int row) { return inContextStream(m_index.records.at(row)); },
+        [this](int row) { return matchesTextAxis(m_index.records.at(row)); },
         [&visible, &context](int row, bool isContext) {
             visible.append(row);
             context.append(isContext ? 1 : 0);
@@ -429,6 +430,35 @@ bool Document::matchesFilters(const Record &r) const
 bool Document::acceptsInView(const Record &r) const
 {
     return inRunBound(r) && matchesFilters(r);
+}
+
+bool Document::inContextStream(const Record &r) const
+{
+    return inRunBound(r) && m_filters.acceptsIntegerAxes(r);
+}
+
+bool Document::matchesTextAxis(const Record &r) const
+{
+    // The activity test is not FilterSet::acceptsText()'s to make here: it takes the
+    // decoded message by value, so calling it unconditionally would decode every
+    // record the integer axes let through even with the axis switched off — exactly
+    // the cost invariant #4 exists to avoid.
+    if (!m_filters.text.active())
+        return true;
+    return m_filters.acceptsText(messageText(r));
+}
+
+int Document::contextWindowStart(int row, int before) const
+{
+    if (before <= 0)
+        return qMax(0, row);
+    int need = before;
+    int r = row - 1;
+    for (; r >= 0; --r) {
+        if (inContextStream(m_index.records.at(r)) && --need == 0)
+            break;
+    }
+    return qMax(0, r);
 }
 
 QString Document::recordFirstLine(const Record &rec) const

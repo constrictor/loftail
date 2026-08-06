@@ -134,6 +134,7 @@ private slots:
     void emitterWindows_data();
     void emitterWindows();
     void emitterSkipsOutOfBoundContext();
+    void emitterCountsInBoundRowsNotOrdinals();
     void emitterSuffixInvariantHolds();
 
     // (b) Document
@@ -141,6 +142,10 @@ private slots:
     void contextDoesNotActivateAnIdentityView();
     void contextIsClampedAndPerFile();
     void contextRespectsTheRunBound();
+    // The M-plus-one rule: context widens the MESSAGE axis and only it.
+    void contextIsInertWithoutAMessageFilter();
+    void contextNeighboursPassTheOtherAxes();
+    void theTwoHalvesOfTheViewPredicateComposeBack();
 
     // (c) the live path
     void liveConvergesWithAOneShotScan_data();
@@ -151,6 +156,7 @@ private slots:
     void liveProvisionalFlipDoesNotDropAnEarlierMatch();
     void liveNoContextPopsExactlyOneRow();
     void liveNoFlipDoesNotChurnTheTail();
+    void liveFlipReachesBackOverRejectedRecords();
 };
 
 // ---------------------------------------------------------------------------
@@ -205,6 +211,22 @@ void TestFilterContext::emitterSkipsOutOfBoundContext()
     QCOMPARE(emitted("..X.......", 0, 3, "MMMM......"), "..Mc......");
 }
 
+void TestFilterContext::emitterCountsInBoundRowsNotOrdinals()
+{
+    // The bound is no longer only the run: it also carries every non-text filter axis
+    // (SPEC.md §6), so its holes are interior and the window has to STEP OVER them
+    // rather than spend itself on them. "-B 2" means the two nearest records the
+    // other filters admit, however far back they are.
+    QCOMPARE(emitted(".....X....", 2, 0, "M.M.MMMMMM"), "..c.cM....");
+    // The same at the trailing end.
+    QCOMPARE(emitted("X.........", 0, 2, "M.M.M....."), "M.c.c.....");
+    // A window that runs out of in-bound rows simply stops; it does not keep walking
+    // to make up the count from rows the other axes rejected.
+    QCOMPARE(emitted("........X.", 5, 0, "..M.....MM"), "..c.....M.");
+    // Reaching the start of the file is the same non-event it always was.
+    QCOMPARE(emitted("..X.......", 4, 0, ".MMMMMMMMM"), ".cM.......");
+}
+
 void TestFilterContext::emitterSuffixInvariantHolds()
 {
     // The property the live path rests on (ContextEmitter.h): after every step, every
@@ -248,16 +270,31 @@ void TestFilterContext::emitterSuffixInvariantHolds()
                             got[r] = isContext ? QLatin1Char('c') : QLatin1Char('M');
                         });
 
-        // (i) Against the naive definition of grep -C, written the obvious O(n·C) way:
-        // a row is shown if it is an in-bound match, or an in-bound row within
-        // `before` of one, or within `after` of one. The emitter's single pass with
-        // its clamps must agree with it exactly, tags included.
+        // (i) Against the naive definition of grep -C, written the obvious O(n·C)
+        // way: a row is shown if it is an in-bound match, or one of the `before`
+        // in-bound rows before one, or one of the `after` in-bound rows after one.
+        // The counting is over IN-BOUND ROWS, not ordinals — the holes above are
+        // records the non-text axes reject, and a window must neither include one
+        // nor spend part of itself on one (ContextEmitter.h). The emitter's single
+        // pass with its clamps must agree with this exactly, tags included.
         QString want(kRows, QLatin1Char('.'));
         for (int m = 0; m < kRows; ++m) {
             if (!inBound(m) || !isMatch(m))
                 continue;
-            for (int q = qMax(0, m - before); q <= qMin(kRows - 1, m + after); ++q) {
-                if (inBound(q) && want.at(q) == QLatin1Char('.'))
+            int n = 0;
+            for (int q = m - 1; q >= 0 && n < before; --q) {
+                if (!inBound(q))
+                    continue;
+                ++n;
+                if (want.at(q) == QLatin1Char('.'))
+                    want[q] = QLatin1Char('c');
+            }
+            n = 0;
+            for (int q = m + 1; q < kRows && n < after; ++q) {
+                if (!inBound(q))
+                    continue;
+                ++n;
+                if (want.at(q) == QLatin1Char('.'))
                     want[q] = QLatin1Char('c');
             }
             want[m] = QLatin1Char('M');
@@ -271,9 +308,11 @@ void TestFilterContext::emitterSuffixInvariantHolds()
         for (int m = 0; m < kRows; ++m) {
             if (got.at(m) != QLatin1Char('M'))
                 continue;
-            for (int q = qMax(0, m - before); q < m; ++q) {
+            int n = 0;
+            for (int q = m - 1; q >= 0 && n < before; --q) {
                 if (!inBound(q))
                     continue;
+                ++n;
                 QVERIFY2(emitted.contains(q),
                          qPrintable(QStringLiteral("row %1 missing from the leading window "
                                                    "of the match at %2 (trial %3, B=%4)")
@@ -293,19 +332,17 @@ void TestFilterContext::applyFiltersWithContext()
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("ctx.log"));
 
-    // 8 records; the WARN/ERROR at 2 and 6 are the only matches for "priority >= WARN".
+    // 8 records; the two carrying "keep" are the only matches for the message filter.
     QByteArray whole;
-    const char *prios[] = {"INFO ", "INFO ", "WARN ", "INFO ", "DEBUG", "INFO ", "ERROR", "INFO "};
     for (int i = 0; i < 8; ++i)
-        whole += rec(i, prios[i], "m" + QByteArray::number(i));
+        whole += rec(i, "INFO ", (i == 2 || i == 6 ? "keep " : "plain ") + QByteArray::number(i));
     QVERIFY(writeWhole(path, whole));
 
     Document doc;
     QVERIFY2(openDoc(doc, path), qPrintable(doc.lastError()));
     QCOMPARE(doc.index().records.size(), 8);
 
-    doc.filters().priorityEnabled = true;
-    doc.filters().minPriority = Priority::Warn;
+    filterOnText(doc, "keep");
 
     doc.applyFilters();
     QCOMPARE(picture(doc, 8), QStringLiteral("..M...M."));
@@ -394,13 +431,109 @@ void TestFilterContext::contextRespectsTheRunBound()
     QCOMPARE(doc.runs().size(), 2);
     QCOMPARE(doc.selectedRun(), 1);
 
-    doc.filters().priorityEnabled = true;
-    doc.filters().minPriority = Priority::Warn;
+    filterOnText(doc, "boom");
     doc.setContext(5, 5);
     doc.applyFilters();
 
     // Records 0-3 are in the other run and stay hidden however wide the window is.
     QCOMPARE(picture(doc, 8), QStringLiteral("....cMcc"));
+}
+
+void TestFilterContext::contextIsInertWithoutAMessageFilter()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("noctx.log"));
+
+    QByteArray whole;
+    const char *prios[] = {"INFO ", "INFO ", "WARN ", "INFO ", "DEBUG", "INFO ", "ERROR", "INFO "};
+    for (int i = 0; i < 8; ++i)
+        whole += rec(i, prios[i], "m" + QByteArray::number(i));
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY2(openDoc(doc, path), qPrintable(doc.lastError()));
+
+    // Context is grep -B/-A over the MESSAGE search (SPEC.md §6). "Show me the two
+    // records either side of every WARN" is not that question — the priority axis
+    // selects a class of records, not an event to read around — so a metadata-only
+    // filter is narrowed exactly as it was before the feature existed, however wide
+    // the spinners are set. Nothing gates this: with the text axis off every record
+    // the other axes admit is a match, and a match cannot also be context.
+    doc.filters().priorityEnabled = true;
+    doc.filters().minPriority = Priority::Warn;
+    doc.setContext(3, 3);
+    doc.applyFilters();
+
+    QCOMPARE(picture(doc, 8), QStringLiteral("..M...M."));
+    QCOMPARE(doc.filtered().contextCount(), 0);
+
+    // Switching the message axis on is what wakes it up. Record 2 is now a NEIGHBOUR
+    // rather than a match — it is the nearest record the priority floor still admits,
+    // three INFOs and a DEBUG having been stepped over to reach it.
+    filterOnText(doc, "m6");
+    doc.applyFilters();
+    QCOMPARE(picture(doc, 8), QStringLiteral("..c...M."));
+}
+
+void TestFilterContext::contextNeighboursPassTheOtherAxes()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("stream.log"));
+
+    // Alternating WARN and INFO. With the priority floor at WARN the stream being
+    // searched is the even records, so "-B 2" from the match at 8 is records 6 and 4
+    // — not 7 and 6, which is what counting ordinals would give.
+    QByteArray whole;
+    for (int i = 0; i < 10; ++i)
+        whole += rec(i, (i % 2 == 0) ? "WARN " : "INFO ",
+                     (i == 8 ? "keep " : "plain ") + QByteArray::number(i));
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY2(openDoc(doc, path), qPrintable(doc.lastError()));
+
+    doc.filters().priorityEnabled = true;
+    doc.filters().minPriority = Priority::Warn;
+    filterOnText(doc, "keep");
+    doc.setContext(2, 1);
+    doc.applyFilters();
+
+    QCOMPARE(picture(doc, 10), QStringLiteral("....c.c.M."));
+    QCOMPARE(doc.filtered().contextCount(), 2);
+
+    // Drop the floor and the INFOs rejoin the stream, so the same two-record window
+    // now lands on the immediate neighbours instead.
+    doc.filters().priorityEnabled = false;
+    doc.applyFilters();
+    QCOMPARE(picture(doc, 10), QStringLiteral("......ccMc"));
+}
+
+void TestFilterContext::theTwoHalvesOfTheViewPredicateComposeBack()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("compose.log"));
+
+    QByteArray whole;
+    for (int i = 0; i < 12; ++i)
+        whole += rec(i, (i % 3 == 0) ? "ERROR" : "INFO ",
+                     (i % 4 == 0 ? "keep " : "plain ") + QByteArray::number(i));
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY2(openDoc(doc, path), qPrintable(doc.lastError()));
+    doc.setRunStart(QStringLiteral("00:00:04"), /*regex=*/false, Qt::CaseInsensitive);
+    doc.filters().priorityEnabled = true;
+    doc.filters().minPriority = Priority::Warn;
+    filterOnText(doc, "keep");
+
+    // The emitter's two callables are the view predicate cut a different way, so
+    // their conjunction has to be the very same set — otherwise context at 0 would
+    // quietly change what a filter shows.
+    for (const Record &r : doc.index().records)
+        QCOMPARE(doc.inContextStream(r) && doc.matchesTextAxis(r), doc.acceptsInView(r));
 }
 
 // ---------------------------------------------------------------------------
@@ -689,6 +822,50 @@ void TestFilterContext::liveNoFlipDoesNotChurnTheTail()
     const QList<QVariant> args = removed.takeFirst();
     QCOMPARE(args.at(1).toInt(), args.at(2).toInt()); // exactly one row
     QCOMPARE(picture(doc, 6), QStringLiteral("cccccM"));
+}
+
+void TestFilterContext::liveFlipReachesBackOverRejectedRecords()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("flipgap.log"));
+
+    // A priority floor thins the stream context is measured over, so the trailing
+    // record's -B window reaches back over records the floor rejects: with WARN set,
+    // the two neighbours of record 6 are records 3 and 0, four and six ordinals away.
+    QByteArray whole;
+    whole += rec(0, "WARN ", "boom a");
+    whole += rec(1, "INFO ", "i1");
+    whole += rec(2, "INFO ", "i2");
+    whole += rec(3, "WARN ", "boom b");
+    whole += rec(4, "INFO ", "i4");
+    whole += rec(5, "INFO ", "i5");
+    whole += rec(6, "WARN ", "gamma");
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY2(openDoc(doc, path), qPrintable(doc.lastError()));
+    doc.filters().priorityEnabled = true;
+    doc.filters().minPriority = Priority::Warn;
+    filterOnText(doc, "boom", /*negate=*/true);
+    doc.setContext(2, 0);
+    doc.applyFilters();
+    QCOMPARE(picture(doc, 7), QStringLiteral("c..c..M"));
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+
+    // The provisional record grows a "boom" and stops matching, orphaning both of
+    // them. The pop point is the START OF ITS WINDOW, which contextWindowStart()
+    // finds by counting in-stream records; `base - before` would put it at record 4,
+    // pop only record 6, and leave two dimmed rows behind with nothing to be context
+    // to — a view that says "here is the lead-up" to a match that is no longer there.
+    QVERIFY(append(path, cont("    boom happened here")));
+    live.checkNow();
+
+    QCOMPARE(picture(doc, 7), QStringLiteral("......."));
+    QCOMPARE(model.rowCount(), 0);
 }
 
 QTEST_GUILESS_MAIN(TestFilterContext)

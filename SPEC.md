@@ -232,13 +232,14 @@ Filtering removes non-matching records from the view. The underlying file is nev
 
 ### Context
 
-Filtering to the ERRORs also hides everything that led to them, which is usually the thing worth reading. **Context** brings the neighbours back: two spinners, *Before* and *After*, ask for that many records either side of every match — `grep -B` and `-A`.
+Searching the messages for one string also hides everything that led up to it, which is usually the thing worth reading. **Context** brings the neighbours back: two spinners, *Before* and *After*, ask for that many records either side of every match — `grep -B` and `-A`.
 
+- **Context belongs to the message-text search, and it sits in that section of the pane.** It is `grep`'s option, and `grep` is what the message axis is: "show me two records either side of every *mention of this*". The other axes select a *class* of record rather than an event to read around, so "two records either side of every WARN" is not a question context answers — with no message search set up, the spinners do nothing and the pane greys them out to say so.
+- **A neighbour still has to pass every other filter.** Context relaxes the message search alone: filtering to WARN-and-above and searching for `timeout` with *Before* at 2 shows the two preceding **WARN-or-worse** records, stepping over the INFOs between them. The filters say what stream is being read; context says how much of that stream to keep around each hit.
 - Context records are **shown dimmed**, so a match is still distinguishable at a glance from what was pulled in around it. A dimmed record that also carries a highlight color (§7) keeps that color, softened.
 - They are ordinary rows in every other respect: selectable, copyable (§5), reachable by Find (§5), and the record menu on one acts on *that* record.
 - Overlapping windows do not repeat a record, and a record that is itself a match is shown as a match even when it also falls inside a neighbour's window.
 - Context never reaches **outside the selected run** (§3a): the lead-up to the first error of a run is what that run logged, not the tail of the run before it.
-- Context alone hides nothing and shows nothing extra: with no filter active there is nothing for it to be context *to*, and the view is unchanged.
 - Both values are **per file**, like the filters themselves, and travel with a saved preset and a restored session (§9, §10).
 - With context on, the record count in the status bar says how much of what is shown is context rather than match.
 

@@ -401,7 +401,12 @@ void LiveController::ingestAppended()
         // its own view row can be wrong. With leading context (-B) configured it can
         // also have PULLED IN neighbours: a provisional that was a match dragged up
         // to `before` records in with it, and if it stops matching those rows are
-        // orphaned. So the resume point widens to base - before.
+        // orphaned. So the resume point widens to the start of its -B window.
+        //
+        // That start is contextWindowStart(), NOT base - before: `before` counts
+        // records the non-text axes admit (ContextEmitter.h), and with a priority or
+        // subsystem filter on, those are not contiguous in ordinal space. Subtracting
+        // would stop short of the window and strand the orphans.
         //
         // It widens only on a genuine FLIP of the provisional's emission class,
         // because that is the only case where re-emitting produces something
@@ -421,7 +426,9 @@ void LiveController::ingestAppended()
         if (provisionalChanged) {
             const bool wasMatch = filtered.lastMatchSource() == base;
             const bool nowMatch = m_document->acceptsInView(idx.records.at(base));
-            candidateStart = (before > 0 && wasMatch != nowMatch) ? qMax(0, base - before) : base;
+            candidateStart = (before > 0 && wasMatch != nowMatch)
+                                 ? m_document->contextWindowStart(base, before)
+                                 : base;
         }
         if (oldCount == 0)
             candidateStart = 0; // nothing was emitted yet; the whole tail is new
@@ -444,13 +451,19 @@ void LiveController::ingestAppended()
         ContextState st;
         st.lastEmitted = filtered.lastVisibleSource();
         st.lastMatch = filtered.lastMatchSource();
+        // How much of the -A window that match has already spent. The visible rows
+        // above lastMatch are exactly its trailing-context rows — contiguous in view
+        // order, because a later match would itself be lastMatch — so counting them
+        // recovers the figure. It is right whenever it is below `after`, and says
+        // "window closed" whenever it equals it, which is all the emitter asks.
+        st.sinceMatch = st.lastMatch >= 0 ? filtered.trailingCountFrom(st.lastMatch + 1) : 0;
 
         QVector<QPair<int, bool>> passing; // (source row, is context)
         passing.reserve(tail.size() + before);
         emitWithContext(
             candidateStart, idx.records.size() - 1, before, after, st,
-            [this, &idx](int row) { return m_document->inRunBound(idx.records.at(row)); },
-            [this, &idx](int row) { return m_document->matchesFilters(idx.records.at(row)); },
+            [this, &idx](int row) { return m_document->inContextStream(idx.records.at(row)); },
+            [this, &idx](int row) { return m_document->matchesTextAxis(idx.records.at(row)); },
             [&passing](int row, bool isContext) { passing.append({row, isContext}); });
 
         if (!passing.isEmpty()) {
