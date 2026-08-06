@@ -28,25 +28,32 @@ namespace loftail {
 
 namespace {
 
-// A group box laid out as [enable checkbox] + [body]. The body is one widget rather
-// than loose rows so setCollapsible() can hide the whole axis in a single call.
+// A group box whose TITLE ROW IS THE ENABLE CONTROL, plus a body. Spending a title
+// on the axis name and then a checkbox on "Filter by <the same name>" cost two lines
+// per axis for one fact; a checkable group box states it once, and Qt greys the body
+// out while it is off instead of leaving dead controls live. The body is one widget
+// rather than loose rows so setCollapsible() can hide the whole axis in a single call.
 struct AxisBox
 {
     QGroupBox   *box;
-    QCheckBox   *enable;
     QWidget     *body;
     QVBoxLayout *bodyLayout;
 };
 
-AxisBox makeAxisBox(QWidget *parent, const QString &title, const QString &enableText,
+AxisBox makeAxisBox(QWidget *parent, const QString &title, const char *objectName,
                     bool enabledByDefault)
 {
     AxisBox a;
     a.box = new QGroupBox(title, parent);
+    a.box->setObjectName(QString::fromLatin1(objectName));
+    a.box->setCheckable(true);
+    a.box->setChecked(enabledByDefault);
     auto *v = new QVBoxLayout(a.box);
-    a.enable = new QCheckBox(enableText, a.box);
-    a.enable->setChecked(enabledByDefault);
-    v->addWidget(a.enable);
+    // Tighter than the style default all round: five stacked group boxes pay these
+    // margins five times, and the top one twice over — the title row already sits
+    // above the frame. It also keeps a COLLAPSED axis (the Highlighters pane) from
+    // leaving a tall empty frame under its title.
+    v->setContentsMargins(8, 4, 8, 6);
     a.body = new QWidget(a.box);
     a.bodyLayout = new QVBoxLayout(a.body);
     a.bodyLayout->setContentsMargins(0, 0, 0, 0);
@@ -54,19 +61,26 @@ AxisBox makeAxisBox(QWidget *parent, const QString &title, const QString &enable
     return a;
 }
 
-// The All / None / Invert row shared by the two value lists.
-QHBoxLayout *makeListButtons(QWidget *parent, QPushButton *&all, QPushButton *&none,
-                             QPushButton *&invert)
+// The All / None / Invert buttons shared by the two value lists, as a COLUMN beside
+// the list rather than a row under it: the list is the tall thing in the pane, and a
+// button row under each of two lists is two lines that the column reclaims for free.
+QVBoxLayout *makeListButtons(QWidget *parent, const char *namePrefix, QPushButton *&all,
+                             QPushButton *&none, QPushButton *&invert)
 {
     // Not a member, so there is no tr() in scope — the context is named explicitly, and
     // named for the class these buttons belong to.
-    auto *btns = new QHBoxLayout;
+    auto *btns = new QVBoxLayout;
     all = new QPushButton(QCoreApplication::translate("loftail::AxisEditor", "All"), parent);
     none = new QPushButton(QCoreApplication::translate("loftail::AxisEditor", "None"), parent);
     invert = new QPushButton(QCoreApplication::translate("loftail::AxisEditor", "Invert"), parent);
+    const QString prefix = QString::fromLatin1(namePrefix);
+    all->setObjectName(prefix + QStringLiteral("All"));
+    none->setObjectName(prefix + QStringLiteral("None"));
+    invert->setObjectName(prefix + QStringLiteral("Invert"));
     btns->addWidget(all);
     btns->addWidget(none);
     btns->addWidget(invert);
+    btns->addStretch(1);
     return btns;
 }
 
@@ -95,37 +109,76 @@ void AxisEditor::buildUi(Defaults defaults)
 
     auto emitChange = [this] { emitChanged(); };
 
+    // The order is how often an axis is reached for, not how the FilterSet declares
+    // them: a level floor and a message search are the everyday narrowing, and the
+    // message axis carries the context row the Filters pane injects (addTextExtra()),
+    // which belongs next to the search it widens rather than at the foot of the pane.
+
     // --- Priority -----------------------------------------------------------
     {
-        // Enabled by default for filtering (SPEC.md §6): off, the combo below was
+        // One row, and no group box: an enable control plus a single combo does not
+        // need a frame and a title to say so.
+        //
+        // Enabled by default for filtering (SPEC.md §6): off, the combo beside it was
         // inert — changing the minimum level did nothing until the box was also
         // ticked, which reads as a broken control. At the default TRACE the axis
         // narrows nothing, and the caller collapses that no-op state so it costs
         // nothing either. A highlight rule opts in instead.
-        AxisBox a = makeAxisBox(this, tr("Priority"),
-                                tr("Filter by minimum priority"),
-                                defaults.priorityOn);
-        m_priorityEnable = a.enable;
-        m_priorityBody = a.body;
         auto *row = new QHBoxLayout;
-        row->addWidget(new QLabel(tr("Minimum:"), a.body));
-        m_priorityCombo = new QComboBox(a.body);
+        m_priorityEnable = new QCheckBox(tr("Minimum priority:"), this);
+        m_priorityEnable->setObjectName(QStringLiteral("priorityEnable"));
+        m_priorityEnable->setChecked(defaults.priorityOn);
+        row->addWidget(m_priorityEnable);
+        m_priorityCombo = new QComboBox(this);
+        m_priorityCombo->setObjectName(QStringLiteral("priorityCombo"));
         for (int i = 0; i < PriorityChoice::count(); ++i)
             m_priorityCombo->addItem(priorityName(PriorityChoice::at(i)));
         row->addWidget(m_priorityCombo, 1);
-        a.bodyLayout->addLayout(row);
-        root->addWidget(a.box);
+        // The combo is this axis's whole body, so setCollapsible() hides it and the
+        // row shrinks to the checkbox — the same one-line stub the group boxes leave.
+        m_priorityBody = m_priorityCombo;
+        root->addLayout(row);
 
         connect(m_priorityEnable, &QCheckBox::toggled, this, emitChange);
         connect(m_priorityCombo, &QComboBox::currentIndexChanged, this,
                 [emitChange](int) { emitChange(); });
     }
 
+    // --- Message text -------------------------------------------------------
+    {
+        AxisBox a = makeAxisBox(this, tr("Message text"), "messageGroup", false);
+        m_textGroup = a.box;
+        m_textBody = a.body;
+        m_textBodyLayout = a.bodyLayout;
+        m_textEdit = new QLineEdit(a.body);
+        m_textEdit->setObjectName(QStringLiteral("messageText"));
+        m_textEdit->setPlaceholderText(tr("Substring or regex..."));
+        ensureReadablePlaceholder(m_textEdit);
+        m_textEdit->setClearButtonEnabled(true);
+        a.bodyLayout->addWidget(m_textEdit);
+        m_textRegex = new QCheckBox(tr("Regular expression"), a.body);
+        m_textCase = new QCheckBox(tr("Case sensitive"), a.body);
+        m_textNegate = new QCheckBox(tr("Hide matching (negate)"), a.body);
+        m_textRegex->setObjectName(QStringLiteral("messageRegex"));
+        m_textCase->setObjectName(QStringLiteral("messageCase"));
+        m_textNegate->setObjectName(QStringLiteral("messageNegate"));
+        a.bodyLayout->addWidget(m_textRegex);
+        a.bodyLayout->addWidget(m_textCase);
+        a.bodyLayout->addWidget(m_textNegate);
+        root->addWidget(a.box);
+
+        connect(m_textGroup, &QGroupBox::toggled, this, emitChange);
+        connect(m_textEdit, &QLineEdit::textChanged, this,
+                [emitChange](const QString &) { emitChange(); });
+        connect(m_textRegex, &QCheckBox::toggled, this, emitChange);
+        connect(m_textCase, &QCheckBox::toggled, this, emitChange);
+        connect(m_textNegate, &QCheckBox::toggled, this, emitChange);
+    }
+
     // --- Subsystem ----------------------------------------------------------
     {
-        AxisBox a = makeAxisBox(this, tr("Subsystem"),
-                                tr("Filter by subsystem"), defaults.loggerOn);
-        m_loggerEnable = a.enable;
+        AxisBox a = makeAxisBox(this, tr("Subsystem"), "subsystemGroup", defaults.loggerOn);
+        m_loggerGroup = a.box;
         m_loggerBody = a.body;
         m_loggerNarrow = new QLineEdit(a.body);
         m_loggerNarrow->setPlaceholderText(tr("Narrow list..."));
@@ -133,10 +186,13 @@ void AxisEditor::buildUi(Defaults defaults)
         m_loggerNarrow->setClearButtonEnabled(true);
         a.bodyLayout->addWidget(m_loggerNarrow);
         m_loggerList = new QListWidget(a.body);
+        m_loggerList->setObjectName(QStringLiteral("subsystemList"));
         m_loggerList->setMinimumHeight(90);
-        a.bodyLayout->addWidget(m_loggerList);
         QPushButton *all = nullptr, *none = nullptr, *invert = nullptr;
-        a.bodyLayout->addLayout(makeListButtons(a.body, all, none, invert));
+        auto *listRow = new QHBoxLayout;
+        listRow->addWidget(m_loggerList, 1);
+        listRow->addLayout(makeListButtons(a.body, "subsystem", all, none, invert));
+        a.bodyLayout->addLayout(listRow);
         auto *manualRow = new QHBoxLayout;
         m_loggerManual = new QLineEdit(a.body);
         m_loggerManual->setPlaceholderText(tr("Add subsystem manually..."));
@@ -147,7 +203,7 @@ void AxisEditor::buildUi(Defaults defaults)
         a.bodyLayout->addLayout(manualRow);
         root->addWidget(a.box);
 
-        connect(m_loggerEnable, &QCheckBox::toggled, this, emitChange);
+        connect(m_loggerGroup, &QGroupBox::toggled, this, emitChange);
         // A hand edit to the list — one tick, or All / None / Invert, which reach here
         // the same way — returns the axis to the discovery default: whatever the user
         // is building now is a statement about the file, so a subsystem that appears
@@ -180,9 +236,8 @@ void AxisEditor::buildUi(Defaults defaults)
 
     // --- Thread -------------------------------------------------------------
     {
-        AxisBox a = makeAxisBox(this, tr("Thread"),
-                                tr("Filter by thread"), false);
-        m_threadEnable = a.enable;
+        AxisBox a = makeAxisBox(this, tr("Thread"), "threadGroup", false);
+        m_threadGroup = a.box;
         m_threadBody = a.body;
         m_threadNarrow = new QLineEdit(a.body);
         m_threadNarrow->setPlaceholderText(tr("Narrow list..."));
@@ -190,10 +245,13 @@ void AxisEditor::buildUi(Defaults defaults)
         m_threadNarrow->setClearButtonEnabled(true);
         a.bodyLayout->addWidget(m_threadNarrow);
         m_threadList = new QListWidget(a.body);
+        m_threadList->setObjectName(QStringLiteral("threadList"));
         m_threadList->setMinimumHeight(70);
-        a.bodyLayout->addWidget(m_threadList);
         QPushButton *all = nullptr, *none = nullptr, *invert = nullptr;
-        a.bodyLayout->addLayout(makeListButtons(a.body, all, none, invert));
+        auto *listRow = new QHBoxLayout;
+        listRow->addWidget(m_threadList, 1);
+        listRow->addLayout(makeListButtons(a.body, "thread", all, none, invert));
+        a.bodyLayout->addLayout(listRow);
         auto *manualRow = new QHBoxLayout;
         m_threadManual = new QLineEdit(a.body);
         m_threadManual->setPlaceholderText(tr("Add thread manually..."));
@@ -204,7 +262,7 @@ void AxisEditor::buildUi(Defaults defaults)
         a.bodyLayout->addLayout(manualRow);
         root->addWidget(a.box);
 
-        connect(m_threadEnable, &QCheckBox::toggled, this, emitChange);
+        connect(m_threadGroup, &QGroupBox::toggled, this, emitChange);
         connect(m_threadList, &QListWidget::itemChanged, this,
                 [this, emitChange](QListWidgetItem *) {
                     if (!m_populating)
@@ -230,57 +288,43 @@ void AxisEditor::buildUi(Defaults defaults)
         connect(m_threadManual, &QLineEdit::returnPressed, this, addManual);
     }
 
-    // --- Message text -------------------------------------------------------
-    {
-        AxisBox a = makeAxisBox(this, tr("Message text"),
-                                tr("Filter by message text"), false);
-        m_textEnable = a.enable;
-        m_textBody = a.body;
-        m_textEdit = new QLineEdit(a.body);
-        m_textEdit->setPlaceholderText(tr("Substring or regex..."));
-        ensureReadablePlaceholder(m_textEdit);
-        m_textEdit->setClearButtonEnabled(true);
-        a.bodyLayout->addWidget(m_textEdit);
-        m_textRegex = new QCheckBox(tr("Regular expression"), a.body);
-        m_textCase = new QCheckBox(tr("Case sensitive"), a.body);
-        m_textNegate = new QCheckBox(tr("Hide matching (negate)"), a.body);
-        a.bodyLayout->addWidget(m_textRegex);
-        a.bodyLayout->addWidget(m_textCase);
-        a.bodyLayout->addWidget(m_textNegate);
-        root->addWidget(a.box);
-
-        connect(m_textEnable, &QCheckBox::toggled, this, emitChange);
-        connect(m_textEdit, &QLineEdit::textChanged, this,
-                [emitChange](const QString &) { emitChange(); });
-        connect(m_textRegex, &QCheckBox::toggled, this, emitChange);
-        connect(m_textCase, &QCheckBox::toggled, this, emitChange);
-        connect(m_textNegate, &QCheckBox::toggled, this, emitChange);
-    }
-
     // --- Time range ---------------------------------------------------------
     {
-        AxisBox a = makeAxisBox(this, tr("Time range"),
-                                tr("Filter by time range"), false);
-        m_timeEnable = a.enable;
+        AxisBox a = makeAxisBox(this, tr("Time range"), "timeGroup", false);
+        m_timeGroup = a.box;
         m_timeBody = a.body;
         const QString fmt = QStringLiteral("yyyy-MM-dd HH:mm:ss");
-        auto *startRow = new QHBoxLayout;
-        startRow->addWidget(new QLabel(tr("Start:"), a.body));
+        // Both bounds on one row. Two second-resolution editors with calendar popups
+        // want ~150 px each, which would make this row alone the widest thing in the
+        // pane and put a horizontal scrollbar under a dock of ordinary width — with
+        // the value lists' buttons the first thing off the edge. So each is given an
+        // explicit floor and an Ignored horizontal policy. The policy is the part
+        // that matters: a plain setMinimumWidth() BELOW the size hint does nothing,
+        // because qSmartMinSize() takes minimumSizeHint() and only ever expands it to
+        // minimumSize. Ignored drops the hint out of the sum; the floor then puts a
+        // usable width back. Each editor still takes half of whatever the dock has.
+        constexpr int kTimeEditMinWidth = 96;
+        auto *row = new QHBoxLayout;
+        row->addWidget(new QLabel(tr("Start:"), a.body));
         m_timeStart = new QDateTimeEdit(a.body);
+        m_timeStart->setObjectName(QStringLiteral("timeStart"));
         m_timeStart->setDisplayFormat(fmt);
         m_timeStart->setCalendarPopup(true);
-        startRow->addWidget(m_timeStart, 1);
-        a.bodyLayout->addLayout(startRow);
-        auto *endRow = new QHBoxLayout;
-        endRow->addWidget(new QLabel(tr("End:"), a.body));
+        m_timeStart->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        m_timeStart->setMinimumWidth(kTimeEditMinWidth);
+        row->addWidget(m_timeStart, 1);
+        row->addWidget(new QLabel(tr("End:"), a.body));
         m_timeEnd = new QDateTimeEdit(a.body);
+        m_timeEnd->setObjectName(QStringLiteral("timeEnd"));
         m_timeEnd->setDisplayFormat(fmt);
         m_timeEnd->setCalendarPopup(true);
-        endRow->addWidget(m_timeEnd, 1);
-        a.bodyLayout->addLayout(endRow);
+        m_timeEnd->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        m_timeEnd->setMinimumWidth(kTimeEditMinWidth);
+        row->addWidget(m_timeEnd, 1);
+        a.bodyLayout->addLayout(row);
         root->addWidget(a.box);
 
-        connect(m_timeEnable, &QCheckBox::toggled, this, emitChange);
+        connect(m_timeGroup, &QGroupBox::toggled, this, emitChange);
         connect(m_timeStart, &QDateTimeEdit::dateTimeChanged, this,
                 [emitChange](const QDateTime &) { emitChange(); });
         connect(m_timeEnd, &QDateTimeEdit::dateTimeChanged, this,
@@ -300,6 +344,13 @@ void AxisEditor::emitChanged()
     emit changed();
 }
 
+void AxisEditor::addTextExtra(QWidget *w)
+{
+    if (!w || !m_textBodyLayout)
+        return;
+    m_textBodyLayout->addWidget(w);
+}
+
 void AxisEditor::setCollapsible(bool collapsible)
 {
     m_collapsible = collapsible;
@@ -310,15 +361,19 @@ void AxisEditor::updateCollapse()
 {
     // Hide the body of a disabled axis so the whole editor shrinks to five title rows
     // when nothing is configured — what makes a five-axis rule editor fit a dock.
-    struct Pair { QCheckBox *enable; QWidget *body; };
+    // Priority's "title row" is its checkbox and its body is the combo beside it; the
+    // other four are checkable group boxes, whose title row is the control itself.
+    struct Pair { bool on; QWidget *body; };
     const Pair pairs[] = {
-        {m_priorityEnable, m_priorityBody}, {m_loggerEnable, m_loggerBody},
-        {m_threadEnable, m_threadBody},     {m_textEnable, m_textBody},
-        {m_timeEnable, m_timeBody},
+        {m_priorityEnable && m_priorityEnable->isChecked(), m_priorityBody},
+        {m_loggerGroup && m_loggerGroup->isChecked(), m_loggerBody},
+        {m_threadGroup && m_threadGroup->isChecked(), m_threadBody},
+        {m_textGroup && m_textGroup->isChecked(), m_textBody},
+        {m_timeGroup && m_timeGroup->isChecked(), m_timeBody},
     };
     for (const Pair &p : pairs) {
-        if (p.enable && p.body)
-            p.body->setVisible(!m_collapsible || p.enable->isChecked());
+        if (p.body)
+            p.body->setVisible(!m_collapsible || p.on);
     }
 }
 
@@ -382,10 +437,10 @@ void AxisEditor::setDocument(Document *document)
     setEnabled(hasDoc);
     // Thread and time axes exist only when the format carries those fields
     // (SPEC.md §6). Disable rather than hide so the layout is stable.
-    if (m_threadEnable)
-        m_threadEnable->parentWidget()->setEnabled(hasThread);
-    if (m_timeEnable)
-        m_timeEnable->parentWidget()->setEnabled(hasDate);
+    if (m_threadGroup)
+        m_threadGroup->setEnabled(hasThread);
+    if (m_timeGroup)
+        m_timeGroup->setEnabled(hasDate);
 
     refreshDiscoveredLists();
 
@@ -524,7 +579,7 @@ MatchCriteria AxisEditor::criteria() const
     c.priorityEnabled = m_priorityEnable->isChecked();
     c.minPriority = PriorityChoice::at(m_priorityCombo->currentIndex());
 
-    c.loggerEnabled = m_loggerEnable->isChecked();
+    c.loggerEnabled = m_loggerGroup->isChecked();
     c.loggerNames = toSortedList(checkedNames(m_loggerList));
     // Coverage is answered from the list the user was shown, never from the intern
     // table: the table grows mid-scan and the list lags it, so asking the table would
@@ -532,17 +587,17 @@ MatchCriteria AxisEditor::criteria() const
     c.loggerCoversAll = allChecked(m_loggerList);
     c.loggerRestrictive = m_loggerRestrictive;
 
-    c.threadEnabled = m_threadEnable->isChecked();
+    c.threadEnabled = m_threadGroup->isChecked();
     c.threadNames = toSortedList(checkedNames(m_threadList));
     c.threadCoversAll = allChecked(m_threadList);
     c.threadRestrictive = m_threadRestrictive;
 
-    c.text.enabled = m_textEnable->isChecked();
+    c.text.enabled = m_textGroup->isChecked();
     c.text.negate = m_textNegate->isChecked();
     c.text.matcher.set(m_textEdit->text(), m_textRegex->isChecked(),
                        m_textCase->isChecked() ? Qt::CaseSensitive : Qt::CaseInsensitive);
 
-    c.timeEnabled = m_timeEnable->isChecked();
+    c.timeEnabled = m_timeGroup->isChecked();
     c.start = m_timeStart->dateTime();
     c.end = m_timeEnd->dateTime();
 
@@ -556,16 +611,16 @@ void AxisEditor::setCriteria(const MatchCriteria &c)
     m_priorityEnable->setChecked(c.priorityEnabled);
     m_priorityCombo->setCurrentIndex(PriorityChoice::indexOf(c.minPriority));
 
-    m_loggerEnable->setChecked(c.loggerEnabled);
-    m_threadEnable->setChecked(c.threadEnabled);
+    m_loggerGroup->setChecked(c.loggerEnabled);
+    m_threadGroup->setChecked(c.threadEnabled);
 
-    m_textEnable->setChecked(c.text.enabled);
+    m_textGroup->setChecked(c.text.enabled);
     m_textEdit->setText(c.text.matcher.pattern());
     m_textRegex->setChecked(c.text.matcher.isRegex());
     m_textCase->setChecked(c.text.matcher.caseSensitivity() == Qt::CaseSensitive);
     m_textNegate->setChecked(c.text.negate);
 
-    m_timeEnable->setChecked(c.timeEnabled);
+    m_timeGroup->setChecked(c.timeEnabled);
     if (c.start.isValid())
         m_timeStart->setDateTime(c.start);
     if (c.end.isValid())
@@ -605,9 +660,9 @@ QListWidget *AxisEditor::listFor(ValueAxis axis) const
     return axis == ValueAxis::Subsystem ? m_loggerList : m_threadList;
 }
 
-QCheckBox *AxisEditor::enableFor(ValueAxis axis) const
+QGroupBox *AxisEditor::enableFor(ValueAxis axis) const
 {
-    return axis == ValueAxis::Subsystem ? m_loggerEnable : m_threadEnable;
+    return axis == ValueAxis::Subsystem ? m_loggerGroup : m_threadGroup;
 }
 
 QSet<QString> &AxisEditor::manualFor(ValueAxis axis)
@@ -660,7 +715,7 @@ void AxisEditor::showOnlyValue(ValueAxis axis, const QString &name)
         QListWidgetItem *item = list->item(i);
         item->setCheckState(item->text() == name ? Qt::Checked : Qt::Unchecked);
     }
-    if (QCheckBox *enable = enableFor(axis))
+    if (QGroupBox *enable = enableFor(axis))
         enable->setChecked(true);
     restrictiveFor(axis) = true;
     m_populating = false;
@@ -683,7 +738,7 @@ void AxisEditor::hideValue(ValueAxis axis, const QString &name)
     }
     // Unticking one value out of everything says nothing until the axis is on — and
     // the thread axis ships off (SPEC.md §6).
-    if (QCheckBox *enable = enableFor(axis))
+    if (QGroupBox *enable = enableFor(axis))
         enable->setChecked(true);
     m_populating = false;
 
@@ -703,7 +758,7 @@ void AxisEditor::setMinimumPriority(Priority p)
 
 void AxisEditor::setTimeBound(TimeBound which, qint64 utcMs)
 {
-    if (!m_timeEnable || !m_timeStart || !m_timeEnd || !supportsTime())
+    if (!m_timeGroup || !m_timeStart || !m_timeEnd || !supportsTime())
         return;
     const QDateTime at = wallClockOf(utcMs);
 
@@ -716,7 +771,7 @@ void AxisEditor::setTimeBound(TimeBound which, qint64 utcMs)
     const QDateTime openEnd = wallClockOf(span ? qMax(hi, utcMs) : utcMs);
     const QDateTime openStart = wallClockOf(span ? qMin(lo, utcMs) : utcMs);
 
-    const bool wasEnabled = m_timeEnable->isChecked();
+    const bool wasEnabled = m_timeGroup->isChecked();
     m_populating = true;
     if (which == TimeBound::Start) {
         m_timeStart->setDateTime(at);
@@ -729,7 +784,7 @@ void AxisEditor::setTimeBound(TimeBound which, qint64 utcMs)
         if (!wasEnabled || m_timeStart->dateTime() > at)
             m_timeStart->setDateTime(openStart);
     }
-    m_timeEnable->setChecked(true);
+    m_timeGroup->setChecked(true);
     m_populating = false;
 
     emitChanged();
@@ -737,14 +792,14 @@ void AxisEditor::setTimeBound(TimeBound which, qint64 utcMs)
 
 void AxisEditor::setTimeRange(qint64 fromUtcMs, qint64 toUtcMs)
 {
-    if (!m_timeEnable || !m_timeStart || !m_timeEnd || !supportsTime())
+    if (!m_timeGroup || !m_timeStart || !m_timeEnd || !supportsTime())
         return;
     if (fromUtcMs > toUtcMs)
         std::swap(fromUtcMs, toUtcMs);
     m_populating = true;
     m_timeStart->setDateTime(wallClockOf(fromUtcMs));
     m_timeEnd->setDateTime(wallClockOf(toUtcMs));
-    m_timeEnable->setChecked(true);
+    m_timeGroup->setChecked(true);
     m_populating = false;
     emitChanged();
 }

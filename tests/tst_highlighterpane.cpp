@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QGroupBox>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
@@ -50,13 +51,20 @@ private:
                         QTimeZone::utc());
     }
 
-    static QCheckBox *box(QWidget &w, const QString &label)
+    // The four group axes: each is a checkable QGroupBox whose title row IS the
+    // enable control. Found by OBJECT NAME, never by the title it shows — a visible
+    // string is a translator's to change (CLAUDE.md), and these names are the test
+    // contract precisely because they are not.
+    static QGroupBox *axis(QWidget &w, const char *name)
     {
-        const QList<QCheckBox *> boxes = w.findChildren<QCheckBox *>();
-        for (QCheckBox *b : boxes)
-            if (b->text() == label)
-                return b;
-        return nullptr;
+        return w.findChild<QGroupBox *>(QString::fromLatin1(name));
+    }
+
+    // Priority is the exception: one checkbox and one combo on a single row, with no
+    // group box to be the enable control.
+    static QCheckBox *priorityEnable(QWidget &w)
+    {
+        return w.findChild<QCheckBox *>(QStringLiteral("priorityEnable"));
     }
 
     static QPushButton *button(QWidget &w, const QString &label)
@@ -68,14 +76,9 @@ private:
         return nullptr;
     }
 
-    // The pattern edit is the one carrying the message-text placeholder.
     static QLineEdit *patternEdit(QWidget &w)
     {
-        const QList<QLineEdit *> edits = w.findChildren<QLineEdit *>();
-        for (QLineEdit *e : edits)
-            if (e->placeholderText() == QStringLiteral("Substring or regex..."))
-                return e;
-        return nullptr;
+        return w.findChild<QLineEdit *>(QStringLiteral("messageText"));
     }
 
     // The rule list is the pane's own direct child; the subsystem and thread lists
@@ -124,16 +127,16 @@ void TestHighlighterPane::everyAxisIsOfferedAndOptIn()
 {
     HighlighterPane pane;
     // All five axes a filter offers are present (SPEC.md §7)...
-    QVERIFY(box(pane, QStringLiteral("Filter by minimum priority")));
-    QVERIFY(box(pane, QStringLiteral("Filter by subsystem")));
-    QVERIFY(box(pane, QStringLiteral("Filter by thread")));
-    QVERIFY(box(pane, QStringLiteral("Filter by message text")));
-    QVERIFY(box(pane, QStringLiteral("Filter by time range")));
+    QVERIFY(priorityEnable(pane));
+    QVERIFY(axis(pane, "subsystemGroup"));
+    QVERIFY(axis(pane, "threadGroup"));
+    QVERIFY(axis(pane, "messageGroup"));
+    QVERIFY(axis(pane, "timeGroup"));
     // ...and every one of them starts OFF. Unlike the Filters pane, where the two
     // metadata axes ship enabled so their controls act on the first click, a highlight
     // rule must be inert until the user configures an axis.
-    QVERIFY(!box(pane, QStringLiteral("Filter by minimum priority"))->isChecked());
-    QVERIFY(!box(pane, QStringLiteral("Filter by subsystem"))->isChecked());
+    QVERIFY(!priorityEnable(pane)->isChecked());
+    QVERIFY(!axis(pane, "subsystemGroup")->isChecked());
 }
 
 void TestHighlighterPane::typingARegexReachesTheDocument()
@@ -147,11 +150,11 @@ void TestHighlighterPane::typingARegexReachesTheDocument()
     button(pane, QStringLiteral("Add"))->click();
     QCOMPARE(doc.highlighters().rules.size(), 1);
 
-    box(pane, QStringLiteral("Filter by message text"))->setChecked(true);
+    axis(pane, "messageGroup")->setChecked(true);
     QLineEdit *edit = patternEdit(pane);
     QVERIFY(edit);
     edit->setText(QStringLiteral("timeout.*retry"));
-    box(pane, QStringLiteral("Regular expression"))->setChecked(true);
+    pane.findChild<QCheckBox *>(QStringLiteral("messageRegex"))->setChecked(true);
 
     const HighlightRule &r = doc.highlighters().rules.first();
     QVERIFY(r.match.text.enabled);
@@ -184,7 +187,7 @@ void TestHighlighterPane::switchingRulesShowsThatRulesSelection()
     QCOMPARE(doc.highlighters().rules.size(), 2);
 
     // Rule 1 (the second, currently selected) matches only db.pool.
-    box(pane, QStringLiteral("Filter by subsystem"))->setChecked(true);
+    axis(pane, "subsystemGroup")->setChecked(true);
     QListWidget *loggers = listContaining(pane, QStringLiteral("db.pool"));
     QVERIFY(loggers);
     check(loggers, QStringLiteral("net.socket"), false);
@@ -200,7 +203,7 @@ void TestHighlighterPane::switchingRulesShowsThatRulesSelection()
     QCOMPARE(rules->count(), 2);
     rules->setCurrentRow(0);
 
-    QVERIFY(!box(pane, QStringLiteral("Filter by subsystem"))->isChecked());
+    QVERIFY(!axis(pane, "subsystemGroup")->isChecked());
     QVERIFY(!isChecked(loggers, QStringLiteral("db.pool")));
     QVERIFY(doc.highlighters().rules.at(0).match.loggerNames.isEmpty());
 
@@ -219,8 +222,8 @@ void TestHighlighterPane::invalidRegexIsFlagged()
     pane.setDocument(&doc);
     button(pane, QStringLiteral("Add"))->click();
 
-    box(pane, QStringLiteral("Filter by message text"))->setChecked(true);
-    box(pane, QStringLiteral("Regular expression"))->setChecked(true);
+    axis(pane, "messageGroup")->setChecked(true);
+    pane.findChild<QCheckBox *>(QStringLiteral("messageRegex"))->setChecked(true);
     QLineEdit *edit = patternEdit(pane);
     edit->setText(QStringLiteral("("));
 
@@ -248,7 +251,7 @@ void TestHighlighterPane::addedRuleIsInertUntilConfigured()
     // that axis back off must leave the rule matching nothing at all — not matching
     // everything, which is what an "all axes inactive" filter would mean.
     QVERIFY(doc.highlighters().anyEnabled());
-    box(pane, QStringLiteral("Filter by minimum priority"))->setChecked(false);
+    priorityEnable(pane)->setChecked(false);
     QVERIFY(!doc.highlighters().anyEnabled());
     QVERIFY(!doc.highlighters().rules.first().match.anyActive());
 }

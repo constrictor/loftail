@@ -11,8 +11,10 @@ QT_BEGIN_NAMESPACE
 class QCheckBox;
 class QComboBox;
 class QDateTimeEdit;
+class QGroupBox;
 class QLineEdit;
 class QListWidget;
+class QVBoxLayout;
 QT_END_NAMESPACE
 
 namespace loftail {
@@ -60,7 +62,20 @@ public:
 
     explicit AxisEditor(Defaults defaults, QWidget *parent = nullptr);
 
-    // Collapse each axis to its title row and enable checkbox while that axis is off.
+    // Append a widget to the bottom of the MESSAGE TEXT axis's body, where it lives
+    // and dies with that axis: shown and hidden by setCollapsible(), and greyed out
+    // with the rest of the body while the axis is off.
+    //
+    // It exists for exactly one caller. Filter context (SPEC.md §6) widens the
+    // message search and nothing else, so its two spinners belong beside that search
+    // — but they are not a match criterion, are absent from MatchCriteria, and mean
+    // nothing to a highlight rule, which is why they stay the FilterPane's own
+    // widgets rather than becoming a sixth axis here. HighlighterPane calls this not
+    // at all, and gets an editor with no context row.
+    void addTextExtra(QWidget *w);
+
+    // Collapse each axis to its title row — which is also its enable control, bar
+    // priority's, whose row keeps the checkbox and drops the combo — while it is off.
     // The Highlighters pane needs it — five axes plus a rule list do not fit a dock
     // otherwise — and the Filters pane, which has the pane to itself, leaves it off.
     void setCollapsible(bool collapsible);
@@ -164,7 +179,7 @@ private:
     // The widgets and per-axis state behind ValueAxis, so the record-menu edits are
     // written once rather than twice.
     QListWidget *listFor(ValueAxis axis) const;
-    QCheckBox   *enableFor(ValueAxis axis) const;
+    QGroupBox   *enableFor(ValueAxis axis) const;
     QSet<QString> &manualFor(ValueAxis axis);
     bool          &restrictiveFor(ValueAxis axis);
     // Make sure `name` is in the axis's list — refreshing from the intern table
@@ -192,7 +207,7 @@ private:
     QWidget   *m_priorityBody = nullptr;
 
     // Subsystem
-    QCheckBox    *m_loggerEnable = nullptr;
+    QGroupBox    *m_loggerGroup = nullptr;
     QLineEdit    *m_loggerNarrow = nullptr;
     QListWidget  *m_loggerList = nullptr;
     QLineEdit    *m_loggerManual = nullptr;
@@ -205,7 +220,7 @@ private:
     bool          m_loggerRestrictive = false;
 
     // Thread
-    QCheckBox    *m_threadEnable = nullptr;
+    QGroupBox    *m_threadGroup = nullptr;
     QLineEdit    *m_threadNarrow = nullptr;
     QListWidget  *m_threadList = nullptr;
     QLineEdit    *m_threadManual = nullptr;
@@ -215,7 +230,8 @@ private:
     bool          m_threadRestrictive = false;
 
     // Message text
-    QCheckBox *m_textEnable = nullptr;
+    QGroupBox   *m_textGroup = nullptr;
+    QVBoxLayout *m_textBodyLayout = nullptr; // where addTextExtra() appends
     QLineEdit *m_textEdit = nullptr;
     QCheckBox *m_textRegex = nullptr;
     QCheckBox *m_textCase = nullptr;
@@ -223,7 +239,7 @@ private:
     QWidget   *m_textBody = nullptr;
 
     // Time range
-    QCheckBox     *m_timeEnable = nullptr;
+    QGroupBox     *m_timeGroup = nullptr;
     QDateTimeEdit *m_timeStart = nullptr;
     QDateTimeEdit *m_timeEnd = nullptr;
     QWidget       *m_timeBody = nullptr;

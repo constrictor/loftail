@@ -3,6 +3,8 @@
 #include <QAction>
 #include <QApplication>
 #include <QFile>
+#include <QGroupBox>
+#include <QLineEdit>
 #include <QMenu>
 #include <QSettings>
 #include <QSpinBox>
@@ -419,24 +421,28 @@ void TestRecordMenu::aContextRowOffersItsOwnRecord()
     w.openFile(m_log);
     waitUntilIndexed(w);
 
-    // Filter to ERROR — the unparsed line survives too (§6) — then ask for one record
-    // of lead-up. Visible becomes: the plain line, the WARN as CONTEXT, the ERROR.
-    QMenu floorMenu;
-    w.buildRecordMenu(&floorMenu, activeView(w), kError, -1);
-    item(floorMenu, "recordPriorityFloor")->trigger();
-    QCOMPARE(visibleRecords(w), 2);
-
+    // Search the messages for "three" — the one axis context widens (SPEC.md §6) —
+    // then ask for one record of lead-up. Visible becomes: the WARN as CONTEXT, the
+    // ERROR that matched. The record menu has no message item of its own, so this
+    // reaches for the pane's controls by object name.
     auto *pane = w.findChild<FilterPane *>();
     QVERIFY(pane);
-    const QList<QSpinBox *> spins = pane->findChildren<QSpinBox *>();
-    QCOMPARE(spins.size(), 2);
-    spins.at(0)->setValue(1); // Before
-    QCOMPARE(visibleRecords(w), 3);
+    auto *messageGroup = pane->findChild<QGroupBox *>(QStringLiteral("messageGroup"));
+    auto *messageText = pane->findChild<QLineEdit *>(QStringLiteral("messageText"));
+    QVERIFY(messageGroup && messageText);
+    messageGroup->setChecked(true);
+    messageText->setText(QStringLiteral("three"));
+    QCOMPARE(visibleRecords(w), 1);
 
-    // View row 1 is the context row, whose SOURCE record is the [worker] WARN from
+    auto *before = pane->findChild<QSpinBox *>(QStringLiteral("contextBefore"));
+    QVERIFY(before);
+    before->setValue(1);
+    QCOMPARE(visibleRecords(w), 2);
+
+    // View row 0 is the context row, whose SOURCE record is the [worker] WARN from
     // db.pool. The menu must describe that record, not the ERROR below it.
     QMenu menu;
-    w.buildRecordMenu(&menu, activeView(w), 1, -1);
+    w.buildRecordMenu(&menu, activeView(w), 0, -1);
     QAction *hide = item(menu, "recordHideThread");
     QVERIFY(hide);
     QVERIFY2(hide->text().contains(QStringLiteral("worker")), qPrintable(hide->text()));

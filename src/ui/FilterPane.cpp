@@ -5,9 +5,9 @@
 #include "Filter.h"
 #include "MatchCriteria.h"
 
-#include <QFormLayout>
 #include <QFrame>
-#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -30,24 +30,34 @@ FilterPane::FilterPane(QWidget *parent) : QWidget(parent)
     m_axes = new AxisEditor(AxisEditor::Defaults{/*priorityOn=*/true, /*loggerOn=*/true}, scroll);
     scroll->setWidget(m_axes);
 
-    // Filter context (SPEC.md §6). Outside the scroll area, below it: two spinners
-    // are small and always relevant, and an axis list long enough to scroll should
-    // not be able to push them out of reach.
-    auto *contextBox = new QGroupBox(tr("Context"), this);
-    contextBox->setToolTip(tr(
-        "Also show records either side of each match, dimmed — like grep -B/-A."));
-    auto *contextForm = new QFormLayout(contextBox);
-    auto makeSpin = [contextBox] {
-        auto *spin = new QSpinBox(contextBox);
+    // Filter context (SPEC.md §6), injected into the message-text axis rather than
+    // added to this pane: context widens the MESSAGE search and only it — a context
+    // record is one the message filter rejected but every other axis still admits —
+    // so it is part of that search, not a sixth thing to configure. Putting it there
+    // also makes the checkable group grey it out exactly when it does nothing.
+    auto *contextRow = new QWidget(this);
+    contextRow->setToolTip(tr(
+        "Also show records either side of each match, dimmed — like grep -B/-A. "
+        "Neighbours still have to pass the other filters."));
+    auto *contextLayout = new QHBoxLayout(contextRow);
+    contextLayout->setContentsMargins(0, 0, 0, 0);
+    auto makeSpin = [contextRow] {
+        auto *spin = new QSpinBox(contextRow);
         spin->setRange(0, Document::kMaxContext);
         spin->setAccelerated(true);
         return spin;
     };
     m_contextBefore = makeSpin();
     m_contextAfter = makeSpin();
-    contextForm->addRow(tr("Before:"), m_contextBefore);
-    contextForm->addRow(tr("After:"), m_contextAfter);
-    outer->addWidget(contextBox);
+    m_contextBefore->setObjectName(QStringLiteral("contextBefore"));
+    m_contextAfter->setObjectName(QStringLiteral("contextAfter"));
+    contextLayout->addWidget(new QLabel(tr("Context:"), contextRow));
+    contextLayout->addWidget(new QLabel(tr("Before:"), contextRow));
+    contextLayout->addWidget(m_contextBefore);
+    contextLayout->addWidget(new QLabel(tr("After:"), contextRow));
+    contextLayout->addWidget(m_contextAfter);
+    contextLayout->addStretch(1);
+    m_axes->addTextExtra(contextRow);
 
     // One handler for every control in the pane, the editor's and this pane's alike:
     // a context edit is a filter edit and must not be able to grow behavior a tick in

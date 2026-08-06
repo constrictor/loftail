@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QGroupBox>
 #include <QListWidget>
 #include <QSpinBox>
 #include <QFile>
@@ -52,13 +53,20 @@ private:
                         Encoding::Utf8, QTimeZone::utc());
     }
 
-    static QCheckBox *box(FilterPane &pane, const QString &label)
+    // The four group axes: each is a checkable QGroupBox whose title row IS the
+    // enable control. Found by OBJECT NAME, never by the title it shows — a visible
+    // string is a translator's to change (CLAUDE.md), and these names are the test
+    // contract precisely because they are not.
+    static QGroupBox *axis(FilterPane &pane, const char *name)
     {
-        const QList<QCheckBox *> boxes = pane.findChildren<QCheckBox *>();
-        for (QCheckBox *b : boxes)
-            if (b->text() == label)
-                return b;
-        return nullptr;
+        return pane.findChild<QGroupBox *>(QString::fromLatin1(name));
+    }
+
+    // Priority is the exception: one checkbox and one combo on a single row, with no
+    // group box to be the enable control.
+    static QCheckBox *priorityEnable(FilterPane &pane)
+    {
+        return pane.findChild<QCheckBox *>(QStringLiteral("priorityEnable"));
     }
 
     // The subsystem list is the one holding the logger names.
@@ -104,13 +112,12 @@ private:
                 list->item(i)->setCheckState(state);
     }
 
-    // The two context spinners (M15), in Before/After order. They live on the pane
-    // rather than in the shared AxisEditor — which uses QDateTimeEdit and no QSpinBox
-    // at all, so these two are the only ones in the widget tree.
-    static QSpinBox *contextSpin(FilterPane &pane, int which)
+    // The two context spinners (M15). They are the pane's own widgets, reparented
+    // into the message-text axis's body by AxisEditor::addTextExtra() — which is
+    // where context belongs, since it widens that axis and no other (SPEC.md §6).
+    static QSpinBox *contextSpin(FilterPane &pane, const char *name)
     {
-        const QList<QSpinBox *> spins = pane.findChildren<QSpinBox *>();
-        return which < spins.size() ? spins.at(which) : nullptr;
+        return pane.findChild<QSpinBox *>(QString::fromLatin1(name));
     }
 
 private slots:
@@ -134,6 +141,7 @@ private slots:
     // M15 — filter context. The spinners are the pane's own controls, so what has to
     // hold is that they behave like every other control on it: one notification per
     // edit, straight into the document, and absent from a state that does not use them.
+    void contextLivesInsideTheMessageAxis();
     void contextSpinnersReachTheDocument();
     void contextRidesTheSavedStateOnlyWhenSet();
 };
@@ -141,12 +149,12 @@ private slots:
 void TestFilterPane::metadataAxesAreOnByDefault()
 {
     FilterPane pane;
-    QVERIFY(box(pane, QStringLiteral("Filter by minimum priority"))->isChecked());
-    QVERIFY(box(pane, QStringLiteral("Filter by subsystem"))->isChecked());
+    QVERIFY(priorityEnable(pane)->isChecked());
+    QVERIFY(axis(pane, "subsystemGroup")->isChecked());
     // The axes the user did not ask for keep their old default.
-    QVERIFY(!box(pane, QStringLiteral("Filter by thread"))->isChecked());
-    QVERIFY(!box(pane, QStringLiteral("Filter by message text"))->isChecked());
-    QVERIFY(!box(pane, QStringLiteral("Filter by time range"))->isChecked());
+    QVERIFY(!axis(pane, "threadGroup")->isChecked());
+    QVERIFY(!axis(pane, "messageGroup")->isChecked());
+    QVERIFY(!axis(pane, "timeGroup")->isChecked());
 }
 
 void TestFilterPane::allInclusiveAxesStayInactive()
@@ -466,6 +474,36 @@ void TestFilterPane::restrictionSurvivesASavedState()
     QCOMPARE(doc.filtered().recordCount(), 1);
 }
 
+void TestFilterPane::contextLivesInsideTheMessageAxis()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+
+    QGroupBox *message = axis(pane, "messageGroup");
+    QVERIFY(message);
+
+    // Ancestry, not a layout position. Context widens the message-text axis and no
+    // other (SPEC.md §6), so it belongs inside that axis rather than beside the five
+    // of them — and being inside it is what makes the rest of this true.
+    QVERIFY(message->isAncestorOf(contextSpin(pane, "contextBefore")));
+    QVERIFY(message->isAncestorOf(contextSpin(pane, "contextAfter")));
+
+    // With the axis off, context has nothing to widen: every record the other axes
+    // admit is a match, so no record is left to be context. The checkable group says
+    // so by greying the spinners, without a line of code here to keep in step.
+    QVERIFY(!message->isChecked());
+    QVERIFY(!contextSpin(pane, "contextBefore")->isEnabled());
+    QVERIFY(!contextSpin(pane, "contextAfter")->isEnabled());
+
+    message->setChecked(true);
+    QVERIFY(contextSpin(pane, "contextBefore")->isEnabled());
+    QVERIFY(contextSpin(pane, "contextAfter")->isEnabled());
+}
+
 void TestFilterPane::contextSpinnersReachTheDocument()
 {
     QTemporaryFile file;
@@ -477,8 +515,8 @@ void TestFilterPane::contextSpinnersReachTheDocument()
     QCOMPARE(doc.contextBefore(), 0);
     QCOMPARE(doc.contextAfter(), 0);
 
-    QSpinBox *before = contextSpin(pane, 0);
-    QSpinBox *after = contextSpin(pane, 1);
+    QSpinBox *before = contextSpin(pane, "contextBefore");
+    QSpinBox *after = contextSpin(pane, "contextAfter");
     QVERIFY(before);
     QVERIFY(after);
     QCOMPARE(before->maximum(), Document::kMaxContext);
@@ -512,7 +550,7 @@ void TestFilterPane::contextRidesTheSavedStateOnlyWhenSet()
     QVERIFY(!source.saveState().contains(QStringLiteral("contextBefore")));
     QVERIFY(!source.saveState().contains(QStringLiteral("contextAfter")));
 
-    contextSpin(source, 0)->setValue(4);
+    contextSpin(source, "contextBefore")->setValue(4);
     const QJsonObject state = source.saveState();
     QCOMPARE(state.value(QStringLiteral("contextBefore")).toInt(), 4);
     QVERIFY(!state.contains(QStringLiteral("contextAfter"))); // still zero
@@ -529,8 +567,8 @@ void TestFilterPane::contextRidesTheSavedStateOnlyWhenSet()
     restored.restoreState(state);
 
     QCOMPARE(changed.count(), 1);
-    QCOMPARE(contextSpin(restored, 0)->value(), 4);
-    QCOMPARE(contextSpin(restored, 1)->value(), 0);
+    QCOMPARE(contextSpin(restored, "contextBefore")->value(), 4);
+    QCOMPARE(contextSpin(restored, "contextAfter")->value(), 0);
     QCOMPARE(other.contextBefore(), 4);
     QCOMPARE(other.contextAfter(), 0);
 
