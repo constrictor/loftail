@@ -5,10 +5,13 @@
 #include "RemoteLocation.h"
 #include "SourceSpool.h"
 #include "SpooledLogSource.h"
+// Unconditional: Q_DECLARE_TR_FUNCTIONS lives here, and the Tr shim below is compiled on
+// every platform. Under the #else it expands to nothing on MSVC and the shim becomes a
+// member function with no return type.
+#include <QCoreApplication>
 #if defined(Q_OS_WIN)
 #else
 #include "MappedLogSource.h"
-#include <QCoreApplication>
 #include <QFile>
 #include <sys/stat.h>
 #include <sys/types.h>
