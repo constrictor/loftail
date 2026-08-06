@@ -27,27 +27,27 @@ void RunPane::buildUi()
 {
     auto *root = new QVBoxLayout(this);
 
-    auto *box = new QGroupBox(QStringLiteral("Run start"), this);
+    auto *box = new QGroupBox(tr("Run start"), this);
     auto *v = new QVBoxLayout(box);
 
     v->addWidget(new QLabel(
-        QStringLiteral("Regexp marking where each run begins (matched against the\n"
+        tr("Regexp marking where each run begins (matched against the\n"
                        "whole log line). Leave empty to view the entire file."),
         box));
 
     m_patternEdit = new QLineEdit(box);
-    m_patternEdit->setPlaceholderText(QStringLiteral("e.g. Application starting"));
+    m_patternEdit->setPlaceholderText(tr("e.g. Application starting"));
     ensureReadablePlaceholder(m_patternEdit);
     m_patternEdit->setClearButtonEnabled(true);
     v->addWidget(m_patternEdit);
 
     auto *opts = new QHBoxLayout;
-    m_regex = new QCheckBox(QStringLiteral("Regex"), box);
-    m_case = new QCheckBox(QStringLiteral("Case sensitive"), box);
+    m_regex = new QCheckBox(tr("Regex"), box);
+    m_case = new QCheckBox(tr("Case sensitive"), box);
     opts->addWidget(m_regex);
     opts->addWidget(m_case);
     opts->addStretch(1);
-    m_apply = new QPushButton(QStringLiteral("Apply"), box);
+    m_apply = new QPushButton(tr("Apply"), box);
     opts->addWidget(m_apply);
     v->addLayout(opts);
 
@@ -57,7 +57,7 @@ void RunPane::buildUi()
 
     root->addWidget(box);
 
-    auto *runBox = new QGroupBox(QStringLiteral("Run"), this);
+    auto *runBox = new QGroupBox(tr("Run"), this);
     auto *rv = new QVBoxLayout(runBox);
     m_runCombo = new QComboBox(runBox);
     rv->addWidget(m_runCombo);
@@ -121,7 +121,7 @@ void RunPane::rebuildRunList()
 {
     m_populating = true;
     m_runCombo->clear();
-    m_runCombo->addItem(QStringLiteral("All runs"));
+    m_runCombo->addItem(tr("All runs"));
 
     if (m_document) {
         const QVector<Document::Run> &runs = m_document->runs();
@@ -132,15 +132,15 @@ void RunPane::rebuildRunList()
                 when = QDateTime::fromMSecsSinceEpoch(r.startTimestamp, m_document->displayZone())
                            .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
             } else {
-                when = QStringLiteral("(no time)");
+                when = tr("(no time)");
             }
             QString snippet = r.firstLine.simplified();
             if (snippet.size() > 60)
                 snippet = snippet.left(59) + QChar(0x2026); // ellipsis
             const QString label = r.isPreamble
-                ? QStringLiteral("#%1  (before first run)  ·  %2 rec")
+                ? tr("#%1  (before first run)  ·  %2 rec")
                       .arg(i).arg(m_document->runRecordCount(i))
-                : QStringLiteral("#%1  %2  ·  %3  ·  %4 rec")
+                : tr("#%1  %2  ·  %3  ·  %4 rec")
                       .arg(i).arg(when, snippet).arg(m_document->runRecordCount(i));
             m_runCombo->addItem(label);
         }
@@ -151,13 +151,13 @@ void RunPane::rebuildRunList()
         // Status line under the pattern field.
         const TextMatcher &m = m_document->runStartMatcher();
         if (m.pattern().isEmpty())
-            m_info->setText(QStringLiteral("No run-start pattern — viewing the whole file."));
+            m_info->setText(tr("No run-start pattern — viewing the whole file."));
         else if (!m.isValid())
-            m_info->setText(QStringLiteral("Invalid regex — nothing matched."));
+            m_info->setText(tr("Invalid regex — nothing matched."));
         else if (runs.isEmpty())
-            m_info->setText(QStringLiteral("Pattern matched no run starts."));
+            m_info->setText(tr("Pattern matched no run starts."));
         else
-            m_info->setText(QStringLiteral("%1 run(s) detected.").arg(runs.size()));
+            m_info->setText(tr("%1 run(s) detected.").arg(runs.size()));
     } else {
         m_runCombo->setCurrentIndex(0);
         m_info->clear();

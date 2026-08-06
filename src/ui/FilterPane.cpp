@@ -33,8 +33,8 @@ FilterPane::FilterPane(QWidget *parent) : QWidget(parent)
     // Filter context (SPEC.md §6). Outside the scroll area, below it: two spinners
     // are small and always relevant, and an axis list long enough to scroll should
     // not be able to push them out of reach.
-    auto *contextBox = new QGroupBox(QStringLiteral("Context"), this);
-    contextBox->setToolTip(QStringLiteral(
+    auto *contextBox = new QGroupBox(tr("Context"), this);
+    contextBox->setToolTip(tr(
         "Also show records either side of each match, dimmed — like grep -B/-A."));
     auto *contextForm = new QFormLayout(contextBox);
     auto makeSpin = [contextBox] {
@@ -45,8 +45,8 @@ FilterPane::FilterPane(QWidget *parent) : QWidget(parent)
     };
     m_contextBefore = makeSpin();
     m_contextAfter = makeSpin();
-    contextForm->addRow(QStringLiteral("Before:"), m_contextBefore);
-    contextForm->addRow(QStringLiteral("After:"), m_contextAfter);
+    contextForm->addRow(tr("Before:"), m_contextBefore);
+    contextForm->addRow(tr("After:"), m_contextAfter);
     outer->addWidget(contextBox);
 
     // One handler for every control in the pane, the editor's and this pane's alike:

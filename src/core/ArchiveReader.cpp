@@ -3,6 +3,7 @@
 #include "ArchiveLocation.h"
 #include "LogSource.h"
 
+#include <QCoreApplication>
 #include <QByteArray>
 #include <QFileInfo>
 
@@ -12,6 +13,19 @@
 #include <archive_entry.h>
 
 namespace loftail {
+
+namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::ArchiveReader)
+};
+} // namespace
+
 
 namespace {
 
@@ -135,7 +149,7 @@ std::unique_ptr<ArchiveStream> ArchiveStream::open(LogSource *input, AwaitInput 
 {
     if (!input) {
         if (error)
-            *error = QStringLiteral("No archive to read.");
+            *error = Tr::tr("No archive to read.");
         return nullptr;
     }
 
@@ -146,7 +160,7 @@ std::unique_ptr<ArchiveStream> ArchiveStream::open(LogSource *input, AwaitInput 
     struct archive *a = archive_read_new();
     if (!a) {
         if (error)
-            *error = QStringLiteral("Cannot start reading the archive.");
+            *error = Tr::tr("Cannot start reading the archive.");
         return nullptr;
     }
     stream->d->handle = a;
@@ -169,7 +183,7 @@ std::unique_ptr<ArchiveStream> ArchiveStream::open(LogSource *input, AwaitInput 
 
     if (archive_read_open1(a) != ARCHIVE_OK) {
         if (error)
-            *error = lastError(a, QStringLiteral("Cannot read the archive."));
+            *error = lastError(a, Tr::tr("Cannot read the archive."));
         return nullptr;
     }
     return stream;
@@ -186,7 +200,7 @@ bool ArchiveStream::nextEntry(ArchiveEntry *out, QString *error)
         return false;
     if (rc != ARCHIVE_OK && rc != ARCHIVE_WARN) {
         if (error)
-            *error = lastError(d->handle, QStringLiteral("Cannot read the archive."));
+            *error = lastError(d->handle, Tr::tr("Cannot read the archive."));
         return false;
     }
 
@@ -218,7 +232,7 @@ bool ArchiveStream::seekToMember(const QString &member, QString *error)
     }
     if (error) {
         *error = readError.isEmpty()
-            ? QStringLiteral("The archive holds no member named %1.").arg(member)
+            ? Tr::tr("The archive holds no member named %1.").arg(member)
             : readError;
     }
     return false;
@@ -229,7 +243,7 @@ qint64 ArchiveStream::read(char *buffer, qint64 length, QString *error)
     const la_ssize_t got = archive_read_data(d->handle, buffer, static_cast<size_t>(length));
     if (got < 0) {
         if (error)
-            *error = lastError(d->handle, QStringLiteral("Cannot read the archive."));
+            *error = lastError(d->handle, Tr::tr("Cannot read the archive."));
         return -1;
     }
     return got;
@@ -259,7 +273,7 @@ QVector<ArchiveEntry> listArchiveMembers(const QString &container, QString *erro
     if (!input) {
         if (error) {
             *error = openError.isEmpty()
-                ? QStringLiteral("Cannot open %1.").arg(container)
+                ? Tr::tr("Cannot open %1.").arg(container)
                 : openError;
         }
         return entries;

@@ -50,22 +50,22 @@ void PresetPane::buildUi()
         });
 
         auto *row1 = new QHBoxLayout;
-        auto *saveBtn = new QPushButton(QStringLiteral("Save current…"), box);
-        auto *applyBtn = new QPushButton(QStringLiteral("Apply"), box);
+        auto *saveBtn = new QPushButton(tr("Save current…"), box);
+        auto *applyBtn = new QPushButton(tr("Apply"), box);
         row1->addWidget(saveBtn);
         row1->addWidget(applyBtn);
         v->addLayout(row1);
 
         auto *row2 = new QHBoxLayout;
-        auto *renameBtn = new QPushButton(QStringLiteral("Rename"), box);
-        auto *deleteBtn = new QPushButton(QStringLiteral("Delete"), box);
+        auto *renameBtn = new QPushButton(tr("Rename"), box);
+        auto *deleteBtn = new QPushButton(tr("Delete"), box);
         row2->addWidget(renameBtn);
         row2->addWidget(deleteBtn);
         v->addLayout(row2);
 
         auto *row3 = new QHBoxLayout;
-        auto *exportBtn = new QPushButton(QStringLiteral("Export…"), box);
-        auto *importBtn = new QPushButton(QStringLiteral("Import…"), box);
+        auto *exportBtn = new QPushButton(tr("Export…"), box);
+        auto *importBtn = new QPushButton(tr("Import…"), box);
         row3->addWidget(exportBtn);
         row3->addWidget(importBtn);
         v->addLayout(row3);
@@ -80,8 +80,8 @@ void PresetPane::buildUi()
         connect(importBtn, &QPushButton::clicked, this, [this, kind] { importPreset(kind); });
     };
 
-    section(QStringLiteral("Filter presets"), PresetStore::Kind::Filters, m_filterList);
-    section(QStringLiteral("Highlighter presets"), PresetStore::Kind::Highlighters, m_highlighterList);
+    section(tr("Filter presets"), PresetStore::Kind::Filters, m_filterList);
+    section(tr("Highlighter presets"), PresetStore::Kind::Highlighters, m_highlighterList);
     root->addStretch(1);
 }
 
@@ -108,8 +108,8 @@ QString PresetPane::selectedName(PresetStore::Kind kind) const
 void PresetPane::createPreset(PresetStore::Kind kind)
 {
     bool ok = false;
-    const QString name = QInputDialog::getText(this, QStringLiteral("Save preset"),
-                                               QStringLiteral("Preset name:"), QLineEdit::Normal,
+    const QString name = QInputDialog::getText(this, tr("Save preset"),
+                                               tr("Preset name:"), QLineEdit::Normal,
                                                QString(), &ok)
                              .trimmed();
     if (!ok || name.isEmpty())
@@ -120,7 +120,7 @@ void PresetPane::createPreset(PresetStore::Kind kind)
                                     : m_highlighters->saveState();
     if (!m_store->save(kind, name, content)) {
         QMessageBox::warning(this, QStringLiteral("loftail"),
-                             QStringLiteral("Could not save the preset."));
+                             tr("Could not save the preset."));
         return;
     }
     refresh(kind);
@@ -145,14 +145,14 @@ void PresetPane::renamePreset(PresetStore::Kind kind)
     if (from.isEmpty())
         return;
     bool ok = false;
-    const QString to = QInputDialog::getText(this, QStringLiteral("Rename preset"),
-                                             QStringLiteral("New name:"), QLineEdit::Normal, from, &ok)
+    const QString to = QInputDialog::getText(this, tr("Rename preset"),
+                                             tr("New name:"), QLineEdit::Normal, from, &ok)
                            .trimmed();
     if (!ok || to.isEmpty() || to == from)
         return;
     if (!m_store->rename(kind, from, to)) {
         QMessageBox::warning(this, QStringLiteral("loftail"),
-                             QStringLiteral("Could not rename the preset."));
+                             tr("Could not rename the preset."));
         return;
     }
     refresh(kind);
@@ -163,8 +163,8 @@ void PresetPane::deletePreset(PresetStore::Kind kind)
     const QString name = selectedName(kind);
     if (name.isEmpty())
         return;
-    if (QMessageBox::question(this, QStringLiteral("Delete preset"),
-                              QStringLiteral("Delete preset \"%1\"?").arg(name))
+    if (QMessageBox::question(this, tr("Delete preset"),
+                              tr("Delete preset \"%1\"?").arg(name))
         != QMessageBox::Yes)
         return;
     m_store->remove(kind, name);
@@ -178,19 +178,19 @@ void PresetPane::exportPreset(PresetStore::Kind kind)
         return;
     const QString file = QFileDialog::getSaveFileName(
         this, QStringLiteral("Export preset"), name + QStringLiteral(".json"),
-        QStringLiteral("JSON files (*.json)"));
+        tr("JSON files (*.json)"));
     if (file.isEmpty())
         return;
     if (!m_store->exportPreset(kind, name, file))
         QMessageBox::warning(this, QStringLiteral("loftail"),
-                             QStringLiteral("Could not export the preset."));
+                             tr("Could not export the preset."));
 }
 
 void PresetPane::importPreset(PresetStore::Kind kind)
 {
     const QString file = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Import preset"), QString(),
-        QStringLiteral("JSON files (*.json)"));
+        this, tr("Import preset"), QString(),
+        tr("JSON files (*.json)"));
     if (file.isEmpty())
         return;
     // The file is self-describing (it declares its own kind); import routes it to
@@ -198,7 +198,7 @@ void PresetPane::importPreset(PresetStore::Kind kind)
     PresetStore::Kind actual{};
     if (!m_store->importPreset(file, &actual)) {
         QMessageBox::warning(this, QStringLiteral("loftail"),
-                             QStringLiteral("Not a valid loftail preset file."));
+                             tr("Not a valid loftail preset file."));
         return;
     }
     refresh(actual);

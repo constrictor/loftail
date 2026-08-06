@@ -46,14 +46,14 @@ OpenArchiveDialog::OpenArchiveDialog(const QString &container,
                                      const QVector<ArchiveEntry> &members, QWidget *parent)
     : QDialog(parent), m_container(container), m_members(members)
 {
-    setWindowTitle(QStringLiteral("Choose a Log"));
+    setWindowTitle(tr("Choose a Log"));
     setObjectName(QStringLiteral("openArchiveDialog"));
 
     auto *layout = new QVBoxLayout(this);
 
     m_summary = new QLabel(this);
     m_summary->setObjectName(QStringLiteral("archiveSummary"));
-    m_summary->setText(QStringLiteral("%1 holds %2 logs. Choose one or more to open.")
+    m_summary->setText(tr("%1 holds %2 logs. Choose one or more to open.")
                            .arg(logSourceDisplayName(container))
                            .arg(members.size()));
     m_summary->setWordWrap(true);
@@ -64,8 +64,8 @@ OpenArchiveDialog::OpenArchiveDialog(const QString &container,
     m_list->setRootIsDecorated(false);
     m_list->setUniformRowHeights(true);
     m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    m_list->setHeaderLabels({QStringLiteral("Log"), QStringLiteral("Size"),
-                             QStringLiteral("Modified")});
+    m_list->setHeaderLabels({tr("Log"), tr("Size"),
+                             tr("Modified")});
 
     const QLocale locale;
     for (const ArchiveEntry &entry : members) {
@@ -130,7 +130,7 @@ QStringList OpenArchiveDialog::chooseMembers(const QString &container, QWidget *
 #else
     // The dialog itself is always compiled so both builds behave alike; only the
     // listing needs the dependency, and saying so beats an empty list.
-    listError = QStringLiteral(
+    listError = tr(
         "Support for compressed and archived logs is not built into this copy of "
         "loftail. Rebuild with libarchive available to enable it.");
 #endif
@@ -138,7 +138,7 @@ QStringList OpenArchiveDialog::chooseMembers(const QString &container, QWidget *
     if (members.isEmpty()) {
         if (error) {
             *error = listError.isEmpty()
-                ? QStringLiteral("%1 holds no logs.").arg(logSourceDisplayName(container))
+                ? tr("%1 holds no logs.").arg(logSourceDisplayName(container))
                 : listError;
         }
         return {};

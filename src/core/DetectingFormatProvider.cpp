@@ -3,7 +3,22 @@
 #include "Decoder.h"
 #include "FormatDetector.h"
 
+#include <QCoreApplication>
+
 namespace loftail {
+
+namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::DetectingFormatProvider)
+};
+} // namespace
+
 
 Expected<LogFormat, CompileError> DetectingFormatProvider::formatFor(QByteArrayView sample)
 {
@@ -22,7 +37,7 @@ Expected<LogFormat, CompileError> DetectingFormatProvider::formatFor(QByteArrayV
         // caller falls back to the manual dialog (opening empty, as today).
         return Expected<LogFormat, CompileError>::makeError(
             CompileError{CompileError::Code::EmptyPattern,
-                         QStringLiteral("No log format could be detected"), -1});
+                         Tr::tr("No log format could be detected"), -1});
     }
 
     m_detected = true;

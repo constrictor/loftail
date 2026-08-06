@@ -26,6 +26,19 @@
 namespace loftail {
 
 namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::KeychainSecretStore)
+};
+} // namespace
+
+
+namespace {
 
 // An ordinary operation may legitimately involve a PERSON: a locked KWallet raises
 // kwalletd's unlock dialog, and macOS asks before letting a binary at an item whose ACL
@@ -110,7 +123,7 @@ SecretStore::Result mapOutcome(const std::shared_ptr<JobOutcome> &outcome, QStri
         // here" as far as any caller is concerned, and it must NOT read as a refusal —
         // a refusal is a thing a backend does, and no backend did anything.
         if (error)
-            *error = QStringLiteral("the keychain did not answer in time");
+            *error = Tr::tr("the keychain did not answer in time");
         return SecretStore::Result::NoBackend;
     }
 
@@ -145,20 +158,20 @@ QString service()
 QString detectBackendName()
 {
 #if defined(Q_OS_WIN)
-    return QStringLiteral("the Windows Credential Manager");
+    return Tr::tr("the Windows Credential Manager");
 #elif defined(Q_OS_MACOS)
-    return QStringLiteral("the macOS Keychain");
+    return Tr::tr("the macOS Keychain");
 #else
     const QString desktop =
         QProcessEnvironment::systemEnvironment()
             .value(QStringLiteral("XDG_CURRENT_DESKTOP"))
             .toUpper();
     if (desktop.contains(QStringLiteral("KDE")) || desktop.contains(QStringLiteral("PLASMA")))
-        return QStringLiteral("KWallet");
+        return Tr::tr("KWallet");
     if (desktop.contains(QStringLiteral("GNOME")) || desktop.contains(QStringLiteral("UNITY"))
         || desktop.contains(QStringLiteral("CINNAMON")))
-        return QStringLiteral("GNOME Keyring");
-    return QStringLiteral("your system keychain");
+        return Tr::tr("GNOME Keyring");
+    return Tr::tr("your system keychain");
 #endif
 }
 
@@ -229,7 +242,7 @@ SecretStore::Result KeychainSecretStore::read(const QString &key, QString *secre
 {
     if (!onTheRightThread()) {
         if (error)
-            *error = QStringLiteral("a keychain is only consulted on the thread that "
+            *error = Tr::tr("a keychain is only consulted on the thread that "
                                     "opened the log");
         return Result::NoBackend;
     }
@@ -248,7 +261,7 @@ SecretStore::Result KeychainSecretStore::store(const QString &key, const QString
 {
     if (!onTheRightThread()) {
         if (error)
-            *error = QStringLiteral("a keychain is only written on the thread that "
+            *error = Tr::tr("a keychain is only written on the thread that "
                                     "opened the log");
         return Result::NoBackend;
     }
@@ -263,7 +276,7 @@ SecretStore::Result KeychainSecretStore::erase(const QString &key, QString *erro
 {
     if (!onTheRightThread()) {
         if (error)
-            *error = QStringLiteral("a keychain is only written on the thread that "
+            *error = Tr::tr("a keychain is only written on the thread that "
                                     "opened the log");
         return Result::NoBackend;
     }

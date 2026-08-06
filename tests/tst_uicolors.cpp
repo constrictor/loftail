@@ -133,17 +133,26 @@ void TestUiColors::chromeColoursCarryOnBothThemes()
     QVERIFY(errorColor(dark) != errorColor(light));
     QVERIFY(warningColor(dark) != warningColor(light));
 
-    // And each is legible against the surface it is drawn on. 3.0 is the WCAG bound
-    // for large text; these are short, emphatic strings on a dialog.
+    // And each is legible against the surface it is drawn on. 4.5 is the WCAG bound for
+    // BODY text, which is what these are: ordinary-sized sentences on a dialog, not
+    // headings. The bound was 3.0 — the large-text allowance — and under it the light
+    // warning amber sat at 3.2 and passed, while being the colour of the sentence that
+    // says a password is about to be written to disk in the clear.
     for (const auto &entry : {std::pair{dark, QStringLiteral("dark")},
                               std::pair{light, QStringLiteral("light")}}) {
         const QPalette &p = entry.first;
         const QColor window = p.color(QPalette::Window);
-        QVERIFY2(contrast(errorColor(p), window) >= 3.0, qPrintable(entry.second));
-        QVERIFY2(contrast(warningColor(p), window) >= 3.0, qPrintable(entry.second));
+        QVERIFY2(contrast(errorColor(p), window) >= 4.5, qPrintable(entry.second));
+        QVERIFY2(contrast(warningColor(p), window) >= 4.5, qPrintable(entry.second));
         // Muted is deliberately quieter, but must not vanish.
         QVERIFY2(contrast(mutedColor(p), window) >= 2.0, qPrintable(entry.second));
     }
+
+    // The exported helpers agree with the ones restated above. UiColors measures its own
+    // colours now (it did not, which is how the amber went unnoticed), and the two
+    // implementations existing side by side is only worth anything if they match.
+    QCOMPARE(qRound(contrastRatio(warningColor(light), light.color(QPalette::Window)) * 100),
+             qRound(contrast(warningColor(light), light.color(QPalette::Window)) * 100));
 }
 
 void TestUiColors::theRemoteDialogsPlaceholdersAreReadable()

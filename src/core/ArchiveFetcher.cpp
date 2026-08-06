@@ -5,6 +5,7 @@
 #include "RemoteLocation.h"
 #include "SpooledLogSource.h"
 
+#include <QCoreApplication>
 #include <QByteArray>
 #include <QDeadlineTimer>
 #include <QFile>
@@ -16,6 +17,19 @@
 #include <QWaitCondition>
 
 namespace loftail {
+
+namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::ArchiveFetcher)
+};
+} // namespace
+
 
 namespace {
 
@@ -151,7 +165,7 @@ bool ArchiveFetcher::start(const QString &spoolDir, QString *error)
     if (!m_input) {
         if (error) {
             *error = openError.isEmpty()
-                ? QStringLiteral("Cannot open %1.").arg(m_location.container)
+                ? Tr::tr("Cannot open %1.").arg(m_location.container)
                 : openError;
         }
         setError(error && !error->isEmpty() ? *error : openError);
@@ -418,7 +432,7 @@ bool ArchiveFetcher::checkFreeSpace(qint64 expandedSize, QString *error) const
 
     if (error) {
         const QLocale locale;
-        *error = QStringLiteral(
+        *error = Tr::tr(
                      "Not enough space in the cache directory to expand %1: it needs "
                      "about %2 and there is %3 free.")
                      .arg(logSourceDisplayName(m_location.toString()),
@@ -437,7 +451,7 @@ void ArchiveFetcher::beginGeneration(qint64 expandedSize)
     const QString path = spoolPath(next);
     QFile spool(path);
     if (!spool.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        setError(QStringLiteral("Cannot write the local cache file %1.").arg(path));
+        setError(Tr::tr("Cannot write the local cache file %1.").arg(path));
         return;
     }
     spool.close();
@@ -460,7 +474,7 @@ bool ArchiveFetcher::expand(qint64 limit, bool *finished)
     const QString path = spoolPath(generation);
     QFile spool(path);
     if (!spool.open(QIODevice::Append)) {
-        setError(QStringLiteral("Cannot append to the local cache file %1.").arg(path));
+        setError(Tr::tr("Cannot append to the local cache file %1.").arg(path));
         return false;
     }
 
@@ -478,7 +492,7 @@ bool ArchiveFetcher::expand(qint64 limit, bool *finished)
         if (got < 0) {
             spool.close();
             setError(readError.isEmpty()
-                         ? QStringLiteral("Cannot expand %1.").arg(m_location.container)
+                         ? Tr::tr("Cannot expand %1.").arg(m_location.container)
                          : readError);
             return false;
         }
@@ -496,10 +510,10 @@ bool ArchiveFetcher::expand(qint64 limit, bool *finished)
             const bool full = spool.error() == QFileDevice::ResourceError;
             spool.close();
             setError(full
-                         ? QStringLiteral("Ran out of space while expanding %1. What was "
+                         ? Tr::tr("Ran out of space while expanding %1. What was "
                                           "expanded so far is still shown.")
                                .arg(logSourceDisplayName(m_location.toString()))
-                         : QStringLiteral("Cannot write to the local cache file %1.").arg(path));
+                         : Tr::tr("Cannot write to the local cache file %1.").arg(path));
             return false;
         }
         written += got;
@@ -540,7 +554,7 @@ std::unique_ptr<SourceFetcher> makeArchiveFetcher(const ArchiveLocation &locatio
 {
     if (!location.isOpenable()) {
         if (error)
-            *error = QStringLiteral("No log chosen inside %1.").arg(location.container);
+            *error = Tr::tr("No log chosen inside %1.").arg(location.container);
         return nullptr;
     }
     return std::make_unique<ArchiveFetcher>(location);

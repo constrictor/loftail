@@ -123,7 +123,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_progressBar = new QProgressBar(this);
     m_progressBar->setMaximumWidth(200);
     m_progressBar->setVisible(false);
-    m_statusLabel = new QLabel(QStringLiteral("No file open"), this);
+    m_statusLabel = new QLabel(tr("No file open"), this);
     m_statusLabel->setObjectName(QStringLiteral("statusLabel")); // findChild, for tests
     statusBar()->addWidget(m_statusLabel, 1);
     statusBar()->addPermanentWidget(m_progressBar);
@@ -144,7 +144,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // The empty state shares the centre with the tabs, rather than sitting behind an
     // empty tab frame; updateEmptyState() swaps between them.
-    m_placeholder = new QLabel(QStringLiteral("No file open. Open a log file to begin."), this);
+    m_placeholder = new QLabel(tr("No file open. Open a log file to begin."), this);
     m_placeholder->setAlignment(Qt::AlignCenter);
     m_placeholder->setWordWrap(true);
 
@@ -157,27 +157,27 @@ MainWindow::MainWindow(QWidget *parent)
     // the active document by signal (invariant #7 / §12.3), never a fixed Document.
     m_filterPane = new FilterPane(this);
     QDockWidget *filterDock = addPaneDock(m_filterPane, QStringLiteral("filtersDock"),
-                                          QStringLiteral("Filters"));
+                                          tr("Filters"));
     connect(this, &MainWindow::activeDocumentChanged, m_filterPane, &FilterPane::setDocument);
     connect(m_filterPane, &FilterPane::filtersChanged, this, &MainWindow::applyActiveFilters);
 
     m_highlighterPane = new HighlighterPane(this);
     QDockWidget *highlightDock = addPaneDock(m_highlighterPane,
                                              QStringLiteral("highlightersDock"),
-                                             QStringLiteral("Highlighters"));
+                                             tr("Highlighters"));
     connect(this, &MainWindow::activeDocumentChanged, m_highlighterPane, &HighlighterPane::setDocument);
     connect(m_highlighterPane, &HighlighterPane::highlightersChanged,
             this, &MainWindow::applyActiveHighlighters);
 
     m_presetPane = new PresetPane(m_filterPane, m_highlighterPane, this);
     QDockWidget *presetDock = addPaneDock(m_presetPane, QStringLiteral("presetsDock"),
-                                          QStringLiteral("Presets"));
+                                          tr("Presets"));
 
     // Run selection pane (§3a): a run-start regexp splits the file into runs and the
     // user views one at a time. Binds to the active document by signal like the rest.
     m_runPane = new RunPane(this);
     QDockWidget *runDock = addPaneDock(m_runPane, QStringLiteral("runsDock"),
-                                       QStringLiteral("Runs"));
+                                       tr("Runs"));
     connect(this, &MainWindow::activeDocumentChanged, m_runPane, &RunPane::setDocument);
     connect(m_runPane, &RunPane::runStartChanged, this, &MainWindow::onRunStartChanged);
     connect(m_runPane, &RunPane::runSelected, this, &MainWindow::onRunSelected);
@@ -207,28 +207,28 @@ MainWindow::~MainWindow()
 
 void MainWindow::buildMenus()
 {
-    QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
-    QAction *openAction = fileMenu->addAction(QStringLiteral("&Open..."));
+    QMenu *fileMenu = menuBar()->addMenu(tr("&File"));
+    QAction *openAction = fileMenu->addAction(tr("&Open..."));
     openAction->setShortcut(QKeySequence::Open);
     connect(openAction, &QAction::triggered, this, &MainWindow::chooseFileToOpen);
 
     // Remote logs (M11, SPEC.md §3). Both entries are present whether or not SSH was
     // compiled in — a disabled item with a tooltip explains the situation, where a
     // missing one would just look like the feature does not exist.
-    m_openRemoteAction = fileMenu->addAction(QStringLiteral("Open &Remote..."));
+    m_openRemoteAction = fileMenu->addAction(tr("Open &Remote..."));
     m_openRemoteAction->setObjectName(QStringLiteral("openRemoteAction")); // findChild, for tests
     m_openRemoteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")));
     connect(m_openRemoteAction, &QAction::triggered, this, &MainWindow::chooseRemoteToOpen);
 
-    m_recentMenu = fileMenu->addMenu(QStringLiteral("Open &Recent"));
+    m_recentMenu = fileMenu->addMenu(tr("Open &Recent"));
     refreshRecentFilesMenu();
 
-    m_remoteHostsMenu = fileMenu->addMenu(QStringLiteral("Remote &Hosts"));
+    m_remoteHostsMenu = fileMenu->addMenu(tr("Remote &Hosts"));
     m_remoteHostsMenu->setObjectName(QStringLiteral("remoteHostsMenu"));
     refreshRemoteHostsMenu();
 
 #if !defined(LOFTAIL_HAVE_SSH)
-    const QString noSsh = QStringLiteral(
+    const QString noSsh = tr(
         "This copy of loftail was built without SSH support, so remote logs cannot "
         "be opened. Rebuild with libssh2 available to enable it.");
     m_openRemoteAction->setEnabled(false);
@@ -238,13 +238,13 @@ void MainWindow::buildMenus()
 #endif
 
     fileMenu->addSeparator();
-    m_closeTabAction = fileMenu->addAction(QStringLiteral("&Close Tab"));
+    m_closeTabAction = fileMenu->addAction(tr("&Close Tab"));
     m_closeTabAction->setObjectName(QStringLiteral("closeTabAction")); // findChild, for tests
     m_closeTabAction->setShortcut(QKeySequence::Close); // Ctrl+W
     m_closeTabAction->setEnabled(false);
     connect(m_closeTabAction, &QAction::triggered, this, &MainWindow::closeActiveView);
 
-    m_closeAllAction = fileMenu->addAction(QStringLiteral("Close &All"));
+    m_closeAllAction = fileMenu->addAction(tr("Close &All"));
     m_closeAllAction->setObjectName(QStringLiteral("closeAllAction")); // findChild, for tests
     m_closeAllAction->setEnabled(false);
     connect(m_closeAllAction, &QAction::triggered, this, &MainWindow::closeAllDocuments);
@@ -253,7 +253,7 @@ void MainWindow::buildMenus()
     // The one case it is required for, rather than merely convenient: a reconnect that
     // needs a password cannot prompt from the fetcher thread, so it stops trying and
     // says so — and this is how the user says "ask me again" (§6.5).
-    m_reconnectAction = fileMenu->addAction(QStringLiteral("&Reconnect"));
+    m_reconnectAction = fileMenu->addAction(tr("&Reconnect"));
     m_reconnectAction->setObjectName(QStringLiteral("reconnectAction")); // findChild, for tests
     m_reconnectAction->setEnabled(false);
     connect(m_reconnectAction, &QAction::triggered, this, [this]() {
@@ -267,13 +267,13 @@ void MainWindow::buildMenus()
     });
 
     fileMenu->addSeparator();
-    m_formatAction = fileMenu->addAction(QStringLiteral("&Log Format..."));
+    m_formatAction = fileMenu->addAction(tr("&Log Format..."));
     m_formatAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
     m_formatAction->setEnabled(false);
     connect(m_formatAction, &QAction::triggered, this, &MainWindow::showFormatDialog);
 
     fileMenu->addSeparator();
-    m_cancelAction = fileMenu->addAction(QStringLiteral("&Cancel Indexing"));
+    m_cancelAction = fileMenu->addAction(tr("&Cancel Indexing"));
     m_cancelAction->setEnabled(false);
     connect(m_cancelAction, &QAction::triggered, this, [this]() {
         if (DocumentContext *ctx = activeContext(); ctx && ctx->controller)
@@ -281,12 +281,12 @@ void MainWindow::buildMenus()
     });
 
     fileMenu->addSeparator();
-    QAction *quitAction = fileMenu->addAction(QStringLiteral("&Quit"));
+    QAction *quitAction = fileMenu->addAction(tr("&Quit"));
     quitAction->setShortcut(QKeySequence::Quit);
     connect(quitAction, &QAction::triggered, this, &QWidget::close);
 
-    QMenu *editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
-    m_copyAction = editMenu->addAction(QStringLiteral("&Copy"));
+    QMenu *editMenu = menuBar()->addMenu(tr("&Edit"));
+    m_copyAction = editMenu->addAction(tr("&Copy"));
     m_copyAction->setObjectName(QStringLiteral("copyAction")); // findChild, for tests
     m_copyAction->setShortcut(QKeySequence::Copy);
     m_copyAction->setEnabled(false);
@@ -294,7 +294,7 @@ void MainWindow::buildMenus()
         if (LogView *v = activeLogView())
             v->copySelectionRaw();
     });
-    m_copyColumnsAction = editMenu->addAction(QStringLiteral("Copy as &Columns"));
+    m_copyColumnsAction = editMenu->addAction(tr("Copy as &Columns"));
     m_copyColumnsAction->setObjectName(QStringLiteral("copyColumnsAction")); // findChild, for tests
     m_copyColumnsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C));
     m_copyColumnsAction->setEnabled(false);
@@ -306,25 +306,25 @@ void MainWindow::buildMenus()
     // Find / Find Next / Find Previous (SPEC.md §5). Find opens the bar; F3 /
     // Shift+F3 navigate the current query over the visible rows.
     editMenu->addSeparator();
-    QAction *findAction = editMenu->addAction(QStringLiteral("&Find..."));
+    QAction *findAction = editMenu->addAction(tr("&Find..."));
     findAction->setShortcut(QKeySequence::Find);
     connect(findAction, &QAction::triggered, this, [this]() {
         if (m_activeView)
             m_activeView->activateFind();
     });
-    QAction *findNextAction = editMenu->addAction(QStringLiteral("Find &Next"));
+    QAction *findNextAction = editMenu->addAction(tr("Find &Next"));
     findNextAction->setShortcut(QKeySequence::FindNext); // F3
     connect(findNextAction, &QAction::triggered, this, [this]() { runFind(true, false); });
-    QAction *findPrevAction = editMenu->addAction(QStringLiteral("Find Pre&vious"));
+    QAction *findPrevAction = editMenu->addAction(tr("Find Pre&vious"));
     findPrevAction->setShortcut(QKeySequence::FindPrevious); // Shift+F3
     connect(findPrevAction, &QAction::triggered, this, [this]() { runFind(false, false); });
 
-    QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
-    QMenu *wrapMenu = viewMenu->addMenu(QStringLiteral("Line &Wrap"));
+    QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
+    QMenu *wrapMenu = viewMenu->addMenu(tr("Line &Wrap"));
     auto *wrapGroup = new QActionGroup(this);
-    QAction *wrapOff = wrapMenu->addAction(QStringLiteral("&Off"));
-    QAction *wrapSel = wrapMenu->addAction(QStringLiteral("&Selected Record Only"));
-    QAction *wrapAll = wrapMenu->addAction(QStringLiteral("&Always On"));
+    QAction *wrapOff = wrapMenu->addAction(tr("&Off"));
+    QAction *wrapSel = wrapMenu->addAction(tr("&Selected Record Only"));
+    QAction *wrapAll = wrapMenu->addAction(tr("&Always On"));
     for (QAction *a : {wrapOff, wrapSel, wrapAll}) {
         a->setCheckable(true);
         wrapGroup->addAction(a);
@@ -346,7 +346,7 @@ void MainWindow::buildMenus()
     // Return-to-bottom / follow control (SPEC.md §3, M6). Checked reflects whether
     // the view is currently following; triggering it re-attaches and jumps to the end.
     viewMenu->addSeparator();
-    m_followAction = viewMenu->addAction(QStringLiteral("&Follow Tail"));
+    m_followAction = viewMenu->addAction(tr("&Follow Tail"));
     m_followAction->setCheckable(true);
     m_followAction->setChecked(true);
     m_followAction->setEnabled(false);
@@ -359,16 +359,16 @@ void MainWindow::buildMenus()
     // Panes are closable docks, so without this a closed pane could not be brought
     // back (SPEC.md §8). Qt's own toggleViewAction does the work.
     viewMenu->addSeparator();
-    QMenu *panesMenu = viewMenu->addMenu(QStringLiteral("&Panes"));
+    QMenu *panesMenu = viewMenu->addMenu(tr("&Panes"));
     for (QDockWidget *dock : std::as_const(m_paneDocks))
         panesMenu->addAction(dock->toggleViewAction());
 
     // Window: move between the open files (SPEC.md §3). The list of open views is
     // rebuilt each time the menu opens, since tabs come and go.
-    m_windowMenu = menuBar()->addMenu(QStringLiteral("&Window"));
+    m_windowMenu = menuBar()->addMenu(tr("&Window"));
     // Parented to the window, not the menu, so refreshWindowMenu()'s clear() does not
     // delete it out from under updateActionStates().
-    m_newViewAction = new QAction(QStringLiteral("&New View"), this);
+    m_newViewAction = new QAction(tr("&New View"), this);
     m_newViewAction->setObjectName(QStringLiteral("newViewAction")); // findChild, for tests
     m_newViewAction->setEnabled(false);
     connect(m_newViewAction, &QAction::triggered, this, &MainWindow::newViewOfActiveDocument);
@@ -384,12 +384,12 @@ void MainWindow::refreshWindowMenu()
     m_windowMenu->addAction(m_newViewAction);
     m_windowMenu->addSeparator();
 
-    QAction *next = m_windowMenu->addAction(QStringLiteral("&Next Tab"));
+    QAction *next = m_windowMenu->addAction(tr("&Next Tab"));
     next->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Tab));
     next->setEnabled(m_views.size() > 1);
     connect(next, &QAction::triggered, this, [this]() { cycleView(1); });
 
-    QAction *prev = m_windowMenu->addAction(QStringLiteral("&Previous Tab"));
+    QAction *prev = m_windowMenu->addAction(tr("&Previous Tab"));
     prev->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Tab));
     prev->setEnabled(m_views.size() > 1);
     connect(prev, &QAction::triggered, this, [this]() { cycleView(-1); });
@@ -649,18 +649,18 @@ void MainWindow::updateActionStates()
     }
 
     setWindowTitle(hasFile
-                       ? QStringLiteral("loftail — %1").arg(logSourceDisplayName(ctx->doc->path()))
+                       ? tr("loftail — %1").arg(logSourceDisplayName(ctx->doc->path()))
                        : QStringLiteral("loftail"));
 }
 
 void MainWindow::chooseFileToOpen()
 {
     const QString path = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Open Log File"), QString(),
+        this, tr("Open Log File"), QString(),
         // The archive filter is offered whether or not libarchive is compiled in, so
         // the two builds' dialogs look alike: a file that simply vanished from the list
         // would read as "loftail cannot see this", where trying it explains itself.
-        QStringLiteral("Log files (*.log *.txt);;"
+        tr("Log files (*.log *.txt);;"
                        "Compressed and archived logs "
                        "(*.gz *.bz2 *.xz *.zst *.zip *.tar *.tgz *.tar.gz *.tar.bz2 "
                        "*.tar.xz *.txz *.tar.zst *.7z);;"
@@ -690,7 +690,7 @@ void MainWindow::refreshRemoteHostsMenu()
     const HostBookmarkStore store(HostBookmarkStore::defaultDir());
     const QVector<HostBookmark> hosts = store.all();
     if (hosts.isEmpty()) {
-        QAction *none = m_remoteHostsMenu->addAction(QStringLiteral("(none saved)"));
+        QAction *none = m_remoteHostsMenu->addAction(tr("(none saved)"));
         none->setEnabled(false);
         return;
     }
@@ -815,7 +815,7 @@ void MainWindow::openFile(const QString &rawPath, const QString &pattern)
         const QStringList members =
             OpenArchiveDialog::chooseMembers(archive->container, this, &error);
         if (!error.isEmpty()) {
-            m_statusLabel->setText(QStringLiteral("Cannot open %1: %2")
+            m_statusLabel->setText(tr("Cannot open %1: %2")
                                        .arg(logSourceDisplayName(path), error));
             return;
         }
@@ -867,7 +867,7 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
         if (remote)
             QGuiApplication::restoreOverrideCursor();
         if (!prepared) {
-            m_statusLabel->setText(QStringLiteral("Cannot open %1: %2")
+            m_statusLabel->setText(tr("Cannot open %1: %2")
                                        .arg(logSourceDisplayName(path), doc->lastError()));
             return false;
         }
@@ -917,7 +917,7 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
                 settings = dlg.settings();
                 ManualFormatProvider chosen(settings.pattern);
                 if (!doc->prepare(path, chosen, settings.encoding, settings.sourceZone.toZone())) {
-                    m_statusLabel->setText(QStringLiteral("Cannot open %1: %2")
+                    m_statusLabel->setText(tr("Cannot open %1: %2")
                                                .arg(logSourceDisplayName(path), doc->lastError()));
                     return false;
                 }
@@ -928,7 +928,7 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
                 // to confirm, and opening with it would show a wall of unparsed
                 // plain text — so abort the open instead (SPEC.md §4). Whatever
                 // was already open stays open, untouched.
-                m_statusLabel->setText(QStringLiteral("Open cancelled: %1")
+                m_statusLabel->setText(tr("Open cancelled: %1")
                                            .arg(logSourceDisplayName(path)));
                 return false;
             }
@@ -1211,7 +1211,7 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
     name.replace(u'&', QLatin1String("&&")); // the tab bar reads '&' as a mnemonic
     QString base = name;
     if (ctx->indexing)
-        base = QStringLiteral("%1 — indexing %2%").arg(name).arg(ctx->progressPercent);
+        base = tr("%1 — indexing %2%").arg(name).arg(ctx->progressPercent);
     else if (ctx->doc->isWaiting())
         // A tab with no records in it, so that a glance at the tab bar tells a log
         // that is empty from one that is not there (SPEC.md §3). The tooltip carries
@@ -1312,7 +1312,7 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
         }
         if (isActive) {
             m_statusLabel->setText(m_statusLabel->text()
-                                   + QStringLiteral("  (indexing cancelled)"));
+                                   + tr("  (indexing cancelled)"));
         }
         return; // a cancelled scan is not watched — the user chose to stop reading it
     }
@@ -1435,7 +1435,7 @@ void MainWindow::resumeWaitingDocument(DocumentContext *ctx)
             // "behind the user's back" case openFile() takes such care to avoid. The
             // log stays readable as plain text and the status bar says where to fix
             // it; nothing is persisted, so reopening still offers the dialog properly.
-            ctx->formatNotice = QStringLiteral("format not recognised — Log ▸ Format…");
+            ctx->formatNotice = tr("format not recognised — Log ▸ Format…");
         }
     }
 
@@ -1580,13 +1580,13 @@ void MainWindow::runFind(bool forward, bool fromStart)
     matcher.set(pattern, findBar->regex(),
                 findBar->caseSensitive() ? Qt::CaseSensitive : Qt::CaseInsensitive);
     if (!matcher.isValid()) {
-        findBar->setStatus(QStringLiteral("bad regex"));
+        findBar->setStatus(tr("bad regex"));
         return;
     }
 
     const int count = model->rowCount();
     if (count == 0) {
-        findBar->setStatus(QStringLiteral("no records"));
+        findBar->setStatus(tr("no records"));
         return;
     }
 
@@ -1605,7 +1605,7 @@ void MainWindow::runFind(bool forward, bool fromStart)
     const int from = fromStart ? -1 : logView->currentRecord();
     const int hit = Find::search(count, from, forward, /*wrap=*/true, rowMatches);
     if (hit < 0) {
-        findBar->setStatus(QStringLiteral("no match"));
+        findBar->setStatus(tr("no match"));
         return;
     }
     logView->setCurrentRecord(hit);
@@ -1616,7 +1616,7 @@ void MainWindow::updateStatus()
 {
     Document *doc = activeDocument();
     if (!doc) {
-        m_statusLabel->setText(QStringLiteral("No file open"));
+        m_statusLabel->setText(tr("No file open"));
         return;
     }
     if (doc->isWaiting()) {
@@ -1634,16 +1634,16 @@ void MainWindow::updateStatus()
     // when a filter narrows the view, otherwise a plain record count.
     QString text;
     if (doc->filters().anyActive()) {
-        text = QStringLiteral("%1  |  %2 of %3 records shown")
+        text = tr("%1  |  %2 of %3 records shown")
                    .arg(logSourceDisplayName(doc->path()))
                    .arg(doc->filtered().recordCount())
                    .arg(total);
         // With filter context on, "shown" counts the neighbours too. Say how many, or
         // the pair reads as a filter that matched far more than it did (SPEC.md §6).
         if (const int ctx = doc->filtered().contextCount(); ctx > 0)
-            text += QStringLiteral(" (%1 as context)").arg(ctx);
+            text += tr(" (%1 as context)").arg(ctx);
     } else {
-        text = QStringLiteral("%1  |  %2 records")
+        text = tr("%1  |  %2 records")
                    .arg(logSourceDisplayName(doc->path()))
                    .arg(total);
     }
@@ -1669,7 +1669,7 @@ void MainWindow::buildTimeDisplayMenu()
     // on the stack per invocation, so this one is borrowed and must outlive it. The
     // actions being window children is also what lets tests findChild them without
     // opening a modal menu (precedent: newViewAction).
-    m_timeDisplayMenu = new QMenu(QStringLiteral("&Timestamp Format"), this);
+    m_timeDisplayMenu = new QMenu(tr("&Timestamp Format"), this);
     m_timeDisplayMenu->setObjectName(QStringLiteral("timeDisplayMenu"));
     auto *group = new QActionGroup(this);
 
@@ -1679,15 +1679,22 @@ void MainWindow::buildTimeDisplayMenu()
         const char *text;
         const char *name;
     };
+    // QT_TR_NOOP marks the text for extraction where it is WRITTEN, since the tr() that
+    // actually translates it is in the loop below and sees only `item.text`. This is the
+    // one menu in the window built from a table rather than from a run of addAction
+    // calls, and therefore the one a sweep for translatable strings walks straight past.
+    // The object names beside them are the test contract and stay untranslated.
     static constexpr Item kItems[] = {
-        { TimeDisplay::AsWritten,    "As &Written in the File", "timeDisplayAsWrittenAction" },
-        { TimeDisplay::LocalTime,    "&Local Time",             "timeDisplayLocalAction" },
-        { TimeDisplay::Utc,          "&UTC",                    "timeDisplayUtcAction" },
-        { TimeDisplay::EpochSeconds, "&Seconds",                "timeDisplaySecondsAction" },
-        { TimeDisplay::RunSeconds,   "Seconds from &Run Start", "timeDisplayRunSecondsAction" },
+        { TimeDisplay::AsWritten,    QT_TR_NOOP("As &Written in the File"),
+          "timeDisplayAsWrittenAction" },
+        { TimeDisplay::LocalTime,    QT_TR_NOOP("&Local Time"), "timeDisplayLocalAction" },
+        { TimeDisplay::Utc,          QT_TR_NOOP("&UTC"),        "timeDisplayUtcAction" },
+        { TimeDisplay::EpochSeconds, QT_TR_NOOP("&Seconds"),    "timeDisplaySecondsAction" },
+        { TimeDisplay::RunSeconds,   QT_TR_NOOP("Seconds from &Run Start"),
+          "timeDisplayRunSecondsAction" },
     };
     for (const Item &item : kItems) {
-        QAction *a = m_timeDisplayMenu->addAction(QLatin1String(item.text));
+        QAction *a = m_timeDisplayMenu->addAction(tr(item.text));
         a->setObjectName(QLatin1String(item.name));
         a->setCheckable(true);
         group->addAction(a);
@@ -1745,7 +1752,7 @@ void MainWindow::showColumnMenu(const QPoint &pos)
         menu.addSeparator();
     }
 
-    menu.addSection(QStringLiteral("Columns"));
+    menu.addSection(tr("Columns"));
     for (int c = 0; c < model->columnCount(); ++c) {
         const QString name = model->headerData(c, Qt::Horizontal).toString();
         QAction *a = menu.addAction(name);
@@ -1854,7 +1861,7 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
     for (Axis axis : order) {
         auto section = [&] {
             if (!filterSection) {
-                menu->addSection(QStringLiteral("Filter"));
+                menu->addSection(tr("Filter"));
                 filterSection = true;
             }
         };
@@ -1863,11 +1870,11 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
             if (!hasSubsystem)
                 break;
             section();
-            add(QStringLiteral("Show Only Subsystem \"%1\"").arg(subsystem),
+            add(tr("Show Only Subsystem \"%1\"").arg(subsystem),
                 "recordShowOnlySubsystem", [this, subsystem] {
                     m_filterPane->showOnlyValue(ValueAxis::Subsystem, subsystem);
                 });
-            add(QStringLiteral("Hide Subsystem \"%1\"").arg(subsystem),
+            add(tr("Hide Subsystem \"%1\"").arg(subsystem),
                 "recordHideSubsystem", [this, subsystem] {
                     m_filterPane->hideValue(ValueAxis::Subsystem, subsystem);
                 });
@@ -1876,11 +1883,11 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
             if (!hasThread)
                 break;
             section();
-            add(QStringLiteral("Show Only Thread \"%1\"").arg(thread),
+            add(tr("Show Only Thread \"%1\"").arg(thread),
                 "recordShowOnlyThread", [this, thread] {
                     m_filterPane->showOnlyValue(ValueAxis::Thread, thread);
                 });
-            add(QStringLiteral("Hide Thread \"%1\"").arg(thread),
+            add(tr("Hide Thread \"%1\"").arg(thread),
                 "recordHideThread", [this, thread] {
                     m_filterPane->hideValue(ValueAxis::Thread, thread);
                 });
@@ -1891,7 +1898,7 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
             section();
             // The record's own level as the MINIMUM, which is the only shape the
             // priority axis has (SPEC.md §6): "at least this bad".
-            add(QStringLiteral("Show %1 and Above").arg(QString(priorityName(prio))),
+            add(tr("Show %1 and Above").arg(QString(priorityName(prio))),
                 "recordPriorityFloor",
                 [this, prio] { m_filterPane->setMinimumPriority(prio); });
             break;
@@ -1901,13 +1908,13 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
             section();
             if (hasTime) {
                 const qint64 ts = rec.timestamp;
-                add(QStringLiteral("Start Time Range Here"), "recordTimeStart",
+                add(tr("Start Time Range Here"), "recordTimeStart",
                     [this, ts] { m_filterPane->setTimeBound(TimeBound::Start, ts); });
-                add(QStringLiteral("End Time Range Here"), "recordTimeEnd",
+                add(tr("End Time Range Here"), "recordTimeEnd",
                     [this, ts] { m_filterPane->setTimeBound(TimeBound::End, ts); });
             }
             if (hasSelectedRange) {
-                add(QStringLiteral("Filter to Selected Time Range"), "recordTimeRange",
+                add(tr("Filter to Selected Time Range"), "recordTimeRange",
                     [this, selLo, selHi] { m_filterPane->setTimeRange(selLo, selHi); });
             }
             break;
@@ -1918,7 +1925,7 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
     // rule, appended so existing rules keep their precedence (SPEC.md §7).
     auto highlight = [&](const QString &text, const char *name, const MatchCriteria &c) {
         if (!highlightSection) {
-            menu->addSection(QStringLiteral("Highlight"));
+            menu->addSection(tr("Highlight"));
             highlightSection = true;
         }
         add(text, name, [this, c] { m_highlighterPane->addRule(c); });
@@ -1933,7 +1940,7 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
             c.loggerNames = QStringList{subsystem};
             c.loggerCoversAll = false;
             c.loggerRestrictive = true; // these names exactly, whatever turns up later
-            highlight(QStringLiteral("Highlight This Subsystem"), "recordHighlightSubsystem", c);
+            highlight(tr("Highlight This Subsystem"), "recordHighlightSubsystem", c);
             break;
         }
         case Axis::Thread: {
@@ -1944,7 +1951,7 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
             c.threadNames = QStringList{thread};
             c.threadCoversAll = false;
             c.threadRestrictive = true;
-            highlight(QStringLiteral("Highlight This Thread"), "recordHighlightThread", c);
+            highlight(tr("Highlight This Thread"), "recordHighlightThread", c);
             break;
         }
         case Axis::Priority: {
@@ -1953,7 +1960,7 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
             MatchCriteria c;
             c.priorityEnabled = true;
             c.minPriority = prio;
-            highlight(QStringLiteral("Highlight %1 and Above").arg(QString(priorityName(prio))),
+            highlight(tr("Highlight %1 and Above").arg(QString(priorityName(prio))),
                       "recordHighlightPriority", c);
             break;
         }
@@ -2002,7 +2009,7 @@ void MainWindow::refreshRecentFilesMenu()
     m_recentMenu->clear();
     const QStringList recent = QSettings().value(QLatin1String(kRecentFilesKey)).toStringList();
     if (recent.isEmpty()) {
-        QAction *none = m_recentMenu->addAction(QStringLiteral("(none)"));
+        QAction *none = m_recentMenu->addAction(tr("(none)"));
         none->setEnabled(false);
         return;
     }
@@ -2218,11 +2225,11 @@ void MainWindow::restoreSession()
         // everything in it was actively refused.
         m_placeholder->setText(QStringLiteral("%1\n%2")
                                    .arg(anyRemote
-                                            ? QStringLiteral("These logs could not be reopened:")
-                                            : QStringLiteral("These files could not be reopened:"),
+                                            ? tr("These logs could not be reopened:")
+                                            : tr("These files could not be reopened:"),
                                         shown.join(u'\n')));
         m_statusLabel->setText(
-            QStringLiteral("%1 file(s) from the last session unavailable").arg(missing.size()));
+            tr("%1 file(s) from the last session unavailable").arg(missing.size()));
     }
     updateEmptyState();
     if (m_contexts.empty())

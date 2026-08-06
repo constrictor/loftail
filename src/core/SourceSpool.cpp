@@ -18,6 +18,19 @@
 namespace loftail {
 
 namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and these strings are user-facing all the same: they travel up to
+// the status bar through Document::lastError() and LiveController::sourceStatusChanged.
+// Q_DECLARE_TR_FUNCTIONS is what lets lupdate file them under a name that means
+// something rather than under the file they happen to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::SourceSpool)
+};
+} // namespace
+
+
+namespace {
 
 constexpr auto kSpoolRootName = "spool";
 constexpr auto kInstanceLockName = "owner.lock";
@@ -56,7 +69,7 @@ std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error
             return makeArchiveFetcher(*archive, error);
 #else
             if (error) {
-                *error = QStringLiteral(
+                *error = Tr::tr(
                     "Support for compressed and archived logs is not built into this "
                     "copy of loftail. Rebuild with libarchive available to enable it.");
             }
@@ -64,7 +77,7 @@ std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error
 #endif
         }
         if (error)
-            *error = QStringLiteral("Nothing to expand in %1.").arg(address);
+            *error = Tr::tr("Nothing to expand in %1.").arg(address);
         return nullptr;
     }
 
@@ -73,11 +86,11 @@ std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error
         if (const auto location = RemoteLocation::parse(key))
             return makeSshFetcher(*location, error);
         if (error)
-            *error = QStringLiteral("Not a valid remote log address: %1").arg(key);
+            *error = Tr::tr("Not a valid remote log address: %1").arg(key);
         return nullptr;
 #else
         if (error) {
-            *error = QStringLiteral(
+            *error = Tr::tr(
                 "SSH support is not built into this copy of loftail, so remote logs "
                 "cannot be opened. Rebuild with libssh2 available to enable it.");
         }
@@ -86,7 +99,7 @@ std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error
     }
 
     if (error)
-        *error = QStringLiteral("No way to fetch %1.").arg(key);
+        *error = Tr::tr("No way to fetch %1.").arg(key);
     return nullptr;
 }
 
@@ -226,13 +239,13 @@ std::shared_ptr<SourceSpool> SourceSpoolRegistry::acquire(const QString &key, QS
     const QString base = instanceDir();
     if (base.isEmpty()) {
         if (error)
-            *error = QStringLiteral("Cannot create a local cache directory for spooled logs.");
+            *error = Tr::tr("Cannot create a local cache directory for spooled logs.");
         return nullptr;
     }
     const QString dir = base + u'/' + spoolKey(key);
     if (!QDir().mkpath(dir)) {
         if (error)
-            *error = QStringLiteral("Cannot create the local cache directory %1.").arg(dir);
+            *error = Tr::tr("Cannot create the local cache directory %1.").arg(dir);
         return nullptr;
     }
 
@@ -250,7 +263,7 @@ std::shared_ptr<SourceSpool> SourceSpoolRegistry::acquire(const QString &key, QS
     if (!fetcher->start(dir, &startError)) {
         QDir(dir).removeRecursively();
         if (error)
-            *error = startError.isEmpty() ? QStringLiteral("Cannot open %1.").arg(key)
+            *error = startError.isEmpty() ? Tr::tr("Cannot open %1.").arg(key)
                                           : startError;
         return nullptr;
     }

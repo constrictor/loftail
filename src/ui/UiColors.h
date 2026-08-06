@@ -28,6 +28,29 @@ namespace loftail {
 // same cue LogModel and HighlighterPane already use for the highlight palette.
 bool isDarkPalette(const QPalette &palette);
 
+// --- Measuring legibility ---------------------------------------------------------
+//
+// Public because every colour above is only defensible against a number, and the number
+// has to be available where the colour is USED as well as where it is chosen: a test
+// asserting a chrome colour carries, a widget deciding whether a theme's own colour is
+// good enough. They were private to this file until the light warning amber was found
+// sitting at 3.2:1 — below the body-text bound — with nothing anywhere able to say so.
+
+// WCAG relative luminance. Not QColor::lightness(): that is an HSL coordinate and calls
+// a saturated blue and a saturated yellow equally light, which is exactly wrong for
+// legibility.
+qreal relativeLuminance(const QColor &color);
+
+// The WCAG contrast ratio between two colours, 1.0 (identical) to 21.0 (black on white).
+// The bounds worth knowing: 4.5 for body text, 3.0 for large text and for non-text
+// indicators. Both colours must be opaque — composite first with compositeOver().
+qreal contrastRatio(const QColor &a, const QColor &b);
+
+// `over` composited onto `under`, honouring alpha. Measuring a partly transparent colour
+// against its background without this measures a colour that is never actually drawn —
+// and Qt's default PlaceholderText is exactly that, black at 50% alpha.
+QColor compositeOver(const QColor &over, const QColor &under);
+
 // An invalid regex, an uncompilable pattern: something the user must fix.
 QColor errorColor(const QPalette &palette);
 

@@ -4,6 +4,7 @@
 
 #include "AppStyle.h"
 #include "MainWindow.h"
+#include "UiLanguage.h"
 #include "Version.h"
 
 #if defined(Q_OS_WIN)
@@ -46,8 +47,13 @@ int main(int argc, char *argv[])
     // hardcoded paths; QSettings derives its path from these).
     QApplication::setOrganizationName(QString::fromLatin1(loftail::organizationName));
     QApplication::setApplicationName(QString::fromLatin1(loftail::applicationName));
-    QApplication::setApplicationDisplayName(QStringLiteral("loftail"));
+    QApplication::setApplicationDisplayName(QStringLiteral("loftail")); // the name, not a word
     QApplication::setApplicationVersion(loftail::applicationVersion());
+
+    // Which language the interface speaks, and Qt's own strings put into the same one
+    // (UiLanguage.h). Before the parser below, whose help text is user-visible, and
+    // before MainWindow, which builds its entire menu bar in its constructor.
+    loftail::installUiLanguage();
 
     // Command-line contract (SPEC.md §3, PLAN.md M7):
     //   loftail [options] [file]
@@ -56,30 +62,41 @@ int main(int argc, char *argv[])
     //
     // There is deliberately no --follow: every file opens at its end and follows,
     // unconditionally (SPEC.md §3, §11). Following is not a mode, so it is not a flag.
+    //
+    // --help is user-facing prose, so it goes through translate() — with an explicit
+    // context, main() being a free function. What does NOT is the argument SYNTAX:
+    // "pattern" is the literal spelling of --pattern, and "file"/"[file]" are the
+    // placeholder names in the usage line. Translating those would rename the option
+    // and break every script that passes it.
     QCommandLineParser parser;
-    parser.setApplicationDescription(
-        QStringLiteral("loftail — a desktop viewer for log4cplus logs.\n\n"
-                       "Opens the given file at its end and follows it as it grows, "
-                       "like tail -f. Filters and highlights by subsystem and priority."));
+    parser.setApplicationDescription(QCoreApplication::translate(
+        "main",
+        "loftail — a desktop viewer for log4cplus logs.\n\n"
+        "Opens the given file at its end and follows it as it grows, "
+        "like tail -f. Filters and highlights by subsystem and priority."));
     const QCommandLineOption helpOpt = parser.addHelpOption();
     const QCommandLineOption versionOpt = parser.addVersionOption();
 
     parser.addPositionalArgument(
         QStringLiteral("file"),
-        QStringLiteral("Log file to open (optional). Either a local path or a remote "
-                       "log over SSH, spelled ssh://user@host/path/to/file.log. A "
-                       "compressed log (app.log.gz) opens directly; a log inside an "
-                       "archive is named by continuing the path through it, as "
-                       "bundle.tar.gz/var/log/app.log. The two combine, so "
-                       "ssh://host/var/log/app.log.1.gz works."),
+        QCoreApplication::translate(
+            "main",
+            "Log file to open (optional). Either a local path or a remote "
+            "log over SSH, spelled ssh://user@host/path/to/file.log. A "
+            "compressed log (app.log.gz) opens directly; a log inside an "
+            "archive is named by continuing the path through it, as "
+            "bundle.tar.gz/var/log/app.log. The two combine, so "
+            "ssh://host/var/log/app.log.1.gz works."),
         QStringLiteral("[file]"));
 
     QCommandLineOption patternOpt(
         QStringLiteral("pattern"),
-        QStringLiteral("log4cplus ConversionPattern for the format of <file>. "
-                       "Used only for a file loftail has not seen before; a file "
-                       "with a remembered format ignores it. A pattern that does "
-                       "not match opens the file as plain text."),
+        QCoreApplication::translate(
+            "main",
+            "log4cplus ConversionPattern for the format of <file>. "
+            "Used only for a file loftail has not seen before; a file "
+            "with a remembered format ignores it. A pattern that does "
+            "not match opens the file as plain text."),
         QStringLiteral("pattern"));
     parser.addOption(patternOpt);
 

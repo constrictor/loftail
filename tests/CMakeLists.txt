@@ -136,6 +136,25 @@ target_link_libraries(tst_remoteopen PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_remoteopen COMMAND tst_remoteopen)
 set_tests_properties(tst_remoteopen PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# The same dialog as a piece of user interface rather than as a route into MainWindow:
+# which controls are live in which state (Open refusing an incomplete address, Save and
+# Remove refusing an empty form), what the sign-in section discloses about where a
+# password would go, and that a host's remembered paths are visible and prunable
+# instead of accumulating out of sight. Ungated — the backend is FakeSecretStore.h.
+qt_add_executable(tst_remotedialog tst_remotedialog.cpp)
+target_link_libraries(tst_remotedialog PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_remotedialog COMMAND tst_remotedialog)
+set_tests_properties(tst_remotedialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Which language the interface is in, and specifically that QT'S OWN strings end up in
+# the same one. loftail ships no catalogue, so its own strings need no help; the
+# standard dialog buttons do, because qtbase_<lang> is loaded for the system locale by
+# a layer above loftail. Asserts the override ordering against a stand-in catalogue.
+qt_add_executable(tst_uilanguage tst_uilanguage.cpp)
+target_link_libraries(tst_uilanguage PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_uilanguage COMMAND tst_uilanguage)
+set_tests_properties(tst_uilanguage PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # M11 — saved hosts and, more to the point, the containment rules around a password
 # the user chose to keep in clear text: written only when asked for, erased when
 # unasked, owner-only on disk, and never present in any of the path strings that get

@@ -247,6 +247,36 @@ else()
                    "remembered password then falls back to plain text in hosts.json)")
 endif()
 
+# --- Translation tooling ------------------------------------------------------
+#
+# loftail ships NO translations. Every user-facing string goes through tr() so that one
+# can be added later without touching the code (CLAUDE.md, "Localization"), and this
+# target is how the .ts files would be produced when somebody does.
+#
+# Optional and gated like every other extra, and for a sharper version of the same
+# reason: the reference build is a stock Ubuntu 24.04 toolchain with nothing extra
+# installed, and Qt6::LinguistTools comes from a separate package (qt6-tools-dev-tools)
+# that has no business being required to build a viewer that is English-only anyway.
+# Nothing depends on this target; it is run by hand.
+find_package(Qt6 6.4 QUIET COMPONENTS LinguistTools)
+if(Qt6LinguistTools_FOUND)
+    message(STATUS "Translation tooling: ENABLED (lupdate available as target loftail_lupdate)")
+    file(GLOB_RECURSE loftail_tr_sources CONFIGURE_DEPENDS
+         "${CMAKE_SOURCE_DIR}/src/*.cpp" "${CMAKE_SOURCE_DIR}/src/*.h")
+    add_custom_target(loftail_lupdate
+        COMMAND Qt6::lupdate -locations relative -no-obsolete
+                ${loftail_tr_sources}
+                -ts "${CMAKE_SOURCE_DIR}/translations/loftail_en.ts"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Extracting translatable strings into translations/loftail_en.ts"
+        VERBATIM
+    )
+else()
+    message(STATUS "Translation tooling: DISABLED "
+                   "(Qt6 LinguistTools not found; install qt6-tools-dev-tools to get the "
+                   "loftail_lupdate target — no translations ship, so nothing else needs it)")
+endif()
+
 enable_testing()
 
 add_subdirectory(src)

@@ -56,6 +56,12 @@ add_library(loftail_ui STATIC
     # standard dialog buttons
     AppStyle.cpp
     AppStyle.h
+    # Which language the interface is in, and keeping Qt's own strings in the same one
+    UiLanguage.cpp
+    UiLanguage.h
+    # A disclosure triangle over a block of controls, for options with a good default
+    CollapsibleSection.cpp
+    CollapsibleSection.h
 )
 
 target_link_libraries(loftail_ui PUBLIC

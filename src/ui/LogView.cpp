@@ -171,8 +171,8 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent)
     // Return-to-bottom control (SPEC.md §3): a small overlay shown only when follow
     // has detached; clicking it re-attaches and jumps to the newest record.
     m_followButton = new QToolButton(viewport());
-    m_followButton->setText(QStringLiteral("Follow tail ↓"));
-    m_followButton->setToolTip(QStringLiteral("Jump to the newest record and follow new ones"));
+    m_followButton->setText(tr("Follow tail ↓"));
+    m_followButton->setToolTip(tr("Jump to the newest record and follow new ones"));
     m_followButton->setCursor(Qt::PointingHandCursor);
     m_followButton->setAutoRaise(false);
     m_followButton->hide();

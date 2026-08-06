@@ -9,14 +9,16 @@ QT_BEGIN_NAMESPACE
 class QCheckBox;
 class QComboBox;
 class QDialogButtonBox;
-class QFormLayout;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QPushButton;
 class QSpinBox;
 QT_END_NAMESPACE
 
 namespace loftail {
+
+class CollapsibleSection;
 
 // Open a log on another machine (SPEC.md §3, M11).
 //
@@ -31,12 +33,20 @@ namespace loftail {
 //
 // One name, one saved host: Save replaces the entry of that name silently, because the
 // list is a list of names and two rows reading the same cannot be told apart or removed
-// separately (HostBookmarkStore::save).
+// separately (HostBookmarkStore::save). The button says "Update" rather than "Save" when
+// the name in the form already names a row, so the replacement is visible before it
+// happens rather than inferred afterwards from the selection moving.
 //
 // There is deliberately NO "Address" row showing the assembled URL. It used to be the
 // first field in the form, and it was every other field concatenated — it could show
 // nothing the rows below it did not already say, so it cost a row of the dialog to
-// repeat them. What it was actually for is PASTE, and paste needs no field of its own.
+// repeat them. What it was actually for is PASTE, and paste needs no field of its own —
+// only the one line of prose under the group title saying so, since a placeholder
+// disappears at the first keystroke and cannot be what teaches a feature.
+//
+// FORM ORDER FOLLOWS THE ORDER THINGS ARE KNOWN IN: user, host, port, path, and only
+// then the name. A saved host is named after you have decided what it is; Name was the
+// first field for three milestones and it was the last thing anybody could fill in.
 class OpenRemoteDialog : public QDialog
 {
     Q_OBJECT
@@ -55,6 +65,12 @@ private:
     void showBookmark(int row);
     HostBookmark currentFields() const;
     void setPasswordAuth(bool password);
+    void updateConsent();
+    void updateActions();
+    void setPathChoices(const QStringList &paths, const QString &current);
+    void dropPathChoicesIfHostChanged();
+    QString currentTarget() const;
+    void showPathMenu(const QPoint &where);
     void absorbPastedUrl(QLineEdit *field);
     void saveCurrentAsBookmark();
     void removeCurrentBookmark();
@@ -64,19 +80,30 @@ private:
     QVector<HostBookmark> m_bookmarks;
 
     QListWidget *m_list = nullptr;
-    QLineEdit   *m_label = nullptr;
-    QLineEdit   *m_user = nullptr;
-    QLineEdit   *m_host = nullptr;
-    QSpinBox    *m_port = nullptr;
-    QLineEdit   *m_path = nullptr;
-    QComboBox   *m_auth = nullptr;
-    QSpinBox    *m_poll = nullptr;
-    QCheckBox   *m_tailOnly = nullptr;
-    QSpinBox    *m_tailMb = nullptr;
-    QCheckBox   *m_remember = nullptr;
-    QLabel      *m_warning = nullptr;  // the plain-text password caution
-    QFormLayout *m_form = nullptr;     // owns the row m_warning lives in
-    QDialogButtonBox *m_buttons = nullptr;
+    QLabel      *m_listEmptyHint = nullptr; // shown over the list while it has no rows
+    QPushButton *m_saveButton = nullptr;
+    QPushButton *m_removeButton = nullptr;
+
+    QLineEdit *m_label = nullptr;
+    QLineEdit *m_user = nullptr;
+    QLineEdit *m_host = nullptr;
+    QSpinBox  *m_port = nullptr;
+    QComboBox *m_path = nullptr; // editable; lists the paths remembered for this host
+    QComboBox *m_auth = nullptr;
+    QCheckBox *m_remember = nullptr;
+    QLabel    *m_consent = nullptr; // where a remembered password would go — always shown
+    QSpinBox  *m_poll = nullptr;
+    QCheckBox *m_tailOnly = nullptr;
+    QSpinBox  *m_tailMb = nullptr;
+
+    CollapsibleSection *m_advanced = nullptr;
+    QDialogButtonBox   *m_buttons = nullptr;
+    QPushButton        *m_openButton = nullptr;
+
+    // Which machine the paths currently listed in m_path belong to, as user@host:port.
+    // A remembered path list is a property of a host, so pointing the form at a
+    // different one must not carry it across (see dropPathChoicesIfHostChanged).
+    QString m_pathsTarget;
 
     QString m_chosenUrl;
 };
