@@ -274,6 +274,15 @@ A remembered SSH password stops being clear text on disk wherever the machine ha
 
 **Risk, and it is M11's shape again.** **Nothing in CI exercises a real keychain, and nothing can** — the runners are headless with no session bus, so no backend would answer and a green pipeline says nothing about KWallet, GNOME Keyring, the Credential Manager or the macOS Keychain. `tst_keychainlive` is manual. Two further gaps: the AppImage cannot bundle libsecret, because QtKeychain `dlopen()`s it and `ldd` never sees it, so inside the AppImage a host without it silently gets the plain-text path (told to the user, but only in the dialog); and the FetchContent source build is first exercised by the Windows job, not locally.
 
+**That second gap bit immediately, and is now closed.** The fetch path shipped in M14 **broken in two ways at once and neither was reachable by any local build**: the tag was written `v0.15.0`, but upstream dropped the `v` prefix at 0.14.1, so the clone died with `invalid reference` — a configure failure *before* any of the options below it were read, which is how the second defect stayed hidden. That second one is `BUILD_WITH_QT6`, which QtKeychain still defaults to **OFF**, its else branch being a `find_package(Qt5 COMPONENTS Core REQUIRED)` — a hard failure on a Qt6-only runner rather than a fallback. Both are fixed, and the path is now exercisable on Linux too:
+
+```bash
+cmake -S . -B build-fetch -G Ninja -DLOFTAIL_KEYCHAIN_FETCH=ON \
+      -DCMAKE_DISABLE_FIND_PACKAGE_Qt6Keychain=ON -DLIBSECRET_SUPPORT=OFF
+```
+
+`LIBSECRET_SUPPORT=OFF` is what makes it a fair stand-in for Windows: QtKeychain's Unix backend hard-requires `libsecret-1`, while on Windows it is a dependency-free wrapper over the Credential Store. The lesson generalizes past this bug — **a dependency path only one CI job can reach is a path nobody can debug**, so give it a local invocation even when the local build does not need it.
+
 ---
 
 ## M15 — filter with context (`grep -B`/`-A`)

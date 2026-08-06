@@ -202,15 +202,24 @@ if(LOFTAIL_WITH_KEYCHAIN)
     # of the job uses — two Qt6Cores, one ABI.
     if(NOT LOFTAIL_KEYCHAIN_TARGET AND LOFTAIL_KEYCHAIN_FETCH)
         include(FetchContent)
+        # NOT the default. QtKeychain still builds Qt5 unless told otherwise, and the
+        # else branch is a `find_package(Qt5 COMPONENTS Core REQUIRED)` — on a runner
+        # with only Qt6 that is a hard configure failure, not a fallback.
+        set(BUILD_WITH_QT6 ON CACHE BOOL "" FORCE)
         set(BUILD_TEST_APPLICATION OFF CACHE BOOL "" FORCE)
         set(BUILD_QTQUICK_DEMO OFF CACHE BOOL "" FORCE)
         # Translations need Qt LinguistTools, which the reference Qt install may not carry
         # and which loftail does not ship anyway.
         set(BUILD_TRANSLATIONS OFF CACHE BOOL "" FORCE)
         set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE) # no extra DLL in the portable zip
+        # The tag is `0.15.0`, NOT `v0.15.0`: upstream dropped the `v` prefix at 0.14.1,
+        # so the older tags in that repository carry one and every tag this build could
+        # want does not. A wrong tag fails at the clone with `invalid reference`, which
+        # is a configure error long before any of the options above are read — which is
+        # how this whole block shipped in M14 without ever executing once.
         FetchContent_Declare(qtkeychain
             GIT_REPOSITORY https://github.com/frankosterfeld/qtkeychain.git
-            GIT_TAG v0.15.0
+            GIT_TAG 0.15.0
             GIT_SHALLOW TRUE
         )
         FetchContent_MakeAvailable(qtkeychain)
