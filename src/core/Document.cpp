@@ -1,5 +1,6 @@
 #include "Document.h"
 
+#include "ContextEmitter.h"
 #include "IFormatProvider.h"
 #include "Indexer.h"
 #include "LogSource.h"
@@ -361,32 +362,59 @@ QString Document::messageText(const Record &rec) const
     return value;
 }
 
+void Document::setContext(int before, int after)
+{
+    m_contextBefore = qBound(0, before, kMaxContext);
+    m_contextAfter = qBound(0, after, kMaxContext);
+}
+
 void Document::applyFilters()
 {
     if (!m_viewRestricted && !m_filters.anyActive()) {
-        m_filtered.clear(); // identity view — nothing to materialize
+        // Identity view — nothing to materialize. Deliberately not widened by a
+        // configured context: with nothing filtered out there is nothing to be
+        // context to, and the identity path must stay allocation-free (M15).
+        m_filtered.clear();
         return;
     }
 
     const int n = m_index.records.size();
     QVector<qint32> visible;
+    QVector<quint8> context;
     visible.reserve(n);
-    for (int i = 0; i < n; ++i) {
-        const Record &r = m_index.records.at(i);
-        // Run byte-offset bound first (cheapest), then integer axes, then the message
-        // decode — reached ONLY for records the earlier tests let through AND when
-        // the text axis is active (invariant #4). See acceptsInView().
-        if (acceptsInView(r))
-            visible.append(i);
-    }
-    m_filtered.setVisible(std::move(visible));
+    context.reserve(n);
+
+    // One forward pass (invariant #9). Run byte-offset bound first (cheapest), then
+    // integer axes, then the message decode — reached ONLY for records the earlier
+    // tests let through AND when the text axis is active (invariant #4). The context
+    // widening rides on the same pass; with before == after == 0 the emitter reduces
+    // to exactly "emit every record acceptsInView() admits".
+    ContextState st;
+    emitWithContext(
+        0, n - 1, m_contextBefore, m_contextAfter, st,
+        [this](int row) { return inRunBound(m_index.records.at(row)); },
+        [this](int row) { return matchesFilters(m_index.records.at(row)); },
+        [&visible, &context](int row, bool isContext) {
+            visible.append(row);
+            context.append(isContext ? 1 : 0);
+        });
+
+    m_filtered.setVisible(std::move(visible), std::move(context));
+}
+
+bool Document::inRunBound(const Record &r) const
+{
+    return !m_viewRestricted || (r.offset >= m_viewStart && r.offset < m_viewEnd);
+}
+
+bool Document::matchesFilters(const Record &r) const
+{
+    return m_filters.accepts(r, [this, &r] { return messageText(r); });
 }
 
 bool Document::acceptsInView(const Record &r) const
 {
-    if (m_viewRestricted && (r.offset < m_viewStart || r.offset >= m_viewEnd))
-        return false;
-    return m_filters.accepts(r, [this, &r] { return messageText(r); });
+    return inRunBound(r) && matchesFilters(r);
 }
 
 QString Document::recordFirstLine(const Record &rec) const

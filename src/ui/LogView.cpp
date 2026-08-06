@@ -533,6 +533,17 @@ void LogView::resolveRowColors(int row, bool selected, QColor &bg, QColor &fg) c
     }
 
     fg = ruleFg.isValid() ? ruleFg : palette().text().color();
+
+    // Filter context (M15, SPEC.md §6): a record shown only because a neighbour
+    // matched recedes, so the matches stay findable by eye. Last, and below
+    // selection: it modifies whatever the row would otherwise have been, including a
+    // highlight rule's colours — which are softened rather than dropped, or a
+    // rule-coloured context row would read as a match.
+    if (m_model->rowIsContext(row)) {
+        if (ruleBg.isValid())
+            bg = contextFillColor(bg, palette().base().color());
+        fg = contextTextColor(fg, bg);
+    }
 }
 
 void LogView::paintEvent(QPaintEvent *event)

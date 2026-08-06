@@ -58,11 +58,26 @@ No accommodation was named in advance, and yet it was additive anyway, for a rea
 
 The prediction this file would have got wrong, had it made one, is where the work landed. It looks like a `LogSource` feature ("a source for a file that is not there") and is not one: what changes is not how bytes are read but whether there are any yet, which is the live controller's existing question. Waiting is a state of the live seam, and no new source type exists.
 
+## ~~Filter with context (`grep -B`/`-A`)~~ — shipped
+
+~~Show N records either side of each filter match, dimmed, so filtering to ERROR keeps what led to it instead of destroying it.~~
+
+**Shipped in M15**, straight out of `ideas.md` Tier 1 without ever spending time in this file as an open item. The behaviour is in `SPEC.md` §6 and the design in `ARCHITECTURE.md` §7.2.1.
+
+The accommodation named in `ideas.md` — "`FilteredIndex::setVisible()` takes any ascending list of source ordinals and rebuilds its own prefix sums, so neighbours are just more ordinals" — **was exactly right**, and it is the first prediction in this project's history that was right about the *hard* part rather than the easy one. Every piece of tested geometry, exact and estimated, ran over the widened subset unchanged; the new state really was one bit per visible row.
+
+What it did not anticipate was the live path, and that is where all the work went. Two things fell out of the same property and neither is obvious:
+
+- **Leading context is still a tail append.** Intuition says `-B` needs to insert *behind* rows already emitted, which `FilteredIndex` cannot do. It does not, because of a suffix invariant that makes a new match's leading window already present below the last emitted row — and that invariant needs the run bound to accept a *contiguous* range of ordinals, which turns a previously incidental property of run selection into a load-bearing one. Bookmarks, below, are the feature most likely to want a scattered restriction; if it ever does, this is the thing it breaks.
+- **A growing trailing record can orphan the context it pulled in.** The provisional record is the only one whose bytes change, so without context at most its own row can be wrong. With `-B` it may have dragged neighbours in with it, and un-emitting them means re-scanning from where the pop stopped, not from the provisional — restarting at the provisional loses any match inside the popped window, permanently and silently.
+
 ## Bookmarks
 
 Mark records of interest and jump between them, so a spot found once can be returned to without re-searching. Bookmarks would be per file and part of the remembered session, and would add a pane alongside filters, highlighters, and presets.
 
 **Not yet accommodated in detail**, but low-risk: a bookmark is a record identity plus a note, and the pane follows the same active-document-binding pattern as the others (`ARCHITECTURE.md` §12.3). The one design point to settle when it is built is what identifies a bookmarked record across a reindex or rotation — a byte offset is not stable, so it likely keys on timestamp plus a content hash.
+
+**One thing M15 added to this entry:** if bookmarks ever grow a *view* mode — "show only bookmarked records" — that restriction would be non-contiguous in ordinal, which is precisely what filter context's tail-append guarantee rules out (`ARCHITECTURE.md` §7.2.1). Composing the two would then need real mid-list insertion in `FilteredIndex`. Navigating between bookmarks, which is what this entry actually proposes, has no such problem.
 
 ---
 
@@ -70,4 +85,5 @@ Mark records of interest and jump between them, so a spot found once can be retu
 
 - `SPEC.md` — what has shipped. When a feature here ships, its user-visible behavior moves into `SPEC.md` and its entry here is struck through, as "Multiple open files" now is.
 - `ARCHITECTURE.md` — the accommodations referenced above are implemented, not deferred.
-- `PLAN.md` — milestone M8 implemented format autodetection, M9 multiple open files (including the move from dock widgets to a document area), M11 remote logs over SSH, M12 compressed and archived logs, and M13 logs that are not there. The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.
+- `PLAN.md` — milestone M8 implemented format autodetection, M9 multiple open files (including the move from dock widgets to a document area), M11 remote logs over SSH, M12 compressed and archived logs, M13 logs that are not there, and M15 filter with context. The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.
+- `ideas.md` — the brainstorm an item is promoted *from*. M15 came straight out of it, which is what that file is for; the rest of its list is not a commitment.

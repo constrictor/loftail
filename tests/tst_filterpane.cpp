@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QListWidget>
+#include <QSpinBox>
 #include <QFile>
 #include <QTemporaryFile>
 
@@ -103,6 +104,15 @@ private:
                 list->item(i)->setCheckState(state);
     }
 
+    // The two context spinners (M15), in Before/After order. They live on the pane
+    // rather than in the shared AxisEditor — which uses QDateTimeEdit and no QSpinBox
+    // at all, so these two are the only ones in the widget tree.
+    static QSpinBox *contextSpin(FilterPane &pane, int which)
+    {
+        const QList<QSpinBox *> spins = pane.findChildren<QSpinBox *>();
+        return which < spins.size() ? spins.at(which) : nullptr;
+    }
+
 private slots:
     void metadataAxesAreOnByDefault();
     void allInclusiveAxesStayInactive();
@@ -120,6 +130,12 @@ private slots:
     void priorityFloorComesFromTheRecord();
     void timeBoundKeepsTheRangeNonEmpty();
     void restrictionSurvivesASavedState();
+
+    // M15 — filter context. The spinners are the pane's own controls, so what has to
+    // hold is that they behave like every other control on it: one notification per
+    // edit, straight into the document, and absent from a state that does not use them.
+    void contextSpinnersReachTheDocument();
+    void contextRidesTheSavedStateOnlyWhenSet();
 };
 
 void TestFilterPane::metadataAxesAreOnByDefault()
@@ -448,6 +464,81 @@ void TestFilterPane::restrictionSurvivesASavedState()
     QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Unchecked);
     doc.applyFilters();
     QCOMPARE(doc.filtered().recordCount(), 1);
+}
+
+void TestFilterPane::contextSpinnersReachTheDocument()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    QCOMPARE(doc.contextBefore(), 0);
+    QCOMPARE(doc.contextAfter(), 0);
+
+    QSpinBox *before = contextSpin(pane, 0);
+    QSpinBox *after = contextSpin(pane, 1);
+    QVERIFY(before);
+    QVERIFY(after);
+    QCOMPARE(before->maximum(), Document::kMaxContext);
+
+    // One filtersChanged() per edit, exactly as a tick in the axis list produces:
+    // MainWindow turns that signal into the model-reset + applyFilters() recompute,
+    // so a context edit and a filter edit take the same route.
+    QSignalSpy changed(&pane, &FilterPane::filtersChanged);
+    QVERIFY(changed.isValid());
+
+    before->setValue(3);
+    QCOMPARE(changed.count(), 1);
+    QCOMPARE(doc.contextBefore(), 3);
+
+    after->setValue(2);
+    QCOMPARE(changed.count(), 2);
+    QCOMPARE(doc.contextAfter(), 2);
+}
+
+void TestFilterPane::contextRidesTheSavedStateOnlyWhenSet()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane source;
+    source.setDocument(&doc);
+    // A pane with no context configured writes neither key, so every preset and
+    // session stored before the feature existed round-trips byte-identically and
+    // neither store's schema version has to move.
+    QVERIFY(!source.saveState().contains(QStringLiteral("contextBefore")));
+    QVERIFY(!source.saveState().contains(QStringLiteral("contextAfter")));
+
+    contextSpin(source, 0)->setValue(4);
+    const QJsonObject state = source.saveState();
+    QCOMPARE(state.value(QStringLiteral("contextBefore")).toInt(), 4);
+    QVERIFY(!state.contains(QStringLiteral("contextAfter"))); // still zero
+
+    // Restoring puts it back on the controls AND on the document, and — like every
+    // other restore — reports itself exactly once.
+    Document other;
+    QTemporaryFile otherFile;
+    QVERIFY2(openLog(other, otherFile, kTwoLoggers), qPrintable(other.lastError()));
+
+    FilterPane restored;
+    restored.setDocument(&other);
+    QSignalSpy changed(&restored, &FilterPane::filtersChanged);
+    restored.restoreState(state);
+
+    QCOMPARE(changed.count(), 1);
+    QCOMPARE(contextSpin(restored, 0)->value(), 4);
+    QCOMPARE(contextSpin(restored, 1)->value(), 0);
+    QCOMPARE(other.contextBefore(), 4);
+    QCOMPARE(other.contextAfter(), 0);
+
+    // A state from before the feature existed means zero, which is what it meant then.
+    QJsonObject legacy = state;
+    legacy.remove(QStringLiteral("contextBefore"));
+    restored.restoreState(legacy);
+    QCOMPARE(other.contextBefore(), 0);
 }
 
 QTEST_MAIN(TestFilterPane)

@@ -5,12 +5,14 @@
 #include <QFile>
 #include <QMenu>
 #include <QSettings>
+#include <QSpinBox>
 #include <QTabWidget>
 #include <QTemporaryDir>
 
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
+#include "FilterPane.h"
 #include "Highlight.h"
 #include "LogFormat.h"
 #include "LogView.h"
@@ -139,6 +141,11 @@ private slots:
     void aSelectionOfTwoRecordsOffersItsOwnRange();
     void highlightingAppendsARuleAndKeepsTheOthers();
     void copyActionsAreOnTheMenu();
+
+    // M15 — a context row is a real row: pointing at it must read ITS record, not the
+    // match it was pulled in beside. Nothing in the menu changed for this, which is
+    // exactly why it is worth pinning.
+    void aContextRowOffersItsOwnRecord();
 };
 
 void TestRecordMenu::initTestCase()
@@ -404,6 +411,38 @@ void TestRecordMenu::highlightingAppendsARuleAndKeepsTheOthers()
 
     // Highlighting removes nothing: every record is still there (SPEC.md §7).
     QCOMPARE(visibleRecords(w), 4);
+}
+
+void TestRecordMenu::aContextRowOffersItsOwnRecord()
+{
+    MainWindow w;
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    // Filter to ERROR — the unparsed line survives too (§6) — then ask for one record
+    // of lead-up. Visible becomes: the plain line, the WARN as CONTEXT, the ERROR.
+    QMenu floorMenu;
+    w.buildRecordMenu(&floorMenu, activeView(w), kError, -1);
+    item(floorMenu, "recordPriorityFloor")->trigger();
+    QCOMPARE(visibleRecords(w), 2);
+
+    auto *pane = w.findChild<FilterPane *>();
+    QVERIFY(pane);
+    const QList<QSpinBox *> spins = pane->findChildren<QSpinBox *>();
+    QCOMPARE(spins.size(), 2);
+    spins.at(0)->setValue(1); // Before
+    QCOMPARE(visibleRecords(w), 3);
+
+    // View row 1 is the context row, whose SOURCE record is the [worker] WARN from
+    // db.pool. The menu must describe that record, not the ERROR below it.
+    QMenu menu;
+    w.buildRecordMenu(&menu, activeView(w), 1, -1);
+    QAction *hide = item(menu, "recordHideThread");
+    QVERIFY(hide);
+    QVERIFY2(hide->text().contains(QStringLiteral("worker")), qPrintable(hide->text()));
+    QAction *only = item(menu, "recordShowOnlySubsystem");
+    QVERIFY(only);
+    QVERIFY2(only->text().contains(QStringLiteral("db.pool")), qPrintable(only->text()));
 }
 
 void TestRecordMenu::copyActionsAreOnTheMenu()

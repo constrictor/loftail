@@ -5,6 +5,8 @@
 #include <QJsonObject>
 #include <QWidget>
 
+class QSpinBox;
+
 namespace loftail {
 
 class Document;
@@ -49,6 +51,13 @@ public:
     // session restore. Carries subsystem/thread NAMES, never interned ids, so it is
     // portable across files and a re-index. restoreState() applies a snapshot and
     // emits filtersChanged() so the caller recomputes the visible set.
+    //
+    // It is the AxisEditor's criteria plus this pane's own controls — currently the
+    // two context spinners, which are not match criteria and so are not in
+    // MatchCriteria (a highlight rule shares that type and has no use for them). They
+    // are written only when non-zero, so a pane with no context set serializes
+    // byte-identically to one from before the feature existed and neither store's
+    // schema version has to move.
     QJsonObject saveState() const;
     void restoreState(const QJsonObject &state);
 
@@ -80,6 +89,11 @@ private:
 
     Document   *m_document = nullptr;
     AxisEditor *m_axes = nullptr;
+    // Filter context (M15, SPEC.md §6), grep's -B/-A. Here and not in the AxisEditor:
+    // that widget is shared with a highlight rule's editor, where "show the two
+    // records either side" means nothing — highlighting removes nothing to begin with.
+    QSpinBox   *m_contextBefore = nullptr;
+    QSpinBox   *m_contextAfter = nullptr;
 };
 
 } // namespace loftail

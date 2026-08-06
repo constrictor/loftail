@@ -276,6 +276,24 @@ A remembered SSH password stops being clear text on disk wherever the machine ha
 
 ---
 
+## M15 — filter with context (`grep -B`/`-A`)
+
+A filter that hides everything but the ERRORs also hides what led to them. Behaviour in `SPEC.md` §6 ("Context"); design in `ARCHITECTURE.md` §7.2.1. Promoted from `ideas.md` Tier 1 #1, whose claim — "the architecture has already paid for this" — held: nothing below the emitter changed.
+
+- [x] **`ContextEmitter.h`** (`src/core`, header-only) — the whole rule, as one forward pass over three callables (`inBound`, `matches`, `sink`). One template rather than two loops, so `Document::applyFilters()` and `LiveController`'s append branch cannot drift — the move `acceptsInView()` already made for the run bound.
+- [x] **`FilteredIndex`** — one parallel `QVector<quint8>` of match/context flags plus a maintained count, threaded through `setVisible()`/`appendVisible()`/`popLastVisible()`/`clear()`, and two live-path queries (`lastMatchSource()`, `trailingCountFrom()`). The compact index, the prefix sums and every geometry path are **untouched**: a context record is just one more ordinal.
+- [x] **`Document`** — `setContext(before, after)` (per file, invariant #7, clamped by `kMaxContext`) and `acceptsInView()` split into `inRunBound()` + `matchesFilters()`, because a context record is one the *filters* rejected and the *run* still admits. `applyFilters()` keeps its identity early-out: context never activates the view on its own.
+- [x] **`LiveController`** — the pop point and the re-scan start are the same row, widened to `base − before` **only when the provisional record's class flips**. Both halves are load-bearing and neither is obvious; the second is the difference between one row of tail churn per tick and `before + 1`.
+- [x] **UI** — two spinners in a Context box on the Filters pane (not in the shared `AxisEditor`, which a highlight rule also uses); `contextTextColor()`/`contextFillColor()` in `UiColors`, so a rule-coloured context row is softened rather than left shouting; the status bar says how much of what is shown is context.
+- [x] **Persistence** — two additive keys in `FilterPane::saveState()`'s object, written only when non-zero. They ride into both filter presets and the session with **no schema bump** in either store, following `loggerRestrictive`'s precedent exactly.
+- [x] **Tests.** `tst_filtercontext` — the emitter table-driven plus a randomized comparison against a naive `O(n·C)` reference, `Document` over real bytes including the run composition, and eight live cases. **Ungated**, unlike the `tst_tail` cases it would otherwise have joined: nothing here needs mmap-sees-appends, an unlink or a rename, and the rule must hold on Windows. Plus cases in `tst_filterpane`, `tst_logmodel`, `tst_uicolors`, `tst_recordmenu` and `tst_sessiongui`.
+
+**Done when:** filtering to ERROR with *Before 3* shows the three records ahead of each error, dimmed; the same view tailed live matches a one-shot scan of the same bytes exactly; and setting both spinners to zero leaves the view byte-identical to what it was before the feature existed.
+
+**The one thing to be careful of later.** The live path is a tail append only because of the **suffix invariant** (`ARCHITECTURE.md` §7.2.1), and that invariant needs the in-view bound to accept a *contiguous* range of ordinals. Run selection satisfies it today by construction. A future view restriction that admitted a scattered set — anything bookmark-shaped, say — would silently make leading context need mid-list insertion, which `FilteredIndex` cannot do. `tst_filtercontext::emitterSuffixInvariantHolds` and `liveLeadingContextIsAlwaysATailAppend` are what would catch it.
+
+---
+
 ## Deliberately deferred
 
 Later-release features are catalogued in `FUTURE.md` (side-by-side views, bookmarks; multi-file views shipped in M9, format autodetection in M8, SSH sources in M11, and compressed/archived sources in M12); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.

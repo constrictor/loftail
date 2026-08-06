@@ -75,6 +75,7 @@ private slots:
     void aThemeThatSetsTheRoleIsLeftAlone();
     void chromeColoursCarryOnBothThemes();
     void theRemoteDialogsPlaceholdersAreReadable();
+    void contextRowsRecedeWithoutBecomingUnreadable();
 };
 
 void TestUiColors::darkThemeIsRecognised()
@@ -169,6 +170,36 @@ void TestUiColors::theRemoteDialogsPlaceholdersAreReadable()
     }
     // The four from the report: name, user, host, path.
     QCOMPARE(checked, 4);
+}
+
+void TestUiColors::contextRowsRecedeWithoutBecomingUnreadable()
+{
+    // A filter-context row (M15, SPEC.md §6) must read as recessed against a match
+    // and still be legible: it is real log text the user asked to see, not a hint.
+    // Both directions matter — on a dark theme "dimmer" moves the text DOWN in
+    // luminance, on a light theme UP, and a fixed lightening factor would wash one of
+    // them out. The functions take the row's own colours, so both fall out for free.
+    for (const QPalette &palette : {plainLight(), brokenDark()}) {
+        const QColor base = palette.color(QPalette::Base);
+        const QColor text = palette.color(QPalette::Text);
+
+        const QColor dim = contextTextColor(text, base);
+        QVERIFY(dim.isValid());
+        QVERIFY2(contrast(dim, base) < contrast(text, base),
+                 "a context row must be visibly quieter than a match");
+        QVERIFY2(contrast(dim, base) >= 3.0, "…but still comfortably readable");
+
+        // A highlight rule's background is softened, not dropped: the rule still says
+        // something about a context row, it just must not shout it as loudly as it
+        // does on the match beside it.
+        const QColor rule(0xc0, 0x39, 0x2b);
+        const QColor soft = contextFillColor(rule, base);
+        QVERIFY(soft.isValid());
+        QCOMPARE_NE(soft, rule);
+        QCOMPARE_NE(soft, base);
+        QVERIFY2(contrast(soft, base) < contrast(rule, base),
+                 "the softened fill must sit between the rule colour and the base");
+    }
 }
 
 int main(int argc, char *argv[])

@@ -43,6 +43,23 @@ QColor mutedColor(const QPalette &palette);
 // its background, so it reads as a hint rather than as content.
 QColor placeholderColor(const QPalette &palette);
 
+// --- Filter context rows (M15, SPEC.md §6) ---------------------------------------
+//
+// A record shown only because a neighbour matched the filter reads as recessed, so a
+// real match is still findable by eye in a view that now holds both. Both take the
+// colours already resolved for the row rather than a palette, because the row may be
+// carrying a highlight rule's colours and those must be softened too — not overridden.
+
+// A context row's text: partway from `fg` toward the row's own `bg`.
+QColor contextTextColor(const QColor &fg, const QColor &bg);
+
+// A context row's fill WHEN a highlight rule supplied one: partway from the rule's
+// colour toward the view's base. Without this a rule-coloured context row paints at
+// full saturation and is indistinguishable from a match, losing the cue exactly on the
+// loudest rows — while suppressing the rule colour entirely would throw away the fact
+// that the lead-up record was also from `db.pool`.
+QColor contextFillColor(const QColor &ruleBg, const QColor &base);
+
 // Give `widget` a readable placeholder colour IF the theme's own is unreadable.
 //
 // This is the bug the whole file was written for. QPalette::PlaceholderText arrived in

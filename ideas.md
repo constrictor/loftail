@@ -10,12 +10,16 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
 
 ## Tier 1 — the architecture has already paid for these
 
-1. **Filter with context (`grep -C`).** Show N records either side of each filter match, dimmed, so
-   filtering to ERROR keeps "what led to it" instead of destroying it.
+1. ~~**Filter with context (`grep -C`).**~~ **Shipped in M15.** Show N records either side of each
+   filter match, dimmed, so filtering to ERROR keeps "what led to it" instead of destroying it.
    *Carried by:* `FilteredIndex::setVisible()` takes any ascending list of source ordinals and
    rebuilds its own prefix sums, so neighbors are just more ordinals — every piece of tested
    geometry (exact and estimated) works unchanged. New state is one bit per visible row
    ("context, not match") that `LogModel` turns into a dimmed row.
+   *And that held exactly*, which is worth recording because it is the accommodation note that
+   was right about the hard part. What it missed is where the work went: the LIVE path, where
+   `-B` looks like it needs to insert behind rows already emitted and — because of a suffix
+   invariant — does not. See `FUTURE.md` and `ARCHITECTURE.md` §7.2.1.
 
 2. **Elapsed-time display mode.** A sixth `TimeDisplay`: seconds since the **previous visible**
    record. Stalls, timeouts and retry storms become visible by scanning one column. Companion:
@@ -90,3 +94,7 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
 menu that was to lead them has **shipped** (`SPEC.md` §5, `ARCHITECTURE.md` §7.4), which is also
 what made the pair worth grouping: pointing at a record is how the filter gets set in the first
 place. Then #4 as the milestone after, since it also unlocks #5 for free.
+
+**Update, 2026-08-06:** #1 shipped on its own as M15, not paired with #2. Splitting them was right —
+#1 turned out to have real depth in the live-append path, and #2 has none of that. #2 is still the
+obvious next small one.

@@ -58,6 +58,10 @@ private:
         o.insert(QStringLiteral("minPriorityIndex"), 4); // ERROR
         o.insert(QStringLiteral("textEnabled"), true);
         o.insert(QStringLiteral("text"), QStringLiteral("boom"));
+        // M15 — filter context. Two additive keys in the SAME object, which is why
+        // this rides a session written at schema 3 with no version bump.
+        o.insert(QStringLiteral("contextBefore"), 3);
+        o.insert(QStringLiteral("contextAfter"), 1);
         return o;
     }
 
@@ -131,6 +135,8 @@ void TestSessionGui::roundTripRestoresFileFiltersHighlighters()
         QCOMPARE(ff.value(QStringLiteral("minPriorityIndex")).toInt(), 4);
         QCOMPARE(ff.value(QStringLiteral("textEnabled")).toBool(), true);
         QCOMPARE(ff.value(QStringLiteral("text")).toString(), QStringLiteral("boom"));
+        QCOMPARE(ff.value(QStringLiteral("contextBefore")).toInt(), 3);
+        QCOMPARE(ff.value(QStringLiteral("contextAfter")).toInt(), 1);
 
         w.close(); // re-saves the session pointing at m_sample
     }

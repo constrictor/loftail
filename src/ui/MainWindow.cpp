@@ -1638,6 +1638,10 @@ void MainWindow::updateStatus()
                    .arg(logSourceDisplayName(doc->path()))
                    .arg(doc->filtered().recordCount())
                    .arg(total);
+        // With filter context on, "shown" counts the neighbours too. Say how many, or
+        // the pair reads as a filter that matched far more than it did (SPEC.md §6).
+        if (const int ctx = doc->filtered().contextCount(); ctx > 0)
+            text += QStringLiteral(" (%1 as context)").arg(ctx);
     } else {
         text = QStringLiteral("%1  |  %2 records")
                    .arg(logSourceDisplayName(doc->path()))

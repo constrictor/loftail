@@ -5,8 +5,12 @@
 #include "Filter.h"
 #include "MatchCriteria.h"
 
+#include <QFormLayout>
 #include <QFrame>
+#include <QGroupBox>
 #include <QScrollArea>
+#include <QSignalBlocker>
+#include <QSpinBox>
 #include <QVBoxLayout>
 
 namespace loftail {
@@ -26,10 +30,35 @@ FilterPane::FilterPane(QWidget *parent) : QWidget(parent)
     m_axes = new AxisEditor(AxisEditor::Defaults{/*priorityOn=*/true, /*loggerOn=*/true}, scroll);
     scroll->setWidget(m_axes);
 
-    connect(m_axes, &AxisEditor::changed, this, [this] {
+    // Filter context (SPEC.md §6). Outside the scroll area, below it: two spinners
+    // are small and always relevant, and an axis list long enough to scroll should
+    // not be able to push them out of reach.
+    auto *contextBox = new QGroupBox(QStringLiteral("Context"), this);
+    contextBox->setToolTip(QStringLiteral(
+        "Also show records either side of each match, dimmed — like grep -B/-A."));
+    auto *contextForm = new QFormLayout(contextBox);
+    auto makeSpin = [contextBox] {
+        auto *spin = new QSpinBox(contextBox);
+        spin->setRange(0, Document::kMaxContext);
+        spin->setAccelerated(true);
+        return spin;
+    };
+    m_contextBefore = makeSpin();
+    m_contextAfter = makeSpin();
+    contextForm->addRow(QStringLiteral("Before:"), m_contextBefore);
+    contextForm->addRow(QStringLiteral("After:"), m_contextAfter);
+    outer->addWidget(contextBox);
+
+    // One handler for every control in the pane, the editor's and this pane's alike:
+    // a context edit is a filter edit and must not be able to grow behavior a tick in
+    // the axis list lacks.
+    auto edited = [this] {
         applyToDocument();
         emit filtersChanged();
-    });
+    };
+    connect(m_axes, &AxisEditor::changed, this, edited);
+    connect(m_contextBefore, &QSpinBox::valueChanged, this, edited);
+    connect(m_contextAfter, &QSpinBox::valueChanged, this, edited);
 
     setDocument(nullptr);
 }
@@ -70,12 +99,30 @@ void FilterPane::refreshDiscoveredLists()
 
 QJsonObject FilterPane::saveState() const
 {
-    return m_axes->criteria().toJson();
+    QJsonObject o = m_axes->criteria().toJson();
+    // Written only when set, following MatchCriteria's own rule for optional keys: an
+    // untouched pane must serialize exactly as it did before context existed, or every
+    // stored preset and session would have to be re-versioned to gain two zeroes.
+    if (m_contextBefore->value() > 0)
+        o.insert(QStringLiteral("contextBefore"), m_contextBefore->value());
+    if (m_contextAfter->value() > 0)
+        o.insert(QStringLiteral("contextAfter"), m_contextAfter->value());
+    return o;
 }
 
 void FilterPane::restoreState(const QJsonObject &o)
 {
     m_axes->setCriteria(MatchCriteria::fromJson(o));
+    // Blocked: the single filtersChanged() at the end of this function is the pane's
+    // one notification for the whole restore, exactly as it was before the spinners
+    // existed. An absent key means zero — what every pre-context preset and session
+    // says, and what it meant then.
+    {
+        const QSignalBlocker blockBefore(m_contextBefore);
+        const QSignalBlocker blockAfter(m_contextAfter);
+        m_contextBefore->setValue(o.value(QStringLiteral("contextBefore")).toInt(0));
+        m_contextAfter->setValue(o.value(QStringLiteral("contextAfter")).toInt(0));
+    }
     // Merge the restored selection with whatever the scan has discovered so far, then
     // push it into the document and let the caller recompute the visible set.
     m_axes->refreshDiscoveredLists();
@@ -139,6 +186,11 @@ void FilterPane::applyToDocument()
     m_document->filters() = m_axes->criteria().resolve(
         m_document->index(), m_document->format(), m_document->displayZone(),
         AbsentField::Matches, NoOpAxes::Collapse);
+
+    // Not part of the resolve: context is not a match criterion but a widening of
+    // what the resolved predicate admits, so it lives beside the FilterSet on the
+    // document rather than inside it (SPEC.md §6, ContextEmitter.h).
+    m_document->setContext(m_contextBefore->value(), m_contextAfter->value());
 }
 
 } // namespace loftail

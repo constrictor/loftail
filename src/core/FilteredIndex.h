@@ -29,6 +29,12 @@ namespace loftail {
 // Inactive (no active filter) is the common path and stays allocation-free: it is a
 // pure identity view over the source index, so indexing appends and unfiltered
 // scrolling never touch the compact copy.
+//
+// M15 adds a third parallel piece, m_context: one byte per visible row saying "this
+// record is here only because a nearby one matched" (SPEC.md §6, grep -B/-A). It is a
+// separate vector rather than a flag bit stolen from m_visible because visible() is
+// public and read as plain ordinals by callers and tests; one byte against the 4 + 32
+// already spent per visible row is not worth the aliasing.
 class FilteredIndex
 {
 public:
@@ -40,10 +46,20 @@ public:
     bool active() const { return m_active; }
 
     // Materialize the visible subset from `visible` (ascending source ordinals) and
-    // build its prefix sums. Marks the index active.
-    void setVisible(QVector<qint32> visible)
+    // build its prefix sums. Marks the index active. `context` is the parallel
+    // match/context flag vector (M15); an empty one means "every row is a match",
+    // which is what a filter with no context configured produces.
+    void setVisible(QVector<qint32> visible, QVector<quint8> context = {})
     {
         m_visible = std::move(visible);
+        m_context = std::move(context);
+        Q_ASSERT(m_context.isEmpty() || m_context.size() == m_visible.size());
+        // Normalize to one flag per visible row so appendVisible()/popLastVisible()
+        // never have to reason about a short vector.
+        m_context.resize(m_visible.size());
+        m_contextCount = 0;
+        for (quint8 c : m_context)
+            m_contextCount += (c != 0);
         m_compact.records.clear();
         m_compact.records.reserve(m_visible.size());
         if (m_source) {
@@ -60,6 +76,9 @@ public:
         m_active = false;
         m_visible.clear();
         m_visible.squeeze();
+        m_context.clear();
+        m_context.squeeze();
+        m_contextCount = 0;
         m_compact = RecordIndex();
     }
 
@@ -88,6 +107,43 @@ public:
     // tests and diagnostics.
     const QVector<qint32> &visible() const { return m_visible; }
 
+    // --- M15 filter context (SPEC.md §6) --------------------------------------
+
+    // True when this view row is present only because a nearby record matched. Never
+    // true on the identity path — with no filter there is nothing to be context to.
+    bool isContext(int viewRow) const
+    {
+        return m_active && viewRow >= 0 && viewRow < m_context.size() && m_context.at(viewRow);
+    }
+
+    // How many visible rows are context rather than matches. Maintained as a counter,
+    // not a scan: the status bar reads it on every repaint.
+    int contextCount() const { return m_active ? m_contextCount : 0; }
+
+    // The parallel flag vector, one entry per visible row. Tests and diagnostics.
+    const QVector<quint8> &contextFlags() const { return m_context; }
+
+    // The source ordinal of the last visible MATCH, or -1. Scans back over the
+    // trailing context rows, which the emission rule bounds at `after` of them.
+    int lastMatchSource() const
+    {
+        for (int i = m_visible.size() - 1; i >= 0; --i) {
+            if (!m_context.at(i))
+                return int(m_visible.at(i));
+        }
+        return -1;
+    }
+
+    // How many TRAILING visible rows have a source ordinal >= minSourceRow. The live
+    // path needs the count up front because beginRemoveTail() takes one.
+    int trailingCountFrom(int minSourceRow) const
+    {
+        int n = 0;
+        for (int i = m_visible.size() - 1; i >= 0 && m_visible.at(i) >= minSourceRow; --i)
+            ++n;
+        return n;
+    }
+
     // --- M6 incremental append (live updates) ---------------------------------
     // When a filter is active and records are appended to the source index, the
     // visible subset is extended in place rather than recomputed (invariant #1):
@@ -104,6 +160,8 @@ public:
     void popLastVisible()
     {
         if (!m_visible.isEmpty()) {
+            m_contextCount -= (m_context.last() != 0);
+            m_context.removeLast();
             m_visible.removeLast();
             m_compact.records.removeLast();
         }
@@ -111,10 +169,13 @@ public:
 
     // Append one now-visible source record (a copy of its 32-byte Record) at the
     // end of the visible subset. Block sums are extended separately via
-    // extendCompactSums() after a batch of appends.
-    void appendVisible(int sourceRow, const Record &rec)
+    // extendCompactSums() after a batch of appends. `context` tags the row as a
+    // neighbour of a match rather than a match itself (M15).
+    void appendVisible(int sourceRow, const Record &rec, bool context = false)
     {
         m_visible.append(sourceRow);
+        m_context.append(context ? 1 : 0);
+        m_contextCount += context ? 1 : 0;
         m_compact.records.append(rec);
     }
 
@@ -126,8 +187,10 @@ public:
 private:
     const RecordIndex *m_source = nullptr;
     bool               m_active = false;
-    QVector<qint32>    m_visible; // view row -> source ordinal (active only)
-    RecordIndex        m_compact; // 32-byte record copies of the visible subset
+    QVector<qint32>    m_visible;      // view row -> source ordinal (active only)
+    QVector<quint8>    m_context;      // parallel to m_visible: 1 = context, 0 = match
+    int                m_contextCount = 0;
+    RecordIndex        m_compact;      // 32-byte record copies of the visible subset
 };
 
 } // namespace loftail
