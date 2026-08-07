@@ -97,9 +97,24 @@ public:
     // Returns false and fills `error` on failure.
     virtual bool start(const QString &spoolDir, QString *error) = 0;
 
-    // Stop following and release the input. Idempotent; safe after a failed start().
-    // The spool files stay on disk until the owning SourceSpool goes away.
-    virtual void stop() = 0;
+    // Ask this fetcher to wind up. NON-BLOCKING, and that is the contract, not an
+    // optimisation: the GUI thread reaches this whenever the last tab on a log closes,
+    // and a worker that is mid-connect may be twenty seconds from noticing. Joining it
+    // there is a freeze — and once a worker can be waiting on the GUI thread for a
+    // password (GuiCallGate.h), joining it there is a deadlock.
+    //
+    // Idempotent, and safe after a failed start(). The spool files stay on disk until
+    // the owning SourceSpool goes away.
+    virtual void requestStop() = 0;
+
+    // Whether the wind-up has finished: this fetcher's thread has exited, so destroying
+    // it will not block. POLLED, by SourceSpoolRegistry's reaper — deliberately, rather
+    // than signalled, because "mutex-guarded snapshot, never a signal" is this whole
+    // layer's synchronisation model (see status() below) and one queued connection here
+    // would be the precedent for the next.
+    //
+    // True before start(), and true forever after it reads true once.
+    virtual bool isStopped() const = 0;
 
     // A consistent snapshot. Thread-safe.
     virtual FetchStatus status() const = 0;

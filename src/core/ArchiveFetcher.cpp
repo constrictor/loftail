@@ -78,10 +78,30 @@ class ArchiveFetcher final : public SourceFetcher
 public:
     explicit ArchiveFetcher(ArchiveLocation location) : m_location(std::move(location)) {}
 
-    ~ArchiveFetcher() override { stop(); }
+    // The one place a worker is joined, and it is not a wait: the reaper destroys a
+    // retired fetcher only once isStopped() reads true, so this returns at once.
+    ~ArchiveFetcher() override
+    {
+        requestStop();
+        if (m_worker) {
+            m_worker->wait();
+            m_worker.reset();
+        }
+        // Only now are these ours again: the worker was the last user of them.
+        m_stream.reset();
+        m_input.reset();
+    }
 
     bool start(const QString &spoolDir, QString *error) override;
-    void stop() override;
+    void requestStop() override;
+
+    bool isStopped() const override
+    {
+        // isFinished() is safe from any thread, and m_worker itself is written only by
+        // start() — before any other thread can hold this fetcher — and cleared only by
+        // the destructor, which the reaper reaches only once this has read true.
+        return !m_worker || m_worker->isFinished();
+    }
 
     FetchStatus status() const override
     {
@@ -305,26 +325,21 @@ bool ArchiveFetcher::beginExpansion(QString *error)
     return true;
 }
 
-void ArchiveFetcher::stop()
+void ArchiveFetcher::requestStop()
 {
-    {
-        QMutexLocker lock(&m_mutex);
-        if (m_stopping && !m_worker)
-            return;
-        m_stopping = true;
-        m_wake.wakeAll();
-    }
-    if (m_worker) {
-        m_worker->wait();
-        m_worker.reset();
-    }
-    // Only now are these ours again: the worker was the last user of them.
-    m_stream.reset();
-    m_input.reset();
+    QMutexLocker lock(&m_mutex);
+    if (m_stopping)
+        return;
+    m_stopping = true;
+    m_wake.wakeAll();
 
+    // Published HERE rather than when the worker actually exits, because Cancel keeps
+    // the spool readable and its document on screen (SourceSpool::cancel): the state a
+    // reader sees the moment it cancels should be the state it asked for, not the one
+    // it gets a poll later. Nothing waits on the worker to make this true.
+    //
     // A finished expansion stays finished. Reporting Disconnected here would tell the
     // live controller that the stream might yet grow, undoing what completion means.
-    QMutexLocker lock(&m_mutex);
     if (m_status.state != FetchStatus::State::Complete)
         m_status.state = FetchStatus::State::Disconnected;
 }

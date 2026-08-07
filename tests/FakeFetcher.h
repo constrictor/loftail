@@ -177,12 +177,20 @@ public:
         return true;
     }
 
-    void stop()
+    void requestStop()
     {
         ++m_stopCount;
         QMutexLocker lock(&m_mutex);
-        m_status.state = FetchStatus::State::Disconnected;
+        if (m_status.state != FetchStatus::State::Complete)
+            m_status.state = FetchStatus::State::Disconnected;
     }
+
+    // A fake owns no thread, so it has always finished winding up. A fake that WANTS to
+    // model a worker still running past requestStop() — which is what makes closing a
+    // tab mid-connect worth testing — sets this.
+    void setStopsSlowly(bool slowly) { m_stopsSlowly = slowly; }
+    void finishStopping() { m_stopsSlowly = false; }
+    bool isStopped() const { return !m_stopsSlowly || m_stopCount == 0; }
 
     FetchStatus status() const
     {
@@ -235,6 +243,7 @@ private:
     bool           m_unavailable = false;
     QString        m_unavailableMessage;
     qint64         m_written = 0;
+    bool           m_stopsSlowly = false;
     int            m_startCount = 0;
     int            m_stopCount = 0;
     int            m_pokeCount = 0;
@@ -250,7 +259,8 @@ public:
     {
         return m_remote->start(spoolDir, error);
     }
-    void stop() override { m_remote->stop(); }
+    void requestStop() override { m_remote->requestStop(); }
+    bool isStopped() const override { return m_remote->isStopped(); }
     FetchStatus status() const override { return m_remote->status(); }
     QString spoolPath(quint64 generation) const override { return m_remote->spoolPath(generation); }
     void pokeNow() override { m_remote->poke(); }

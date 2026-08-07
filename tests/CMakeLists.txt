@@ -118,6 +118,13 @@ qt_add_executable(tst_spooledsource tst_spooledsource.cpp)
 target_link_libraries(tst_spooledsource PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_spooledsource COMMAND tst_spooledsource)
 
+# M17 — a dead spool is retired, not joined. Pins the promise the async open rests on:
+# dropping the last handle returns at once even while the fetcher's thread is still
+# winding up, and the directory is removed only once it has. Also network-free.
+qt_add_executable(tst_spoolretire tst_spoolretire.cpp)
+target_link_libraries(tst_spoolretire PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_spoolretire COMMAND tst_spoolretire)
+
 # M11 — `tail -f` over a remote log: tst_tail's matrix (append with a split
 # multi-line record, truncate, rotate, filtered/highlighted append) run again over a
 # SpooledLogSource, plus the two cases with no local counterpart — uncommitted bytes

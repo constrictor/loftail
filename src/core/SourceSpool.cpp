@@ -7,9 +7,12 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QLockFile>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QThread>
+#include <QTimerEvent>
 
 #if defined(LOFTAIL_HAVE_SSH)
 #include "SshFetcher.h"
@@ -35,6 +38,13 @@ namespace {
 constexpr auto kSpoolRootName = "spool";
 constexpr auto kInstanceLockName = "owner.lock";
 
+// How often the reaper checks whether a retired fetcher's thread has exited, and how
+// long shutdown() waits between checks and in total. Nobody is waiting on the first two;
+// the third is a cap on how long quitting can take, not a target.
+constexpr int kReapIntervalMs = 250;
+constexpr int kDrainSliceMs = 20;
+constexpr int kDrainBudgetMs = 2000;
+
 // The cache root all instances spool beneath. CacheLocation, not AppConfigLocation:
 // a spool is a reproducible copy of somebody else's file and may be enormous, so it
 // belongs somewhere the platform is free to clear (no hardcoded paths — CLAUDE.md).
@@ -46,12 +56,20 @@ QString spoolRoot()
     return cache + u'/' + QLatin1String(kSpoolRootName);
 }
 
-// A short, filesystem-safe directory name for one spooled log.
-QString spoolKey(const QString &key)
+// A short, filesystem-safe directory name for one ACQUISITION of a spooled log.
+//
+// The digest names the log, which is what makes a spool directory identifiable while
+// debugging. The serial is what stops two acquisitions of the SAME log from sharing a
+// directory — and they overlap now that a dead spool's directory is removed when its
+// fetcher's thread finally exits rather than the instant the spool is dropped
+// (SourceSpoolRegistry::retire). Reopening a log whose previous fetcher is still winding
+// up would otherwise hand the new spool the old one's directory, and the reaper would
+// then delete a live spool's files out from under it.
+QString spoolDirName(const QString &key, quint64 serial)
 {
     const QByteArray digest =
         QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha1);
-    return QString::fromLatin1(digest.toHex().left(16));
+    return QString::fromLatin1(digest.toHex().left(16)) + QStringLiteral("-%1").arg(serial);
 }
 
 // Marks a key whose spool holds the EXPANSION of an address rather than the address's
@@ -119,12 +137,12 @@ SourceSpool::SourceSpool(QString key, std::unique_ptr<SourceFetcher> fetcher, QS
 
 SourceSpool::~SourceSpool()
 {
-    // Stop the fetcher BEFORE removing the directory: it owns a thread that is
-    // writing into it, and stop() joins that thread.
-    if (m_fetcher)
-        m_fetcher->stop();
-    if (!m_dir.isEmpty())
-        QDir(m_dir).removeRecursively();
+    // Hand both to the registry rather than stopping and deleting here. The fetcher owns
+    // a thread that is writing into this directory, so the directory cannot go until the
+    // thread has — and waiting for that is exactly what this destructor must not do: it
+    // runs on the GUI thread every time the last tab on a log closes, and the thread may
+    // be twenty seconds into a connect (SourceSpoolRegistry::retire).
+    SourceSpoolRegistry::instance().retire(std::move(m_fetcher), m_dir);
 }
 
 FetchStatus SourceSpool::status() const
@@ -145,14 +163,146 @@ void SourceSpool::poke()
 
 void SourceSpool::cancel()
 {
+    // Ask, and do not wait: this runs on the GUI thread from the Cancel button, and the
+    // whole point of cancelling a gigabyte expansion is not to sit through the rest of
+    // it. The fetcher publishes Disconnected immediately, so the status line is right at
+    // once even though the worker takes a moment to notice.
     if (m_fetcher)
-        m_fetcher->stop();
+        m_fetcher->requestStop();
 }
 
 // --- SourceSpoolRegistry ---------------------------------------------------
 
+// Polls the retired fetchers and buries the ones that have stopped.
+//
+// A TIMER RATHER THAN QThread::finished, deliberately. "A mutex-guarded snapshot,
+// polled; never a signal" is this whole layer's synchronisation model — it is why
+// SpooledLogSource needs no lock against the fetcher thread at all (SourceFetcher.h) —
+// and one queued connection here is the precedent for the next one. Nothing is waiting
+// on this: a spool directory that lingers a quarter of a second longer costs nothing.
+//
+// No Q_OBJECT and no signals of its own, so this needs no moc.
+class SourceSpoolRegistry::Reaper : public QObject
+{
+public:
+    void arm()
+    {
+        if (m_timer == 0)
+            m_timer = startTimer(kReapIntervalMs);
+    }
+
+protected:
+    void timerEvent(QTimerEvent *event) override
+    {
+        if (event->timerId() != m_timer)
+            return;
+        if (SourceSpoolRegistry::instance().collectRetired() > 0)
+            return;
+        killTimer(m_timer); // nothing left to bury; stop waking up for it
+        m_timer = 0;
+    }
+
+private:
+    int m_timer = 0;
+};
+
 SourceSpoolRegistry::SourceSpoolRegistry() = default;
 SourceSpoolRegistry::~SourceSpoolRegistry() = default;
+
+void SourceSpoolRegistry::retire(std::unique_ptr<SourceFetcher> fetcher, const QString &dir)
+{
+    if (!fetcher) {
+        if (!dir.isEmpty())
+            QDir(dir).removeRecursively();
+        return;
+    }
+
+    // Outside the lock: requestStop() takes the fetcher's own mutex, and the fetcher's
+    // worker takes this one when it drops a nested spool (see acquire()'s deleter).
+    fetcher->requestStop();
+
+    if (fetcher->isStopped()) {
+        // The common case by far — a fetcher whose worker had already finished, or one
+        // that never started a worker at all. No timer, no wait, no bookkeeping.
+        fetcher.reset();
+        if (!dir.isEmpty())
+            QDir(dir).removeRecursively();
+        return;
+    }
+
+    QObject *reaper = nullptr;
+    {
+        QMutexLocker lock(&m_mutex);
+        m_retired.push_back(Retired{std::move(fetcher), dir});
+        reaper = m_reaper.get();
+    }
+
+    // May be null in a core test that never opened a spool through acquire(), and on any
+    // thread but the GUI one. Both are fine: shutdown() drains whatever is left, and it
+    // is the only thing that has to.
+    if (reaper) {
+        QMetaObject::invokeMethod(
+            reaper, [reaper]() { static_cast<Reaper *>(reaper)->arm(); },
+            Qt::QueuedConnection);
+    }
+}
+
+int SourceSpoolRegistry::collectRetired()
+{
+    // Swap the list out and inspect it unlocked. isStopped() takes the fetcher's mutex
+    // and ~SourceFetcher can drop a nested spool — which takes this one — so neither may
+    // run under it.
+    std::vector<Retired> pending;
+    {
+        QMutexLocker lock(&m_mutex);
+        pending.swap(m_retired);
+    }
+
+    std::vector<Retired> stillRunning;
+    for (Retired &r : pending) {
+        if (!r.fetcher->isStopped()) {
+            stillRunning.push_back(std::move(r));
+            continue;
+        }
+        r.fetcher.reset(); // joins instantly: its thread has already exited
+        if (!r.dir.isEmpty())
+            QDir(r.dir).removeRecursively();
+    }
+
+    const int remaining = static_cast<int>(stillRunning.size());
+    if (remaining > 0) {
+        QMutexLocker lock(&m_mutex);
+        for (Retired &r : stillRunning)
+            m_retired.push_back(std::move(r));
+    }
+    return remaining;
+}
+
+void SourceSpoolRegistry::drainRetired(int budgetMs)
+{
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (collectRetired() > 0) {
+        if (elapsed.elapsed() >= budgetMs)
+            break;
+        // msleep, NOT processEvents(): this runs during teardown, after the main window
+        // is gone, and re-entering the event loop there is how an orderly exit turns
+        // into a crash.
+        QThread::msleep(kDrainSliceMs);
+    }
+
+    QMutexLocker lock(&m_mutex);
+    for (Retired &r : m_retired) {
+        // Out of budget with a thread still running — a connect to a host that is not
+        // answering, most likely. Deleting the fetcher would join that thread and hang
+        // the quit, which is the one thing worse than what this does instead: let the
+        // object leak, and leave its directory. The process is seconds from exiting, and
+        // the next launch's sweepAbandonedSpools() removes the tree — an instance
+        // directory whose lock file is gone is granted to whoever asks (see below).
+        (void) r.fetcher.release();
+    }
+    m_retired.clear();
+}
 
 SourceSpoolRegistry &SourceSpoolRegistry::instance()
 {
@@ -188,6 +338,12 @@ QString SourceSpoolRegistry::instanceDir()
 
     m_instanceDir = std::move(dir);
     m_instanceLock = std::move(lock);
+
+    // Built here, on the thread that does every acquire(), so that retire() — which is
+    // called from wherever a spool's last handle is dropped — only ever has to post to
+    // it, never to create it.
+    if (!m_reaper)
+        m_reaper = std::make_unique<Reaper>();
 
     // Release the lock and the directory while Qt is still up, rather than in this
     // singleton's own destructor — by then the application object is gone and, in a
@@ -249,7 +405,7 @@ std::shared_ptr<SourceSpool> SourceSpoolRegistry::acquire(const QString &key, QS
             *error = Tr::tr("Cannot create a local cache directory for spooled logs.");
         return nullptr;
     }
-    const QString dir = base + u'/' + spoolKey(key);
+    const QString dir = base + u'/' + spoolDirName(key, ++m_serial);
     if (!QDir().mkpath(dir)) {
         if (error)
             *error = Tr::tr("Cannot create the local cache directory %1.").arg(dir);
@@ -298,6 +454,10 @@ std::shared_ptr<SourceSpool> SourceSpoolRegistry::acquire(const QString &key, QS
 void SourceSpoolRegistry::shutdown()
 {
     clear();
+    // The reaper's timer will never fire again — this runs as a post-routine, after the
+    // event loop has stopped — so the draining has to happen here, by hand and bounded.
+    drainRetired(kDrainBudgetMs);
+    m_reaper.reset();
     if (m_instanceLock) {
         m_instanceLock->unlock();
         m_instanceLock.reset();
