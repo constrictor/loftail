@@ -4,6 +4,8 @@
 #include <QElapsedTimer>
 #include <QFileInfo>
 
+#include <memory>
+
 #include "FakeFetcher.h"
 #include "LogSource.h"
 #include "SourceSpool.h"

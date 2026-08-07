@@ -4,6 +4,7 @@
 #include "RemoteLocation.h"
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDeadlineTimer>

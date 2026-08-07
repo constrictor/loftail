@@ -1,9 +1,16 @@
 #include <QtTest>
 
 #include <QElapsedTimer>
+#include <QFile>
+#include <QIODevice>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QStandardPaths>
 #include <QThread>
+#include <QTimeZone>
 
 #include <atomic>
+#include <memory>
 
 #include "Document.h"
 #include "LogSource.h"
