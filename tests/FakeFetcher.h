@@ -200,6 +200,11 @@ public:
 
     // --- The SourceFetcher side --------------------------------------------
 
+    // NOTE WHAT THIS CANNOT PROVE. A fake returns instantly whatever the contract says,
+    // so nothing here demonstrates that a real start() does not block — that is
+    // tst_asyncconnect's job, with a fake that genuinely sleeps. What the fake IS for is
+    // everything above the transport: the states a real fetcher passes through, and how
+    // the document, the live seam and the UI behave in each.
     bool start(const QString &spoolDir, QString *error)
     {
         ++m_startCount;

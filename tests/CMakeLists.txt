@@ -118,6 +118,13 @@ qt_add_executable(tst_spooledsource tst_spooledsource.cpp)
 target_link_libraries(tst_spooledsource PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_spooledsource COMMAND tst_spooledsource)
 
+# M17 — THE test for the milestone: opening a remote log must not block the thread that
+# opened it. Uses a transport that genuinely takes a second, because a fake that returns
+# instantly satisfies the old contract just as well as the new one. Network-free.
+qt_add_executable(tst_asyncconnect tst_asyncconnect.cpp)
+target_link_libraries(tst_asyncconnect PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_asyncconnect COMMAND tst_asyncconnect)
+
 # M17 — a question asked on a fetcher's thread, answered on the application's. Pins
 # where the answer runs, that only one question is in flight at a time, and that a
 # cancel unblocks a waiter instead of stranding it. No network and no libssh2.
