@@ -244,6 +244,8 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
 {
     if (m_restoreCancelled)
         return false; // the user already asked to stop reopening remote files
+    if (m_skippedTargets.contains(target))
+        return false; // "Skip This Host" meant the host, not just the file it was on
 
     QDialog dialog(m_parent);
     dialog.setWindowTitle(tr("Password for %1").arg(target));
@@ -319,22 +321,27 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     QAbstractButton *skipAll = nullptr;
+    QAbstractButton *skipHost = nullptr;
     if (m_bulkRestore) {
         // Restoring a session reopens everything at once. Without these, a host that
         // needs a password and is not available turns into an unskippable queue of
         // dialogs at launch.
-        buttons->addButton(tr("Skip This Host"), QDialogButtonBox::DestructiveRole);
+        skipHost = buttons->addButton(tr("Skip This Host"), QDialogButtonBox::DestructiveRole);
         skipAll = buttons->addButton(tr("Skip All Remaining"), QDialogButtonBox::RejectRole);
     }
     layout->addWidget(buttons);
 
     bool accepted = false;
     bool cancelRemaining = false;
+    bool skipThisHost = false;
     QObject::connect(buttons, &QDialogButtonBox::clicked, &dialog,
                      [&](QAbstractButton *button) {
                          const auto role = buttons->buttonRole(button);
                          if (role == QDialogButtonBox::AcceptRole) {
                              accepted = true;
+                         } else if (button == skipHost && skipHost) {
+                             // By identity, like skipAll below, and for the same reason.
+                             skipThisHost = true;
                          } else if (role == QDialogButtonBox::RejectRole && button == skipAll) {
                              // By identity, not by label. This matched
                              // text().contains("Remaining") until the tr() sweep, at which
@@ -352,6 +359,12 @@ bool GuiSshPrompter::askPassword(const QString &target, const QString &promptTex
 
     if (cancelRemaining)
         m_restoreCancelled = true;
+    // Remembered, because the button says "host" and a host commonly has several files
+    // open on it. Without this it skipped the FILE and the next one on the same host
+    // asked again — which, at session restore, is exactly the queue of dialogs the
+    // button exists to escape.
+    if (skipThisHost)
+        m_skippedTargets.insert(target);
     if (!accepted) {
         field->clear();
         return false;
