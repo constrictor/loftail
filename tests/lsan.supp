@@ -1,0 +1,31 @@
+# LeakSanitizer suppressions (ARCHITECTURE.md §13).
+#
+# THIS FILE SHOULD STAY ALMOST EMPTY. loftail's own suite leaks nothing, and the one
+# by-design retention — an abandoned fetcher whose thread is still running — is parked in
+# a reachable static rather than leaked, precisely so that it needs no entry here
+# (SourceSpool::drainRetired). An entry is justified only when the allocation is made and
+# lost entirely inside a third-party library, with no loftail frame that could free it.
+#
+# --- libproxy, reached through Qt's system-proxy lookup ---------------------
+#
+# QTcpSocket::connectToHost() asks QNetworkProxyFactory::systemProxyForQuery() what proxy
+# applies, which on Linux dlopens libproxy; libproxy's GObject backend allocates a manager
+# and its backing lists and never frees them. Six allocations, 141 bytes, every one of
+# them under px_proxy_factory_new with nothing of loftail's below it.
+#
+# It is not reproducible on every machine — it appears on the ubuntu-24.04 runner and not
+# on a 26.04 developer box with a newer libproxy, and only when SshFetcher's background
+# reconnect gets far enough to open a socket. That intermittency is the reason it is
+# suppressed by name rather than left to be rediscovered as a flaky red build.
+#
+# Worth recording, since it is visible here and nowhere else: an ssh:// connect consults
+# the DESKTOP'S HTTP proxy configuration, and libproxy may evaluate a PAC script to answer.
+# loftail has never had a proxy setting and does not document one. Turning it off for the
+# SSH socket (QAbstractSocket::setProxy(QNetworkProxy::NoProxy)) would remove this leak at
+# its source and take a synchronous lookup off the connect path — but it would also break
+# anyone who reaches their hosts THROUGH a system SOCKS proxy today, so it is a product
+# decision and not a sanitizer one. Suppressing the symptom deliberately leaves it open.
+leak:px_proxy_factory_new
+leak:px_manager_new_with_options
+leak:libpxbackend-1.0.so
+leak:QNetworkProxyFactory::systemProxyForQuery

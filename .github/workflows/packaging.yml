@@ -184,16 +184,21 @@ jobs:
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
-          # Leak detection stays ON. The suite is clean with no suppression file at all —
-          # the one by-design retention, an abandoned fetcher whose thread is still
-          # running, is parked in a reachable static rather than leaked, precisely so that
-          # this can stay on (SourceSpool.cpp, drainRetired). That is only cheap to keep
+          # Leak detection stays ON, and nothing of loftail's is suppressed: the one
+          # by-design retention, an abandoned fetcher whose thread is still running, is
+          # parked in a reachable static rather than leaked, precisely so that this can
+          # stay on (SourceSpool.cpp, drainRetired). tests/lsan.supp holds one third-party
+          # entry, libproxy, and is meant to stay that short. That is only cheap to keep
           # true if it never goes red.
           #
           # detect_stack_use_after_return catches the exact class the M17 call-gate bug
           # was: a lambda still reading a frame whose owner has returned. It is the reason
           # this job exists, so it is switched on rather than left at its default.
           ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1
+          # Leak suppressions are LSan's, not ASan's, even when LSan is running inside
+          # ASan. print_suppressions reports which ones actually matched, so the file is
+          # checkable rather than a list of guesses that quietly stops applying.
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/lsan.supp:print_suppressions=1
           UBSAN_OPTIONS: print_stacktrace=1
         run: ctest --test-dir build-asan --output-on-failure
 

@@ -714,6 +714,8 @@ For the record, since they still bind:
 
 **ASan is a CI gate; TSan is not.** That asymmetry is measured, not a preference, and the reasons are below.
 
+Leak detection runs with `detect_stack_use_after_return` on, and **nothing of loftail's is suppressed**. `tests/lsan.supp` holds one third-party entry: libproxy, which Qt `dlopen`s from `QTcpSocket::connectToHost` to answer a system-proxy query and which never frees its GObject manager — six allocations, 141 bytes, with no loftail frame below `px_proxy_factory_new`. It appears on the ubuntu-24.04 runner and not on a 26.04 box with a newer libproxy, and only when `SshFetcher`'s background reconnect gets as far as opening a socket; that intermittency is why it is named rather than left to resurface as a flaky red build. The rule for that file is in its header, and the by-design fetcher retention deliberately does not use it (§13.3).
+
 ### 13.1 Why core uses `std::mutex`, not `QMutex`
 
 `src/core` contains no `QMutex`, `QMutexLocker` or `QWaitCondition`, and must not regain any. This is a testability constraint, not a style one.
