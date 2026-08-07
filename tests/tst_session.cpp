@@ -417,7 +417,12 @@ void TestSession::runSelectionRoundTrip()
         SessionStore::save(s, in);
     }
     QSettings s(ini, QSettings::IniFormat);
-    const SessionDocument &od = SessionStore::load(s).documents.first();
+    // Hold the Session, not a reference into a temporary one: load() returns by value and
+    // documents.first() hands back a reference INTO it, which lifetime extension does not
+    // reach through — the Session would die at the semicolon and every QCOMPARE below
+    // would read freed memory. Every other load() call site in this file binds by value.
+    const Session          out = SessionStore::load(s);
+    const SessionDocument &od = out.documents.first();
 
     QCOMPARE(od.format.runStartPattern, QStringLiteral("Application starting"));
     QCOMPARE(od.format.runStartIsRegex, true);

@@ -233,7 +233,7 @@ void SourceSpoolRegistry::retire(std::unique_ptr<SourceFetcher> fetcher, const Q
 
     QObject *reaper = nullptr;
     {
-        QMutexLocker lock(&m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         m_retired.push_back(Retired{std::move(fetcher), dir});
         reaper = m_reaper.get();
     }
@@ -255,7 +255,7 @@ int SourceSpoolRegistry::collectRetired()
     // run under it.
     std::vector<Retired> pending;
     {
-        QMutexLocker lock(&m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         pending.swap(m_retired);
     }
 
@@ -272,7 +272,7 @@ int SourceSpoolRegistry::collectRetired()
 
     const int remaining = static_cast<int>(stillRunning.size());
     if (remaining > 0) {
-        QMutexLocker lock(&m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         for (Retired &r : stillRunning)
             m_retired.push_back(std::move(r));
     }
@@ -292,16 +292,28 @@ void SourceSpoolRegistry::drainRetired(int budgetMs)
         QThread::msleep(kDrainSliceMs);
     }
 
-    QMutexLocker lock(&m_mutex);
-    for (Retired &r : m_retired) {
-        // Out of budget with a thread still running — a connect to a host that is not
-        // answering, most likely. Deleting the fetcher would join that thread and hang
-        // the quit, which is the one thing worse than what this does instead: let the
-        // object leak, and leave its directory. The process is seconds from exiting, and
-        // the next launch's sweepAbandonedSpools() removes the tree — an instance
-        // directory whose lock file is gone is granted to whoever asks (see below).
-        (void) r.fetcher.release();
-    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    // Out of budget with a thread still running — a connect to a host that is not
+    // answering, most likely. Deleting the fetcher would join that thread and hang the
+    // quit, which is the one thing worse than what this does instead: keep the object
+    // alive and leave its directory. The process is seconds from exiting, and the next
+    // launch's sweepAbandonedSpools() removes the tree — an instance directory whose lock
+    // file is gone is granted to whoever asks (see below).
+    //
+    // PARKED HERE, not `release()`d. The distinction is not bookkeeping: the thread still
+    // running owns this object and will touch it again, so it has to outlive the registry
+    // either way — but parking it keeps it REACHABLE, which is the honest statement of
+    // intent and is what lets LeakSanitizer stay switched on in CI with no suppression
+    // (ARCHITECTURE.md §13). An abandoned fetcher is retained on purpose; any OTHER
+    // leaked fetcher is a bug, and a blanket suppression would have hidden both.
+    //
+    // Deliberately a leaked pointer rather than a plain static vector: a static's
+    // destructor runs at exit and would delete these, joining the very threads this whole
+    // path exists to avoid waiting for.
+    static auto *abandoned = new std::vector<std::unique_ptr<SourceFetcher>>();
+    for (Retired &r : m_retired)
+        abandoned->push_back(std::move(r.fetcher));
     m_retired.clear();
 }
 
@@ -385,13 +397,13 @@ void SourceSpoolRegistry::sweepAbandonedSpools()
 
 std::shared_ptr<SourceSpool> SourceSpoolRegistry::find(const QString &key) const
 {
-    QMutexLocker lock(&m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     return m_spools.value(key).lock();
 }
 
 void SourceSpoolRegistry::forget(const QString &key)
 {
-    QMutexLocker lock(&m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_spools.remove(key);
 }
 
@@ -446,7 +458,7 @@ std::shared_ptr<SourceSpool> SourceSpoolRegistry::acquire(const QString &key, QS
                                            delete p;
                                        });
     {
-        QMutexLocker lock(&m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         m_spools.insert(key, spool);
     }
     return spool;
@@ -472,7 +484,7 @@ void SourceSpoolRegistry::clear()
     // kept alive by that handle and torn down when it drops, which is the point of
     // the weak map. Forgetting the entries just means the next acquire() of the same
     // key builds a fresh spool instead of joining the old one.
-    QMutexLocker lock(&m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_spools.clear();
 }
 

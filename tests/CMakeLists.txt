@@ -132,6 +132,16 @@ qt_add_executable(tst_promptrelay tst_promptrelay.cpp)
 target_link_libraries(tst_promptrelay PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_promptrelay COMMAND tst_promptrelay)
 
+# M17 — the same gate under concurrent pressure, aimed at the window tst_promptrelay
+# does not open: a cancel landing while calls are queued and running on other threads.
+# Checks rules 2 and 3 from OUTSIDE the gate (was any caller released while its work was
+# still in flight? did two ever run at once?), so a lifetime bug fails as an assertion
+# rather than as a use-after-free that needs the right 1-in-28 timing to crash.
+# Ungated and network-free.
+qt_add_executable(tst_gatestress tst_gatestress.cpp)
+target_link_libraries(tst_gatestress PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_gatestress COMMAND tst_gatestress)
+
 # M17 — a dead spool is retired, not joined. Pins the promise the async open rests on:
 # dropping the last handle returns at once even while the fetcher's thread is still
 # winding up, and the directory is removed only once it has. Also network-free.
@@ -411,6 +421,49 @@ qt_add_executable(tst_tabsession tst_tabsession.cpp)
 target_link_libraries(tst_tabsession PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_tabsession COMMAND tst_tabsession)
 set_tests_properties(tst_tabsession PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# --- The `threading` label: what ThreadSanitizer is run over ----------------
+#
+# ARCHITECTURE.md §13. TSan is a supported build (-DLOFTAIL_SANITIZE=thread) but it is
+# gated in CI over THIS SUBSET, not the whole suite, and the reason is a property of the
+# system Qt rather than of the tests: Qt is not built with TSan, so its internal locking
+# is invisible and anything driving widgets and a real event loop reports Qt's own
+# queued-connection and glib internals as races. Measured on the UI tests: 11-23 reports
+# each, none of them loftail's. Gating on those would mean a suppression file broad
+# enough to hide real findings too.
+#
+# These are the tests that exercise loftail's OWN threads — the indexer, the fetchers,
+# the spool registry, the live seam and the call gate — which is where every concurrency
+# bug in this project has been. They run at ZERO reports with tests/tsan.supp, so a new
+# one means a new bug rather than more noise. Keep that true: a test added here that
+# cannot reach zero belongs outside the label, with a note saying why.
+set(loftail_threading_tests
+    tst_indexcontroller
+    tst_spooledsource
+    tst_asyncconnect
+    tst_promptrelay
+    tst_gatestress
+    tst_spoolretire
+    tst_remotetail
+    tst_remoteopen
+    tst_waitingremote
+    tst_complete
+    tst_livegui
+    tst_runselect
+    tst_tail            # POSIX-only
+    tst_waiting         # POSIX-only
+    tst_archivemembers  # libarchive-only
+    tst_archivefetcher  # libarchive-only
+    tst_archivetail     # libarchive-only
+)
+# Label only what this configuration actually defined — several above are conditional,
+# and set_tests_properties on a test that does not exist is a configure error.
+get_property(loftail_defined_tests DIRECTORY PROPERTY TESTS)
+foreach(t IN LISTS loftail_threading_tests)
+    if(t IN_LIST loftail_defined_tests)
+        set_property(TEST ${t} APPEND PROPERTY LABELS threading)
+    endif()
+endforeach()
 
 # --- Console subsystem on Windows ------------------------------------------
 #

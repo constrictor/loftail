@@ -8,6 +8,7 @@
 #include <QStandardPaths>
 #include <QString>
 
+#include <atomic>
 #include <memory>
 
 #include "SourceFetcher.h"
@@ -332,9 +333,15 @@ private:
     // Non-zero when the test has said how big the source really is; see setTotalSize().
     qint64         m_pinnedTotal = 0;
     bool           m_stopsSlowly = false;
-    int            m_startCount = 0;
-    int            m_stopCount = 0;
-    int            m_pokeCount = 0;
+    // Atomic, not plain ints: these three are bumped on whichever thread drives the
+    // fetcher and read by a test watching from another — tst_archivemembers polls
+    // startCount() from a worker while the main thread opens the container. They sit
+    // outside m_mutex deliberately, because a test that took the fetcher's own lock to
+    // read a counter would serialise against the thing it is trying to observe.
+    // (Found by ThreadSanitizer; ARCHITECTURE.md §13.)
+    std::atomic<int> m_startCount{0};
+    std::atomic<int> m_stopCount{0};
+    std::atomic<int> m_pokeCount{0};
 };
 
 // The SourceFetcher the registry owns; all behavior lives in the shared FakeRemote.

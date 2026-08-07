@@ -1,13 +1,12 @@
 #include "GuiCallGate.h"
 
 #include <QCoreApplication>
-#include <QMutex>
-#include <QMutexLocker>
 #include <QObject>
 #include <QThread>
-#include <QWaitCondition>
 
+#include <condition_variable>
 #include <deque>
+#include <mutex>
 
 namespace loftail {
 
@@ -35,8 +34,8 @@ struct GuiCallGate::Call
 class GuiCallGate::Pump : public QObject
 {
 public:
-    mutable QMutex                          mutex;
-    QWaitCondition                          answered;
+    mutable std::mutex                      mutex;
+    std::condition_variable                 answered;
     std::deque<std::shared_ptr<Call>>       queue;
     bool                                    cancelled = false;
     bool                                    running = false; // rule 3
@@ -49,7 +48,7 @@ public:
         std::shared_ptr<Call> next;
         bool run = false;
         {
-            QMutexLocker lock(&mutex);
+            std::unique_lock<std::mutex> lock(mutex);
             if (running || queue.empty())
                 return;
             next = queue.front();
@@ -70,12 +69,12 @@ public:
 
         bool more = false;
         {
-            QMutexLocker lock(&mutex);
+            std::unique_lock<std::mutex> lock(mutex);
             if (run)
                 running = false;
             next->done = true;
             more = !queue.empty();
-            answered.wakeAll();
+            answered.notify_all();
         }
 
         if (more)
@@ -104,19 +103,19 @@ GuiCallGate::~GuiCallGate()
 
 void GuiCallGate::setInterrupt(std::function<void()> interrupt)
 {
-    QMutexLocker lock(&d->mutex);
+    std::unique_lock<std::mutex> lock(d->mutex);
     d->interrupt = std::move(interrupt);
 }
 
 bool GuiCallGate::cancelled() const
 {
-    QMutexLocker lock(&d->mutex);
+    std::unique_lock<std::mutex> lock(d->mutex);
     return d->cancelled;
 }
 
 void GuiCallGate::reopen()
 {
-    QMutexLocker lock(&d->mutex);
+    std::unique_lock<std::mutex> lock(d->mutex);
     d->cancelled = false;
 }
 
@@ -124,7 +123,7 @@ void GuiCallGate::cancel()
 {
     std::function<void()> interrupt;
     {
-        QMutexLocker lock(&d->mutex);
+        std::unique_lock<std::mutex> lock(d->mutex);
         d->cancelled = true;
         // Only the ones that have not started. A started call is the application thread's
         // business until it returns, and its asker stays parked until then.
@@ -135,7 +134,7 @@ void GuiCallGate::cancel()
         // Only worth interrupting if the application thread is actually inside something.
         if (d->running)
             interrupt = d->interrupt;
-        d->answered.wakeAll();
+        d->answered.notify_all();
     }
 
     // Outside the mutex (rule 1): an interrupt closes a modal dialog, which returns
@@ -147,7 +146,7 @@ void GuiCallGate::cancel()
 bool GuiCallGate::call(const std::function<void()> &work)
 {
     {
-        QMutexLocker lock(&d->mutex);
+        std::unique_lock<std::mutex> lock(d->mutex);
         if (d->cancelled)
             return false;
     }
@@ -168,15 +167,15 @@ bool GuiCallGate::call(const std::function<void()> &work)
         // Rule 3 still holds: reaching here while running is true would mean a dialog's
         // nested event loop delivered a second question, which is the stack this refuses.
         {
-            QMutexLocker lock(&d->mutex);
+            std::unique_lock<std::mutex> lock(d->mutex);
             if (d->running)
                 return false;
             d->running = true;
         }
         work();
-        QMutexLocker lock(&d->mutex);
+        std::unique_lock<std::mutex> lock(d->mutex);
         d->running = false;
-        d->answered.wakeAll();
+        d->answered.notify_all();
         return true;
     }
 
@@ -193,19 +192,18 @@ bool GuiCallGate::call(const std::function<void()> &work)
     call->work = work;
 
     {
-        QMutexLocker lock(&d->mutex);
+        std::unique_lock<std::mutex> lock(d->mutex);
         d->queue.push_back(call);
     }
     d->rearm();
 
-    QMutexLocker lock(&d->mutex);
+    std::unique_lock<std::mutex> lock(d->mutex);
     // A cancel releases a call that has NOT STARTED. One that has must be waited out —
     // `work` holds references into this frame, so returning here would let the frame die
     // while the application thread is still inside the lambda. That is what cancel()'s
     // interrupt is for: it ends the dialog, so the wait this keeps is a moment, not the
     // user's own time.
-    while (!call->done && !(d->cancelled && !call->started))
-        d->answered.wait(&d->mutex);
+    d->answered.wait(lock, [&] { return call->done || (d->cancelled && !call->started); });
 
     if (call->done)
         return !call->abandoned;

@@ -14,7 +14,6 @@
 #include <QFileInfo>
 #include <QHostAddress>
 #include <QHostInfo>
-#include <QMutex>
 #include <QStandardPaths>
 #include <QTcpSocket>
 
@@ -161,7 +160,7 @@ struct SshSession::Impl
     // race that guard prevents is not a crash but something worse: teardown() closing
     // the descriptor between abort() reading it and shutting it down would aim a
     // shutdown at whatever the operating system had since handed that number to.
-    QMutex            fdMutex;
+    std::mutex        fdMutex;
     qintptr           fd = -1;
 
     // Consulted while connecting so that a long connect can be given up on. Set before
@@ -228,7 +227,7 @@ struct SshSession::Impl
         // The descriptor goes LAST: libssh2_session_disconnect above writes a farewell
         // packet, and it needs a socket to write it to.
         {
-            QMutexLocker lock(&fdMutex);
+            std::lock_guard<std::mutex> lock(fdMutex);
             closeDetachedSocket(fd);
             fd = -1;
         }
@@ -651,7 +650,7 @@ void SshSession::abort()
     // Everything this deliberately does not do is the point: no teardown, no free, no
     // touching the session. The thread inside libssh2 owns all of that and will do it
     // when its call returns — which is what this is for, and all it is for.
-    QMutexLocker lock(&d->fdMutex);
+    std::lock_guard<std::mutex> lock(d->fdMutex);
     shutdownDetachedSocket(d->fd);
 }
 
@@ -708,7 +707,7 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     // Connected — now take the socket off Qt before a single SSH byte moves, because
     // from here on libssh2 must be its only reader (detachFromQt).
     {
-        QMutexLocker lock(&d->fdMutex);
+        std::lock_guard<std::mutex> lock(d->fdMutex);
         d->fd = detachSocketFromQt(d->socket);
     }
     if (d->fd < 0) {

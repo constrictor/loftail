@@ -495,12 +495,21 @@ void MainWindow::updateEmptyState()
 
 void MainWindow::onViewDestroyed(QObject *obj)
 {
-    // `obj` is mid-destruction: compare it, never dereference it.
-    auto *view = static_cast<DocumentView *>(obj);
-    m_views.removeAll(view);
+    // `obj` is mid-destruction: compare it, never dereference it — and, since M17's
+    // sanitizer work, never DOWNCAST it either. ~QObject runs after ~DocumentView, so by
+    // the time this fires the object's dynamic type has degraded to QWidget and
+    // static_cast<DocumentView *>(obj) is undefined behaviour on an object that is no
+    // longer one. UBSan reports it as "downcast of address ... which does not point to an
+    // object of type 'DocumentView'"; the pointer it produced happened to be right,
+    // because the bases are all primary, which is exactly why it went unnoticed.
+    //
+    // Compare in the safe direction instead: converting each LIVE list entry up to
+    // QObject * is a pointer adjustment that reads no vtable. See ARCHITECTURE.md §13.
+    const auto isThisView = [obj](DocumentView *v) { return v == obj; };
+    m_views.removeIf(isThisView);
     for (auto &ctx : m_contexts)
-        ctx->views.removeAll(view);
-    if (m_activeView == view)
+        ctx->views.removeIf(isThisView);
+    if (m_activeView == obj)
         m_activeView = nullptr;
 
     // A file with no views left is closed: its index, workers and model go with it.

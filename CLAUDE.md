@@ -64,6 +64,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Never identify a widget by its visible text.** `SshPromptDialogs` distinguished two same-role buttons with `text().contains("Remaining")`, which the first translated build would have turned into a silent behaviour change in the bulk-restore path. Object names and pointers, in `src/` and in `tests/` alike; `tst_remoteopen` found the Save button by label, and it stopped working the moment the button learned to say "Update".
 
+**`src/core` contains no `QMutex`, `QMutexLocker` or `QWaitCondition`, and must not regain any** (`ARCHITECTURE.md` §13.1). Qt's TSan annotations live in `qmutex.h` and are compiled into loftail's translation units, but the system `libQt6Core` is not built under TSan — so `QWaitCondition::wait()` unlocks and relocks *inside that library*, unannotated, and TSan's happens-before chain breaks at every wait. Correctly guarded data then reads as a race with both accesses reporting the same held mutex. Measured on one stress harness against **known-good** code: 37 reports with `QMutex`+`QWaitCondition`, **0** with `std::mutex`+`std::condition_variable`, and the 37 were loudest about the file that had just been fixed. The ban stops at `src/core`; `src/ui` and test scaffolding may use Qt's primitives, and a plain `QMutex` with no condition variable is fine anywhere because it annotates symmetrically. The same trap catches `QThread::wait()`, which joins through a `QWaitCondition`: a test whose own load generator needs joining uses `std::thread` (`tst_gatestress`, `tst_archivemembers`).
+
+**ASan is a CI gate; TSan is not, and the reason is the sanitizer runtime rather than loftail.** The `sanitizers` job builds `-DLOFTAIL_SANITIZE=address` and runs all 56 tests with leak detection and `detect_stack_use_after_return` on, clean, with **no suppression file at all** — the one by-design retention, an abandoned fetcher whose thread is still running, is parked in a reachable static instead of leaked precisely so that stays true (`SourceSpool::drainRetired`). TSan is a supported build with `tests/tsan.supp` and a `threading` CTest label, and reaches zero reports on the tests it completes — but its own thread registry aborts inside `pthread_create` from `QThread::start` on a recycled `pthread_t`, killing 6 of the 17 labelled tests, identically under GCC 15 and clang 21, and predating this work. Run it by hand; do not wire it into CI expecting green.
+
+**Neither sanitizer found the M17 call-gate bug that prompted them, and that is the lesson.** Sixty twelve-way-parallel ASan runs against the pre-fix tree reproduced nothing — the slowdown closes the 1-in-28 window — and TSan never flagged the unlocked `abandoned` read, because no test went near the state that mattered. Sanitizers amplify coverage; they do not create it. `tst_gatestress` is what actually pins it: it drives a cancel raised *from inside the work*, through a nested event loop, which is the only shape in which rule 2 has anything to say — a cancel posted from a timer can never land while `drain()` is running, since both are the application thread. It fails five times out of five against the pre-fix gate with no sanitizer at all.
+
 **Outstanding regardless of milestone:** Windows and macOS builds and runtime behavior are still unverified (`PLAN.md` M6/M7), including the stubbed Windows `BufferedLogSource` share-mode open and `pathIdentity()`.
 
 **Windows testing has no fonts.** The offscreen QPA plugin on Windows uses Qt's own font database, which looks in `$QTDIR/lib/fonts`; Qt no longer ships fonts, so `QFontDatabase::families()` comes back **empty** and nothing resolves — not even to a wrong font. (Offscreen on Linux has fontconfig, so this never shows up locally.) Any test that asserts on resolved font properties must guard on an empty family list and `QSKIP`; `tst_logview::everyColumnRendersFixedPitch` does. This is an environment limit, not a `monospaceFont()` bug.
@@ -121,6 +127,19 @@ ctest --test-dir build --output-on-failure
 
 # A single test case within a binary (Qt Test convention)
 ./build/tests/tst_sessiongui sessionRoundTrip
+
+# ASan + UBSan + LeakSanitizer over the whole suite (~4x slower; this runs in CI)
+cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLOFTAIL_SANITIZE=address
+cmake --build build-asan
+QT_QPA_PLATFORM=offscreen ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1 \
+  ctest --test-dir build-asan --output-on-failure
+
+# ThreadSanitizer over the threading tests only. BY HAND — not a CI gate, see below.
+cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLOFTAIL_SANITIZE=thread
+cmake --build build-tsan
+QT_QPA_PLATFORM=offscreen \
+TSAN_OPTIONS="report_thread_leaks=0 suppressions=$PWD/tests/tsan.supp" \
+  ctest --test-dir build-tsan -L threading --output-on-failure
 ```
 
 On Windows and macOS, `CMAKE_PREFIX_PATH` must point at the Qt installation.

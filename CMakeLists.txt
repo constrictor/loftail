@@ -277,6 +277,53 @@ else()
                    "loftail_lupdate target — no translations ship, so nothing else needs it)")
 endif()
 
+# ---------------------------------------------------------------------------
+# Sanitizers (ARCHITECTURE.md §13). Off by default; a separate build directory,
+# never a flag you flip on the one you develop in.
+#
+#   -DLOFTAIL_SANITIZE=address   ASan + UBSan + LeakSanitizer
+#   -DLOFTAIL_SANITIZE=thread    ThreadSanitizer
+#
+# Applied at the top level with add_compile_options/add_link_options rather than on
+# a target, because a sanitizer is only sound when EVERY translation unit linked into
+# a binary agrees — core, ui and all 55 test binaries. Mixing instrumented and
+# uninstrumented objects is the one way to get results that are worse than none.
+#
+# address and thread are mutually exclusive: ASan and TSan both want the shadow
+# memory mapping and refuse to share it.
+set(LOFTAIL_SANITIZE "" CACHE STRING
+    "Build with a sanitizer: address (ASan+UBSan+LSan), thread (TSan), or empty")
+set_property(CACHE LOFTAIL_SANITIZE PROPERTY STRINGS "" address thread)
+
+if(LOFTAIL_SANITIZE STREQUAL "address")
+    # UBSan rides along with ASan because it is nearly free and catches a different
+    # class entirely. -fno-sanitize-recover makes UBSan ABORT rather than print and
+    # carry on: a report ctest does not turn into a failure is a report nobody reads.
+    set(loftail_sanitize_flags
+        -fsanitize=address,undefined
+        -fno-sanitize-recover=undefined
+        -fno-omit-frame-pointer)
+elseif(LOFTAIL_SANITIZE STREQUAL "thread")
+    set(loftail_sanitize_flags -fsanitize=thread -fno-omit-frame-pointer)
+elseif(NOT LOFTAIL_SANITIZE STREQUAL "")
+    message(FATAL_ERROR
+        "LOFTAIL_SANITIZE must be 'address', 'thread' or empty; got '${LOFTAIL_SANITIZE}'")
+endif()
+
+if(loftail_sanitize_flags)
+    if(MSVC)
+        # MSVC has /fsanitize=address only, with different spelling and no UBSan or
+        # TSan at all. Say so rather than emitting flags cl.exe will reject.
+        message(FATAL_ERROR
+            "LOFTAIL_SANITIZE is not supported with MSVC; use the Linux or macOS build")
+    endif()
+    add_compile_options(${loftail_sanitize_flags})
+    add_link_options(${loftail_sanitize_flags})
+    message(STATUS "Sanitizer: ${LOFTAIL_SANITIZE} (${loftail_sanitize_flags})")
+else()
+    message(STATUS "Sanitizer: none (-DLOFTAIL_SANITIZE=address or =thread to enable)")
+endif()
+
 enable_testing()
 
 add_subdirectory(src)
