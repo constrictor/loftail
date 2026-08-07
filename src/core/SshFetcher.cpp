@@ -328,39 +328,11 @@ bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *
     publishHeldCommits();
 
     setState(FetchStatus::State::Live);
-    // Standing remark, not an error: this server would not do SFTP, so the log is being
-    // read by running commands on it. Slower, and rotation is detected the weaker way,
-    // so say which transport is in use rather than leaving it to be deduced (§6.3.1).
-    // How MUCH weaker depends on what the server can be measured with, so the note says
-    // that too. Set once here: a re-settle on a later rotation can leave it slightly
-    // stale, which is worth less than a status bar that rewrites itself mid-tail.
-    {
-        QMutexLocker lock(&m_mutex);
-        if (m_session->mode() != SshSession::Mode::Exec) {
-            m_status.note.clear();
-        } else {
-            switch (m_session->sizeSource()) {
-            case SizeSource::Wc:
-                m_status.note = Tr::tr("reading with shell commands — %1 offers neither "
-                                       "SFTP nor `stat` nor `ls`, so the log is measured "
-                                       "by reading all of it and is checked rarely")
-                                    .arg(m_location.host);
-                break;
-            case SizeSource::Ls:
-                m_status.note = Tr::tr("reading with shell commands — %1 offers neither "
-                                       "SFTP nor `stat`, so a rotation is noticed within "
-                                       "about half a minute rather than at once")
-                                    .arg(m_location.host);
-                break;
-            case SizeSource::Stat:
-            case SizeSource::None:
-                m_status.note = Tr::tr("reading with shell commands — %1 does not offer "
-                                       "SFTP")
-                                    .arg(m_location.host);
-                break;
-            }
-        }
-    }
+    // Nothing is said about the exec fallback or the size rung it settled on. A tail that
+    // is working is the ordinary case whatever transport carries it, and a permanent line
+    // in the status bar is read once and ignored forever after. The costs that are worth
+    // interrupting for are the ones that stop the tail working, and those already speak
+    // for themselves as errors — the 64 MB `wc` ceiling names its own remedy (§6.3.1).
     *failure = SshSession::Failure::None;
     return true;
 }
