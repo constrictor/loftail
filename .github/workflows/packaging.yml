@@ -354,15 +354,93 @@ jobs:
       # env to later steps) before configuring. Constrain it to VS 2022 so a
       # newer side-by-side toolset can't be selected.
       #
-      # Still on node20 and so still annotated as deprecated, unlike the actions/*
-      # ones bumped to v7: v1.13.0 is its latest release and it is node20 too, so
-      # there is no version to move to. Left alone deliberately — the runner forces
-      # it onto node24 and it works; pinning a fork or vendoring the two lines of
-      # vcvarsall it wraps would cost more than the warning does.
+      # This was ilammy/msvc-dev-cmd@v1, which is node20 and so annotated as
+      # deprecated on every run. Unlike the actions/* ones bumped to v7 there was no
+      # version to move to: v1.13.0 (Jan 2024) is its latest release and is node20
+      # too, and the repository has not been pushed to since Apr 2024. What the
+      # action does is find vcvarsall.bat and export what it changes, so it is done
+      # here directly rather than swapping in another third-party action that will
+      # eventually deprecate the same way — this step now has no node runtime to age.
       - name: Set up MSVC toolchain
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          vsversion: "2022"
+        shell: pwsh
+        run: |
+          # vswhere ships with the VS Installer and is the supported way to locate an
+          # installation. The version range is the "vsversion: 2022" constraint:
+          # VS 2022 is toolset 17.x, so [17.0,18.0) excludes a side-by-side 2026.
+          # -requires rejects an installation that has no x64 C++ compiler at all,
+          # which is what makes a wrong pick fail here rather than at the first cl.exe.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            Write-Host "::error::vswhere.exe not found; no Visual Studio installer on this runner"
+            exit 1
+          }
+          $install = (& $vswhere -products '*' -version '[17.0,18.0)' `
+                        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                        -property installationPath -latest | Select-Object -First 1)
+          if (-not $install) {
+            Write-Host "::error::no VS 2022 installation with the x64 C++ toolset"
+            exit 1
+          }
+          $vcvars = Join-Path $install.Trim() 'VC\Auxiliary\Build\vcvarsall.bat'
+          if (-not (Test-Path $vcvars)) {
+            Write-Host "::error::found VS 2022 at $install but no vcvarsall.bat under it"
+            exit 1
+          }
+
+          # vcvarsall is invoked from a generated .cmd rather than by handing a quoted
+          # command string to `cmd /c`. PowerShell escapes an embedded double quote as
+          # \" when it builds a native command line and cmd.exe has no such escape, so
+          # `cmd /c "`"$vcvars`" x64 && set"` -- the idiom this would otherwise be --
+          # mangles exactly the paths that need quoting, and vcvarsall.bat is always
+          # under "Program Files (x86)". Inside a .cmd file cmd does its own quoting.
+          $runner = Join-Path $env:RUNNER_TEMP 'loftail-vcvars.cmd'
+          $log = Join-Path $env:RUNNER_TEMP 'loftail-vcvars.log'
+          @(
+            '@echo off'
+            # vcvarsall reports failure on stdout, not stderr, so keep the output for
+            # the error path instead of sending it to nul.
+            "call `"$vcvars`" x64 > `"$log`" 2>&1 || exit /b 1"
+            'set'
+          ) | Set-Content -LiteralPath $runner -Encoding ascii
+
+          # Export the environment DELTA across vcvarsall, not everything `set` prints:
+          # the latter would write the runner's own GITHUB_*/RUNNER_* variables back
+          # into GITHUB_ENV. Both sides are read through cmd so the two listings are in
+          # the same format and the difference is only vcvarsall's doing.
+          function Read-CmdEnv($lines) {
+            $table = @{}
+            foreach ($line in $lines) {
+              $name, $value = $line -split '=', 2
+              # cmd emits pseudo-variables whose name is empty ("=C:", "=ExitCode");
+              # they split to an empty name and are dropped here.
+              if ($name) { $table[$name] = $value }
+            }
+            return $table
+          }
+          $before = Read-CmdEnv (cmd /c set)
+          $afterLines = cmd /c $runner
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::vcvarsall.bat x64 failed with exit code $LASTEXITCODE"
+            if (Test-Path $log) { Get-Content $log | ForEach-Object { Write-Host $_ } }
+            exit 1
+          }
+          $after = Read-CmdEnv $afterLines
+          $changed = foreach ($name in $after.Keys) {
+            if ($before[$name] -ne $after[$name]) { "$name=$($after[$name])" }
+          }
+          # A silent no-op would leave MinGW g++ first on PATH and fail much later, in
+          # CMake's compiler probe, with nothing pointing back at this step. cmd's own
+          # variables (PROMPT, COMSPEC) cancel out of the diff because the baseline is
+          # read through cmd as well, so an empty delta really does mean nothing ran.
+          if (-not $changed) {
+            Write-Host "::error::vcvarsall.bat changed no environment variables"
+            exit 1
+          }
+          # Appended in one write, and -Encoding utf8 is BOM-less under pwsh (7.x),
+          # which is the shell here; Windows PowerShell 5.1 would emit a BOM and land
+          # it in the middle of the file.
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value $changed -Encoding utf8
+          Write-Host "MSVC toolchain from $install ($($changed.Count) variables exported)"
 
       # libarchive comes from vcpkg (preinstalled on this runner) rather than being
       # built from source like libssh2. The difference is codecs: libarchive is only
