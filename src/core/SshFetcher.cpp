@@ -151,7 +151,7 @@ private:
 
     void tailLoop();
     void pollOnce();
-    bool establish(SshPrompter *prompter, QString *error, SshSession::Failure *failure);
+    bool establish(bool mayPrompt, QString *error, SshSession::Failure *failure);
     void reconnect();
     bool fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset);
     void publishHeldCommits();
@@ -191,9 +191,6 @@ private:
 
     std::unique_ptr<SshSession> m_session; // the worker's, from the moment it starts
     std::unique_ptr<Worker>     m_worker;
-    // Captured by start() on the thread that has one, so the worker never reads the
-    // global. Only consulted when m_wantsPrompter allows it.
-    SshPrompter                *m_prompter = nullptr;
     // The same session as m_session when there is one, but guarded — the one handle
     // another thread may touch, and only to call abort(). See publishSession().
     SshSession                 *m_abortable = nullptr;
@@ -233,14 +230,14 @@ private:
 // the session is live and the state is Live. Shared by start(), which runs on the thread
 // that opened the document and may prompt, and by the worker's reconnect, which may not
 // — the only difference between the two is the prompter, which is why this takes one.
-bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Failure *failure)
+bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *failure)
 {
     // An unattended retry is IMPATIENT where the first attempt is patient. A person
     // watching a connect they asked for will wait; a timer retrying in the background
     // has nothing to lose by giving up early, because the next attempt is seconds away
     // and every second spent in this one is a second the host is not being left alone.
-    const int timeout = prompter ? m_options.timeoutMs
-                                 : qMin(m_options.timeoutMs, kRetryTimeoutMs);
+    const int timeout = mayPrompt ? m_options.timeoutMs
+                                  : qMin(m_options.timeoutMs, kRetryTimeoutMs);
 
     // A retry out of Waiting stays Waiting until it actually gets somewhere. Announcing
     // "connecting…" on every attempt would flap the state several times a minute, and
@@ -273,10 +270,14 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
 
     // Every question goes through the relay, whichever thread this is on. On the
     // application thread the gate runs it inline, so an interactive open behaves exactly
-    // as it did; off it, the question travels and the answer comes back. A null prompter
-    // is still a null prompter — the relay refuses on its behalf rather than asking.
-    PromptRelay relay(prompter);
-    SshPrompter *asker = prompter ? &relay : nullptr;
+    // as it did; off it, the question travels and the answer comes back.
+    //
+    // The relay is handed no prompter and resolves the live one per call (PromptRelay.h):
+    // this fetcher's thread can outlive the window whose prompter it would otherwise have
+    // cached, since a fetcher is retired rather than joined. `mayPrompt` is the
+    // permission, not the pointer — a null prompter at call time refuses by itself.
+    PromptRelay relay;
+    SshPrompter *asker = mayPrompt ? &relay : nullptr;
     if (!m_session->connectTo(m_location, asker, timeout, error, failure)) {
         resetSession();
         return false;
@@ -379,13 +380,13 @@ bool SshFetcher::start(const QString &spoolDir, QString *error)
     // the tab appears at once, says what it is doing, and fills in when the bytes arrive,
     // by the same M13 machinery a log that has not been written yet uses (§6.5).
     //
-    // The prompter is captured HERE, on the thread that has one, rather than read from
-    // the worker: the first attempt is a person's own open and may ask them anything,
-    // and every attempt after it is unattended and may not (reconnect()).
-    m_prompter = sshPrompter();
+    // Whether the first attempt MAY ask is decided here, on the thread that would be
+    // asked — but only as a permission, never as a pointer to the prompter itself, which
+    // this thread may outlive (PromptRelay.h). Every attempt after the first is
+    // unattended and may not ask at all (reconnect()).
     {
         QMutexLocker lock(&m_mutex);
-        m_wantsPrompter = true;
+        m_wantsPrompter = sshPrompter() != nullptr;
         m_status.state = FetchStatus::State::Connecting;
     }
 
@@ -711,18 +712,18 @@ void SshFetcher::pollOnce()
 // into the retry after the one it was granted for.
 void SshFetcher::reconnect()
 {
-    SshPrompter *prompter = nullptr;
+    bool mayPrompt = false;
     {
         QMutexLocker lock(&m_mutex);
         if (m_wantsPrompter) {
             m_wantsPrompter = false;
-            prompter = m_prompter;
+            mayPrompt = true;
         }
     }
 
     QString error;
     SshSession::Failure failure = SshSession::Failure::None;
-    if (establish(prompter, &error, &failure))
+    if (establish(mayPrompt, &error, &failure))
         return;
 
     if (failure == SshSession::Failure::Unreachable

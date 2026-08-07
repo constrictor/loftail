@@ -12,6 +12,7 @@
 #else
 #  include <sys/socket.h>
 #  include <unistd.h>
+#  include <cerrno>
 #endif
 
 using namespace loftail;
@@ -58,6 +59,22 @@ private:
         QEventLoop loop;
         QTimer::singleShot(ms, &loop, &QEventLoop::quit);
         loop.exec();
+    }
+
+    // Whether a read on `fd` would park a blocking reader — "nothing yet, ask again" —
+    // as opposed to ending it, however it ends. The two platforms end it differently and
+    // only the ending matters (SshSession::abort).
+    static bool readWouldBlock(qintptr fd)
+    {
+        char buffer[64];
+        const qint64 got = rawRead(fd, buffer, sizeof(buffer));
+        if (got >= 0)
+            return false; // data, or end of stream: either way the reader moves on
+#if defined(Q_OS_WIN)
+        return ::WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+        return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
     }
 
     // A read that does not block, the way libssh2 polls a non-blocking descriptor.
@@ -165,13 +182,17 @@ void TestSocketDetach::shuttingDownUnblocksAReadWithoutFreeingTheDescriptor()
     const qintptr owned = detachSocketFromQt(m_client);
     QVERIFY(owned >= 0);
 
+    // Before: an idle connected socket says "nothing yet, ask again" — which is exactly
+    // what a blocking reader inside libssh2 is sitting in.
+    QVERIFY2(readWouldBlock(owned), "an idle connected socket should have nothing to say");
+
     shutdownDetachedSocket(owned);
 
-    // Returns, rather than blocking for want of anything to read: a shutdown read end
-    // reports end of stream.
-    char buffer[64];
-    const qint64 got = rawRead(owned, buffer, sizeof(buffer));
-    QCOMPARE(got, qint64(0));
+    // After: the read stops saying that, so a blocking reader stops waiting. WHAT it says
+    // instead differs by platform and does not matter — POSIX reports end of stream (0),
+    // Winsock fails the call with WSAESHUTDOWN, and libssh2 abandons the read either way.
+    // Asserting the POSIX answer specifically is what failed on Windows.
+    QVERIFY2(!readWouldBlock(owned), "a shut-down socket still parked the reader");
 
     // Still a descriptor this process owns — shutdown() is not close(). Asking for a
     // socket option is the cheapest question that distinguishes the two.

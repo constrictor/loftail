@@ -25,10 +25,14 @@ namespace loftail {
 // THE DISCIPLINE, in one place so that it is not re-derived per user:
 //
 //   1. The gate's mutex is never held while the work runs, nor while a caller waits.
-//   2. A call is a shared_ptr owned by both sides. A cancelled caller returns while the
-//      application thread may still be inside a modal dialog, and writing that dialog's
-//      eventual answer into a dead stack frame is the one genuinely dangerous move
-//      available here.
+//   2. A call NEVER returns while its work is running. The work holds references into
+//      the caller's frame — &password, &choice, &message — so a cancel that released a
+//      caller mid-execution would let that frame die underneath the application thread,
+//      which is a crash a long way from its cause. Only a call that has not STARTED can
+//      be abandoned, that decision is made under the mutex, and it is not re-read
+//      afterwards. The interrupt is what keeps the resulting wait short: it ends the
+//      dialog rather than waiting for the user. The call is a shared_ptr owned by both
+//      sides so the object outlives whichever of them lets go first.
 //   3. One call runs at a time. A second request delivered inside the first dialog's
 //      nested event loop would stack two modal dialogs.
 //   4. A caller must not hold ITS OWN locks across call(). A fetcher that called this

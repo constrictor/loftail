@@ -18,7 +18,14 @@ struct GuiCallGate::Call
 {
     std::function<void()> work;
     bool                  done = false;
-    bool                  abandoned = false; // the asker gave up; run nothing
+    bool                  abandoned = false; // the asker gave up BEFORE it started
+
+    // Set under the mutex the instant the application thread commits to running this,
+    // and it is what makes `abandoned` a decision rather than a race. Once this is true
+    // the asker MUST wait for done, cancelled or not: `work` holds references into the
+    // asker's stack frame (&password, &choice, &message), so returning early would let
+    // that frame die underneath a call already executing.
+    bool                  started = false;
 };
 
 // Lives on the application thread and drains the queue there.
@@ -40,22 +47,32 @@ public:
     void drain()
     {
         std::shared_ptr<Call> next;
+        bool run = false;
         {
             QMutexLocker lock(&mutex);
             if (running || queue.empty())
                 return;
             next = queue.front();
             queue.pop_front();
-            running = true;
+            // DECIDED HERE, under the mutex, and not re-read afterwards. Reading
+            // `abandoned` outside the lock is a race on the one bit that says whether the
+            // asker's stack is still alive — and losing it means running a lambda over a
+            // dead frame, which is a crash a long way from its cause.
+            run = !next->abandoned && next->work != nullptr;
+            if (run) {
+                next->started = true;
+                running = true;
+            }
         }
 
-        if (!next->abandoned && next->work)
+        if (run)
             next->work();
 
         bool more = false;
         {
             QMutexLocker lock(&mutex);
-            running = false;
+            if (run)
+                running = false;
             next->done = true;
             more = !queue.empty();
             answered.wakeAll();
@@ -109,8 +126,12 @@ void GuiCallGate::cancel()
     {
         QMutexLocker lock(&d->mutex);
         d->cancelled = true;
-        for (auto &call : d->queue)
-            call->abandoned = true;
+        // Only the ones that have not started. A started call is the application thread's
+        // business until it returns, and its asker stays parked until then.
+        for (auto &call : d->queue) {
+            if (!call->started)
+                call->abandoned = true;
+        }
         // Only worth interrupting if the application thread is actually inside something.
         if (d->running)
             interrupt = d->interrupt;
@@ -178,15 +199,20 @@ bool GuiCallGate::call(const std::function<void()> &work)
     d->rearm();
 
     QMutexLocker lock(&d->mutex);
-    while (!call->done && !d->cancelled)
+    // A cancel releases a call that has NOT STARTED. One that has must be waited out —
+    // `work` holds references into this frame, so returning here would let the frame die
+    // while the application thread is still inside the lambda. That is what cancel()'s
+    // interrupt is for: it ends the dialog, so the wait this keeps is a moment, not the
+    // user's own time.
+    while (!call->done && !(d->cancelled && !call->started))
         d->answered.wait(&d->mutex);
 
     if (call->done)
         return !call->abandoned;
 
-    // Cancelled with the question still outstanding. Mark it so the application thread
-    // does not run it if it gets there first, and leave: the shared_ptr keeps the object
-    // alive for whichever side is still holding one (rule 2).
+    // Cancelled with the question still queued and untouched. Mark it so the application
+    // thread skips it, and leave: the shared_ptr keeps the object alive for whichever
+    // side is still holding one (rule 2).
     call->abandoned = true;
     return false;
 }
