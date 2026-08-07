@@ -3,6 +3,7 @@
 #include "SourceFetcher.h"
 
 #include <QHash>
+#include <QMutex>
 #include <QString>
 
 #include <functional>
@@ -79,7 +80,19 @@ private:
 };
 
 // The live spools, keyed by normalized path, plus the place a transport is installed
-// from. Single instance; called from the GUI thread only.
+// from. Single instance.
+//
+// THREADING, and it is not "the GUI thread only" however much the rest of this file
+// reads that way. acquire(), find() and setFetcherFactory() ARE GUI-thread-only, and
+// the first of those relies on it: acquire() is re-entrant (a remote `app.log.gz`
+// acquires the expansion's key, whose fetcher acquires the container's), so its
+// check-then-insert is deliberately not atomic and cannot be made so without
+// deadlocking on itself.
+//
+// But the map is also written from wherever the LAST shared_ptr to a spool is dropped,
+// and that is not this thread. ArchiveFetcher resets its input — a SpooledLogSource
+// holding the container's spool — from its own worker. So m_spools is guarded, and the
+// lock is held only across the map access, never across start() or a destructor.
 class SourceSpoolRegistry
 {
 public:
@@ -128,9 +141,18 @@ private:
     SourceSpoolRegistry();
     ~SourceSpoolRegistry();
 
-    FetcherFactory m_factory;
+    // Drop `key` from the map. Called from a spool's deleter, on whatever thread let go
+    // of the last handle — which is why it takes the lock and why it is separate from
+    // the delete that follows it: ~SourceSpool must not run under m_mutex.
+    void forget(const QString &key);
+
+    FetcherFactory m_factory; // GUI thread only, installed before any open
+
+    mutable QMutex m_mutex; // guards m_spools, and nothing else
     // Weak, so the last SpooledLogSource dropping its handle tears the spool down.
     QHash<QString, std::weak_ptr<SourceSpool>> m_spools;
+
+    // GUI thread only: created on the first acquire(), released by shutdown().
     std::unique_ptr<QTemporaryDir> m_instanceDir;
     std::unique_ptr<QLockFile>     m_instanceLock;
 };

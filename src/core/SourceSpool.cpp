@@ -228,12 +228,19 @@ void SourceSpoolRegistry::sweepAbandonedSpools()
 
 std::shared_ptr<SourceSpool> SourceSpoolRegistry::find(const QString &key) const
 {
+    QMutexLocker lock(&m_mutex);
     return m_spools.value(key).lock();
+}
+
+void SourceSpoolRegistry::forget(const QString &key)
+{
+    QMutexLocker lock(&m_mutex);
+    m_spools.remove(key);
 }
 
 std::shared_ptr<SourceSpool> SourceSpoolRegistry::acquire(const QString &key, QString *error)
 {
-    if (auto live = m_spools.value(key).lock())
+    if (auto live = find(key))
         return live;
 
     const QString base = instanceDir();
@@ -270,12 +277,21 @@ std::shared_ptr<SourceSpool> SourceSpoolRegistry::acquire(const QString &key, QS
 
     // shared_ptr with an explicit deleter: the constructor is private, so make_shared
     // cannot reach it, and the weak entry must be reaped when the last handle drops.
+    //
+    // This deleter runs on WHICHEVER THREAD dropped the last handle, which for a remote
+    // archive is the archive fetcher's own worker letting go of the container. Hence
+    // forget() rather than a bare remove — and hence the delete happening after it and
+    // outside the lock, because ~SourceSpool stops a fetcher and must not do that with
+    // the registry held.
     std::shared_ptr<SourceSpool> spool(new SourceSpool(key, std::move(fetcher), dir),
                                        [key](SourceSpool *p) {
-                                           SourceSpoolRegistry::instance().m_spools.remove(key);
+                                           SourceSpoolRegistry::instance().forget(key);
                                            delete p;
                                        });
-    m_spools.insert(key, spool);
+    {
+        QMutexLocker lock(&m_mutex);
+        m_spools.insert(key, spool);
+    }
     return spool;
 }
 
@@ -295,6 +311,7 @@ void SourceSpoolRegistry::clear()
     // kept alive by that handle and torn down when it drops, which is the point of
     // the weak map. Forgetting the entries just means the next acquire() of the same
     // key builds a fresh spool instead of joining the old one.
+    QMutexLocker lock(&m_mutex);
     m_spools.clear();
 }
 
