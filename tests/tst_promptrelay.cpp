@@ -88,6 +88,10 @@ private slots:
     void cancelUnblocksAWaitingWorker();
     void cancelledMeansRefused();
     void aNullPrompterRefusesWithoutAsking();
+
+    void oneConnectAtATimeToOneHost();
+    void differentHostsConnectInParallel();
+    void aWaitingConnectCanBeGivenUpOn();
 };
 
 void TestPromptRelay::aQuestionFromAWorkerIsAnsweredOnTheMainThread()
@@ -241,6 +245,103 @@ void TestPromptRelay::aNullPrompterRefusesWithoutAsking()
     bool remember = false;
     QVERIFY(!relay.askPassword(QStringLiteral("deploy@web1:22"), QStringLiteral("Password:"),
                                &password, &remember));
+}
+
+void TestPromptRelay::oneConnectAtATimeToOneHost()
+{
+    // The property that used to be free: with every connect on the GUI thread they were
+    // serialised by construction, so five files on one host cost one prompt. Now the
+    // fetchers connect in parallel and this is what keeps that true — the first one
+    // prompts, the rest wait and then find the password in the cache.
+    std::atomic_int inFlight{0};
+    std::atomic_int highWater{0};
+
+    const auto body = [&]() {
+        SshConnectHold hold(QStringLiteral("deploy@web1:22"), nullptr);
+        QVERIFY(hold.held());
+        const int now = ++inFlight;
+        highWater = qMax(highWater.load(), now);
+        QThread::msleep(50);
+        --inFlight;
+    };
+
+    Asker one(body);
+    Asker two(body);
+    Asker three(body);
+    one.start();
+    two.start();
+    three.start();
+
+    QVERIFY(one.wait(5000));
+    QVERIFY(two.wait(5000));
+    QVERIFY(three.wait(5000));
+    QCOMPARE(highWater.load(), 1);
+}
+
+void TestPromptRelay::differentHostsConnectInParallel()
+{
+    // Because serialising ALL connects would trade one freeze for another: opening five
+    // logs on five hosts should take as long as the slowest, not the sum.
+    std::atomic_int inFlight{0};
+    std::atomic_int highWater{0};
+
+    const auto bodyFor = [&](const QString &target) {
+        return [&, target]() {
+            SshConnectHold hold(target, nullptr);
+            QVERIFY(hold.held());
+            const int now = ++inFlight;
+            highWater = qMax(highWater.load(), now);
+            QThread::msleep(100);
+            --inFlight;
+        };
+    };
+
+    Asker one(bodyFor(QStringLiteral("deploy@web1:22")));
+    Asker two(bodyFor(QStringLiteral("deploy@web2:22")));
+    one.start();
+    two.start();
+    QVERIFY(one.wait(5000));
+    QVERIFY(two.wait(5000));
+
+    QCOMPARE(highWater.load(), 2);
+}
+
+void TestPromptRelay::aWaitingConnectCanBeGivenUpOn()
+{
+    // A fetcher queued behind another host's password dialog must still close promptly
+    // when its tab is closed — otherwise the wait this introduced becomes a new way to
+    // freeze on teardown, which is the thing being removed.
+    QMutex holderStarted;
+    holderStarted.lock();
+    std::atomic_bool releaseHolder{false};
+
+    Asker holder([&]() {
+        SshConnectHold hold(QStringLiteral("deploy@web1:22"), nullptr);
+        holderStarted.unlock();
+        while (!releaseHolder.load())
+            QThread::msleep(5);
+    });
+    holder.start();
+    QVERIFY(holderStarted.tryLock(5000)); // it is in
+
+    std::atomic_bool giveUp{false};
+    std::atomic_bool gotIt{true};
+    Asker waiter([&]() {
+        SshConnectHold hold(QStringLiteral("deploy@web1:22"),
+                            [&]() { return giveUp.load(); });
+        gotIt = hold.held();
+    });
+    waiter.start();
+
+    QThread::msleep(100); // it is queued behind the holder
+    QVERIFY(waiter.isRunning());
+    giveUp = true;
+    QVERIFY2(waiter.wait(5000), "a waiting connect ignored being asked to stop");
+    QVERIFY(!gotIt.load());
+
+    releaseHolder = true;
+    QVERIFY(holder.wait(5000));
+    holderStarted.unlock();
 }
 
 QTEST_MAIN(TestPromptRelay)

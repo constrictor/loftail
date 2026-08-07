@@ -232,6 +232,19 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
         setState(FetchStatus::State::Connecting);
 
     resetSession();
+    // One connect at a time to this host, so that N files on it still cost ONE password
+    // prompt — the property that used to fall out of every connect running on the GUI
+    // thread, and that has to be arranged now that they do not (SshPrompter.h). Held
+    // until this function returns, which is deliberately past authentication: the point
+    // is for the waiters to find the password in the cache rather than ask for it.
+    SshConnectHold hold(m_location.target(), [this]() { return stopping(); });
+    if (!hold.held()) {
+        if (error)
+            *error = Tr::tr("Cancelled while waiting to connect to %1.").arg(m_location.host);
+        *failure = SshSession::Failure::Unreachable;
+        return false;
+    }
+
     m_session = std::make_unique<SshSession>();
     // So a connect gives up as soon as nobody wants it any more, rather than running out
     // its timeout first. Read from this thread only, which is why it can look at

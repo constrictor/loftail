@@ -2,6 +2,8 @@
 
 #include <QString>
 
+#include <functional>
+
 namespace loftail {
 
 // What loftail must ask a person before it can read a remote log, expressed without
@@ -82,6 +84,8 @@ SshPrompter *sshPrompter();
 // It deliberately caches per target rather than sharing a connection: a LIBSSH2_SESSION
 // is not thread-safe, and each fetcher runs its own thread, so a shared session would
 // need a mutex around every read and would serialize them for no user-visible gain.
+//
+// Read and written from every fetcher thread since M17, hence the lock inside.
 namespace SshCredentialCache {
 bool has(const QString &target);
 QString password(const QString &target);
@@ -89,5 +93,44 @@ void remember(const QString &target, const QString &password);
 void forget(const QString &target);
 void clear();
 } // namespace SshCredentialCache
+
+// One connect at a time to any given target, held for as long as this object lives
+// (ARCHITECTURE.md §6.3.3).
+//
+// WHAT IT PROTECTS is the promise above it: one host costs one prompt. That used to be
+// free, because every connect ran on the GUI thread and they were therefore serialised
+// by construction. Once each fetcher connects on its own thread, restoring five files
+// from one host means five workers reaching authentication at the same instant, all
+// missing the still-empty credential cache, and all asking — five stacked dialogs for
+// one host, and five of sshd's six default MaxAuthTries spent to produce them.
+//
+// So the first fetcher for a host connects and prompts, and the rest wait here; when it
+// releases, they find the password in SshCredentialCache and sign in without asking.
+// DIFFERENT hosts still connect in parallel, which is where the time is actually saved.
+//
+// Coalescing the prompts themselves would be the wrong fix: keyboard-interactive is a
+// conversation whose wording differs per prompt, so one host's answer is not in general
+// another's question.
+//
+// Never taken on the application thread, and never while holding a fetcher's own mutex.
+class SshConnectHold
+{
+public:
+    // Blocks until this target's slot is free, `abandon` returns true, or the process is
+    // shutting down. Check held() before relying on it.
+    SshConnectHold(const QString &target, const std::function<bool()> &abandon);
+    ~SshConnectHold();
+
+    SshConnectHold(const SshConnectHold &) = delete;
+    SshConnectHold &operator=(const SshConnectHold &) = delete;
+
+    // False when the wait was abandoned. The caller should give up rather than connect:
+    // it was asked to stop.
+    bool held() const { return m_held; }
+
+private:
+    QString m_target;
+    bool    m_held = false;
+};
 
 } // namespace loftail

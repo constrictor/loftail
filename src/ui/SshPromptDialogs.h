@@ -3,6 +3,7 @@
 #include "SshPrompter.h"
 
 #include <QCoreApplication>
+#include <QSet>
 
 QT_BEGIN_NAMESPACE
 class QWidget;
@@ -66,6 +67,10 @@ private:
     QString  m_lastRememberFailure;
     bool     m_bulkRestore = false;
     bool     m_restoreCancelled = false;
+    // Targets the user pressed "Skip This Host" for. The button names a HOST, and a host
+    // commonly has several files open on it, so without this it skipped only the file it
+    // appeared for and the next one on the same host asked again.
+    QSet<QString> m_skippedTargets;
 };
 
 } // namespace loftail
