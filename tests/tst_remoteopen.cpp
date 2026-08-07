@@ -19,6 +19,7 @@
 
 #include "FakeFetcher.h"
 #include "HostBookmarkStore.h"
+#include "LogFormatDialog.h"
 #include "LogView.h"
 #include "MainWindow.h"
 #include "OpenRemoteDialog.h"
@@ -53,6 +54,13 @@ private:
     static constexpr auto kUrl = "ssh://deploy@web1/var/log/app.log";
 
     static QString url() { return QString::fromLatin1(kUrl); }
+    // Distinct addresses for the format-dialog cases. The format cache is persistent and
+    // shared across every case in this binary, and a cached format suppresses the prompt.
+    static QString formatUrl()
+    {
+        return QStringLiteral("ssh://deploy@fmt1/var/log/app.log");
+    }
+    static QString bgUrl() { return QStringLiteral("ssh://deploy@bg1/var/log/app.log"); }
 
     static QByteArray sampleLog()
     {
@@ -111,8 +119,11 @@ private slots:
     void menuEntriesExist();
     void savedHostsAreOneFlatLevel();
     void refusedRemoteReportsWithoutOpeningATab();
+    void aTransportRefusalKeepsTheTabAndSaysWhy();
     void unreachableRemoteOpensAWaitingTab();
     void savingOverwritesTheBookmarkOfTheSameName();
+    void anInteractiveRemoteOpenStillGetsTheFormatDialog();
+    void aBackgroundResumeRaisesNoFormatDialog();
 };
 
 void TestRemoteOpen::opensARemoteUrlAsATab()
@@ -279,9 +290,11 @@ void TestRemoteOpen::savedHostsAreOneFlatLevel()
 
 void TestRemoteOpen::refusedRemoteReportsWithoutOpeningATab()
 {
-    // A REFUSAL — a changed host key, a rejected password — which is what
-    // setStartFailure() models. It gets the same answer however long loftail waits, so
-    // it stays an open failure with no tab, exactly as a malformed path does.
+    // A refusal decided with NO I/O — no transport could be built for this address at
+    // all. Those are still an open failure with no tab, exactly as a malformed path is,
+    // because there is nothing to put in a tab and nothing that could change.
+    // setStartFailure() is what models that since M17; a refusal by the far END is
+    // aTransportRefusalKeepsTheTabAndSaysWhy() below.
     FakeRemoteFarm farm;
     farm.at(url())->setStartFailure(QStringLiteral("Authentication to deploy@web1 failed."));
 
@@ -392,6 +405,119 @@ void TestRemoteOpen::savingOverwritesTheBookmarkOfTheSameName()
     remove->click();
     QCOMPARE(list->count(), 1);
     QCOMPARE(list->item(0)->text(), QStringLiteral("staging"));
+}
+
+void TestRemoteOpen::aTransportRefusalKeepsTheTabAndSaysWhy()
+{
+    // A refusal by the far end — a rejected password, a changed host key. Since M17 the
+    // tab is already on screen by the time the answer comes back, so tearing it down
+    // would mean a tab appearing and vanishing on its own. It stays and reports the
+    // transport's own words instead, and File ▸ Reconnect is how the user tries again
+    // (SPEC.md §3).
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(sampleLog());
+    remote->setConnectRefusal(QStringLiteral("Authentication to deploy@web1 failed."));
+
+    MainWindow window;
+    window.openFile(url(), QString::fromLatin1(kPattern));
+    settle(200);
+
+    QCOMPARE(tabCount(window), 1);
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log (web1)"));
+    QVERIFY(statusText(window).contains(QStringLiteral("Authentication")));
+
+    auto *view = window.findChild<LogView *>();
+    QVERIFY(view);
+    QCOMPARE(view->recordCount(), 0);
+    QVERIFY(view->placeholderText().contains(QStringLiteral("Authentication")));
+
+    // Reconnect is offered, because a refused spooled log still has its spool.
+    auto *reconnect = window.findChild<QAction *>(QStringLiteral("reconnectAction"));
+    QVERIFY(reconnect);
+    QVERIFY(reconnect->isEnabled());
+}
+
+void TestRemoteOpen::anInteractiveRemoteOpenStillGetsTheFormatDialog()
+{
+    // THE SILENT REGRESSION THIS PREVENTS. openWithSettings() suppresses the format
+    // prompt for a waiting document, and since M17 EVERY remote log opens waiting — so
+    // without the deferral, no remote log would ever see the Log Format dialog again,
+    // M8's autodetection would be unreachable for them, and nothing would be persisted,
+    // so every reopen would repeat the non-offer. All without an error anywhere.
+    FakeRemoteFarm farm;
+    // A URL of its own: the format cache is shared across the cases in this binary,
+    // and a cached format would suppress the very prompt being tested.
+    auto remote = farm.at(formatUrl());
+    // Content the default pattern cannot parse, so the dialog is genuinely warranted.
+    remote->setInitialContent(QByteArrayLiteral("<12>Jul 21 00:00:01 host app: first\n"
+                                                "<12>Jul 21 00:00:02 host app: second\n"));
+    remote->setConnectDelayed();
+
+    bool shown = false;
+    auto *timer = new QTimer(qApp);
+    timer->setInterval(10);
+    QObject::connect(timer, &QTimer::timeout, timer, [timer, &shown] {
+        auto *dlg = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!qobject_cast<loftail::LogFormatDialog *>(dlg))
+            return;
+        shown = true;
+        timer->stop();
+        timer->deleteLater();
+        dlg->reject(); // declining is enough; the point is that it was offered
+    });
+    timer->start();
+
+    MainWindow window;
+    window.show();
+    // No pattern passed, so this is the "prompt if the default does not match" path an
+    // ordinary File ▸ Open takes.
+    window.openFile(formatUrl());
+    QCOMPARE(tabCount(window), 1); // the tab is there before anything has connected
+
+    remote->becomeAvailable();
+    QTRY_VERIFY_WITH_TIMEOUT(shown, 5000);
+}
+
+void TestRemoteOpen::aBackgroundResumeRaisesNoFormatDialog()
+{
+    // The other side of the same rule, and the one §6.5 has always insisted on: a log
+    // arriving on a watch tick raises nothing, because the tab may not even be on screen
+    // and the user is doing something else. Here the open passed a pattern, so no prompt
+    // was ever owed — which is exactly the session-restore case.
+    FakeRemoteFarm farm;
+    auto remote = farm.at(bgUrl());
+    remote->setInitialContent(QByteArrayLiteral("<12>Jul 21 00:00:01 host app: first\n"));
+    remote->setConnectDelayed();
+
+    bool shown = false;
+    auto *timer = new QTimer(qApp);
+    timer->setInterval(10);
+    QObject::connect(timer, &QTimer::timeout, timer, [&shown] {
+        auto *dlg = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (qobject_cast<loftail::LogFormatDialog *>(dlg)) {
+            shown = true;
+            dlg->reject();
+        }
+    });
+    timer->start();
+
+    MainWindow window;
+    window.show();
+    window.openFile(bgUrl(), QString::fromLatin1(kPattern));
+    remote->becomeAvailable();
+
+    // Wait for the resume to have happened, then check nothing was raised on the way.
+    auto *view = window.findChild<LogView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() > 0, 5000);
+    settle(300);
+    timer->stop();
+    timer->deleteLater();
+
+    QVERIFY(!shown);
+    // It says where to fix it instead, which is the whole of §6.5's alternative.
+    QVERIFY(statusText(window).contains(QStringLiteral("format not recognised")));
 }
 
 int main(int argc, char *argv[])
