@@ -91,10 +91,34 @@ class SourceFetcher
 public:
     virtual ~SourceFetcher() = default;
 
-    // Open the input and fetch enough of it that a format sample can be taken; then
-    // keep following in the background. Blocking, bounded by the implementation's own
-    // timeout, and the ONE call that may prompt the user.
-    // Returns false and fills `error` on failure.
+    // Begin filling `spoolDir`, and return.
+    //
+    // NON-BLOCKING, and that is the contract (M17, ARCHITECTURE.md §6.3.3). This runs on
+    // the thread that opened the document. It used to connect, authenticate, prompt and
+    // fetch 128 KB before returning — which is why opening a remote log froze the window
+    // for as long as the far end took, and why restoring a session containing one showed
+    // no window at all until every host had answered. All of that is the implementation's
+    // own thread's work now.
+    //
+    // What the caller gets back is a legal, empty spool in State::Connecting.
+    // SpooledLogSource::notReadyYet() reads that as "wait", so the document opens into
+    // the state M13 built for a log that has not been written yet: a tab that exists,
+    // says what it is doing, and fills in when the bytes arrive (§6.5).
+    //
+    // Returns false and fills `error` only for a refusal decided WITHOUT I/O — a spool
+    // directory that cannot be created, an address naming nothing fetchable. Anything
+    // that needs a round trip is published as State::Error instead, and the tab stays and
+    // says why (SPEC.md §3).
+    //
+    // THE PRIME IS PUBLISHED ALL AT ONCE. The first committedSize an implementation
+    // publishes must be either the whole format prime or the whole stream — never one
+    // short read of it. The document leaves its waiting state at the first committed byte
+    // and settles both its format and its encoding from what it can then read, once and
+    // for good (Document::resume is a one-way door). libssh2 and libarchive are both free
+    // to return less than asked, and Decoder::detect() over 4 KB is not always the same
+    // answer as over 64 KB — so a per-chunk publish during the prime would settle a log's
+    // format against whatever the first read happened to return. After the prime,
+    // publishing per chunk is the point: that is what makes records appear as they arrive.
     virtual bool start(const QString &spoolDir, QString *error) = 0;
 
     // Ask this fetcher to wind up. NON-BLOCKING, and that is the contract, not an

@@ -44,10 +44,14 @@ private:
     QString spoolDir();
     static ArchiveLocation at(const QString &container, const QString &member = QString());
     static bool runToEnd(SourceFetcher &fetcher, int timeoutMs = 30000);
+    bool waitForPrime(SourceFetcher &fetcher, int timeoutMs = 30000);
+    static bool waitForError(SourceFetcher &fetcher, int timeoutMs = 30000);
     static QByteArray spoolContents(const SourceFetcher &fetcher);
 
     QTemporaryDir m_dir;
     int           m_spools = 0;
+    // The first committedSize waitForPrime() saw; see the prime-atomicity rule.
+    qint64        m_firstCommitted = 0;
 };
 
 QString TestArchiveFetcher::spoolDir()
@@ -75,6 +79,47 @@ bool TestArchiveFetcher::runToEnd(SourceFetcher &fetcher, int timeoutMs)
             return true;
         if (status.state == FetchStatus::State::Error)
             return false;
+        QThread::msleep(5);
+    }
+    return false;
+}
+
+// Wait for the prime to land: the first committed bytes, or a terminal state.
+//
+// Needed since M17, where start() spawns the worker and returns rather than expanding
+// anything itself — so "the bytes are there when start() returns" stopped being true.
+// What replaced it is that they arrive PROMPTLY and ALL AT ONCE (SourceFetcher.h), which
+// is what the callers of this then assert.
+bool TestArchiveFetcher::waitForPrime(SourceFetcher &fetcher, int timeoutMs)
+{
+    m_firstCommitted = 0;
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < timeoutMs) {
+        const FetchStatus status = fetcher.status();
+        if (status.committedSize > 0) {
+            // The first size anyone could have seen — which is the figure the
+            // prime-atomicity rule is about, and the only one a later poll cannot
+            // recover once the worker has carried on past it.
+            m_firstCommitted = status.committedSize;
+            return true;
+        }
+        if (status.state == FetchStatus::State::Error
+            || status.state == FetchStatus::State::Complete
+            || status.state == FetchStatus::State::Disconnected)
+            return status.committedSize > 0;
+        QThread::msleep(5);
+    }
+    return false;
+}
+
+bool TestArchiveFetcher::waitForError(SourceFetcher &fetcher, int timeoutMs)
+{
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < timeoutMs) {
+        if (fetcher.status().state == FetchStatus::State::Error)
+            return true;
         QThread::msleep(5);
     }
     return false;
@@ -151,12 +196,22 @@ void TestArchiveFetcher::startPrimesEnoughForAFormatSample()
     QVERIFY2(fetcher, qPrintable(error));
     QVERIFY2(fetcher->start(spoolDir(), &error), qPrintable(error));
 
-    // Document::prepare() takes a 64 KB sample the instant start() returns. Without a
-    // synchronous prime it would sample an empty file and autodetect nothing.
-    const FetchStatus primed = fetcher->status();
-    QVERIFY2(primed.committedSize >= 64 * 1024,
-             qPrintable(QStringLiteral("only %1 bytes were primed").arg(primed.committedSize)));
-    QVERIFY(primed.committedSize < body.size()); // and it did NOT expand the whole thing
+    // The document settles its format and its encoding from a 64 KB sample taken at the
+    // FIRST committed bytes. Since M17 those arrive on the worker rather than inside
+    // start(), so what has to hold is not that they are there immediately but that when
+    // they appear there are enough of them: the prime is published all at once, never
+    // one short read at a time (SourceFetcher.h).
+    QVERIFY(waitForPrime(*fetcher));
+    QVERIFY2(m_firstCommitted >= 64 * 1024,
+             qPrintable(QStringLiteral("the first published size was only %1 bytes")
+                            .arg(m_firstCommitted)));
+
+    // NOT asserted any more: that the prime stopped short of the whole member. That was
+    // a statement about start() returning early, and start() no longer expands anything
+    // itself — the worker carries straight on from the prime into the rest, so by the
+    // time any observer looks, a member this size may legitimately be finished. What
+    // survives, and is what the document actually depends on, is the line above: the
+    // FIRST size anyone can see already covers a full format sample.
 
     QVERIFY(runToEnd(*fetcher));
     QCOMPARE(spoolContents(*fetcher), body);
@@ -309,9 +364,13 @@ void TestArchiveFetcher::anUnanswerableSpaceQuestionDoesNotRefuseTheOpen()
     QVERIFY2(fetcher, qPrintable(error));
     const QString missing = m_dir.path() + QStringLiteral("/no-such-dir");
     // Unanswerable, so it proceeds — and then fails on the write, not on the guess.
-    fetcher->start(missing, &error);
-    QVERIFY(!error.isEmpty());
-    QVERIFY2(!error.contains(QStringLiteral("Not enough space")), qPrintable(error));
+    // Reported through the published status rather than out of start(), which since M17
+    // returns before anything has been attempted.
+    QVERIFY(fetcher->start(missing, &error));
+    QVERIFY(waitForError(*fetcher));
+    const QString reported = fetcher->status().error;
+    QVERIFY(!reported.isEmpty());
+    QVERIFY2(!reported.contains(QStringLiteral("Not enough space")), qPrintable(reported));
 }
 
 void TestArchiveFetcher::aStoppedExpansionKeepsWhatItWrote()
@@ -328,6 +387,7 @@ void TestArchiveFetcher::aStoppedExpansionKeepsWhatItWrote()
     QVERIFY2(fetcher, qPrintable(error));
     QVERIFY2(fetcher->start(spoolDir(), &error), qPrintable(error));
 
+    QVERIFY(waitForPrime(*fetcher));
     const qint64 committedBefore = fetcher->status().committedSize;
     QVERIFY(committedBefore > 0);
     fetcher->requestStop();

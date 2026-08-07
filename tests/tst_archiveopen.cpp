@@ -95,8 +95,10 @@ void TestArchiveOpen::aCompressedLogOpensWithoutAskingAnything()
 
     // The tab names the log the writer meant, not the container it arrived in — and
     // names it ONCE: "app.log (app.log.gz)" would say the same thing twice.
-    QTRY_VERIFY(!tabs(window)->tabText(0).contains(QStringLiteral("indexing")));
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log"));
+    // QTRY, because an archived log now opens WAITING and settles a moment later: the
+    // member is expanded on a worker, so the tab exists (marked "◦") before it has a
+    // record in it. Which is the point — it appears at once instead of after the scan.
+    QTRY_COMPARE(tabs(window)->tabText(0), QStringLiteral("app.log"));
     QTRY_VERIFY(statusText(window).contains(QStringLiteral("2 records")));
 }
 
@@ -128,8 +130,7 @@ void TestArchiveOpen::aMultiMemberArchiveAsksWhichLog()
     QTRY_COMPARE(tabCount(window), 1);
     // Here the container IS worth naming: several of its logs could be open at once,
     // and two tabs called "app.log" from different bundles would be indistinguishable.
-    QTRY_VERIFY(!tabs(window)->tabText(0).contains(QStringLiteral("indexing")));
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("db.log (bundle.zip)"));
+    QTRY_COMPARE(tabs(window)->tabText(0), QStringLiteral("db.log (bundle.zip)"));
 }
 
 void TestArchiveOpen::severalPickedMembersOpenAsSeveralTabs()

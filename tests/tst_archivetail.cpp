@@ -11,6 +11,7 @@
 #include "LiveController.h"
 #include "LogModel.h"
 #include "LogSource.h"
+#include "ManualFormatProvider.h"
 #include "Priority.h"
 #include "RecordIndex.h"
 #include "SourceSpool.h"
@@ -56,6 +57,46 @@ private:
     static bool openDoc(Document &doc, const QString &p)
     {
         return doc.open(p, QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc());
+    }
+
+    // The owner's half of the resume handshake, as MainWindow does it: core holds no
+    // pattern, so this is where the provider comes from (invariant #3).
+    //
+    // Needed by every case here since M17. An archived log opens WAITING — start() no
+    // longer expands anything itself, because seeking to a member decompresses the
+    // container up to it and that cannot happen on the thread opening the document — so
+    // the first records arrive through resume() rather than through open().
+    static void wireResume(LiveController &live, Document &doc, LogModel &model)
+    {
+        QObject::connect(&live, &LiveController::resumeRequested, &live, [&doc, &model] {
+            ManualFormatProvider provider(QString::fromLatin1(kPattern));
+            model.beginFilterReset();
+            const bool ok = doc.resume(provider);
+            if (ok) {
+                // Exactly what MainWindow::resumeWaitingDocument does after a successful
+                // resume: the intern tables were rebuilt from scratch, and a filter set
+                // before the bytes arrived still has to apply to them.
+                doc.resolveHighlighters();
+                if (doc.filters().anyActive() || doc.viewRestricted())
+                    doc.applyFilters();
+            }
+            model.endFilterReset();
+        });
+    }
+
+    // Tick until the document has left its waiting state, i.e. the prime has landed and
+    // there are real records to reason about. Returns the count it settled on.
+    static int pumpToFirstRecords(Document &doc, LiveController &live, int timeoutMs = 30000)
+    {
+        QElapsedTimer clock;
+        clock.start();
+        while (clock.elapsed() < timeoutMs) {
+            live.checkNow();
+            if (!doc.isWaiting() && doc.index().records.size() > 0)
+                return doc.index().records.size();
+            QThread::msleep(2);
+        }
+        return 0;
     }
 
     // Drive the live controller until the source reports its stream finished, the way
@@ -134,17 +175,31 @@ void TestArchiveTail::recordsAppearWhileTheMemberIsStillExpanding()
 
     Document doc;
     QVERIFY2(openDoc(doc, gz), qPrintable(doc.lastError()));
-
-    // The document opened on the primed head only: this is exactly the invariant-#9
-    // payoff — the spool is being filled and indexed at the same time, so an archived
-    // log fills in as it expands rather than freezing until it is done.
-    const int atOpen = doc.index().records.size();
-    QVERIFY2(atOpen > 0, "the synchronous prime must leave real records to open on");
-    QVERIFY2(atOpen < 12000, "start() must not have expanded the whole member");
+    // Opens WAITING now: nothing has been expanded yet, because expanding is the
+    // worker's job (§6.4). The tab exists from this instant either way.
+    QVERIFY(doc.isWaiting());
 
     LogModel model(&doc);
     LiveController live(&doc, &model);
+    wireResume(live, doc, model);
     live.start();
+
+    // The document picks up the primed head and settles its format on it: the
+    // invariant-#9 payoff, where the spool is filled and indexed at the same time, so an
+    // archived log fills in as it expands rather than freezing until it is done.
+    const int atFirstRecords = pumpToFirstRecords(doc, live);
+    QVERIFY2(atFirstRecords > 0, "the prime must leave real records to settle a format on");
+    QVERIFY(doc.formatSettled());
+
+    // NOT asserted here: that this first batch was short of the whole member. Nothing
+    // pauses after the prime any more — the worker carries straight on — so how much has
+    // arrived by the time anything observes it is a race, and a local gzip of this size
+    // often wins it. The progressive publication itself is pinned where it can be
+    // observed deterministically, at the fetcher
+    // (tst_archivefetcher::committedSizeNeverRunsAheadOfTheSpoolFile); what belongs here
+    // is that the document opened with NOTHING and got everything through the live seam,
+    // which is the isWaiting() above and the count below.
+
     QVERIFY(pumpToCompletion(doc, live));
     live.checkNow(); // the tick that ingests the final chunk and stops the watch
 
@@ -172,6 +227,7 @@ void TestArchiveTail::aMultiLineRecordSplitAcrossChunksResolves()
     QVERIFY2(openDoc(doc, gz), qPrintable(doc.lastError()));
     LogModel model(&doc);
     LiveController live(&doc, &model);
+    wireResume(live, doc, model);
     live.start();
     QVERIFY(pumpToCompletion(doc, live));
     live.checkNow();
@@ -206,6 +262,7 @@ void TestArchiveTail::filtersApplyToRecordsArrivingDuringExpansion()
 
     LogModel model(&doc);
     LiveController live(&doc, &model);
+    wireResume(live, doc, model);
     live.start();
     QVERIFY(pumpToCompletion(doc, live));
     live.checkNow();
@@ -236,6 +293,7 @@ void TestArchiveTail::anExpandedMemberIndexesExactlyLikeAPlainFile()
              qPrintable(archived.lastError()));
     LogModel model(&archived);
     LiveController live(&archived, &model);
+    wireResume(live, archived, model);
     live.start();
     QVERIFY(pumpToCompletion(archived, live));
     live.checkNow();
@@ -284,6 +342,7 @@ void TestArchiveTail::aRemoteArchiveChainsTwoFetchers()
 
     LogModel model(&doc);
     LiveController live(&doc, &model);
+    wireResume(live, doc, model);
     live.start();
     QVERIFY(pumpToCompletion(doc, live));
     live.checkNow();

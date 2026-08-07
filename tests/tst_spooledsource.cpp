@@ -285,12 +285,14 @@ void TestSpooledSource::unconfiguredRemoteReportsNotBuiltIn()
                              OpenPolicy::Interactive, &error);
 #if defined(LOFTAIL_HAVE_SSH)
     // M13: a host that cannot be reached is not a failure to open any more — it is a
-    // log that is not there YET. The source exists, is empty, and reports its origin
-    // vanished so the document upstream shows itself as waiting while the fetcher keeps
-    // trying (§6.5).
+    // log that is not there YET. M17 makes that true one step earlier: opening does not
+    // even wait to find out, so what comes back here is an empty source whose fetcher is
+    // still connecting. Either way the document upstream shows itself as waiting; which
+    // of the two predicates says so depends only on how far the worker has got, so this
+    // asks the question the document asks, not one of its halves.
     QVERIFY(src);
     QCOMPARE(src->size(), 0);
-    QVERIFY(src->originVanished());
+    QVERIFY(src->originVanished() || src->notReadyYet());
     src.reset(); // drop the spool (and its retrying fetcher) before the next case
 #else
     // Without libssh2 there is nothing to wait FOR: no fetcher can ever be built for

@@ -128,12 +128,12 @@ private:
         explicit Worker(ArchiveFetcher *owner) : m_owner(owner) {}
         void run() override
         {
-            // Ordinarily start() has already opened the member and primed it, and
-            // there is only the rest to expand. The exception is a container that was
-            // NOT THERE when the log was opened — a `.gz` on a host that is down —
-            // where opening it is itself the thing that has to wait, and waiting on
-            // the GUI thread is not an option (§6.5).
-            if (!m_owner->m_stream && !m_owner->awaitContainer())
+            // Opening the member is the worker's first job, not something start() has
+            // already done. For a compressed tar that means decompressing the container
+            // until the member is reached, and for a container that is not there yet — a
+            // `.gz` on a host that is down — waiting for it to appear; neither belongs
+            // on the thread that opened the document (§6.4, §6.5).
+            if (!m_owner->awaitContainer())
                 return;
             m_owner->expandRest();
         }
@@ -153,6 +153,7 @@ private:
     // Expands at most `limit` bytes (0 meaning "to the end"). Returns false on error;
     // sets `finished` when the member has been read to its end.
     bool expand(qint64 limit, bool *finished);
+    void publishHeldCommits();
     bool awaitInput();
     void beginGeneration(qint64 expandedSize);
     void publishComplete();
@@ -166,6 +167,12 @@ private:
     std::unique_ptr<LogSource>     m_input;  // the container's bytes; see the note above
     std::unique_ptr<ArchiveStream> m_stream;
     std::unique_ptr<Worker>        m_worker;
+
+    // Worker-thread only: true while the prime is running, so expand() records what it
+    // has written without publishing it. m_heldCommit is the pending figure and is
+    // written under m_mutex like the rest of the status it belongs to.
+    bool   m_holdBackCommits = false;
+    qint64 m_heldCommit = 0;
 
     mutable QMutex m_mutex;
     QWaitCondition m_wake;
@@ -181,6 +188,12 @@ bool ArchiveFetcher::start(const QString &spoolDir, QString *error)
     QString openError;
     // As BYTES, not as a log: openLogSource() on a container means "expand it", which
     // for a single-stream container is this very fetcher (LogSource.h).
+    //
+    // STAYS ON THE CALLER'S THREAD while everything after it moves to the worker, and
+    // that is deliberate rather than an oversight: this reaches
+    // SourceSpoolRegistry::acquire(), which is GUI-thread-only and re-entrant by design
+    // (SourceSpool.h). It costs nothing to leave here now — for a remote container it
+    // builds an SSH fetcher whose own start() no longer blocks either.
     m_input = openContainerSource(m_location.container, OpenPolicy::Interactive, &openError);
     if (!m_input) {
         if (error) {
@@ -192,57 +205,41 @@ bool ArchiveFetcher::start(const QString &spoolDir, QString *error)
         return false;
     }
 
-    // The container is not there YET — a `.gz` on a host that is down, or one that has
-    // not been written. Opening it is what has to wait, and this runs on the thread that
-    // opened the document, so it cannot be what waits: hand the whole opening to the
-    // worker and report Waiting meanwhile. Without this the await below spins on the
-    // GUI thread forever, because the transport underneath never reaches a terminal
-    // state — it is retrying, which is exactly what it should be doing (§6.5).
-    if (m_input->originVanished()) {
-        {
-            QMutexLocker lock(&m_mutex);
-            m_status.state = FetchStatus::State::Waiting;
-            m_status.error = sourceStatusText(*m_input, m_location.container);
-        }
-        m_worker = std::make_unique<Worker>(this);
-        m_worker->start();
-        return true;
-    }
-
-    QString beginError;
-    if (!beginExpansion(&beginError)) {
-        if (error)
-            *error = beginError;
-        return false;
-    }
-
-    if (!m_stream) {
-        // A small member expanded entirely during the prime. There is no work left for
-        // a worker thread to do, and the stream ends here.
-        return true;
-    }
-
-    // Stays in Priming — "the initial bulk fetch into the spool" — until Complete.
-    // Never Live, which means "following the input for more bytes": an expansion has a
-    // fixed amount of work and then stops, so there is nothing to follow. That is also
-    // what lets the status bar show expansion progress while staying quiet during a
-    // healthy remote tail, with no extra flag to distinguish the two.
+    // EVERYTHING BLOCKING IS THE WORKER'S FROM HERE. Opening the member means seeking to
+    // it, and for a compressed tar that decompresses the container until it is reached —
+    // on the thread that opened the document, which is how a large `.tar.gz` used to
+    // freeze the window for as long as the scan took. Waiting for a container that is not
+    // there yet has always been the worker's (§6.5); this simply stops treating the two
+    // cases differently, since neither can happen here.
+    //
+    // What the caller gets back is a legal, empty spool in State::Connecting, which
+    // notReadyYet() reads as "wait": the tab appears at once and fills in as the member
+    // expands. From then on it stays in Priming — "the initial bulk fetch into the spool"
+    // — until Complete. Never Live, which means "following the input for more bytes": an
+    // expansion has a fixed amount of work and then stops, so there is nothing to follow.
     m_worker = std::make_unique<Worker>(this);
     m_worker->start();
     return true;
 }
 
-// Wait for a container that was not there when the log was opened, then open it. Worker
-// thread only — this is the part of start() that can block for an unbounded time.
+// Wait until the container has bytes to read, then open the member. Worker thread only —
+// this is everything about start() that can block for an unbounded time, which since M17
+// is all of it: seeking to a member decompresses the container up to it.
 bool ArchiveFetcher::awaitContainer()
 {
     forever {
         if (stopping())
             return false;
-        if (!m_input) // stop() got here first
+        if (!m_input) // start() never got one
             return false;
         m_input->refreshSize();
-        if (!m_input->originVanished())
+        // notReadyYet() as well as originVanished(), and without it this loop falls
+        // straight through on a remote container: its fetcher is Connecting, not
+        // Waiting, so the vanish test says no while there is not a byte to read.
+        // beginExpansion() would then see a zero-length input — checkFreeSpace() would
+        // silently guess that nothing is needed, and ArchiveStream::open() would get no
+        // header until the await inside readBlock happened to supply one.
+        if (!m_input->originVanished() && !m_input->notReadyYet())
             break;
         QMutexLocker lock(&m_mutex);
         if (m_stopping)
@@ -302,16 +299,24 @@ bool ArchiveFetcher::beginExpansion(QString *error)
     setState(FetchStatus::State::Priming);
     beginGeneration(m_stream->currentSize());
 
-    // Enough for the format sample, synchronously, so the Document does not open on an
-    // empty file and autodetect nothing.
+    // Enough for the format sample before anything upstream is told there are bytes, so
+    // the Document does not settle its format and its encoding against a fraction of one.
+    // Published all at once — the rule in SourceFetcher.h — and BEFORE publishComplete()
+    // below, or a member small enough to finish inside the prime would announce itself
+    // finished while still reporting a committed size of zero, inverting the one ordering
+    // the live controller relies on.
     bool finished = false;
-    if (!expand(kPrimeBytes, &finished)) {
+    m_holdBackCommits = true;
+    const bool primed = expand(kPrimeBytes, &finished);
+    m_holdBackCommits = false;
+    if (!primed) {
         if (error)
             *error = status().error;
         m_stream.reset();
         m_input.reset();
         return false;
     }
+    publishHeldCommits();
 
     if (finished) {
         // A small member expanded entirely during the prime. There is no work left for
@@ -474,6 +479,7 @@ void ArchiveFetcher::beginGeneration(qint64 expandedSize)
     lock.relock();
     m_status.baseOffset = 0; // an expansion always starts at the member's first byte
     m_status.committedSize = 0;
+    m_heldCommit = 0; // the hold's tally starts over with the generation
     // -1 from the archive means "not recorded", which a raw gzip stream never is. 0
     // then means unknown, and the status bar says "so far" rather than "of N".
     m_status.totalSize = expandedSize > 0 ? expandedSize : 0;
@@ -537,12 +543,24 @@ bool ArchiveFetcher::expand(qint64 limit, bool *finished)
         // synchronisation between this thread and the reader: a reader clamps to
         // committedSize, so it can never observe a half-written chunk (§6.3).
         QMutexLocker lock(&m_mutex);
-        m_status.committedSize += got;
-        m_status.totalSize = qMax(m_status.totalSize, m_status.committedSize);
+        m_heldCommit += got;
+        m_status.totalSize = qMax(m_status.totalSize, m_heldCommit);
+        // Withheld during the prime, and only during it, so that the first size anyone
+        // sees covers the whole format sample rather than one short read of it —
+        // archive_read_data() is free to return less than asked. See SourceFetcher.h.
+        if (!m_holdBackCommits)
+            m_status.committedSize = m_heldCommit;
     }
 
     spool.close();
     return true;
+}
+
+void ArchiveFetcher::publishHeldCommits()
+{
+    QMutexLocker lock(&m_mutex);
+    if (m_heldCommit > m_status.committedSize)
+        m_status.committedSize = m_heldCommit;
 }
 
 void ArchiveFetcher::expandRest()

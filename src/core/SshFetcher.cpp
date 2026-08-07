@@ -129,6 +129,12 @@ public:
         // An explicit ask is the one thing that clears a refusal: the user has been
         // told why loftail stopped trying and has decided to try again anyway.
         m_reconnectRefused = false;
+        // …and the one thing that grants the next attempt a prompter. Without this,
+        // File ▸ Reconnect could never clear the commonest refusal there is: the retry
+        // it triggered ran unattended, found nobody to ask for the password, reported
+        // NeedsPerson again and re-latched. §6.5 has always said this action "does have
+        // a prompter"; until now nothing gave it one.
+        m_wantsPrompter = true;
         m_wake.wakeAll();
     }
 
@@ -148,6 +154,7 @@ private:
     bool establish(SshPrompter *prompter, QString *error, SshSession::Failure *failure);
     void reconnect();
     bool fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset);
+    void publishHeldCommits();
     void beginGeneration(qint64 remoteSize);
     bool remoteHeadDiffersFromSpool();
     bool stallProbeDue();
@@ -182,8 +189,11 @@ private:
     SshFetchOptions m_options;
     QString         m_spoolDir;
 
-    std::unique_ptr<SshSession> m_session; // owned by start()'s thread, then by m_worker
+    std::unique_ptr<SshSession> m_session; // the worker's, from the moment it starts
     std::unique_ptr<Worker>     m_worker;
+    // Captured by start() on the thread that has one, so the worker never reads the
+    // global. Only consulted when m_wantsPrompter allows it.
+    SshPrompter                *m_prompter = nullptr;
     // The same session as m_session when there is one, but guarded — the one handle
     // another thread may touch, and only to call abort(). See publishSession().
     SshSession                 *m_abortable = nullptr;
@@ -199,6 +209,15 @@ private:
     // answer forever. pokeNow() (File ▸ Reconnect, which does have a prompter) clears
     // it, so the user can always ask again; nothing else can.
     bool           m_reconnectRefused = false;
+    // Permission for the NEXT attempt to ask a person something. Set by start() (the
+    // user's own open) and by pokeNow() (File ▸ Reconnect), consumed by reconnect().
+    bool           m_wantsPrompter = false;
+
+    // Fetcher-thread only: true while the prime is running, so fetchForward() records
+    // what it has written without publishing it. m_heldCommit is the pending figure and
+    // is written under m_mutex like the rest of the status it belongs to.
+    bool   m_holdBackCommits = false;
+    qint64 m_heldCommit = 0;
 
     // Fetcher-thread only, so no lock: the last stat, used by the rotation fallback.
     qint64 m_lastMtime = kUnknownMtime;
@@ -283,17 +302,29 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
     setState(FetchStatus::State::Priming);
     beginGeneration(attrs.size);
 
-    // Enough for the format sample, synchronously, so the Document does not open on
-    // an empty file and autodetect nothing.
+    // Enough for the format sample before anything upstream is told there are bytes, so
+    // the Document does not settle its format and its encoding against a fraction of one.
+    //
+    // PUBLISHED ALL AT ONCE, which is the rule stated in SourceFetcher.h: the first
+    // committedSize a fetcher publishes is either the whole prime or the whole stream.
+    // The document leaves its waiting state at the first committed byte and settles both
+    // from what it can then read, once and for good — so a per-chunk publish here would
+    // hand it whatever the first SFTP read happened to return. Both libssh2 and the exec
+    // fallback may return short, and Decoder::detect() over 4 KB is not always the same
+    // answer as over 64 KB.
     const qint64 base = status().baseOffset;
     const qint64 primeTo = qMin(attrs.size, base + kPrimeBytes);
-    if (primeTo > base && !fetchForward(base, primeTo)) {
+    m_holdBackCommits = true;
+    const bool primed = primeTo <= base || fetchForward(base, primeTo);
+    m_holdBackCommits = false;
+    if (!primed) {
         if (error)
             *error = status().error;
         *failure = SshSession::Failure::Unreachable; // the transfer died mid-prime
         resetSession();
         return false;
     }
+    publishHeldCommits();
 
     setState(FetchStatus::State::Live);
     // Standing remark, not an error: this server would not do SFTP, so the log is being
@@ -335,26 +366,27 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
 
 bool SshFetcher::start(const QString &spoolDir, QString *error)
 {
+    Q_UNUSED(error); // nothing here can fail any more; see below
     m_spoolDir = spoolDir;
 
-    SshSession::Failure failure = SshSession::Failure::None;
-    if (!establish(sshPrompter(), error, &failure)) {
-        // A host that is down and a log that has not been written yet are NOT failures
-        // to open — they are the ordinary way a waiting log starts (SPEC.md §3, §6.5).
-        // Return success with an empty spool and let the worker keep trying: the
-        // document opens, says it is waiting, and fills in when the log turns up.
-        //
-        // Everything else really is a refusal — a changed host key, rejected
-        // credentials, a cancelled prompt, or an unattended context that cannot ask —
-        // and retrying it on a timer would get the same answer forever while hammering
-        // a host loftail has just declined to talk to.
-        if (failure != SshSession::Failure::Unreachable
-            && failure != SshSession::Failure::NoSuchFile) {
-            setState(FetchStatus::State::Error);
-            return false;
-        }
-        setWaiting(error && !error->isEmpty() ? *error
-                                              : Tr::tr("Cannot reach %1.").arg(m_location.host));
+    // NOTHING BLOCKING HAPPENS HERE. This runs on the thread that opened the document,
+    // and it used to connect, authenticate and fetch 128 KB before returning — which is
+    // why opening a remote log froze the window for as long as the far end took, and why
+    // restoring a session with one showed no window at all until it was done.
+    //
+    // The connect is now the worker's first job. What the caller gets back immediately is
+    // a legal, empty spool in State::Connecting, which notReadyYet() reads as "wait" — so
+    // the tab appears at once, says what it is doing, and fills in when the bytes arrive,
+    // by the same M13 machinery a log that has not been written yet uses (§6.5).
+    //
+    // The prompter is captured HERE, on the thread that has one, rather than read from
+    // the worker: the first attempt is a person's own open and may ask them anything,
+    // and every attempt after it is unattended and may not (reconnect()).
+    m_prompter = sshPrompter();
+    {
+        QMutexLocker lock(&m_mutex);
+        m_wantsPrompter = true;
+        m_status.state = FetchStatus::State::Connecting;
     }
 
     m_worker = std::make_unique<Worker>(this);
@@ -437,6 +469,7 @@ void SshFetcher::beginGeneration(qint64 remoteSize)
     lock.relock();
     m_status.baseOffset = base;
     m_status.committedSize = 0;
+    m_heldCommit = 0; // a new generation starts the hold's tally over too
     m_status.totalSize = remoteSize;
     m_status.generation = next; // published LAST, once its file exists and is empty
 }
@@ -492,12 +525,24 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
         QMutexLocker lock(&m_mutex);
         if (m_status.generation != generation)
             break;
-        m_status.committedSize = offset - m_status.baseOffset;
+        m_heldCommit = offset - m_status.baseOffset;
         m_status.totalSize = qMax(m_status.totalSize, offset);
+        // Withheld during the prime, and only during it, so that the first size anyone
+        // sees covers the whole format sample rather than one short read of it. See
+        // establish(); publishHeldCommits() ends the hold.
+        if (!m_holdBackCommits)
+            m_status.committedSize = m_heldCommit;
     }
 
     spool.close();
     return true;
+}
+
+void SshFetcher::publishHeldCommits()
+{
+    QMutexLocker lock(&m_mutex);
+    if (m_heldCommit > m_status.committedSize)
+        m_status.committedSize = m_heldCommit;
 }
 
 bool SshFetcher::stallProbeDue()
@@ -652,18 +697,32 @@ void SshFetcher::pollOnce()
 
 // One unattended attempt to (re)establish the session, from the worker thread.
 //
-// NO PROMPTER, deliberately and without exception. A prompt is a modal dialog on the
-// GUI thread, and marshalling one out of here would mean a dialog appearing while the
-// user is doing something else, for a log they may have opened hours ago. So a retry
-// gets the SSH agent, the usual key files, and any password already accepted for this
-// host — the common case, and entirely automatic. Anything that genuinely needs a
-// person says so and waits to be asked again through File ▸ Reconnect, which runs on
-// the GUI thread and does have a prompter (§6.3, §6.5).
+// NO PROMPTER, deliberately and without exception — except for the one attempt the user
+// asked for. A prompt is a modal dialog, and although one can now be carried to the
+// application thread from here (PromptRelay), being ABLE to ask is not permission to: a
+// dialog appearing while the user is doing something else, for a log they may have opened
+// hours ago, is exactly what must not happen. So an unattended retry gets the SSH agent,
+// the usual key files, and any password already accepted for this host — the common case,
+// and entirely automatic. Anything that genuinely needs a person says so and waits to be
+// asked again (§6.3, §6.5).
+//
+// m_wantsPrompter is the permission, and exactly two things set it: the document's own
+// opening, and the user pressing Reconnect. It is consumed here, so it can never leak
+// into the retry after the one it was granted for.
 void SshFetcher::reconnect()
 {
+    SshPrompter *prompter = nullptr;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (m_wantsPrompter) {
+            m_wantsPrompter = false;
+            prompter = m_prompter;
+        }
+    }
+
     QString error;
     SshSession::Failure failure = SshSession::Failure::None;
-    if (establish(nullptr, &error, &failure))
+    if (establish(prompter, &error, &failure))
         return;
 
     if (failure == SshSession::Failure::Unreachable

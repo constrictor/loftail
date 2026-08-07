@@ -21,9 +21,14 @@ namespace loftail {
 // need two spools at once. A remote `app.log.gz` is fetched as a container (by the SSH
 // fetcher) and expanded from it (by the archive fetcher) — and because a single-stream
 // container collapses to its own plain path, both of those are the *same address
-// string*. Sharing a key between them is not merely ambiguous: the expansion's own
-// input lookup would find the expansion, and since the registry publishes its entry
-// only after start() returns, it would build a second one and recurse forever.
+// string*. Sharing a key between them is not merely ambiguous: the expansion's own input
+// lookup would resolve to the expansion itself — an archive fetcher whose input is its
+// own spool, waiting forever for bytes only it could produce.
+//
+// (That used to read "it would build a second one and recurse forever", which was true
+// while the registry published its entry only after start() returned. start() no longer
+// blocks, so the inner lookup now happens after publication and would FIND the outer
+// spool rather than build another. The prefix is what prevents either reading.)
 //
 // The prefix never escapes the registry. Document::path(), the session and the
 // format-cache key all hold the plain address (ArchiveLocation.h).
