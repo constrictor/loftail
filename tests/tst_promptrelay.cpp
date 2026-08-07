@@ -1,8 +1,10 @@
 #include <QtTest>
 
+#include <QMutex>
 #include <QThread>
 
 #include <atomic>
+#include <functional>
 
 #include "GuiCallGate.h"
 #include "PromptRelay.h"

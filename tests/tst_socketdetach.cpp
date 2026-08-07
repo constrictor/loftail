@@ -175,12 +175,17 @@ void TestSocketDetach::shuttingDownUnblocksAReadWithoutFreeingTheDescriptor()
 
     // Still a descriptor this process owns — shutdown() is not close(). Asking for a
     // socket option is the cheapest question that distinguishes the two.
+    //
+    // The length is declared per platform because its TYPE differs: `socklen_t` is
+    // POSIX, and Winsock's getsockopt() takes a plain `int *`. Declaring it once outside
+    // the #if is what broke the Windows build.
     int optval = 0;
-    socklen_t optlen = sizeof(optval);
 #if defined(Q_OS_WIN)
+    int optlen = sizeof(optval);
     const int rc = ::getsockopt(SOCKET(owned), SOL_SOCKET, SO_TYPE,
                                 reinterpret_cast<char *>(&optval), &optlen);
 #else
+    socklen_t optlen = sizeof(optval);
     const int rc = ::getsockopt(int(owned), SOL_SOCKET, SO_TYPE, &optval, &optlen);
 #endif
     QCOMPARE(rc, 0);

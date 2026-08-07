@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QLockFile>
+#include <QObject>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QThread>
