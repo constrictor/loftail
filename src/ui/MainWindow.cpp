@@ -23,6 +23,9 @@
 #include "OpenArchiveDialog.h"
 #include "SourceSpool.h"
 #include "SpooledLogSource.h"
+
+#include <QElapsedTimer>
+#include <QTimer>
 #include "OpenRemoteDialog.h"
 #include "PresetPane.h"
 #include "PaneTitleStyle.h"
@@ -67,6 +70,13 @@ namespace {
 // that does not match still opens with unparsed lines as plain text (SPEC.md §4).
 constexpr auto kDefaultPattern = "%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n";
 constexpr int  kMaxRecentFiles = 10;
+
+// How often the restore checks whether its remote logs have finished connecting, and the
+// ceiling on how long it will keep the bulk-prompt mode armed waiting for them. The cap
+// exists so that one host that neither answers nor fails cannot leave "Skip All
+// Remaining" on every password dialog for the rest of the session.
+constexpr int  kBulkRestoreWatchMs = 500;
+constexpr int  kBulkRestoreCapMs = 60000;
 constexpr auto kRecentFilesKey = "recentFiles";
 
 // May a pane be torn off into a window of its own?
@@ -855,17 +865,11 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     auto doc = std::make_unique<Document>();
     ManualFormatProvider provider(settings.pattern);
     {
-        // Opening a remote log connects, which blocks this thread for as long as the
-        // handshake and authentication take (bounded by the SSH timeout). Say so with
-        // the cursor — the prompts that may appear during it are modal dialogs, which
-        // is also what stops a second open from starting on top of this one.
-        const bool remote = RemoteLocation::isRemote(path);
-        if (remote)
-            QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+        // No wait cursor, and nothing to wait for: opening a remote log no longer
+        // connects on this thread (§6.3.3). It returns in microseconds with a tab that
+        // says it is connecting, and the connect happens behind it.
         const bool prepared =
             doc->prepare(path, provider, settings.encoding, settings.sourceZone.toZone());
-        if (remote)
-            QGuiApplication::restoreOverrideCursor();
         if (!prepared) {
             m_statusLabel->setText(tr("Cannot open %1: %2")
                                        .arg(logSourceDisplayName(path), doc->lastError()));
@@ -886,52 +890,34 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     // format from the bytes that actually arrive (Document::resume). Nothing is
     // persisted either: a pattern never checked against a line of the log is not
     // knowledge, and remembering it would suppress the format prompt forever.
+    const bool deferFormatPrompt = doc->isWaiting() && promptIfNoMatch;
     if (doc->isWaiting()) {
         promptIfNoMatch = false;
         persist = false;
     }
 
     if (promptIfNoMatch) {
-        const qint64 sampleLen = qMin<qint64>(64 * 1024, doc->source()->size());
-        const QByteArray sample = sampleLen > 0
-            ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
-        Decoder decoder = Decoder::detect(sample, settings.encoding);
-        const PreviewResult pv = FormatPreview::build(doc->format(), sample, decoder);
-
-        if (pv.matchedCount > 0) {
+        switch (offerFormat(doc.get(), path, &settings)) {
+        case FormatOutcome::Matched:
             persist = true; // the default matched — remember it
-        } else {
-            // The default did not match and no format is cached (M3 unchanged: a
-            // cached file never reaches here). Autodetect (M8, ARCHITECTURE.md §9)
-            // and PRE-FILL the dialog with the detected pattern for confirmation —
-            // never applied silently. A no-detection result leaves the dialog
-            // seeded with the fallback default, i.e. it opens as it does today.
-            FormatSettings seed = settings;
-            DetectingFormatProvider detector(settings.encoding);
-            detector.formatFor(QByteArrayView(sample.constData(), sample.size()));
-            if (detector.detected())
-                seed.pattern = detector.detectedPattern();
-
-            LogFormatDialog dlg(logSourceDisplayName(path), sample, seed, this);
-            if (dlg.exec() == QDialog::Accepted) {
-                settings = dlg.settings();
-                ManualFormatProvider chosen(settings.pattern);
-                if (!doc->prepare(path, chosen, settings.encoding, settings.sourceZone.toZone())) {
-                    m_statusLabel->setText(tr("Cannot open %1: %2")
-                                               .arg(logSourceDisplayName(path), doc->lastError()));
-                    return false;
-                }
-                doc->setTimeDisplay(settings.timeDisplay);
-                persist = true;
-            } else {
-                // Cancelled. The only format we have is one the user just refused
-                // to confirm, and opening with it would show a wall of unparsed
-                // plain text — so abort the open instead (SPEC.md §4). Whatever
-                // was already open stays open, untouched.
-                m_statusLabel->setText(tr("Open cancelled: %1")
-                                           .arg(logSourceDisplayName(path)));
+            break;
+        case FormatOutcome::Chosen: {
+            ManualFormatProvider chosen(settings.pattern);
+            if (!doc->prepare(path, chosen, settings.encoding, settings.sourceZone.toZone())) {
+                m_statusLabel->setText(tr("Cannot open %1: %2")
+                                           .arg(logSourceDisplayName(path), doc->lastError()));
                 return false;
             }
+            doc->setTimeDisplay(settings.timeDisplay);
+            persist = true;
+            break;
+        }
+        case FormatOutcome::Declined:
+            // The only format we have is one the user just refused to confirm, and
+            // opening with it would show a wall of unparsed plain text — so abort the
+            // open instead (SPEC.md §4). Whatever was already open stays open, untouched.
+            m_statusLabel->setText(tr("Open cancelled: %1").arg(logSourceDisplayName(path)));
+            return false;
         }
     }
 
@@ -946,6 +932,8 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     ctx->doc = std::move(doc);
     ctx->settings = settings;
     ctx->pendingRunRestore = std::move(runRestore);
+    // The prompt this open could not raise, deferred to the first resume that has bytes.
+    ctx->pendingFormatPrompt = deferFormatPrompt;
     m_contexts.push_back(std::move(ctx));
 
     buildViewAndIndex(m_contexts.back().get());
@@ -1113,6 +1101,53 @@ void MainWindow::buildViewAndIndex(DocumentContext *ctx)
     // indexing progresses.
     showView(view);
     ctx->controller->start();
+}
+
+// Does `settings->pattern` actually fit the bytes now readable in `doc`, and if not, what
+// does the user want to do about it?
+//
+// ONE COPY, shared by the two moments this question arises: an ordinary open, and the
+// first time a log that opened WAITING has real bytes to judge against
+// (resumeWaitingDocument). Those two used to be a copy of each other with a comment
+// promising they agreed; since M17 every remote and archived log takes the second route,
+// so a divergence would mean the format prompt behaving differently for local and remote
+// logs — the sort of thing nobody would notice for a year.
+// Does this document's compiled format actually match the bytes it can now read? The
+// half of offerFormat() that asks nobody anything, for the callers that must not.
+bool MainWindow::formatFits(Document *doc, const FormatSettings &settings)
+{
+    const qint64 sampleLen = qMin<qint64>(64 * 1024, doc->source()->size());
+    const QByteArray sample = sampleLen > 0
+        ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
+    Decoder decoder = Decoder::detect(sample, settings.encoding);
+    return FormatPreview::build(doc->format(), sample, decoder).matchedCount > 0;
+}
+
+MainWindow::FormatOutcome MainWindow::offerFormat(Document *doc, const QString &path,
+                                                  FormatSettings *settings)
+{
+    if (formatFits(doc, *settings))
+        return FormatOutcome::Matched;
+
+    const qint64 sampleLen = qMin<qint64>(64 * 1024, doc->source()->size());
+    const QByteArray sample = sampleLen > 0
+        ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
+
+    // The default did not match and no format is cached (M3 unchanged: a cached file
+    // never reaches here). Autodetect (M8, ARCHITECTURE.md §9) and PRE-FILL the dialog
+    // with the detected pattern for confirmation — never applied silently. A no-detection
+    // result leaves the dialog seeded with the fallback default.
+    FormatSettings seed = *settings;
+    DetectingFormatProvider detector(settings->encoding);
+    detector.formatFor(QByteArrayView(sample.constData(), sample.size()));
+    if (detector.detected())
+        seed.pattern = detector.detectedPattern();
+
+    LogFormatDialog dlg(logSourceDisplayName(path), sample, seed, this);
+    if (dlg.exec() != QDialog::Accepted)
+        return FormatOutcome::Declined;
+    *settings = dlg.settings();
+    return FormatOutcome::Chosen;
 }
 
 void MainWindow::showFormatDialog()
@@ -1415,27 +1450,51 @@ void MainWindow::resumeWaitingDocument(DocumentContext *ctx)
     }
 
     if (settleFormat) {
-        // Whether the remembered pattern actually fits, decided the same way an
-        // ordinary open decides it (openWithSettings) so the two cannot disagree.
-        const qint64 sampleLen = qMin<qint64>(64 * 1024, doc->source()->size());
-        const QByteArray sample =
-            sampleLen > 0 ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
-        Decoder decoder = Decoder::detect(sample, ctx->settings.encoding);
-        const PreviewResult pv = FormatPreview::build(doc->format(), sample, decoder);
+        // CONSUMED UNCONDITIONALLY, before anything is decided with it. A document can
+        // wait and resume any number of times — a host that comes and goes — and the
+        // dialog is owed once, for the open the user actually performed.
+        const bool owedADialog = ctx->pendingFormatPrompt;
+        ctx->pendingFormatPrompt = false;
 
-        if (pv.matchedCount > 0) {
+        // Whether the remembered pattern fits, decided by the same code an ordinary open
+        // uses, so the two cannot disagree (offerFormat).
+        //
+        // The dialog is only ever raised for a log the user just opened AND is looking
+        // at. §6.5's rule that nothing pops up on arrival is about the other case — a
+        // watch tick bringing back a log in a tab that may not even be on screen — and
+        // that case still raises nothing. For an interactive open the resume lands about
+        // a second later, on the tab in front of them, which is the dialog they would
+        // have got before the connect moved off this thread.
+        const bool mayAsk = owedADialog && ctx == activeContext();
+        FormatSettings settled = ctx->settings;
+        const FormatOutcome outcome =
+            mayAsk ? offerFormat(doc, doc->path(), &settled)
+                   : (formatFits(doc, ctx->settings) ? FormatOutcome::Matched
+                                                     : FormatOutcome::Declined);
+
+        switch (outcome) {
+        case FormatOutcome::Matched:
             // It fits, and it has now been checked against real lines rather than
             // assumed — which is exactly the point at which it becomes worth
             // remembering. The waiting open deliberately persisted nothing.
             persistFormat(doc->path(), ctx->settings);
             ctx->formatNotice.clear();
-        } else {
-            // It does not, and there is NO DIALOG here on purpose: this runs from a
-            // watch tick for a tab that may not even be on screen, which is the
-            // "behind the user's back" case openFile() takes such care to avoid. The
-            // log stays readable as plain text and the status bar says where to fix
-            // it; nothing is persisted, so reopening still offers the dialog properly.
+            break;
+        case FormatOutcome::Chosen:
+            // Reopened through the ordinary format-change path rather than by preparing
+            // this document again: it is live, it has a controller and bound views, and
+            // prepare() would reset its index and its waiting state underneath them.
+            // Safe to use the active-context form, because the dialog was only offered
+            // when this context IS the active one.
+            ctx->formatNotice.clear();
+            applySettings(settled);
+            return; // ctx and doc are gone; applySettings reopened the file
+        case FormatOutcome::Declined:
+            // Either the user closed the dialog, or there was nobody to show one to. The
+            // log stays readable as plain text and the status bar says where to fix it;
+            // nothing is persisted, so reopening still offers the dialog properly.
             ctx->formatNotice = tr("format not recognised — Log ▸ Format…");
+            break;
         }
     }
 
@@ -1623,8 +1682,14 @@ void MainWindow::updateStatus()
         // A record count for a log that is not there would be an honest zero and a
         // useless one. Say what is actually going on instead (SPEC.md §3).
         QString text = doc->waitReason();
-        if (const DocumentContext *ctx = activeContext(); ctx && !ctx->sourceStatus.isEmpty())
+        if (const DocumentContext *ctx = activeContext();
+            ctx && !ctx->sourceStatus.isEmpty() && ctx->sourceStatus != text) {
+            // Not when they are the same sentence, which for a spooled document is the
+            // ordinary case rather than a coincidence: both come from sourceStatusText()
+            // over the same fetcher. Every remote open would otherwise read
+            // "connecting…  |  connecting…".
             text += QStringLiteral("  |  ") + ctx->sourceStatus;
+        }
         m_statusLabel->setText(text);
         return;
     }
@@ -2114,6 +2179,56 @@ void MainWindow::saveSession()
     SessionStore::save(store, session);
 }
 
+// Hold the restore's bulk-prompt mode open until every restored remote log has stopped
+// being able to ask anything, then let it go.
+//
+// A fetcher can only prompt on the attempt the document's own opening granted it a
+// prompter for; once it has left Connecting it has either got in, given up, or gone to
+// its unattended retry loop, and none of those asks again without File ▸ Reconnect. So
+// "still Connecting" is exactly the set worth waiting for.
+//
+// Polled rather than signalled, like everything else that watches a fetcher, and capped
+// so that one wedged host cannot leave the mode armed for the session.
+void MainWindow::armBulkRestore()
+{
+    if (!m_sshPrompter)
+        return;
+
+    const auto stillConnecting = [this]() {
+        for (const auto &ctx : m_contexts) {
+            if (!ctx->doc)
+                continue;
+            const auto *spooled = dynamic_cast<const SpooledLogSource *>(ctx->doc->source());
+            if (!spooled)
+                continue;
+            const FetchStatus::State state = spooled->fetchStatus().state;
+            if (state == FetchStatus::State::Connecting || state == FetchStatus::State::Idle)
+                return true;
+        }
+        return false;
+    };
+
+    if (!stillConnecting()) {
+        m_sshPrompter->endBulkRestore();
+        return;
+    }
+
+    auto *timer = new QTimer(this);
+    timer->setObjectName(QStringLiteral("bulkRestoreWatch")); // findChild, for tests
+    timer->setInterval(kBulkRestoreWatchMs);
+    auto since = std::make_shared<QElapsedTimer>();
+    since->start();
+    connect(timer, &QTimer::timeout, this, [this, timer, since, stillConnecting]() {
+        if (since->elapsed() < kBulkRestoreCapMs && stillConnecting())
+            return;
+        if (m_sshPrompter)
+            m_sshPrompter->endBulkRestore();
+        timer->stop();
+        timer->deleteLater();
+    });
+    timer->start();
+}
+
 void MainWindow::restoreSession()
 {
     QSettings store;
@@ -2205,8 +2320,12 @@ void MainWindow::restoreSession()
             toActivate = view;
     }
 
-    if (m_sshPrompter)
-        m_sshPrompter->endBulkRestore();
+    // BULK MODE STAYS ARMED until the last connect has settled, not until this loop
+    // finishes. The loop used to be the whole restore — every connect ran inside it — and
+    // now it merely creates the tabs, in milliseconds, while the connects run behind them.
+    // Disarming here would take "Skip This Host" and "Skip All Remaining" off the very
+    // dialogs they exist for, since none of them has appeared yet.
+    armBulkRestore();
 
     if (!missing.isEmpty()) {
         // A local file that has gone and a remote host that would not answer are

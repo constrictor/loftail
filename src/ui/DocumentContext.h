@@ -100,6 +100,19 @@ public:
     // cannot overwrite each other; a fetcher publishing its progress must not erase it.
     QString formatNotice;
 
+    // The user opened this log INTERACTIVELY and it has not yet been offered the Log
+    // Format dialog, because when it opened there were no bytes to judge a pattern
+    // against (M17). Consumed by the first resume that has some.
+    //
+    // Without it, no remote or archived log would ever see that dialog again: every one
+    // of them now opens waiting, openWithSettings() suppresses the prompt for a waiting
+    // document, and resumeWaitingDocument() deliberately raises no dialog. So the M8
+    // autodetection would become unreachable for exactly the logs whose format is least
+    // likely to be the default — silently, and on every reopen, since nothing would be
+    // persisted either. Session restore never sets it: it opens with a saved pattern and
+    // asks nothing.
+    bool pendingFormatPrompt = false;
+
     // The views showing this file. Non-owning: each view is owned by its dock.
     QVector<DocumentView *> views;
 };

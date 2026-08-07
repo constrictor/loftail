@@ -192,6 +192,25 @@ private:
     void applySettings(const FormatSettings &newSettings);
     void persistFormat(const QString &path, const FormatSettings &s);
 
+    // What came of asking whether a format fits (offerFormat).
+    enum class FormatOutcome {
+        Matched,  // it fits; nothing was shown
+        Chosen,   // it did not, and the user picked one — `settings` was updated
+        Declined, // it did not, and nobody chose: cancelled, or nobody to ask
+    };
+    // Whether `settings`'s pattern matches the bytes `doc` can now read. Asks nothing.
+    static bool formatFits(Document *doc, const FormatSettings &settings);
+    // formatFits(), and if it does not, the Log Format dialog seeded with M8's
+    // autodetection. ONE COPY, shared by an ordinary open and by the first resume of a
+    // log that opened waiting — which since M17 is every remote and archived log, so a
+    // second copy would mean the prompt behaving differently for local and remote files.
+    FormatOutcome offerFormat(Document *doc, const QString &path, FormatSettings *settings);
+
+    // Keep session restore's bulk-prompt mode armed until the last restored remote log
+    // has finished connecting, then end it. See the definition for why the restore loop
+    // finishing is no longer the right moment.
+    void armBulkRestore();
+
     // Close every open file (window close, and File ▸ Close All).
     void closeAllDocuments();
     // Close the active view's tab; the file itself closes with its last view.
