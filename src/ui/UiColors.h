@@ -17,7 +17,7 @@ namespace loftail {
 // palette range from dim to nearly invisible. The log's OWN colours never had this
 // problem: highlight rules go through HighlightPalette, which has carried a light and
 // a dark variant per slot since M5. This is the same idea applied to the chrome, and
-// it is deliberately NOT part of HighlightPalette: those twelve slots are a user-facing
+// it is deliberately NOT part of HighlightPalette: those slots are a user-facing
 // palette that rules reference by index and presets round-trip through, while these
 // four are internal and nothing persists them.
 //

@@ -24,7 +24,7 @@ class Document;
 // global "current file". It edits an ordered list of highlight rules — add/remove,
 // reorder, enable/disable per rule, and per rule the SAME five match axes a filter
 // offers (subsystem, thread, priority, time range, message text) plus a background
-// and foreground color picked from the 12-slot palette (or *default*).
+// and foreground color picked from the 27-slot palette (or *default*).
 //
 // The axis controls are the shared `AxisEditor`, the very widget the Filters pane
 // uses, sitting in a scroll area with each axis collapsed until it is enabled — five
