@@ -68,6 +68,11 @@ private slots:
     void unreachableHostOpensWaitingAndFillsInWhenItReturns();
     void aRemoteLogRemovedMidTailWaitsAndKeepsItsSpool();
     void aRefusalStillFailsTheOpen();
+
+    // M17 — a spool with nothing in it yet waits, and the three states that means.
+    void aConnectingSpoolWaitsUntilItsFirstBytes();
+    void aRefusedConnectWaitsAndSaysWhy();
+    void anEmptyRemoteLogIsNotAWait();
 };
 
 void TestWaitingRemote::unreachableHostOpensWaitingAndFillsInWhenItReturns()
@@ -173,10 +178,10 @@ void TestWaitingRemote::aRemoteLogRemovedMidTailWaitsAndKeepsItsSpool()
 
 void TestWaitingRemote::aRefusalStillFailsTheOpen()
 {
-    // A host that says no is not a host that is not there. A changed key or a rejected
-    // password gets the same answer however long loftail waits, so it stays an open
-    // failure with no document and no retry — which is also what stops loftail
-    // hammering a host it has just been refused by.
+    // A refusal decided with NO I/O — no transport was ever built, because the address
+    // named none that could be. Those still fail the open outright, with no document to
+    // show; everything that needed a round trip now opens a waiting tab instead, which
+    // is aRefusedConnectWaitsAndSaysWhy() below.
     FakeRemoteFarm farm;
     farm.at(url())->setStartFailure(QStringLiteral("Authentication to deploy@web1 failed."));
 
@@ -185,6 +190,101 @@ void TestWaitingRemote::aRefusalStillFailsTheOpen()
     QVERIFY(!doc.prepare(url(), provider, Encoding::Utf8, QTimeZone::utc()));
     QVERIFY(!doc.isWaiting());
     QCOMPARE(doc.lastError(), QStringLiteral("Authentication to deploy@web1 failed."));
+}
+
+void TestWaitingRemote::aConnectingSpoolWaitsUntilItsFirstBytes()
+{
+    // The shape of every remote open since M17: the document exists before the connect
+    // has finished, so it opens WAITING over a legal, empty spool and fills in when the
+    // bytes arrive. Everything below the wait is M13's, unchanged.
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(rec(1, "INFO ", "boot", "one") + rec(2, "WARN ", "boot", "two"));
+    remote->setConnectDelayed();
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.prepare(url(), provider, Encoding::Utf8, QTimeZone::utc()));
+
+    // Waiting, not failed — and the reason is the transport's own word for the state it
+    // is in rather than "the log is not there", which would be wrong: nobody has looked.
+    QVERIFY(doc.isWaiting());
+    QVERIFY(doc.lastError().isEmpty());
+    QVERIFY(doc.waitReason().contains(QStringLiteral("connecting")));
+    // The format has NOT settled: settling it against the empty sample would be a guess
+    // about a log nobody has seen, and resume() is the only thing that can revisit it.
+    QVERIFY(!doc.formatSettled());
+    QVERIFY(doc.source()); // the spool is kept — it is what is doing the connecting
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    int resumes = 0;
+    wireResume(live, doc, model, &resumes);
+    live.start();
+
+    // Still connecting: a tick must not take it out of the wait, because there is still
+    // nothing to settle a format from.
+    live.checkNow();
+    QCOMPARE(resumes, 0);
+    QVERIFY(doc.isWaiting());
+
+    remote->becomeAvailable();
+    live.checkNow();
+
+    QCOMPARE(resumes, 1);
+    QVERIFY(!doc.isWaiting());
+    QVERIFY(doc.formatSettled());
+    QCOMPARE(model.rowCount(), 2);
+    QCOMPARE(remote->startCount(), 1);
+}
+
+void TestWaitingRemote::aRefusedConnectWaitsAndSaysWhy()
+{
+    // A rejected password or a changed host key now KEEPS the tab and reports the
+    // transport's own words (SPEC.md §3). It is still not retried on a timer — the
+    // fetcher latches its refusal — so what the user gets is a tab that explains itself
+    // and File ▸ Reconnect.
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(rec(1, "INFO ", "boot", "one"));
+    remote->setConnectRefusal(QStringLiteral("Authentication to deploy@web1 failed."));
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.prepare(url(), provider, Encoding::Utf8, QTimeZone::utc()));
+
+    QVERIFY(doc.isWaiting());
+    QVERIFY(doc.lastError().isEmpty()); // waiting is a state, not a failure
+    QCOMPARE(doc.waitReason(), QStringLiteral("Authentication to deploy@web1 failed."));
+    QVERIFY(doc.source());
+}
+
+void TestWaitingRemote::anEmptyRemoteLogIsNotAWait()
+{
+    // The correction that keeps notReadyYet() honest. A remote log that EXISTS and has
+    // nothing in it has been looked at, found, and read — so it opens as an ordinary
+    // empty tab, exactly as an empty local file does. Marking it ◦ would say "not there
+    // yet" about a log that is demonstrably there, which is the one distinction that
+    // mark exists to draw.
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(QByteArray()); // present, zero length
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.prepare(url(), provider, Encoding::Utf8, QTimeZone::utc()));
+
+    QVERIFY(!doc.isWaiting());
+    QVERIFY(doc.waitReason().isEmpty());
+    QCOMPARE(doc.index().recordCount(), 0);
+
+    // And it tails from there like any other log.
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+    remote->append(rec(1, "INFO ", "boot", "first line at last"));
+    live.checkNow();
+    QCOMPARE(model.rowCount(), 1);
 }
 
 QTEST_GUILESS_MAIN(TestWaitingRemote)

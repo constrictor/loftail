@@ -50,12 +50,31 @@ public:
         m_unavailableMessage = message;
     }
 
+    // Make start() SUCCEED into State::Connecting with nothing committed — a fetcher
+    // whose worker is still shaking hands, which since M17 is how EVERY remote open
+    // begins. The test ends it with becomeAvailable().
+    //
+    // Note what this fake cannot prove: it returns from start() instantly, so it says
+    // nothing about start() not blocking. That is tst_asyncconnect's job.
+    void setConnectDelayed() { m_openState = FetchStatus::State::Connecting; }
+
+    // Make start() SUCCEED into State::Error with nothing committed — a rejected
+    // password, a changed host key, a container that would not open. Since M17 that
+    // opens a tab which says why, rather than no tab at all (SPEC.md §3); contrast
+    // setStartFailure(), which is now only for refusals decided with no I/O.
+    void setConnectRefusal(const QString &message)
+    {
+        m_openState = FetchStatus::State::Error;
+        m_openMessage = message;
+    }
+
     // The wait ended: the host came back, or the log was finally written. Publishes
     // the initial content as generation 1 and goes Live, which is what start() would
     // have done had it succeeded.
     void becomeAvailable()
     {
         m_unavailable = false;
+        m_openState = FetchStatus::State::Idle;
         writeWhole(pathFor(1), m_initial);
 
         QMutexLocker lock(&m_mutex);
@@ -119,6 +138,40 @@ public:
         m_status.generation = next; // bumped LAST, after its bytes are on disk
     }
 
+    // A rotation on a SLOW LINK: the generation is bumped and its spool file created,
+    // but nothing has been fetched into it yet. The state a real fetcher passes through
+    // between beginGeneration() and its first committed chunk, and the one that used to
+    // be over in a microsecond because the whole prime happened inside start().
+    //
+    // This is the shape that would blank a healthy tab if notReadyYet() were ever folded
+    // into checkNow()'s vanish branch, so it exists to be tested rather than to be
+    // convenient. finishReplacing() ends it.
+    void beginReplacing(qint64 expectedSize)
+    {
+        QMutexLocker lock(&m_mutex);
+        const quint64 next = m_status.generation + 1;
+        lock.unlock();
+
+        writeWhole(pathFor(next), QByteArray());
+
+        lock.relock();
+        m_written = 0;
+        m_status.committedSize = 0;
+        m_status.totalSize = expectedSize;
+        m_status.baseOffset = 0;
+        m_status.state = FetchStatus::State::Priming;
+        m_status.generation = next; // bumped LAST, after its (empty) file is on disk
+    }
+
+    void finishReplacing(const QByteArray &bytes)
+    {
+        writeToCurrent(bytes);
+        QMutexLocker lock(&m_mutex);
+        m_status.committedSize = m_written;
+        m_status.totalSize = m_written;
+        m_status.state = FetchStatus::State::Live;
+    }
+
     // The stream is finished — what an archive expansion publishes when the member has
     // been read to its end (M12). Committing the outstanding bytes FIRST and the state
     // LAST is the ordering the real fetcher promises and the live controller relies on:
@@ -156,6 +209,14 @@ public:
             return false;
         }
         m_dir = spoolDir;
+        if (m_openState != FetchStatus::State::Idle) {
+            // Opened into a state with no bytes behind it: connecting, or refused. Both
+            // leave the spool legal and empty, which is what notReadyYet() reads.
+            QMutexLocker lock(&m_mutex);
+            m_status.state = m_openState;
+            m_status.error = m_openMessage;
+            return true;
+        }
         if (m_unavailable) {
             // Started successfully with nothing to show: the spool exists and is empty,
             // and the fetcher behind it keeps trying. This is the shape a real
@@ -240,6 +301,10 @@ private:
     QString        m_dir;
     QByteArray     m_initial;
     QString        m_startFailure;
+    // Idle means "open normally". Anything else is a state start() lands in with no
+    // bytes committed — see setConnectDelayed() and setConnectRefusal().
+    FetchStatus::State m_openState = FetchStatus::State::Idle;
+    QString        m_openMessage;
     bool           m_unavailable = false;
     QString        m_unavailableMessage;
     qint64         m_written = 0;

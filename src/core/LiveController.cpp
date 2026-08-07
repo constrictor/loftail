@@ -248,7 +248,14 @@ void LiveController::checkWhileWaiting()
     // A LOCAL log has no source while it waits, so the path is all there is to ask; a
     // SPOOLED one keeps its source precisely so its fetcher can go on trying, and the
     // fetcher — not the path — is what knows whether it got through.
-    const bool back = src ? !src->originVanished()
+    //
+    // notReadyYet() is the second half of the spooled question and is asked ONLY here
+    // and in Document::prepare() — never in checkNow()'s vanish branch, where it would
+    // blank the view on every slow-link rotation (LogSource.h). It is what holds the
+    // wait until bytes actually arrive rather than until the fetcher merely changes
+    // state, which matters because resume() cannot be un-done: settling a format against
+    // an empty sample leaves it unsettled forever.
+    const bool back = src ? !(src->originVanished() || src->notReadyYet())
                           : logSourceAvailable(m_document->path());
 
     // Keep the status line current either way: a spooled source spends this whole time

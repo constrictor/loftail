@@ -75,6 +75,39 @@ bool SpooledLogSource::originVanished() const
     return m_spool && m_spool->status().state == FetchStatus::State::Waiting;
 }
 
+bool SpooledLogSource::notReadyYet() const
+{
+    if (!m_spool)
+        return false;
+    const FetchStatus status = m_spool->status();
+    if (status.committedSize > 0)
+        return false; // there is something to read, whatever the fetcher is doing next
+
+    switch (status.state) {
+    case FetchStatus::State::Idle:
+    case FetchStatus::State::Connecting:
+    case FetchStatus::State::Priming:
+        return true; // on its way, and nothing has arrived
+    case FetchStatus::State::Error:
+        // A refusal — a rejected password, a changed host key, a container that would
+        // not open. The tab stays and says why (SPEC.md §3): the fetcher's own words
+        // reach the placeholder and the status bar through sourceStatusText(), and
+        // File ▸ Reconnect is how the user tries again.
+        return true;
+    case FetchStatus::State::Live:
+        // An EMPTY remote log, which is a real thing and not a wait: it exists, it has
+        // been read, and it has nothing in it — the same case as an empty local file,
+        // which opens as an ordinary empty tab. Saying "not there yet" here would put a
+        // ◦ on a log that has demonstrably appeared, which is the exact distinction the
+        // mark exists to draw.
+    case FetchStatus::State::Complete:
+    case FetchStatus::State::Disconnected:
+    case FetchStatus::State::Waiting: // originVanished()'s business, not this one's
+        return false;
+    }
+    return false;
+}
+
 bool SpooledLogSource::isComplete() const
 {
     // The fetcher publishes Complete only after its final committedSize, so a caller

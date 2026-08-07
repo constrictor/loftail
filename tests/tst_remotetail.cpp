@@ -104,6 +104,7 @@ private slots:
     void withheldBytesAreNotIngestedUntilCommitted();
     void truncationTriggersRescan();
     void rotationTriggersReindex();
+    void rotationOnASlowLinkDoesNotBlankTheTab();
     void rescanDuringTailDoesNotReconnect();
     void filteredAndHighlightedAppend();
     void openFailureLeavesAUsableError();
@@ -281,6 +282,57 @@ void TestRemoteTail::rotationTriggersReindex()
     live.checkNow();
     QCOMPARE(model.rowCount(), 3);
     QCOMPARE(rescans, 1); // the append was not mistaken for another rotation
+}
+
+void TestRemoteTail::rotationOnASlowLinkDoesNotBlankTheTab()
+{
+    // THE REGRESSION THE TWO-CALL-SITE RULE PREVENTS (LogSource.h, notReadyYet()).
+    //
+    // notReadyYet() and originVanished() both mean "nothing to read", and folding them
+    // into one test in LiveController::checkNow() reads as obvious tidying. It is not:
+    // after a rotation, wasReplaced() rescans onto the new generation, and the very next
+    // tick finds it Priming with nothing committed yet. On a slow link that lasts long
+    // enough for the two-second vanish grace to expire — and the view of a log that is
+    // perfectly fine, and merely rotating, would be blanked into "no longer there".
+    //
+    // Without this test the merge would be reintroduced, look correct, and only misbehave
+    // against a real remote host mid-logrotate.
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(rec(1, "t0", "INFO ", "logger.old", "before rotate"));
+
+    Document doc;
+    QVERIFY(openDoc(doc));
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0); // no grace at all: the strictest form of the question
+    live.start();
+    QCOMPARE(model.rowCount(), 1);
+
+    int waits = 0;
+    connect(&live, &LiveController::waitingChanged, &live,
+            [&](bool waiting, const QString &) {
+                if (waiting)
+                    ++waits;
+            });
+
+    // The rotation has been noticed and the new file is not here yet.
+    remote->beginReplacing(4096);
+    live.checkNow(); // sees the new generation: rescan
+    live.checkNow(); // and now: new generation adopted, still nothing committed
+    live.checkNow();
+
+    QCOMPARE(waits, 0);
+    QVERIFY(!doc.isWaiting());
+
+    QByteArray rotated;
+    rotated += rec(1, "t9", "INFO ", "logger.new", "after rotate a");
+    rotated += rec(2, "t9", "ERROR", "logger.new", "after rotate b");
+    remote->finishReplacing(rotated);
+    live.checkNow();
+
+    QCOMPARE(waits, 0);
+    QCOMPARE(model.rowCount(), 2);
 }
 
 void TestRemoteTail::rescanDuringTailDoesNotReconnect()

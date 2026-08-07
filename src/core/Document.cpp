@@ -136,10 +136,24 @@ bool Document::prepare(const QString &rawPath,
         return false;
     }
 
+    // Settled BEFORE the waiting check below, not after it. That check returns early,
+    // and a caller who PINNED a zone — which every restored document with a saved
+    // sourceZone does — would otherwise end up with a default-constructed, invalid
+    // QTimeZone rendering its Date column, because resume() re-infers only when the zone
+    // was not pinned. Rare when only an unreachable host reached here; universal now
+    // that every remote open does.
+    m_sourceZone = sourceZone.isValid() ? sourceZone : inferSourceZone(m_format);
+    recomputeDisplayZone(); // "as written" tracks whatever source zone just settled
+
     // A spooled source opens even when its input is not there — the spool is legal and
     // empty, and the fetcher behind it is retrying. That is the remote and archived
     // form of the same wait, and it is the source, not the path, that can say so.
-    if (m_source->originVanished()) {
+    //
+    // notReadyYet() is the same wait one step earlier: the fetcher has not FINISHED
+    // ASKING yet, or asked and was refused. A remote open reaches this on its way in,
+    // every time, because connecting no longer happens before the document exists
+    // (§6.3.3).
+    if (m_source->originVanished() || m_source->notReadyYet()) {
         // Prefer the TRANSPORT's own words. "app.log has not appeared yet" is right for
         // a local path we just stat'd and wrong for a remote one, where the log may be
         // sitting there perfectly well and the trouble is reaching it — a host that is
@@ -151,8 +165,6 @@ bool Document::prepare(const QString &rawPath,
         return true;
     }
 
-    m_sourceZone = sourceZone.isValid() ? sourceZone : inferSourceZone(m_format);
-    recomputeDisplayZone(); // "as written" tracks whatever source zone just settled
     return true;
 }
 
