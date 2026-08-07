@@ -1,9 +1,14 @@
 #include <QtTest>
 
+#include <QElapsedTimer>
 #include <QTemporaryDir>
+#include <QThread>
+
+#include <atomic>
 
 #include "ArchiveFixtures.h"
 #include "ArchiveReader.h"
+#include "FakeFetcher.h"
 
 using namespace loftail;
 using namespace loftail::fixtures;
@@ -23,6 +28,8 @@ private slots:
     void skipsDirectoriesAndEmptyEntries();
     void aBareCompressedStreamHasOneSyntheticMember();
     void reportsAContainerThatIsNotAnArchive();
+    void listingARemoteContainerWaitsForAllOfIt();
+    void listingCanBeGivenUpOn();
 
 private:
     QString path(const QString &name) const { return m_dir.path() + u'/' + name; }
@@ -108,5 +115,111 @@ void TestArchiveMembers::reportsAContainerThatIsNotAnArchive()
     QVERIFY2(!error.isEmpty(), "a container that cannot be read must say so");
 }
 
-QTEST_APPLESS_MAIN(TestArchiveMembers)
+void TestArchiveMembers::listingARemoteContainerWaitsForAllOfIt()
+{
+    // A BUG THAT PREDATES M17 and that M17 would have turned from partial into empty.
+    //
+    // This code passed no AwaitInput, on the stated assumption that "the container is
+    // fully available by the time it is listed". Nothing ever made that true: a remote
+    // container arrives progressively, so listing one enumerated whatever the transport
+    // had committed at that instant — the 128 KB prime — and called that the archive. A
+    // support bundle would quietly show its first few members and hide the rest.
+    //
+    // The fake hands over its bytes in pieces so that a listing which does not wait sees
+    // an incomplete container, which is exactly what the old code did.
+    QVector<fixtures::Member> members;
+    for (int i = 0; i < 40; ++i) {
+        members.append({QStringLiteral("var/log/app-%1.log").arg(i, 2, 10, QChar(u'0')),
+                        logBody(200)});
+    }
+    const QString tgz = path(QStringLiteral("bundle.tar.gz"));
+    QVERIFY(writeTarGz(tgz, members));
+
+    QFile packed(tgz);
+    QVERIFY(packed.open(QIODevice::ReadOnly));
+    const QByteArray compressed = packed.readAll();
+    packed.close();
+    QVERIFY(compressed.size() > 4096); // several chunks' worth, or this proves nothing
+
+    const QString url = QStringLiteral("ssh://deploy@web1/var/log/bundle.tar.gz");
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url);
+    // Only the head to begin with; the rest arrives while the listing is under way. The
+    // total is what a stat would have reported before a byte was fetched, which is how
+    // the listing can tell "still coming" from "that is all there is".
+    remote->setInitialContent(compressed.left(2048));
+    remote->setTotalSize(compressed.size());
+
+    // Feed the remainder from another thread, as a transport would. run() is overridden
+    // rather than hooking started(), so the thread ENDS when the feeding does — a default
+    // run() would enter an event loop and outlive its work.
+    struct Feeder : QThread
+    {
+        std::shared_ptr<FakeRemote> remote;
+        QByteArray                  bytes;
+        void run() override
+        {
+            // Not until the source has actually been opened. start() writes the initial
+            // content and resets the fake's byte count, so anything appended before it
+            // is thrown away — and the appends would land first, because opening the
+            // container is what the main thread is about to do.
+            while (remote->startCount() == 0)
+                QThread::msleep(1);
+            for (int at = 2048; at < bytes.size(); at += 2048) {
+                QThread::msleep(2);
+                remote->append(bytes.mid(at, 2048));
+            }
+        }
+    } feeder;
+    feeder.remote = remote;
+    feeder.bytes = compressed;
+    feeder.start();
+
+    QString error;
+    const QVector<ArchiveEntry> listed = listArchiveMembers(url, &error);
+    QVERIFY(feeder.wait(10000));
+
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(listed.size(), 40); // every member, not the handful in the first chunk
+    QCOMPARE(listed.first().path, QStringLiteral("var/log/app-00.log"));
+    QCOMPARE(listed.last().path, QStringLiteral("var/log/app-39.log"));
+}
+
+void TestArchiveMembers::listingCanBeGivenUpOn()
+{
+    // The picker's Cancel button, from below. A container that never finishes arriving
+    // would otherwise make the listing wait for ever, which since M17 is a wait on a
+    // worker thread that the window is polling — so it has to be interruptible or Cancel
+    // is a button that does nothing.
+    const QString tgz = path(QStringLiteral("stalled.tar.gz"));
+    QVERIFY(writeTarGz(tgz, {{QStringLiteral("a.log"), logBody(200)},
+                             {QStringLiteral("b.log"), logBody(200)}}));
+
+    QFile packed(tgz);
+    QVERIFY(packed.open(QIODevice::ReadOnly));
+    const QByteArray compressed = packed.readAll();
+    packed.close();
+
+    const QString url = QStringLiteral("ssh://deploy@web2/var/log/stalled.tar.gz");
+    FakeRemoteFarm farm;
+    // A head and then nothing, for ever: the host is still connected and simply has not
+    // sent the rest.
+    farm.at(url)->setInitialContent(compressed.left(512));
+
+    // The predicate times itself rather than being flipped by a QTimer: this test runs
+    // no event loop, so a timer would never fire and the listing would wait for ever —
+    // which is exactly the hang being guarded against, and a poor way to demonstrate it.
+    QElapsedTimer clock;
+    clock.start();
+    QString error;
+    const QVector<ArchiveEntry> listed =
+        listArchiveMembers(url, &error, [&clock]() { return clock.elapsed() > 200; });
+    Q_UNUSED(listed);
+
+    QVERIFY2(clock.elapsed() < 5000,
+             qPrintable(QStringLiteral("the listing ignored the cancel for %1 ms")
+                            .arg(clock.elapsed())));
+}
+
+QTEST_GUILESS_MAIN(TestArchiveMembers)
 #include "tst_archivemembers.moc"
