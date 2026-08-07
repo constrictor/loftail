@@ -37,14 +37,39 @@ void TestSecretStore::theStoreIsNeverNull()
 {
     QVERIFY(secretStore() != nullptr);
 
+    // Asked BEHAVIOURALLY rather than by comparing pointers, because since M17 the
+    // returned object is deliberately not the installed one: secretStore() hands back a
+    // view that runs every call on the application thread (ARCHITECTURE.md §6.3.3), so
+    // that a keychain read reached from a fetcher's thread cannot be the thing that
+    // remembers to marshal itself. What has to hold is that installing a store takes
+    // effect and uninstalling restores the default — which is what this now asks.
     FakeSecretStore fake;
+    fake.preload(QStringLiteral("ssh/deploy@web1:22"), QStringLiteral("hunter2"));
     {
         InstalledSecretStore installed(&fake);
-        QCOMPARE(secretStore(), &fake);
+        QString secret;
+        QCOMPARE(secretStore()->read(QStringLiteral("ssh/deploy@web1:22"), &secret),
+                 SecretStore::Result::Ok);
+        QCOMPARE(secret, QStringLiteral("hunter2"));
     }
+
+    // And that swapping stores actually re-routes: the first fake stops being consulted.
+    // Checked against a SECOND fake rather than against the process default, because
+    // this test has no QCoreApplication and a real keychain read bridges QtKeychain's
+    // asynchronous job with a nested event loop whose timeout is a QTimer — which never
+    // fires without an application, so that read would never return.
+    const int readsBefore = fake.readCount();
+    FakeSecretStore other;
+    {
+        InstalledSecretStore installed(&other);
+        QString stale;
+        QCOMPARE(secretStore()->read(QStringLiteral("ssh/deploy@web1:22"), &stale),
+                 SecretStore::Result::NotFound);
+    }
+    QCOMPARE(fake.readCount(), readsBefore);
+
     // Uninstalling restores the process default rather than leaving a hole.
     QVERIFY(secretStore() != nullptr);
-    QVERIFY(secretStore() != &fake);
 }
 
 // This is what makes the CI leg that configures with -DLOFTAIL_WITH_KEYCHAIN=OFF mean

@@ -52,6 +52,14 @@ add_library(loftail_core STATIC
     SshPrompter.h
     SshFetcher.h
     SshFetchOptions.cpp
+    # M17 — carrying a question from a fetcher's thread to the application's and the
+    # answer back. Always compiled for the same reason the prompt seam is, and for one
+    # more: the threading discipline it documents is the only copy of that reasoning, so
+    # it must not be something a build configuration can omit.
+    GuiCallGate.cpp
+    GuiCallGate.h
+    PromptRelay.cpp
+    PromptRelay.h
     # M14 — where a remembered password lives. The seam and the null implementation are
     # compiled in EVERY configuration for the same reason SshPrompter is: the checkbox
     # wording, the auth chain's ordering and the consent rule must not differ between

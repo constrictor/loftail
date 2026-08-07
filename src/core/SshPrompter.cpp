@@ -1,5 +1,7 @@
 #include "SshPrompter.h"
 
+#include "GuiCallGate.h"
+
 #include <QHash>
 
 namespace loftail {
@@ -22,6 +24,16 @@ QHash<QString, QString> &cache()
 void setSshPrompter(SshPrompter *prompter)
 {
     g_prompter = prompter;
+
+    // "Null means never prompt" is this seam's existing policy (see the header), and
+    // once a question can be waiting on the application thread that policy has to reach
+    // the questions already in flight as well — otherwise a window on its way out leaves
+    // a fetcher blocked on a prompter it has just withdrawn. Cancelling answers every one
+    // of them in the safe direction, which is the same answer a null prompter gives.
+    if (prompter)
+        guiCallGate().reopen();
+    else
+        guiCallGate().cancel();
 }
 
 SshPrompter *sshPrompter()

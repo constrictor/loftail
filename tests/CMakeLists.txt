@@ -118,6 +118,13 @@ qt_add_executable(tst_spooledsource tst_spooledsource.cpp)
 target_link_libraries(tst_spooledsource PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_spooledsource COMMAND tst_spooledsource)
 
+# M17 — a question asked on a fetcher's thread, answered on the application's. Pins
+# where the answer runs, that only one question is in flight at a time, and that a
+# cancel unblocks a waiter instead of stranding it. No network and no libssh2.
+qt_add_executable(tst_promptrelay tst_promptrelay.cpp)
+target_link_libraries(tst_promptrelay PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_promptrelay COMMAND tst_promptrelay)
+
 # M17 — a dead spool is retired, not joined. Pins the promise the async open rests on:
 # dropping the last handle returns at once even while the fetcher's thread is still
 # winding up, and the directory is removed only once it has. Also network-free.

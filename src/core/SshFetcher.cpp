@@ -1,5 +1,6 @@
 #include "SshFetcher.h"
 
+#include "PromptRelay.h"
 #include "SshPrompter.h"
 #include "SshSession.h"
 
@@ -237,7 +238,14 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
     // m_stopping through the ordinary accessor.
     m_session->setAbandonCheck([this]() { return stopping(); });
     publishSession(m_session.get());
-    if (!m_session->connectTo(m_location, prompter, timeout, error, failure)) {
+
+    // Every question goes through the relay, whichever thread this is on. On the
+    // application thread the gate runs it inline, so an interactive open behaves exactly
+    // as it did; off it, the question travels and the answer comes back. A null prompter
+    // is still a null prompter — the relay refuses on its behalf rather than asking.
+    PromptRelay relay(prompter);
+    SshPrompter *asker = prompter ? &relay : nullptr;
+    if (!m_session->connectTo(m_location, asker, timeout, error, failure)) {
         resetSession();
         return false;
     }

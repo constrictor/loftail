@@ -1,5 +1,7 @@
 #include "SecretStore.h"
 
+#include "GuiCallGate.h"
+
 #if defined(LOFTAIL_HAVE_KEYCHAIN)
 #include "KeychainSecretStore.h"
 #endif
@@ -38,6 +40,68 @@ SecretStore &defaultStore()
 
 SecretStore *g_store = nullptr;
 
+SecretStore &installedStore()
+{
+    return g_store ? *g_store : defaultStore();
+}
+
+// Every keychain call, run on the application thread (ARCHITECTURE.md §6.3.3).
+//
+// A keychain read happens inside SshSession's authentication ladder, which after M17
+// runs on a fetcher's own thread. QtKeychain needs the application thread for two
+// reasons that outlive any one backend: its jobs are asynchronous and are bridged with a
+// nested event loop, and on Unix that loop wants QDBusConnection::sessionBus(). A worker
+// runs no event loop at all.
+//
+// WHAT THIS DOES NOT CHANGE is the more important half. The keychain rung still sits
+// BELOW authenticate()'s "is there anybody to ask" test, and marshalling is not a reason
+// to move it: that test is about whether a PERSON is there, not about which thread is
+// running, and an unattended retry — which passes no prompter — must not raise an unlock
+// dialog for a log the user opened hours ago.
+//
+// Resolves the installed store inside each call rather than holding a pointer, so a test
+// swapping stores mid-flight cannot be caught between the two.
+class MarshalledSecretStore final : public SecretStore
+{
+public:
+    bool available() override
+    {
+        bool answer = false;
+        guiCallGate().call([&answer]() { answer = installedStore().available(); });
+        return answer;
+    }
+
+    QString backendName() override
+    {
+        QString name;
+        guiCallGate().call([&name]() { name = installedStore().backendName(); });
+        return name;
+    }
+
+    Result read(const QString &key, QString *secret, QString *error) override
+    {
+        Result result = Result::NoBackend;
+        guiCallGate().call(
+            [&]() { result = installedStore().read(key, secret, error); });
+        return result;
+    }
+
+    Result store(const QString &key, const QString &secret, QString *error) override
+    {
+        Result result = Result::NoBackend;
+        guiCallGate().call(
+            [&]() { result = installedStore().store(key, secret, error); });
+        return result;
+    }
+
+    Result erase(const QString &key, QString *error) override
+    {
+        Result result = Result::NoBackend;
+        guiCallGate().call([&]() { result = installedStore().erase(key, error); });
+        return result;
+    }
+};
+
 } // namespace
 
 void setSecretStore(SecretStore *store)
@@ -47,7 +111,11 @@ void setSecretStore(SecretStore *store)
 
 SecretStore *secretStore()
 {
-    return g_store ? g_store : &defaultStore();
+    // Always the marshalling view, never the store itself. On the application thread the
+    // gate runs the work inline, so this costs one indirection and nothing else — which
+    // is what keeps the rule from being something each caller has to remember.
+    static MarshalledSecretStore marshalled;
+    return &marshalled;
 }
 
 QString sshSecretKey(const QString &target)

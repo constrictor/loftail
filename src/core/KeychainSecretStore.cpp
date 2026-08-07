@@ -202,10 +202,20 @@ bool KeychainSecretStore::available()
 {
     if (m_probed)
         return m_available;
-    m_probed = true;
 
+    // BEFORE m_probed is latched, and that ordering is the whole of it. Latching first
+    // meant a single off-thread call — a marshalling wrapper that forgot to route this
+    // one method, or a test — turned the keychain off for the rest of the process, and
+    // M14's remembered passwords then stopped working with every test above this seam
+    // still green. Which is exactly how the two M14 wires broke the first time.
+    //
+    // Not reachable through secretStore(), which marshals; kept as the structural
+    // assertion it has always been, so a later caller cannot quietly reintroduce a
+    // keychain read on a fetcher thread.
     if (!onTheRightThread())
         return false;
+
+    m_probed = true;
 
     // The cheap negative first — but ONLY as a negative. QKeychain::isAvailable() answers
     // "was a backend library found", which on Linux is true as soon as libsecret-1 can be
