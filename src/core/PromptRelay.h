@@ -18,24 +18,26 @@ namespace loftail {
 // is "the user said no". That is the same answer a null prompter gives, and deliberately
 // so — "there is nobody to ask" and "nobody is going to answer" are the same situation.
 //
-// Holds the target prompter but does not own it; both may outlive each other only
-// because setSshPrompter() cancels the gate on the way out.
+// HOLDS NO PROMPTER. It resolves sshPrompter() inside each marshalled call, on the
+// application thread — the only thread that ever writes it — and refuses if there is
+// none by then.
+//
+// Holding one was a dangling pointer waiting to happen, and it happened: a fetcher's
+// relay outlives the window whose prompter it captured, because a fetcher is retired
+// rather than joined and its thread may still be mid-connect when the window goes. The
+// gate's cancel covers the questions in flight at that moment, but a *later* window
+// reopens the gate, and the stale relay would then call a destroyed prompter. Resolving
+// late means the answer is always the current prompter or nobody, and "nobody" is a case
+// every caller already handles.
 class PromptRelay final : public SshPrompter
 {
 public:
-    explicit PromptRelay(SshPrompter *target) : m_target(target) {}
-
-    SshPrompter *target() const { return m_target; }
-
     HostKeyChoice confirmHostKey(const HostKeyInfo &info) override;
     bool askPassword(const QString &target, const QString &promptText,
                      QString *password, bool *remember) override;
     void passwordAccepted(const QString &target, const QString &password,
                           bool remember) override;
     void progress(const QString &message) override;
-
-private:
-    SshPrompter *m_target;
 };
 
 } // namespace loftail

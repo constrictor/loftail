@@ -52,6 +52,15 @@ public:
     bool          rememberToGive = false;
 };
 
+// Installs a prompter for a scope, the way MainWindow does for its lifetime — and takes
+// it away again, which is the lifetime the relay must survive.
+class InstalledPrompter
+{
+public:
+    explicit InstalledPrompter(SshPrompter *p) { setSshPrompter(p); }
+    ~InstalledPrompter() { setSshPrompter(nullptr); }
+};
+
 // Runs one lambda off the main thread and reports when it is done.
 class Asker : public QThread
 {
@@ -92,6 +101,8 @@ private slots:
     void cancelledMeansRefused();
     void aNullPrompterRefusesWithoutAsking();
 
+    void aRelayOutlivingItsPrompterRefusesInsteadOfCrashing();
+
     void oneConnectAtATimeToOneHost();
     void differentHostsConnectInParallel();
     void aWaitingConnectCanBeGivenUpOn();
@@ -100,7 +111,8 @@ private slots:
 void TestPromptRelay::aQuestionFromAWorkerIsAnsweredOnTheMainThread()
 {
     RecordingPrompter prompter;
-    PromptRelay relay(&prompter);
+    InstalledPrompter installed(&prompter);
+    PromptRelay relay;
 
     QString password;
     bool remember = false;
@@ -130,7 +142,8 @@ void TestPromptRelay::aQuestionFromTheMainThreadRunsInline()
     // thread. Posting to ourselves and waiting for a queue we are the only one draining
     // would deadlock, so the gate must run it directly.
     RecordingPrompter prompter;
-    PromptRelay relay(&prompter);
+    InstalledPrompter installed(&prompter);
+    PromptRelay relay;
 
     QString password;
     bool remember = false;
@@ -172,7 +185,8 @@ void TestPromptRelay::twoWorkersAreAnsweredOneAtATime()
     };
 
     CountingPrompter prompter(inFlight, highWater);
-    PromptRelay relay(&prompter);
+    InstalledPrompter installed(&prompter);
+    PromptRelay relay;
 
     SshPrompter::HostKeyInfo info;
     info.host = QStringLiteral("web1");
@@ -195,7 +209,8 @@ void TestPromptRelay::cancelUnblocksAWaitingWorker()
     // teardown — which, since nothing joins a fetcher any more, is what keeps a cancel
     // that arrives late from costing anything.
     RecordingPrompter prompter;
-    PromptRelay relay(&prompter);
+    InstalledPrompter installed(&prompter);
+    PromptRelay relay;
 
     std::atomic_bool asked{false};
     SshPrompter::HostKeyInfo info;
@@ -221,7 +236,8 @@ void TestPromptRelay::cancelledMeansRefused()
     // answer" and "there is nobody to ask" are the same situation.
     RecordingPrompter prompter;
     prompter.hostKeyAnswer = SshPrompter::HostKeyChoice::AcceptAndRemember;
-    PromptRelay relay(&prompter);
+    InstalledPrompter installed(&prompter);
+    PromptRelay relay;
 
     guiCallGate().cancel();
 
@@ -238,7 +254,9 @@ void TestPromptRelay::cancelledMeansRefused()
 
 void TestPromptRelay::aNullPrompterRefusesWithoutAsking()
 {
-    PromptRelay relay(nullptr);
+    // No prompter installed at all: the relay resolves one per call and finds none.
+    setSshPrompter(nullptr);
+    PromptRelay relay;
 
     SshPrompter::HostKeyInfo info;
     info.host = QStringLiteral("web1");
@@ -248,6 +266,47 @@ void TestPromptRelay::aNullPrompterRefusesWithoutAsking()
     bool remember = false;
     QVERIFY(!relay.askPassword(QStringLiteral("deploy@web1:22"), QStringLiteral("Password:"),
                                &password, &remember));
+}
+
+void TestPromptRelay::aRelayOutlivingItsPrompterRefusesInsteadOfCrashing()
+{
+    // THE CRASH THIS PREVENTS, found in a core dump from a parallel Release run.
+    //
+    // A fetcher is retired rather than joined, so its thread can still be mid-connect
+    // when the window goes — and the relay used to hold the raw SshPrompter * it was
+    // constructed with. The gate's cancel covers the questions in flight at that moment,
+    // but the NEXT window reopens the gate, and the stale relay then called a destroyed
+    // prompter. It resolves the live one per call now, so there is nothing to dangle.
+    PromptRelay relay; // outlives every prompter below, exactly as a fetcher's does
+
+    {
+        RecordingPrompter prompter;
+        InstalledPrompter installed(&prompter);
+        QString password;
+        bool remember = false;
+        QVERIFY(relay.askPassword(QStringLiteral("deploy@web1:22"),
+                                  QStringLiteral("Password:"), &password, &remember));
+        QCOMPARE(prompter.calls, 1);
+    }
+    // The prompter is destroyed and uninstalled. Asking again must refuse, not crash.
+    guiCallGate().reopen(); // as a second window would, which is what made this reachable
+
+    QString password;
+    bool remember = false;
+    QVERIFY(!relay.askPassword(QStringLiteral("deploy@web1:22"),
+                               QStringLiteral("Password:"), &password, &remember));
+
+    SshPrompter::HostKeyInfo info;
+    info.host = QStringLiteral("web1");
+    QCOMPARE(relay.confirmHostKey(info), SshPrompter::HostKeyChoice::Reject);
+    relay.progress(QStringLiteral("Connecting to web1…")); // must simply do nothing
+
+    // And a fresh prompter is picked up without the relay being rebuilt.
+    RecordingPrompter second;
+    InstalledPrompter installed(&second);
+    QVERIFY(relay.askPassword(QStringLiteral("deploy@web1:22"),
+                              QStringLiteral("Password:"), &password, &remember));
+    QCOMPARE(second.calls, 1);
 }
 
 void TestPromptRelay::oneConnectAtATimeToOneHost()

@@ -454,19 +454,23 @@ void TestRemoteOpen::anInteractiveRemoteOpenStillGetsTheFormatDialog()
                                                 "<12>Jul 21 00:00:02 host app: second\n"));
     remote->setConnectDelayed();
 
+    // A STACK timer, deliberately, and not one parented to qApp. It captures `shown` by
+    // reference, and a QVERIFY that fails returns from this function immediately — so a
+    // heap timer would outlive the frame it points into and fire again during a later
+    // test, reading freed stack. That is a segfault whose cause is nowhere near where it
+    // lands. A stack timer dies with the frame on every path, including that one.
     bool shown = false;
-    auto *timer = new QTimer(qApp);
-    timer->setInterval(10);
-    QObject::connect(timer, &QTimer::timeout, timer, [timer, &shown] {
+    QTimer watcher;
+    watcher.setInterval(10);
+    QObject::connect(&watcher, &QTimer::timeout, &watcher, [&watcher, &shown] {
         auto *dlg = qobject_cast<QDialog *>(QApplication::activeModalWidget());
         if (!qobject_cast<loftail::LogFormatDialog *>(dlg))
             return;
         shown = true;
-        timer->stop();
-        timer->deleteLater();
+        watcher.stop();
         dlg->reject(); // declining is enough; the point is that it was offered
     });
-    timer->start();
+    watcher.start();
 
     MainWindow window;
     window.show();
@@ -490,17 +494,19 @@ void TestRemoteOpen::aBackgroundResumeRaisesNoFormatDialog()
     remote->setInitialContent(QByteArrayLiteral("<12>Jul 21 00:00:01 host app: first\n"));
     remote->setConnectDelayed();
 
+    // Stack-scoped for the reason given in the case above: it captures `shown`, and an
+    // assertion that fails returns from here without running any teardown.
     bool shown = false;
-    auto *timer = new QTimer(qApp);
-    timer->setInterval(10);
-    QObject::connect(timer, &QTimer::timeout, timer, [&shown] {
+    QTimer watcher;
+    watcher.setInterval(10);
+    QObject::connect(&watcher, &QTimer::timeout, &watcher, [&shown] {
         auto *dlg = qobject_cast<QDialog *>(QApplication::activeModalWidget());
         if (qobject_cast<loftail::LogFormatDialog *>(dlg)) {
             shown = true;
             dlg->reject();
         }
     });
-    timer->start();
+    watcher.start();
 
     MainWindow window;
     window.show();
@@ -512,8 +518,7 @@ void TestRemoteOpen::aBackgroundResumeRaisesNoFormatDialog()
     QVERIFY(view);
     QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() > 0, 5000);
     settle(300);
-    timer->stop();
-    timer->deleteLater();
+    watcher.stop();
 
     QVERIFY(!shown);
     // It says where to fix it instead, which is the whole of §6.5's alternative.
