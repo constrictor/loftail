@@ -44,9 +44,12 @@ constexpr qint64 kPrimeBytes = 128 * 1024;
 // the handle. Only ever read on suspicion, never on the ordinary poll path.
 constexpr qint64 kHeadProbeBytes = 4096;
 
-// Ceiling on an UNATTENDED reconnect's own timeout (M13). Not a patience setting: the
-// worker thread is joined by stop(), which the GUI thread reaches when the last tab on
-// a log closes, so this is the worst case for closing a tab on a host that is down.
+// Ceiling on an UNATTENDED reconnect's own timeout (M13). This used to be the worst case
+// for closing a tab on a host that is down, because stop() joined the worker; nothing
+// joins it now (SourceSpool.h, retire()). The value survives its original reason on a
+// better one: a background retry has nothing to lose by giving up early — the next
+// attempt is seconds away — and every second it spends is a second the unreachable host
+// is not being left alone. Do not delete this along with the reason it was written for.
 constexpr int kRetryTimeoutMs = 5000;
 
 // How often the head compare may run when a STALLED SIZE is the only rotation signal
@@ -91,7 +94,7 @@ public:
             m_worker.reset();
         }
         // Only now is the session ours again: the worker was the last user of it.
-        m_session.reset();
+        resetSession();
     }
 
     bool start(const QString &spoolDir, QString *error) override;
@@ -151,12 +154,38 @@ private:
     void setWaiting(const QString &message);
     void setState(FetchStatus::State state);
 
+    bool stopping() const
+    {
+        QMutexLocker lock(&m_mutex);
+        return m_stopping;
+    }
+
+    // Make the live session reachable by abort(), or stop making it so. Called only from
+    // the thread that OWNS the session, and always with the withdrawal happening before
+    // the object goes away — which is what makes requestStop()'s abort safe to issue from
+    // the GUI thread at any moment: under m_mutex, m_abortable is either a live session
+    // or null, never a dangling one.
+    void publishSession(SshSession *session)
+    {
+        QMutexLocker lock(&m_mutex);
+        m_abortable = session;
+    }
+
+    void resetSession()
+    {
+        publishSession(nullptr);
+        m_session.reset();
+    }
+
     RemoteLocation  m_location;
     SshFetchOptions m_options;
     QString         m_spoolDir;
 
     std::unique_ptr<SshSession> m_session; // owned by start()'s thread, then by m_worker
     std::unique_ptr<Worker>     m_worker;
+    // The same session as m_session when there is one, but guarded — the one handle
+    // another thread may touch, and only to call abort(). See publishSession().
+    SshSession                 *m_abortable = nullptr;
 
     mutable QMutex m_mutex;
     QWaitCondition m_wake;
@@ -186,11 +215,10 @@ private:
 // — the only difference between the two is the prompter, which is why this takes one.
 bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Failure *failure)
 {
-    // An unattended retry is IMPATIENT where the first attempt is patient, and that is
-    // about closing rather than about connecting. stop() joins this thread, and it is
-    // reached from the GUI thread when the last tab on a log closes — so however long a
-    // connect blocks for is how long closing a tab on a dead host freezes the window.
-    // A retry has nothing to lose by giving up early: the next one is seconds away.
+    // An unattended retry is IMPATIENT where the first attempt is patient. A person
+    // watching a connect they asked for will wait; a timer retrying in the background
+    // has nothing to lose by giving up early, because the next attempt is seconds away
+    // and every second spent in this one is a second the host is not being left alone.
     const int timeout = prompter ? m_options.timeoutMs
                                  : qMin(m_options.timeoutMs, kRetryTimeoutMs);
 
@@ -202,13 +230,19 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
     if (status().state != FetchStatus::State::Waiting)
         setState(FetchStatus::State::Connecting);
 
+    resetSession();
     m_session = std::make_unique<SshSession>();
+    // So a connect gives up as soon as nobody wants it any more, rather than running out
+    // its timeout first. Read from this thread only, which is why it can look at
+    // m_stopping through the ordinary accessor.
+    m_session->setAbandonCheck([this]() { return stopping(); });
+    publishSession(m_session.get());
     if (!m_session->connectTo(m_location, prompter, timeout, error, failure)) {
-        m_session.reset();
+        resetSession();
         return false;
     }
     if (!m_session->openFile(error, failure)) {
-        m_session.reset();
+        resetSession();
         return false;
     }
 
@@ -219,7 +253,7 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
         // Connected, authenticated, opened — and then could not stat it. Whatever that
         // is, it is about the file rather than the trust, so it is worth trying again.
         *failure = SshSession::Failure::NoSuchFile;
-        m_session.reset();
+        resetSession();
         return false;
     }
     m_lastMtime = attrs.mtime;
@@ -236,7 +270,7 @@ bool SshFetcher::establish(SshPrompter *prompter, QString *error, SshSession::Fa
         if (error)
             *error = status().error;
         *failure = SshSession::Failure::Unreachable; // the transfer died mid-prime
-        m_session.reset();
+        resetSession();
         return false;
     }
 
@@ -314,6 +348,14 @@ void SshFetcher::requestStop()
         return;
     m_stopping = true;
     m_wake.wakeAll();
+
+    // Wakes a worker sleeping between polls; the abort below is for one that is inside
+    // libssh2, where the only thing that would otherwise end the wait is the session
+    // timeout. Between them there is no state in which asking this fetcher to stop
+    // leaves it blocked for longer than a moment — which is what lets the registry bury
+    // it without waiting and lets quitting stay quick (SourceSpool.h, retire()).
+    if (m_abortable)
+        m_abortable->abort();
     // Published HERE rather than when the worker actually exits, because Cancel keeps
     // the spool readable and its document on screen (SourceSpool::cancel): the state a
     // reader sees the moment it cancels should be the state it asked for, not the one
@@ -476,7 +518,7 @@ void SshFetcher::pollOnce()
             // The connection dropped, not the file. Let go of the dead session so the
             // next turn of the loop re-establishes it — before M13 nothing ever did,
             // and a link that blipped stayed broken until the log was reopened.
-            m_session.reset();
+            resetSession();
             setWaiting(Tr::tr("Lost the connection to %1 — reconnecting…")
                            .arg(m_location.host));
             return;

@@ -5,11 +5,13 @@
 
 #include <QString>
 
+#include <functional>
 #include <memory>
 
 namespace loftail {
 
 class SshPrompter;
+
 
 // One SSH connection with one remote file open on it (ARCHITECTURE.md §6.3).
 //
@@ -69,6 +71,26 @@ public:
     // derived from a credential.
     bool connectTo(const RemoteLocation &location, SshPrompter *prompter, int timeoutMs,
                    QString *error, Failure *failure = nullptr);
+
+    // Consulted repeatedly while connecting; returning true abandons the attempt with
+    // Failure::Unreachable. Set before connectTo() by an owner that may be asked to stop
+    // — which is every fetcher — and called from the connecting thread, so it must not
+    // touch anything that thread does not already own.
+    //
+    // This is what keeps `timeoutMs` from being the price of closing a tab. Without it a
+    // connect to a host that is not answering runs its full twenty seconds no matter who
+    // has lost interest, and the registry's shutdown drain hits its cap every time.
+    void setAbandonCheck(std::function<bool()> check);
+
+    // Break the connection from ANOTHER THREAD so that a blocking libssh2 call returns
+    // now instead of waiting out its timeout. The owning thread then fails, reports and
+    // tears down exactly as it would for a dropped link — nothing here frees anything.
+    //
+    // The one call on this class that is safe to make while another thread is inside it,
+    // and it is deliberately the smallest possible such call: it shuts the socket down
+    // and touches nothing else. setAbandonCheck() covers the waits loftail controls;
+    // this covers the ones inside libssh2, which are the rest of them.
+    void abort();
 
     void close();
     bool isConnected() const;

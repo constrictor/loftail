@@ -83,6 +83,7 @@ private slots:
     void qtStealsBytesFromTheDescriptorItHolds();
     void aDetachedDescriptorKeepsItsBytes();
     void aDetachedSocketIsStillTwoWay();
+    void shuttingDownUnblocksAReadWithoutFreeingTheDescriptor();
 };
 
 void TestSocketDetach::qtStealsBytesFromTheDescriptorItHolds()
@@ -147,6 +148,45 @@ void TestSocketDetach::aDetachedSocketIsStillTwoWay()
     QVERIFY(m_peer->waitForReadyRead(2000));
     QCOMPARE(m_peer->readAll(), QByteArray("hello\n"));
 
+    closeDetachedSocket(owned);
+}
+
+void TestSocketDetach::shuttingDownUnblocksAReadWithoutFreeingTheDescriptor()
+{
+    // How a connect in progress is abandoned when its tab is closed (SshSession::abort).
+    // A blocking read inside libssh2 would otherwise sit there until the session timeout,
+    // which is the whole twenty seconds the async open exists to stop anyone waiting for.
+    //
+    // Two halves, and the second is the one that makes it safe to call across threads:
+    // the read must return, and the descriptor must still be VALID afterwards. Closing
+    // it here instead would free the number while another thread is inside libssh2
+    // holding it, and the next socket the process opened could inherit it.
+    QVERIFY(connectPair());
+    const qintptr owned = detachSocketFromQt(m_client);
+    QVERIFY(owned >= 0);
+
+    shutdownDetachedSocket(owned);
+
+    // Returns, rather than blocking for want of anything to read: a shutdown read end
+    // reports end of stream.
+    char buffer[64];
+    const qint64 got = rawRead(owned, buffer, sizeof(buffer));
+    QCOMPARE(got, qint64(0));
+
+    // Still a descriptor this process owns — shutdown() is not close(). Asking for a
+    // socket option is the cheapest question that distinguishes the two.
+    int optval = 0;
+    socklen_t optlen = sizeof(optval);
+#if defined(Q_OS_WIN)
+    const int rc = ::getsockopt(SOCKET(owned), SOL_SOCKET, SO_TYPE,
+                                reinterpret_cast<char *>(&optval), &optlen);
+#else
+    const int rc = ::getsockopt(int(owned), SOL_SOCKET, SO_TYPE, &optval, &optlen);
+#endif
+    QCOMPARE(rc, 0);
+
+    // Idempotent: requestStop() may well be called more than once.
+    shutdownDetachedSocket(owned);
     closeDetachedSocket(owned);
 }
 

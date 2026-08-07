@@ -41,4 +41,16 @@ qintptr detachSocketFromQt(QTcpSocket &socket);
 // Close a descriptor returned by detachSocketFromQt(). A no-op for -1.
 void closeDetachedSocket(qintptr descriptor);
 
+// Break a detached socket's connection WITHOUT closing the descriptor, so that a
+// blocking read or write on another thread returns instead of waiting out its timeout.
+//
+// This is how a connect in progress is abandoned when the tab it belongs to is closed
+// (SshSession::abort). Shutting down rather than closing is the whole point: the
+// descriptor stays valid, so the thread that owns it can still fail, report and tear
+// down in its own time, and no descriptor number is freed for something else to reuse
+// while another thread is inside libssh2 holding it.
+//
+// A no-op for -1. Safe to call more than once.
+void shutdownDetachedSocket(qintptr descriptor);
+
 } // namespace loftail

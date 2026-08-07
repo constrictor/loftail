@@ -6,6 +6,7 @@
 #  include <winsock2.h>
 #  include <windows.h>
 #else
+#  include <sys/socket.h>
 #  include <unistd.h>
 #endif
 
@@ -35,6 +36,17 @@ qintptr detachSocketFromQt(QTcpSocket &socket)
     const int copy = ::dup(int(original));
     socket.abort();
     return copy < 0 ? -1 : qintptr(copy);
+#endif
+}
+
+void shutdownDetachedSocket(qintptr descriptor)
+{
+    if (descriptor < 0)
+        return;
+#if defined(Q_OS_WIN)
+    ::shutdown(SOCKET(descriptor), SD_BOTH);
+#else
+    ::shutdown(int(descriptor), SHUT_RDWR);
 #endif
 }
 

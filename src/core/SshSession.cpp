@@ -9,10 +9,12 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QHostAddress>
 #include <QHostInfo>
+#include <QMutex>
 #include <QStandardPaths>
 #include <QTcpSocket>
 
@@ -143,10 +145,29 @@ void kbdIntCallback(const char *, int, const char *, int, int numPrompts,
 
 } // namespace
 
+namespace {
+// How long connectTo() waits for the TCP connection before checking whether anyone
+// still wants it. Short enough that closing a tab on a host that is down feels
+// instant; long enough that a healthy connect never sees more than one iteration.
+constexpr int kConnectSliceMs = 250;
+} // namespace
+
 struct SshSession::Impl
 {
     QTcpSocket        socket;   // resolves, connects, times out — then hands the fd over
-    qintptr           fd = -1;  // OURS, not Qt's; see SocketDetach.h
+
+    // OURS, not Qt's (SocketDetach.h). GUARDED, alone among these members, because
+    // abort() reaches it from another thread while this one is inside libssh2 — and the
+    // race that guard prevents is not a crash but something worse: teardown() closing
+    // the descriptor between abort() reading it and shutting it down would aim a
+    // shutdown at whatever the operating system had since handed that number to.
+    QMutex            fdMutex;
+    qintptr           fd = -1;
+
+    // Consulted while connecting so that a long connect can be given up on. Set before
+    // connectTo() and read only by the connecting thread.
+    std::function<bool()> abandonCheck;
+
     LIBSSH2_SESSION  *session = nullptr;
     LIBSSH2_SFTP     *sftp = nullptr;
     LIBSSH2_SFTP_HANDLE *file = nullptr;
@@ -206,8 +227,11 @@ struct SshSession::Impl
         }
         // The descriptor goes LAST: libssh2_session_disconnect above writes a farewell
         // packet, and it needs a socket to write it to.
-        closeDetachedSocket(fd);
-        fd = -1;
+        {
+            QMutexLocker lock(&fdMutex);
+            closeDetachedSocket(fd);
+            fd = -1;
+        }
         if (socket.state() != QAbstractSocket::UnconnectedState)
             socket.disconnectFromHost();
     }
@@ -617,6 +641,20 @@ bool SshSession::fstatTracksHandle() const
     return d->fstatTracks;
 }
 
+void SshSession::setAbandonCheck(std::function<bool()> check)
+{
+    d->abandonCheck = std::move(check);
+}
+
+void SshSession::abort()
+{
+    // Everything this deliberately does not do is the point: no teardown, no free, no
+    // touching the session. The thread inside libssh2 owns all of that and will do it
+    // when its call returns — which is what this is for, and all it is for.
+    QMutexLocker lock(&d->fdMutex);
+    shutdownDetachedSocket(d->fd);
+}
+
 bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter, int timeoutMs,
                            QString *error, Failure *failure)
 {
@@ -633,16 +671,46 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     if (prompter)
         prompter->progress(Tr::tr("Connecting to %1…").arg(location.host));
 
+    // In slices rather than one wait of `timeoutMs`, so that giving up on this connect
+    // costs a quarter of a second rather than the whole timeout. A host that is simply
+    // not answering is the dominant case of a slow open and the one that used to make
+    // closing its tab take twenty seconds. QAbstractSocket keeps connecting through a
+    // SocketTimeoutError, so looping is the documented way to do this.
+    //
+    // BEFORE the detach below, and that ordering is not negotiable: waitForConnected()
+    // runs Qt's own machinery on this socket, which is exactly what must stop happening
+    // once SSH bytes start moving (SocketDetach.h).
     d->socket.connectToHost(location.host, static_cast<quint16>(location.port));
-    if (!d->socket.waitForConnected(timeoutMs)) {
-        err = Tr::tr("Cannot reach %1:%2 — %3")
-                  .arg(location.host).arg(location.port).arg(d->socket.errorString());
+    {
+        QElapsedTimer elapsed;
+        elapsed.start();
+        while (!d->socket.waitForConnected(kConnectSliceMs)) {
+            if (d->socket.error() != QAbstractSocket::SocketTimeoutError
+                || elapsed.elapsed() >= timeoutMs) {
+                err = Tr::tr("Cannot reach %1:%2 — %3")
+                          .arg(location.host).arg(location.port).arg(d->socket.errorString());
+                return false;
+            }
+            if (d->abandonCheck && d->abandonCheck()) {
+                err = Tr::tr("Cancelled while connecting to %1.").arg(location.host);
+                d->teardown();
+                return false;
+            }
+        }
+    }
+
+    if (d->abandonCheck && d->abandonCheck()) {
+        err = Tr::tr("Cancelled while connecting to %1.").arg(location.host);
+        d->teardown();
         return false;
     }
 
     // Connected — now take the socket off Qt before a single SSH byte moves, because
     // from here on libssh2 must be its only reader (detachFromQt).
-    d->fd = detachSocketFromQt(d->socket);
+    {
+        QMutexLocker lock(&d->fdMutex);
+        d->fd = detachSocketFromQt(d->socket);
+    }
     if (d->fd < 0) {
         err = Tr::tr("Cannot take over the connection to %1.").arg(location.host);
         d->teardown();
