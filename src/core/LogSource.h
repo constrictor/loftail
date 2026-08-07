@@ -80,6 +80,37 @@ public:
     // "no", and a source that cannot tell must say "no" rather than guess.
     virtual bool originVanished() const { return false; }
 
+    // True when this source is perfectly legal, perfectly open, and has NOTHING TO READ
+    // YET — a spool whose fetcher is still connecting, still fetching its first chunk,
+    // or has been refused (M17, §6.3.3). The document waits, exactly as it waits for a
+    // log that has not been written; the reason comes from sourceStatusText(), which
+    // already phrases each of those states differently.
+    //
+    // Distinct from originVanished(), and NOT foldable into it. That one is an
+    // observation that the origin is GONE, and the live controller measures a two-second
+    // grace period against it to cover the gap in a rotation that has renamed but not yet
+    // recreated. "I have not asked yet" is a different question and must not inherit a
+    // rotation-shaped hysteresis, nor teach the next reader that the two are the same.
+    //
+    // CONSULTED IN EXACTLY TWO PLACES — Document::prepare() and
+    // LiveController::checkWhileWaiting() — and this is a rule, not an accident. In
+    // particular it must NOT join checkNow()'s vanish branch: after a rotation on a slow
+    // link, wasReplaced() rescans onto the new generation, and the very next tick sees
+    // Priming with nothing committed yet. Fold the two together and the grace period
+    // expires two seconds later and blanks the view of a log that is fine and merely
+    // rotating. The two-call-site rule is what makes that unreachable, and it is
+    // sufficient: a document that opened with bytes never needs this predicate again,
+    // and one that opened without them stays waiting until there are some.
+    //
+    // ON BYTES, never on a state change, because Document::resume() is a one-way door —
+    // it clears the waiting flag unconditionally, and opening a spool never fails, so a
+    // resume with nothing to read settles the format against an empty sample, leaves it
+    // unsettled forever, and takes the document out of the only state from which the
+    // settling path can be reached again. Silently.
+    //
+    // Non-pure on purpose, the fourth arrival by the route wasReplaced() took.
+    virtual bool notReadyYet() const { return false; }
+
     // True when this source's byte stream is provably FINISHED — every byte has been
     // delivered and there will never be another.
     //
