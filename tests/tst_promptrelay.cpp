@@ -1,5 +1,6 @@
 #include <QtTest>
 
+#include <QElapsedTimer>
 #include <QMutex>
 #include <QThread>
 
@@ -284,16 +285,26 @@ void TestPromptRelay::differentHostsConnectInParallel()
 {
     // Because serialising ALL connects would trade one freeze for another: opening five
     // logs on five hosts should take as long as the slowest, not the sum.
-    std::atomic_int inFlight{0};
-    std::atomic_int highWater{0};
+    //
+    // Each holder WAITS FOR THE OTHER rather than sleeping a fixed time and hoping they
+    // overlap — a slow runner could otherwise finish the first before the second had
+    // started, and the test would fail for a scheduling accident rather than for the
+    // thing it is about. If the gate wrongly serialised them the second never arrives,
+    // the first times out, and the high-water mark stays 1: still a failure, and now the
+    // right one.
+    std::atomic_int  inFlight{0};
+    std::atomic_bool bothArrived{false};
 
     const auto bodyFor = [&](const QString &target) {
         return [&, target]() {
             SshConnectHold hold(target, nullptr);
             QVERIFY(hold.held());
-            const int now = ++inFlight;
-            highWater = qMax(highWater.load(), now);
-            QThread::msleep(100);
+            if (++inFlight == 2)
+                bothArrived = true; // LATCHED, so whoever waits still sees it after
+            QElapsedTimer clock;
+            clock.start();
+            while (!bothArrived.load() && clock.elapsed() < 3000)
+                QThread::msleep(2);
             --inFlight;
         };
     };
@@ -305,7 +316,8 @@ void TestPromptRelay::differentHostsConnectInParallel()
     QVERIFY(one.wait(5000));
     QVERIFY(two.wait(5000));
 
-    QCOMPARE(highWater.load(), 2);
+    QVERIFY2(bothArrived.load(),
+             "the two hosts were serialised — only one held the gate at a time");
 }
 
 void TestPromptRelay::aWaitingConnectCanBeGivenUpOn()
