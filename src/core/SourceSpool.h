@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <memory>
+#include <vector>
 
 QT_BEGIN_NAMESPACE
 class QLockFile;
@@ -137,7 +138,36 @@ public:
     // deleted out from under it (SPEC.md §3 allows several instances at once).
     void sweepAbandonedSpools();
 
+    // Take a dead spool's fetcher off the caller's hands: ask it to stop, and destroy it
+    // — and remove `dir` — once it says it has. THE CALLER NEVER WAITS.
+    //
+    // This is what makes closing a tab instant on a host that is down. A fetcher's
+    // thread may be twenty seconds into a connect, and after M17 it may additionally be
+    // blocked on the GUI thread for a password (GuiCallGate.h), so ~SourceSpool cannot
+    // join it: on the GUI thread that is a freeze in the first case and a deadlock in
+    // the second. The directory outlives the spool by however long the worker takes to
+    // notice, which costs some cache space and nothing else — nobody is reading it.
+    //
+    // Callable from any thread: the last handle to a remote archive's container spool is
+    // dropped by the archive fetcher's own worker.
+    void retire(std::unique_ptr<SourceFetcher> fetcher, const QString &dir);
+
 private:
+    class Reaper;
+    friend class Reaper;
+
+    struct Retired
+    {
+        std::unique_ptr<SourceFetcher> fetcher;
+        QString                        dir;
+    };
+
+    // Destroy every retired fetcher that has stopped, and remove its directory. Returns
+    // how many are still running. GUI thread; called from the reaper's timer.
+    int collectRetired();
+    // Give the retired fetchers up to `budgetMs` to stop, then abandon the stragglers.
+    // Called only from shutdown(), where there is no event loop left to reap with.
+    void drainRetired(int budgetMs);
     SourceSpoolRegistry();
     ~SourceSpoolRegistry();
 
@@ -148,11 +178,14 @@ private:
 
     FetcherFactory m_factory; // GUI thread only, installed before any open
 
-    mutable QMutex m_mutex; // guards m_spools, and nothing else
+    mutable QMutex m_mutex; // guards m_spools and m_retired, and nothing else
     // Weak, so the last SpooledLogSource dropping its handle tears the spool down.
     QHash<QString, std::weak_ptr<SourceSpool>> m_spools;
+    std::vector<Retired>                       m_retired;
+    std::unique_ptr<Reaper>                    m_reaper; // GUI thread only
 
     // GUI thread only: created on the first acquire(), released by shutdown().
+    quint64                        m_serial = 0; // distinguishes acquisitions of one key
     std::unique_ptr<QTemporaryDir> m_instanceDir;
     std::unique_ptr<QLockFile>     m_instanceLock;
 };

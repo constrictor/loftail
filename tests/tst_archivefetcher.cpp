@@ -272,14 +272,22 @@ void TestArchiveFetcher::stopReturnsPromptlyMidExpansion()
     QVERIFY2(fetcher->start(spoolDir(), &error), qPrintable(error));
     QVERIFY(fetcher->status().state != FetchStatus::State::Complete);
 
-    // Closing a tab drops the last handle, whose destructor stops the fetcher and then
-    // deletes the spool directory. A loop that only checked its flag between members
-    // would hold that up for the length of the whole expansion.
+    // Closing a tab drops the last handle, whose destructor retires the fetcher and lets
+    // the registry delete the spool directory once the worker has gone. Two separate
+    // promises, and both matter: asking must not block the asker at all, and the worker
+    // must then wind up quickly — a loop that only checked its flag between members
+    // would go on expanding for the length of the whole file.
     QElapsedTimer clock;
     clock.start();
-    fetcher->stop();
-    QVERIFY2(clock.elapsed() < 2000,
-             qPrintable(QStringLiteral("stop() took %1 ms").arg(clock.elapsed())));
+    fetcher->requestStop();
+    QVERIFY2(clock.elapsed() < 100,
+             qPrintable(QStringLiteral("requestStop() took %1 ms").arg(clock.elapsed())));
+
+    while (!fetcher->isStopped() && clock.elapsed() < 2000)
+        QThread::msleep(5);
+    QVERIFY2(fetcher->isStopped(),
+             qPrintable(QStringLiteral("the worker was still expanding after %1 ms")
+                            .arg(clock.elapsed())));
 }
 
 void TestArchiveFetcher::anUnanswerableSpaceQuestionDoesNotRefuseTheOpen()
@@ -322,7 +330,9 @@ void TestArchiveFetcher::aStoppedExpansionKeepsWhatItWrote()
 
     const qint64 committedBefore = fetcher->status().committedSize;
     QVERIFY(committedBefore > 0);
-    fetcher->stop();
+    fetcher->requestStop();
+    while (!fetcher->isStopped())
+        QThread::msleep(5);
 
     const FetchStatus after = fetcher->status();
     QVERIFY(after.state != FetchStatus::State::Complete);
