@@ -5,6 +5,8 @@
 #include <QThread>
 
 #include <atomic>
+#include <chrono>
+#include <thread>
 
 #include "ArchiveFixtures.h"
 #include "ArchiveReader.h"
@@ -150,34 +152,33 @@ void TestArchiveMembers::listingARemoteContainerWaitsForAllOfIt()
     remote->setInitialContent(compressed.left(2048));
     remote->setTotalSize(compressed.size());
 
-    // Feed the remainder from another thread, as a transport would. run() is overridden
-    // rather than hooking started(), so the thread ENDS when the feeding does — a default
-    // run() would enter an event loop and outlive its work.
-    struct Feeder : QThread
-    {
-        std::shared_ptr<FakeRemote> remote;
-        QByteArray                  bytes;
-        void run() override
-        {
-            // Not until the source has actually been opened. start() writes the initial
-            // content and resets the fake's byte count, so anything appended before it
-            // is thrown away — and the appends would land first, because opening the
-            // container is what the main thread is about to do.
-            while (remote->startCount() == 0)
-                QThread::msleep(1);
-            for (int at = 2048; at < bytes.size(); at += 2048) {
-                QThread::msleep(2);
-                remote->append(bytes.mid(at, 2048));
-            }
+    // Feed the remainder from another thread, as a transport would.
+    //
+    // std::thread rather than QThread, which matters here for one reason: this thread's
+    // stack sits inside the main thread's live test frame, and QThread::wait() joins
+    // through Qt's own condition variable — invisible to ThreadSanitizer in an
+    // uninstrumented libQt6Core, so the join is not seen and every later reuse of that
+    // stack region reads as a race. std::thread::join() goes through pthread_join, which
+    // TSan intercepts. See ARCHITECTURE.md §13.
+    std::thread feeder([&remote, &compressed]() {
+        // Not until the source has actually been opened. start() writes the initial
+        // content and resets the fake's byte count, so anything appended before it is
+        // thrown away — and the appends would land first, because opening the container
+        // is what the main thread is about to do. Bounded, so that a fetcher which never
+        // starts ends the feeding rather than hanging the join: the listing assertions
+        // below are what then report it.
+        for (int i = 0; i < 10000 && remote->startCount() == 0; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        for (int at = 2048; at < compressed.size(); at += 2048) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            remote->append(compressed.mid(at, 2048));
         }
-    } feeder;
-    feeder.remote = remote;
-    feeder.bytes = compressed;
-    feeder.start();
+    });
 
     QString error;
     const QVector<ArchiveEntry> listed = listArchiveMembers(url, &error);
-    QVERIFY(feeder.wait(10000));
+    // Before any QVERIFY: those return on failure, and the thread reads `compressed`.
+    feeder.join();
 
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QCOMPARE(listed.size(), 40); // every member, not the handful in the first chunk

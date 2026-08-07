@@ -1,0 +1,38 @@
+# ThreadSanitizer suppressions (ARCHITECTURE.md §13).
+#
+# Every entry here is Qt's own synchronisation, not loftail's, and is suppressed for one
+# reason: the system Qt is not built with TSan, so its internal locking is invisible.
+# TSan intercepts pthread mutexes, but Qt does not use them — QMutex is a futex with
+# hand-written __tsan_mutex_* annotations in qmutex.h that only exist in translation
+# units compiled under TSan. loftail's are; libQt6Core's are not.
+#
+# THE RULE FOR ADDING TO THIS FILE: an entry is justified only when both sides of the
+# reported access are inside Qt and the ordering between them is Qt's to establish. A
+# report naming loftail code on either side is a bug until proven otherwise — it is
+# exactly what this file is meant to leave visible. Nothing here suppresses a report
+# by file or by library, because `called_from_lib:libQt6Core.so.6` would match nearly
+# every stack in the process, loftail's own races included.
+#
+# This is why src/core uses std::mutex and std::condition_variable rather than QMutex
+# and QWaitCondition: those TSan does understand, so loftail's own synchronisation
+# needs no suppression at all. See ARCHITECTURE.md §13.
+
+# Queued signal/slot argument marshalling. A queued connection deep-copies its arguments
+# on the emitting thread and destroys the copy on the receiving one; the handover is
+# ordered by the mutex inside QCoreApplication's event queue. Reported as a malloc on a
+# worker thread and a free on the main one, with no loftail frame between them.
+race:QArrayData::allocate
+race:QArrayData::deallocate
+
+# QMetaObject::invokeMethod's functor form, which is how GuiCallGate::rearm() reaches the
+# application thread. The heap block holding the lambda is allocated by the calling
+# thread and read by the receiving one, ordered by the same event queue.
+race:invokeMethodCallableHelper
+
+# QThread's own start/finish bookkeeping. QThread::wait() joins through a QWaitCondition
+# rather than pthread_join, so TSan sees no join at all and reports a worker's last
+# writes against whatever tears it down. tst_gatestress uses std::thread precisely to
+# avoid needing this.
+race:QThread::start
+race:QThreadPrivate::start
+thread:QThread::start

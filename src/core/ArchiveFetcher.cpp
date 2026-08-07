@@ -7,14 +7,14 @@
 
 #include <QCoreApplication>
 #include <QByteArray>
-#include <QDeadlineTimer>
 #include <QFile>
 #include <QLocale>
-#include <QMutex>
-#include <QMutexLocker>
 #include <QStorageInfo>
 #include <QThread>
-#include <QWaitCondition>
+
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 
 namespace loftail {
 
@@ -46,7 +46,7 @@ constexpr qint64 kPrimeBytes = 128 * 1024;
 // How long the reader waits for a container that is still arriving before asking again
 // whether it ever will. Only reached for a REMOTE container: a local one is complete
 // the moment it is opened.
-constexpr int kAwaitSliceMs = 100;
+constexpr auto kAwaitSlice = std::chrono::milliseconds(100);
 
 // What an unknown expanded size is guessed at, as a multiple of the compressed input,
 // for the free-space check alone. Text compresses around 10:1, so this is the right
@@ -105,7 +105,7 @@ public:
 
     FetchStatus status() const override
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         return m_status;
     }
 
@@ -174,8 +174,8 @@ private:
     bool   m_holdBackCommits = false;
     qint64 m_heldCommit = 0;
 
-    mutable QMutex m_mutex;
-    QWaitCondition m_wake;
+    mutable std::mutex      m_mutex;
+    std::condition_variable m_wake;
     FetchStatus    m_status;
     bool           m_stopping = false;
 };
@@ -241,10 +241,10 @@ bool ArchiveFetcher::awaitContainer()
         // header until the await inside readBlock happened to supply one.
         if (!m_input->originVanished() && !m_input->notReadyYet())
             break;
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         if (m_stopping)
             return false;
-        m_wake.wait(&m_mutex, QDeadlineTimer(kAwaitSliceMs));
+        m_wake.wait_for(lock, kAwaitSlice);
     }
 
     QString beginError;
@@ -332,11 +332,11 @@ bool ArchiveFetcher::beginExpansion(QString *error)
 
 void ArchiveFetcher::requestStop()
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     if (m_stopping)
         return;
     m_stopping = true;
-    m_wake.wakeAll();
+    m_wake.notify_all();
 
     // Published HERE rather than when the worker actually exits, because Cancel keeps
     // the spool readable and its document on screen (SourceSpool::cancel): the state a
@@ -351,13 +351,13 @@ void ArchiveFetcher::requestStop()
 
 bool ArchiveFetcher::stopping() const
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     return m_stopping;
 }
 
 void ArchiveFetcher::setState(FetchStatus::State state)
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     m_status.state = state;
     // Waiting carries its explanation the same way Error does, so neither clears it.
     if (state != FetchStatus::State::Error && state != FetchStatus::State::Waiting)
@@ -366,7 +366,7 @@ void ArchiveFetcher::setState(FetchStatus::State state)
 
 void ArchiveFetcher::setError(const QString &message)
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     m_status.state = FetchStatus::State::Error;
     m_status.error = message;
 }
@@ -430,8 +430,8 @@ bool ArchiveFetcher::awaitInput()
             return spooled->refreshSize() > before;
         }
 
-        QMutexLocker lock(&m_mutex);
-        m_wake.wait(&m_mutex, QDeadlineTimer(kAwaitSliceMs));
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_wake.wait_for(lock, kAwaitSlice);
     }
 }
 
@@ -464,7 +464,7 @@ bool ArchiveFetcher::checkFreeSpace(qint64 expandedSize, QString *error) const
 
 void ArchiveFetcher::beginGeneration(qint64 expandedSize)
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     const quint64 next = m_status.generation + 1;
     lock.unlock();
 
@@ -476,7 +476,7 @@ void ArchiveFetcher::beginGeneration(qint64 expandedSize)
     }
     spool.close();
 
-    lock.relock();
+    lock.lock();
     m_status.baseOffset = 0; // an expansion always starts at the member's first byte
     m_status.committedSize = 0;
     m_heldCommit = 0; // the hold's tally starts over with the generation
@@ -542,7 +542,7 @@ bool ArchiveFetcher::expand(qint64 limit, bool *finished)
         // Publish only AFTER the bytes are on disk. That ordering is the entire
         // synchronisation between this thread and the reader: a reader clamps to
         // committedSize, so it can never observe a half-written chunk (§6.3).
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         m_heldCommit += got;
         m_status.totalSize = qMax(m_status.totalSize, m_heldCommit);
         // Withheld during the prime, and only during it, so that the first size anyone
@@ -558,7 +558,7 @@ bool ArchiveFetcher::expand(qint64 limit, bool *finished)
 
 void ArchiveFetcher::publishHeldCommits()
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     if (m_heldCommit > m_status.committedSize)
         m_status.committedSize = m_heldCommit;
 }
@@ -574,7 +574,7 @@ void ArchiveFetcher::expandRest()
 
 void ArchiveFetcher::publishComplete()
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     // committedSize is already final — every write published it before this runs — so
     // observing Complete guarantees observing the final size. See SourceFetcher.h.
     m_status.totalSize = m_status.committedSize;

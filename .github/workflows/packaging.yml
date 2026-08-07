@@ -136,6 +136,67 @@ jobs:
           archive: false
           if-no-files-found: error
 
+  sanitizers:
+    # AddressSanitizer + UndefinedBehaviorSanitizer + LeakSanitizer over the whole suite
+    # (ARCHITECTURE.md §13).
+    #
+    # A job of its own rather than another step in `linux`: it is a separate build of
+    # everything, it takes about four times as long to run as the plain suite, and when it
+    # fails the useful signal is which sanitizer fired — which the other job's four
+    # configurations would bury.
+    #
+    # ThreadSanitizer is deliberately NOT here. It is a supported build
+    # (-DLOFTAIL_SANITIZE=thread, with tests/tsan.supp and the `threading` test label) and
+    # it is run BY HAND, because its own thread registry aborts on Qt's detached QThreads
+    # — measured on both GCC 15 and clang 21, killing 6 of the 17 threading tests before
+    # they finish. ARCHITECTURE.md §13 has the detail. Gating on that would mean a red
+    # pipeline that says nothing about loftail.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain + system Qt 6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake \
+            qt6-base-dev libgl1-mesa-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev
+
+      - name: Configure + build with ASan/UBSan
+        run: |
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DLOFTAIL_SANITIZE=address 2>&1 | tee configure-asan.log
+          # The option is the whole point of the job; a typo that silently produced an
+          # ordinary build would go green and prove nothing.
+          grep -q "Sanitizer: address" configure-asan.log \
+            || { echo "::error::-DLOFTAIL_SANITIZE=address did not take effect"; exit 1; }
+          # The optional dependencies again, for the same reason as in the `linux` job:
+          # auto-detection failing silently would shrink what is being sanitized.
+          for want in "SSH remote sources: ENABLED" "Archived log sources: ENABLED" \
+                      "OS keychain for passwords: ENABLED"; do
+            grep -q "$want" configure-asan.log \
+              || { echo "::error::the sanitizer build reported '$want' missing"; exit 1; }
+          done
+          cmake --build build-asan
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+          # Leak detection stays ON. The suite is clean with no suppression file at all —
+          # the one by-design retention, an abandoned fetcher whose thread is still
+          # running, is parked in a reachable static rather than leaked, precisely so that
+          # this can stay on (SourceSpool.cpp, drainRetired). That is only cheap to keep
+          # true if it never goes red.
+          #
+          # detect_stack_use_after_return catches the exact class the M17 call-gate bug
+          # was: a lambda still reading a frame whose owner has returned. It is the reason
+          # this job exists, so it is switched on rather than left at its default.
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build-asan --output-on-failure
+
   deb:
     # Ubuntu packages, one per release. NOT one package built once: 24.04 has
     # Qt 6.4.2 and 26.04 a much newer Qt with different sonames, so a single .deb

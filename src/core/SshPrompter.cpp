@@ -2,12 +2,12 @@
 
 #include "GuiCallGate.h"
 
-#include <QDeadlineTimer>
 #include <QHash>
-#include <QMutex>
-#include <QMutexLocker>
 #include <QSet>
-#include <QWaitCondition>
+
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 
 namespace loftail {
 
@@ -27,23 +27,23 @@ QHash<QString, QString> &cache()
 // Guards cache(). Every fetcher thread reads it during authentication now, where before
 // M17 the only caller was whichever thread happened to be opening a document — which,
 // connects being serialised on the GUI thread, was always the same one.
-QMutex &cacheMutex()
+std::mutex &cacheMutex()
 {
-    static QMutex mutex;
+    static std::mutex mutex;
     return mutex;
 }
 
 // --- SshConnectHold's bookkeeping ------------------------------------------
 
-QMutex &connectMutex()
+std::mutex &connectMutex()
 {
-    static QMutex mutex;
+    static std::mutex mutex;
     return mutex;
 }
 
-QWaitCondition &connectFreed()
+std::condition_variable &connectFreed()
 {
-    static QWaitCondition condition;
+    static std::condition_variable condition;
     return condition;
 }
 
@@ -55,7 +55,7 @@ QSet<QString> &connecting()
 
 // How long a waiter sleeps before rechecking whether it has been asked to give up. The
 // holder may be sitting on a modal password dialog, so there is nothing to wake us.
-constexpr unsigned long kConnectSliceMs = 100;
+constexpr auto kConnectSlice = std::chrono::milliseconds(100);
 
 } // namespace
 
@@ -83,25 +83,25 @@ namespace SshCredentialCache {
 
 bool has(const QString &target)
 {
-    QMutexLocker lock(&cacheMutex());
+    std::lock_guard<std::mutex> lock(cacheMutex());
     return cache().contains(target);
 }
 
 QString password(const QString &target)
 {
-    QMutexLocker lock(&cacheMutex());
+    std::lock_guard<std::mutex> lock(cacheMutex());
     return cache().value(target);
 }
 
 void remember(const QString &target, const QString &password)
 {
-    QMutexLocker lock(&cacheMutex());
+    std::lock_guard<std::mutex> lock(cacheMutex());
     cache().insert(target, password);
 }
 
 void forget(const QString &target)
 {
-    QMutexLocker lock(&cacheMutex());
+    std::lock_guard<std::mutex> lock(cacheMutex());
     if (auto it = cache().find(target); it != cache().end()) {
         it.value().fill(QChar(u'\0')); // overwrite before releasing the buffer
         cache().erase(it);
@@ -110,7 +110,7 @@ void forget(const QString &target)
 
 void clear()
 {
-    QMutexLocker lock(&cacheMutex());
+    std::lock_guard<std::mutex> lock(cacheMutex());
     for (auto it = cache().begin(); it != cache().end(); ++it)
         it.value().fill(QChar(u'\0'));
     cache().clear();
@@ -121,14 +121,14 @@ void clear()
 SshConnectHold::SshConnectHold(const QString &target, const std::function<bool()> &abandon)
     : m_target(target)
 {
-    QMutexLocker lock(&connectMutex());
+    std::unique_lock<std::mutex> lock(connectMutex());
     while (connecting().contains(m_target)) {
         if (abandon && abandon())
             return; // asked to stop while waiting; m_held stays false
         // Timed rather than indefinite: the holder may be sitting on a modal dialog for
         // as long as the user takes, and nothing wakes us in the meantime. The slice is
         // how quickly this notices it has been asked to give up.
-        connectFreed().wait(&connectMutex(), QDeadlineTimer(kConnectSliceMs));
+        connectFreed().wait_for(lock, kConnectSlice);
     }
     connecting().insert(m_target);
     m_held = true;
@@ -139,10 +139,10 @@ SshConnectHold::~SshConnectHold()
     if (!m_held)
         return;
     {
-        QMutexLocker lock(&connectMutex());
+        std::lock_guard<std::mutex> lock(connectMutex());
         connecting().remove(m_target);
     }
-    connectFreed().wakeAll();
+    connectFreed().notify_all();
 }
 
 } // namespace loftail

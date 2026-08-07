@@ -3,11 +3,11 @@
 #include "SourceFetcher.h"
 
 #include <QHash>
-#include <QMutex>
 #include <QString>
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 QT_BEGIN_NAMESPACE
@@ -183,7 +183,7 @@ private:
 
     FetcherFactory m_factory; // GUI thread only, installed before any open
 
-    mutable QMutex m_mutex; // guards m_spools and m_retired, and nothing else
+    mutable std::mutex m_mutex; // guards m_spools and m_retired, and nothing else
     // Weak, so the last SpooledLogSource dropping its handle tears the spool down.
     QHash<QString, std::weak_ptr<SourceSpool>> m_spools;
     std::vector<Retired>                       m_retired;

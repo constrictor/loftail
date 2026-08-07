@@ -9,10 +9,11 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QHash>
-#include <QMutex>
-#include <QMutexLocker>
 #include <QThread>
-#include <QWaitCondition>
+
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 
 namespace loftail {
 
@@ -111,7 +112,7 @@ public:
 
     FetchStatus status() const override
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         return m_status;
     }
 
@@ -124,7 +125,7 @@ public:
 
     void pokeNow() override
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         m_poked = true;
         // An explicit ask is the one thing that clears a refusal: the user has been
         // told why loftail stopped trying and has decided to try again anyway.
@@ -135,7 +136,7 @@ public:
         // NeedsPerson again and re-latched. §6.5 has always said this action "does have
         // a prompter"; until now nothing gave it one.
         m_wantsPrompter = true;
-        m_wake.wakeAll();
+        m_wake.notify_all();
     }
 
 private:
@@ -164,7 +165,7 @@ private:
 
     bool stopping() const
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         return m_stopping;
     }
 
@@ -175,7 +176,7 @@ private:
     // or null, never a dangling one.
     void publishSession(SshSession *session)
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         m_abortable = session;
     }
 
@@ -195,8 +196,8 @@ private:
     // another thread may touch, and only to call abort(). See publishSession().
     SshSession                 *m_abortable = nullptr;
 
-    mutable QMutex m_mutex;
-    QWaitCondition m_wake;
+    mutable std::mutex      m_mutex;
+    std::condition_variable m_wake;
     FetchStatus    m_status;
     bool           m_stopping = false;
     bool           m_poked = false;
@@ -357,7 +358,7 @@ bool SshFetcher::start(const QString &spoolDir, QString *error)
     // this thread may outlive (PromptRelay.h). Every attempt after the first is
     // unattended and may not ask at all (reconnect()).
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         m_wantsPrompter = sshPrompter() != nullptr;
         m_status.state = FetchStatus::State::Connecting;
     }
@@ -369,11 +370,11 @@ bool SshFetcher::start(const QString &spoolDir, QString *error)
 
 void SshFetcher::requestStop()
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     if (m_stopping)
         return;
     m_stopping = true;
-    m_wake.wakeAll();
+    m_wake.notify_all();
 
     // Wakes a worker sleeping between polls; the abort below is for one that is inside
     // libssh2, where the only thing that would otherwise end the wait is the session
@@ -392,7 +393,7 @@ void SshFetcher::requestStop()
 
 void SshFetcher::setState(FetchStatus::State state)
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     m_status.state = state;
     // Waiting carries its explanation the same way Error does, so neither clears it.
     if (state != FetchStatus::State::Error && state != FetchStatus::State::Waiting)
@@ -401,7 +402,7 @@ void SshFetcher::setState(FetchStatus::State state)
 
 void SshFetcher::setError(const QString &message)
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     m_status.state = FetchStatus::State::Error;
     m_status.error = message;
 }
@@ -411,7 +412,7 @@ void SshFetcher::setWaiting(const QString &message)
     // Not an error: the host or the log is not there, and this fetcher is still trying.
     // SpooledLogSource::originVanished() reads this, which is how the document upstream
     // knows to show itself as waiting rather than as broken (§6.5).
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     m_status.state = FetchStatus::State::Waiting;
     m_status.error = message;
 }
@@ -420,7 +421,7 @@ void SshFetcher::setWaiting(const QString &message)
 // current one: the index worker may be mmapping it, and record offsets index it.
 void SshFetcher::beginGeneration(qint64 remoteSize)
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     const quint64 next = m_status.generation + 1;
     lock.unlock();
 
@@ -439,7 +440,7 @@ void SshFetcher::beginGeneration(qint64 remoteSize)
     }
     spool.close();
 
-    lock.relock();
+    lock.lock();
     m_status.baseOffset = base;
     m_status.committedSize = 0;
     m_heldCommit = 0; // a new generation starts the hold's tally over too
@@ -463,7 +464,7 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
 
     while (offset < toRemoteOffset) {
         {
-            QMutexLocker lock(&m_mutex);
+            std::unique_lock<std::mutex> lock(m_mutex);
             if (m_stopping)
                 break;
             // A rotation started while this loop ran: abandon it, the new generation
@@ -495,7 +496,7 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
         // Publish only AFTER the bytes are on disk. That ordering is the entire
         // synchronisation between this thread and the GUI thread: a reader clamps to
         // committedSize, so it can never observe a half-written chunk (§6.3).
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         if (m_status.generation != generation)
             break;
         m_heldCommit = offset - m_status.baseOffset;
@@ -513,7 +514,7 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
 
 void SshFetcher::publishHeldCommits()
 {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     if (m_heldCommit > m_status.committedSize)
         m_status.committedSize = m_heldCommit;
 }
@@ -686,7 +687,7 @@ void SshFetcher::reconnect()
 {
     bool mayPrompt = false;
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         if (m_wantsPrompter) {
             m_wantsPrompter = false;
             mayPrompt = true;
@@ -712,7 +713,7 @@ void SshFetcher::reconnect()
         setWaiting(error);
     else
         setError(error);
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     m_reconnectRefused = true;
 }
 
@@ -721,7 +722,7 @@ void SshFetcher::tailLoop()
     forever {
         bool refused = false;
         {
-            QMutexLocker lock(&m_mutex);
+            std::unique_lock<std::mutex> lock(m_mutex);
             if (m_stopping)
                 return;
             refused = m_reconnectRefused;
@@ -734,7 +735,7 @@ void SshFetcher::tailLoop()
         // else: loftail has been told no. Sleep until poked (File ▸ Reconnect) or
         // stopped, rather than asking a host that has already refused.
 
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         if (m_stopping)
             return;
         if (!m_poked) {
@@ -751,7 +752,7 @@ void SshFetcher::tailLoop()
             // re-read every second on the machine being observed (invariant #5).
             if (m_session && m_session->sizeSource() == SizeSource::Wc)
                 wait = qMax(wait, kWcMinPollMs);
-            m_wake.wait(&m_mutex, static_cast<unsigned long>(wait));
+            m_wake.wait_for(lock, std::chrono::milliseconds(wait));
         }
         m_poked = false;
     }

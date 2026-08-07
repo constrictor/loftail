@@ -707,3 +707,51 @@ For the record, since they still bind:
 2. **No singletons or globals for file state.** No `currentFile()` accessor, no static index. This is the constraint most easily violated by accident and the most painful to unwind.
 3. **Panes bind to the active document by signal, not by construction.** A pane built against a fixed `Document&` works fine with one file and has to be torn apart for two.
 4. **The settings schema stores arrays.** It held a one-element `documents` array from day one, which is why v2 could add `views` beside it instead of restructuring — and why v3 could drop the window-layout coupling from `views` without touching either scope.
+
+## 13. Sanitizers
+
+`-DLOFTAIL_SANITIZE=address` builds with ASan + UBSan + LeakSanitizer; `=thread` builds with ThreadSanitizer. Off by default, mutually exclusive, and applied at the top level with `add_compile_options`/`add_link_options` rather than per target — a sanitizer is only sound when every translation unit linked into a binary agrees, and that includes all 56 test binaries.
+
+**ASan is a CI gate; TSan is not.** That asymmetry is measured, not a preference, and the reasons are below.
+
+### 13.1 Why core uses `std::mutex`, not `QMutex`
+
+`src/core` contains no `QMutex`, `QMutexLocker` or `QWaitCondition`, and must not regain any. This is a testability constraint, not a style one.
+
+Qt ships TSan annotations in `qtsan_impl.h`, and `qmutex.h` calls them inline around `QMutex::lock`/`unlock`. Those annotations are compiled into *loftail's* translation units, because `__SANITIZE_THREAD__` is defined there — but the system `libQt6Core` is not built under TSan, so nothing inside it annotates anything. `QWaitCondition::wait()` unlocks and relocks the mutex **inside that library**, unannotated, so TSan's happens-before chain breaks at every wait. Data that is correctly guarded then reads as a race, with both accesses reporting the same held mutex.
+
+Measured on one stress harness against **known-good** code: 37 reports with `QMutex` + `QWaitCondition`, **0** with `std::mutex` + `std::condition_variable`. The 37 were loudest about `GuiCallGate` — the file that had just been fixed — and pointed at nothing. TSan understands `std::mutex` and `std::condition_variable` because they go through pthreads, which it intercepts.
+
+The ban stops at `src/core`. `src/ui` is Qt's own thread and Qt's own primitives are fine there; test scaffolding may use `QMutex` too, since a plain `QMutex` with no condition variable annotates symmetrically and is visible to TSan.
+
+**One consequence in tests:** `QThread::wait()` joins through a `QWaitCondition`, so TSan sees no join and reports a worker's last writes against whatever reuses its stack. Where a test's own load generator is involved, use `std::thread` and `join()` — `tst_gatestress` and `tst_archivemembers` do, and say why inline.
+
+### 13.2 Why ThreadSanitizer is not a CI gate
+
+Two things stop it, one fixable and one not.
+
+**The fixable part is noise, and it is fixed.** After §13.1, the tests that exercise loftail's own threads report **zero** races with `tests/tsan.supp`. That file suppresses only Qt's own queued-connection marshalling and `QThread` bookkeeping, by function name; nothing is suppressed by file or by library, because `called_from_lib:libQt6Core.so.6` would match nearly every stack in the process, loftail's own races included. The rule for adding an entry is in the file: both sides of the report must be inside Qt. UI tests are *not* covered — driving widgets and a real event loop produces 11–23 reports each from Qt and glib internals — which is what the `threading` CTest label exists to exclude. Run it with:
+
+```bash
+cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLOFTAIL_SANITIZE=thread
+cmake --build build-tsan
+QT_QPA_PLATFORM=offscreen \
+TSAN_OPTIONS="report_thread_leaks=0 suppressions=$PWD/tests/tsan.supp" \
+  ctest --test-dir build-tsan -L threading --output-on-failure
+```
+
+`report_thread_leaks=0` is required and is a design consequence, not a workaround: nothing joins a fetcher (§6.3.3), so a retired one whose thread is still running is a thread leak by construction.
+
+**The unfixable part is the sanitizer runtime itself.** TSan's thread registry aborts with `CHECK failed: ... live_.try_emplace(user_id, tid).second != 0` inside `pthread_create`, called from `QThread::start` — a `pthread_t` recycled from a Qt thread the runtime never saw retired. It kills **6 of the 17** labelled tests before they finish, identically under **GCC 15 and clang 21**, and it predates this work. The other 11 complete clean.
+
+So TSan earns its keep as a tool a developer points at a specific test, and it would not earn its keep as a gate: a third of the runs would be red for reasons that say nothing about loftail. If a future Qt or sanitizer runtime fixes the registry crash, the label and the suppression file are already in place and the job is a copy of the ASan one.
+
+### 13.3 What the sanitizers actually found
+
+Recorded because it calibrates what each is worth here.
+
+- **A dangling reference in `tst_session`** (ASan, first run): `SessionStore::load(s).documents.first()` bound to a `const &`. Lifetime extension does not reach through a member call returning a reference, so six `QCOMPARE`s read freed memory. It had always passed.
+- **An invalid downcast in `MainWindow::onViewDestroyed`** (UBSan): `static_cast<DocumentView *>(obj)` on a `QObject *` whose `DocumentView` subobject is already destroyed — `~QObject` runs last, so by then the dynamic type has degraded to `QWidget`. The comment already said "compare it, never dereference it"; the cast itself was the undefined part, and it went unnoticed because the bases are all primary so the pointer value came out right. Now compares in the safe direction.
+- **A data race on `FakeRemote`'s call counters** (TSan): plain `int`s bumped on the thread driving the fetcher and read by a test watching from another. Test-only, real, now atomic.
+
+**And what neither found: the M17 call-gate bug they were prompted by.** Sixty twelve-way-parallel ASan runs of `tst_remoteopen` against the pre-fix tree reproduced nothing — the slowdown closes the 1-in-28 window — and TSan never flagged the unlocked `abandoned` read, because no test went near the state that mattered. **Sanitizers amplify coverage; they do not create it.** That is what `tst_gatestress` is for, and why it is checked in beside them: it fails five times out of five against the pre-fix gate on its own, with no sanitizer at all.
