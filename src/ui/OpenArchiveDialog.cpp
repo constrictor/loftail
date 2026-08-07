@@ -6,12 +6,18 @@
 #include <QApplication>
 #include <QDateTime>
 #include <QDialogButtonBox>
+#include <QDeadlineTimer>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLocale>
+#include <QProgressDialog>
+#include <QThread>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+
+#include <atomic>
 
 namespace loftail {
 
@@ -116,17 +122,105 @@ void OpenArchiveDialog::accept()
     QDialog::accept();
 }
 
+#if defined(LOFTAIL_HAVE_ARCHIVE)
+namespace {
+
+// Enumerate `container` on a worker thread, with a cancellable progress dialog in front.
+//
+// Listing a compressed tar costs what expanding it costs — there is no index — and for a
+// remote one it also waits for the container to arrive. A wait cursor used to be the
+// whole of the answer, which meant a large `.tar.gz` locked the window up for minutes
+// with no way out.
+//
+// It still pumps events from this frame rather than returning and continuing later, and
+// deliberately: the user asked to open an archive and must pick a member before anything
+// can happen, so there is nothing for them to do in this window meanwhile. What it buys
+// over the wait cursor is the three things that matter — the window repaints, the listing
+// can be cancelled, and every OTHER tab goes on tailing, because their fetchers are on
+// their own threads.
+//
+// The worker owns its own LogSource, which is what the per-instance form of the
+// refreshSize() rule requires (SpooledLogSource.h): nothing else refreshes it.
+class MemberLister : public QThread
+{
+public:
+    MemberLister(QString container, std::atomic_bool *cancelled)
+        : m_container(std::move(container)), m_cancelled(cancelled)
+    {
+    }
+
+    void run() override
+    {
+        auto *flag = m_cancelled;
+        members = listArchiveMembers(m_container, &error, [flag]() { return flag->load(); });
+    }
+
+    QVector<ArchiveEntry> members;
+    QString               error;
+
+private:
+    QString           m_container;
+    std::atomic_bool *m_cancelled;
+};
+
+// How long each wait slice is: the granularity at which the progress dialog repaints
+// and its Cancel button is noticed.
+constexpr int kListenSliceMs = 50;
+
+QVector<ArchiveEntry> listOffThread(const QString &container, QWidget *parent,
+                                    QString *error)
+{
+    std::atomic_bool cancelled{false};
+    MemberLister lister(container, &cancelled);
+
+    QProgressDialog progress(
+        OpenArchiveDialog::tr("Looking inside %1…").arg(logSourceDisplayName(container)),
+        OpenArchiveDialog::tr("Cancel"), 0, 0, parent);
+    progress.setObjectName(QStringLiteral("archiveListProgress")); // findChild, for tests
+    progress.setWindowTitle(OpenArchiveDialog::tr("Open Archive"));
+    progress.setWindowModality(Qt::WindowModal);
+    // Not immediately: a zip is read through its central directory and is quick at any
+    // size, and a dialog that flashes for 30 ms is worse than no dialog.
+    progress.setMinimumDuration(400);
+    progress.setValue(0); // indeterminate; there is no total to count towards
+
+    QObject::connect(&progress, &QProgressDialog::canceled, &progress,
+                     [&cancelled]() { cancelled = true; });
+
+    // Waited for by POLLING rather than by quitting a nested QEventLoop on the thread's
+    // finished() signal, and the difference is a hang. QProgressDialog::setValue() calls
+    // processEvents() for a modal dialog, so a listing that finishes quickly — a zip,
+    // which is most of them — can have its queued quit() delivered before exec() has
+    // begun. QEventLoop::quit() on a loop that is not running does nothing, and the wait
+    // never ends. wait(timeout) has no such edge: it reports a thread that has ALREADY
+    // finished just as readily as one that finishes while it waits.
+    lister.start();
+    while (!lister.wait(QDeadlineTimer(kListenSliceMs)))
+        QCoreApplication::processEvents(QEventLoop::AllEvents, kListenSliceMs);
+
+    progress.reset();
+    if (error)
+        *error = lister.error;
+    if (cancelled) {
+        // Cancelled listing and cancelled picker mean the same thing to the caller:
+        // abandon the open silently, with nothing to report.
+        if (error)
+            error->clear();
+        return {};
+    }
+    return lister.members;
+}
+
+} // namespace
+#endif
+
 QStringList OpenArchiveDialog::chooseMembers(const QString &container, QWidget *parent,
                                              QString *error)
 {
     QString listError;
     QVector<ArchiveEntry> members;
 #if defined(LOFTAIL_HAVE_ARCHIVE)
-    // Listing a compressed tar costs what expanding it costs — there is no index — so
-    // the wait cursor is not decoration.
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    members = listArchiveMembers(container, &listError);
-    QApplication::restoreOverrideCursor();
+    members = listOffThread(container, parent, &listError);
 #else
     // The dialog itself is always compiled so both builds behave alike; only the
     // listing needs the dependency, and saying so beats an empty list.

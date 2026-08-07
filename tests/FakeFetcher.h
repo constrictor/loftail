@@ -97,13 +97,29 @@ public:
         m_status.error = message;
     }
 
+    // How big the source really is, when that differs from how much has been delivered.
+    //
+    // Without this the fake reports totalSize == committedSize at every moment, which is
+    // "everything has arrived" by definition — so a reader that waits for the rest, as
+    // an archive listing does, could never be shown a container that is still coming. A
+    // real fetcher learns the total from a stat before it has fetched a byte of it.
+    // Cleared by setting 0.
+    void setTotalSize(qint64 total)
+    {
+        QMutexLocker lock(&m_mutex);
+        m_pinnedTotal = total;
+        if (total > 0)
+            m_status.totalSize = total;
+    }
+
     // Append and publish: the ordinary "the writer wrote another line" case.
     void append(const QByteArray &bytes)
     {
         writeToCurrent(bytes);
         QMutexLocker lock(&m_mutex);
         m_status.committedSize = m_written;
-        m_status.totalSize = m_status.baseOffset + m_written;
+        m_status.totalSize = m_pinnedTotal > 0 ? m_pinnedTotal
+                                               : m_status.baseOffset + m_written;
     }
 
     // Append to the spool file but DO NOT publish it — a chunk that has landed on
@@ -238,7 +254,7 @@ public:
         m_written = m_initial.size();
         m_status.generation = 1;
         m_status.committedSize = m_written;
-        m_status.totalSize = m_written;
+        m_status.totalSize = m_pinnedTotal > 0 ? m_pinnedTotal : m_written;
         m_status.state = FetchStatus::State::Live;
         return true;
     }
@@ -313,6 +329,8 @@ private:
     bool           m_unavailable = false;
     QString        m_unavailableMessage;
     qint64         m_written = 0;
+    // Non-zero when the test has said how big the source really is; see setTotalSize().
+    qint64         m_pinnedTotal = 0;
     bool           m_stopsSlowly = false;
     int            m_startCount = 0;
     int            m_stopCount = 0;

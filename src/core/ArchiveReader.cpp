@@ -2,10 +2,12 @@
 
 #include "ArchiveLocation.h"
 #include "LogSource.h"
+#include "SpooledLogSource.h"
 
 #include <QCoreApplication>
 #include <QByteArray>
 #include <QFileInfo>
+#include <QThread>
 
 #include <cstring>
 
@@ -254,7 +256,55 @@ qint64 ArchiveStream::currentSize() const
     return d->entrySize;
 }
 
-QVector<ArchiveEntry> listArchiveMembers(const QString &container, QString *error)
+namespace {
+
+// Wait for a spooled container to deliver more bytes, or to prove it will not.
+//
+// The listing counterpart of ArchiveFetcher::awaitInput(), and the same reasoning: a
+// remote container arrives progressively, an SSH fetcher tails forever and so never
+// reaches a terminal state, and libarchive always reads past the end looking for more.
+// Simpler than the fetcher's because there is nothing to publish and no generation to
+// worry about — only "are there more bytes, and if not will there ever be".
+// How long to sleep between checks while a remote container is still arriving.
+constexpr unsigned long kAwaitSliceMs = 20;
+
+bool awaitMoreOf(SpooledLogSource *spooled, const std::function<bool()> &cancel)
+{
+    const qint64 before = spooled->size();
+    for (;;) {
+        if (cancel && cancel())
+            return false;
+
+        if (spooled->refreshSize() > before)
+            return true;
+
+        const FetchStatus upstream = spooled->fetchStatus();
+        switch (upstream.state) {
+        case FetchStatus::State::Idle:
+        case FetchStatus::State::Error:
+        case FetchStatus::State::Disconnected:
+        case FetchStatus::State::Complete:
+            // Refresh once more before believing it: the fetcher may have committed its
+            // last chunk and then stopped, so the bytes are there while the state says
+            // otherwise.
+            return spooled->refreshSize() > before;
+        case FetchStatus::State::Waiting:
+            break; // the host is down and still trying; this is a wait, not an end
+        case FetchStatus::State::Connecting:
+        case FetchStatus::State::Priming:
+        case FetchStatus::State::Live:
+            if (upstream.totalSize > 0 && upstream.committedSize >= upstream.totalSize)
+                return spooled->refreshSize() > before; // everything has arrived
+            break;
+        }
+        QThread::msleep(kAwaitSliceMs);
+    }
+}
+
+} // namespace
+
+QVector<ArchiveEntry> listArchiveMembers(const QString &container, QString *error,
+                                         const std::function<bool()> &cancel)
 {
     QVector<ArchiveEntry> entries;
 
@@ -279,11 +329,24 @@ QVector<ArchiveEntry> listArchiveMembers(const QString &container, QString *erro
         return entries;
     }
 
-    // The container is fully available by the time it is listed, so no await — which
+    // A LOCAL container is whole the moment it is opened, so it needs no await — which
     // also makes it seekable, and a zip is then read through its central directory
-    // rather than streamed. allowRaw is false: everything reaching here is a
-    // multi-member container, the single-stream case having returned above.
-    auto stream = ArchiveStream::open(input.get(), nullptr, false, error);
+    // rather than streamed.
+    //
+    // A REMOTE one is not, and assuming otherwise was a bug that predates M17: the
+    // comment here used to say "fully available by the time it is listed", but nothing
+    // ever made that true. It enumerated whatever the SSH fetcher had committed at that
+    // instant — the 128 KB prime — so listing a remote multi-member tar quietly returned
+    // the first few members and called that the archive. Since M17 it would have found
+    // zero bytes and reported the container empty.
+    //
+    // allowRaw is false: everything reaching here is a multi-member container, the
+    // single-stream case having returned above.
+    AwaitInput await;
+    if (auto *spooled = dynamic_cast<SpooledLogSource *>(input.get()))
+        await = [spooled, cancel]() { return awaitMoreOf(spooled, cancel); };
+
+    auto stream = ArchiveStream::open(input.get(), std::move(await), false, error);
     if (!stream)
         return entries;
 

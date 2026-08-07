@@ -91,7 +91,13 @@ private:
 // COST: a zip is read through its central directory and is quick at any size. A .tar.gz
 // has no index and must be DECOMPRESSED to be enumerated, so listing a large one costs
 // what expanding it costs — which is why the picker is never shown when there is
-// nothing to choose.
-QVector<ArchiveEntry> listArchiveMembers(const QString &container, QString *error);
+// nothing to choose, and why since M17 this is called from a worker rather than from the
+// thread showing the picker (OpenArchiveDialog::chooseMembers).
+//
+// `cancel` is polled while waiting for a remote container's bytes and while walking the
+// entries; returning true abandons the listing and yields what was found so far. May be
+// null for a caller that will always wait.
+QVector<ArchiveEntry> listArchiveMembers(const QString &container, QString *error,
+                                         const std::function<bool()> &cancel = {});
 
 } // namespace loftail
