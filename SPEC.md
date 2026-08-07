@@ -254,7 +254,15 @@ Highlighting colors matching records without removing anything, for spotting eve
 - Rules are an **ordered list**; when several match a record, the first match wins. Order is user-adjustable.
 - Rules can be enabled and disabled individually, like filters.
 - **A rule sets a background color and a text (foreground) color, chosen independently.** Either can be left at its default, which is the record's normal un-highlighted appearance — so a rule may recolor only the background, only the text, or both. A highlight can therefore be as quiet as tinting the text or as loud as a full-row fill.
-- **Colors come from a curated palette**, not a free color picker. Each palette entry is defined once for light themes and once for dark, so a highlight stays legible in both and switching themes needs no rework. A rule stores, for each of background and text, either a palette entry or *default* — never a raw color value. The palette has 12 entries, covering the usual severity associations (reds, ambers, greens) plus neutral distinguishing hues.
+- **Colors come from a curated palette**, not a free color picker. Each palette entry is defined once for light themes and once for dark, so a highlight stays legible in both and switching themes needs no rework. A rule stores, for each of background and text, either a palette entry or *default* — never a raw color value.
+- **The palette is a grid: eight hues in each of three tone bands, plus a neutral closing each band** — 27 entries. The band is how loud the highlight is, and it is the user's choice, not the theme's:
+  - **Deep** — dark and saturated. A strong fill under light text, or text on a light row. Closed by **Ink**, a near-black.
+  - **Vivid** — maximum chroma. The screaming one; this is what highlighting is for. Closed by **Gray**.
+  - **Soft** — pale. A quiet tint under dark text, or text on a dark row. Closed by **Paper**, a near-white.
+
+  A slot keeps its tone in both themes and shifts only enough to sit correctly against the surrounding background, so a rule looks like itself whichever theme it is read in. Every colour has a partner that reads on it — picking a background and then Ink or Paper for the text always gives legible text, on either theme. The hues are the usual severity associations (reds, ambers, greens) plus enough distinguishing ones to tell a handful of rules apart at a glance.
+- **A highlight made from the record menu picks both colors**, cycling the hues so a second one-click rule is distinguishable from the first, and pairing each background with the text colour that reads on it.
+- Rules saved before the palette grew still load and still match the same records; they keep their entry and so take its new colour.
 
 ## 8. Side panes
 

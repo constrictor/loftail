@@ -21,6 +21,7 @@
 #include <QScrollArea>
 #include <QSet>
 #include <QVBoxLayout>
+#include <QVector>
 
 namespace loftail {
 
@@ -98,9 +99,19 @@ QComboBox *HighlighterPane::makeSwatchCombo(QWidget *parent)
     combo->addItem(tr("Default"), HighlightPalette::kDefault);
     const bool dark = isDark();
     for (int i = 0; i < HighlightPalette::count(); ++i) {
+        // A rule separating the three tone bands, so a list this long reads as
+        // "pick a loudness, then a hue" rather than as one run of swatches. A
+        // separator is not selectable and carries no data, so findData() and
+        // currentData() below are unaffected.
+        if (i > 0 && i % HighlightPalette::kSlotsPerBand == 0)
+            combo->insertSeparator(combo->count());
         const PaletteSlot &s = HighlightPalette::slot(i);
         combo->addItem(swatchIcon(HighlightPalette::color(i, dark)), QString(s.name), i);
     }
+    // Twenty-seven slots plus the default and two separators is a taller popup than
+    // a style will always fit on a short screen, so cap it and let Qt scroll rather
+    // than let the list run off the top or bottom.
+    combo->setMaxVisibleItems(HighlightPalette::kSlotsPerBand * 2 + 1);
     return combo;
 }
 
@@ -165,12 +176,14 @@ void HighlighterPane::buildUi()
     auto *bgRow = new QHBoxLayout;
     bgRow->addWidget(new QLabel(tr("Background:"), content));
     m_bgCombo = makeSwatchCombo(content);
+    m_bgCombo->setObjectName(QStringLiteral("backgroundColor")); // test contract, never translated
     bgRow->addWidget(m_bgCombo, 1);
     cv->addLayout(bgRow);
 
     auto *fgRow = new QHBoxLayout;
     fgRow->addWidget(new QLabel(tr("Text:"), content));
     m_fgCombo = makeSwatchCombo(content);
+    m_fgCombo->setObjectName(QStringLiteral("textColor"));
     fgRow->addWidget(m_fgCombo, 1);
     cv->addLayout(fgRow);
 
@@ -288,6 +301,18 @@ void HighlighterPane::reloadRuleList()
 
 void HighlighterPane::loadEditorFor(int row)
 {
+    // SAVED and restored, never forced false on the way out. reloadRuleList() calls
+    // this re-entrantly without meaning to — `m_ruleList->clear()` drops the current
+    // row, which emits currentRowChanged(-1) — and an unconditional `m_updating =
+    // false` here then unguards the REST of that function. What followed was silent
+    // and total: the loop's `setFlags` fired itemChanged before `setCheckState` had
+    // run, so the handler read the item's not-yet-set check state as Unchecked and
+    // wrote `enabled = false` back into `m_rules` — through the very reference the
+    // next line reads (`for (const HighlightRule &r : m_rules)`), so `setCheckState`
+    // was then handed the false it had just caused. Every rule switched itself off,
+    // and only from the second rule onward, because clear() on an empty list emits
+    // nothing. Restoring the flag is the fix; the aliasing is only how it bit.
+    const bool wasUpdating = m_updating;
     m_updating = true;
     const bool valid = row >= 0 && row < m_rules.size();
     m_editor->setEnabled(valid);
@@ -301,7 +326,7 @@ void HighlighterPane::loadEditorFor(int row)
         setSwatchCombo(m_bgCombo, r.background);
         setSwatchCombo(m_fgCombo, r.foreground);
     }
-    m_updating = false;
+    m_updating = wasUpdating;
 }
 
 void HighlighterPane::syncToDocument()
@@ -364,11 +389,21 @@ void HighlighterPane::addRule(const MatchCriteria &criteria)
     // this thread" is distinguishable from the first at a glance. Once every slot is
     // spoken for, cycle rather than refuse — a repeated color is a small annoyance,
     // a menu item that silently does nothing is not.
+    //
+    // Offered in band order — Deep, then Vivid, then Soft — and skipping the three
+    // neutrals, which are foreground colors far more often than they are anyone's
+    // idea of a highlight. Deep leads because it is the band that reads as a fill in
+    // either theme without shouting.
+    QVector<int> offered;
+    for (int i = 0; i < HighlightPalette::count(); ++i) {
+        if (!HighlightPalette::isNeutral(i))
+            offered.append(i);
+    }
     QSet<int> used;
     for (const HighlightRule &r : m_rules)
         used.insert(r.background);
-    int slot = m_rules.size() % HighlightPalette::count();
-    for (int i = 0; i < HighlightPalette::count(); ++i) {
+    int slot = offered.at(m_rules.size() % offered.size());
+    for (int i : offered) {
         if (!used.contains(i)) {
             slot = i;
             break;
@@ -378,6 +413,12 @@ void HighlighterPane::addRule(const MatchCriteria &criteria)
     HighlightRule r;
     r.match = criteria;
     r.background = slot;
+    // ...and the text that reads on it. Leaving the foreground at *default* was safe
+    // only while the palette gave a theme one tone: now that a background can be Deep
+    // or Soft by the user's choice, half of them would be unreadable under the theme's
+    // own text colour, and which half flips when the theme does. The pairing here is
+    // theme-stable (Palette.h), so a one-click rule stays legible either way.
+    r.foreground = HighlightPalette::readableTextSlot(slot);
     m_rules.append(r);
     commit();
     reloadRuleList();

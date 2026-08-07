@@ -2,6 +2,8 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
+#include <QAbstractItemView>
 #include <QGroupBox>
 #include <QLineEdit>
 #include <QListWidget>
@@ -11,6 +13,8 @@
 #include "Document.h"
 #include "Highlight.h"
 #include "HighlighterPane.h"
+#include "MatchCriteria.h"
+#include "Palette.h"
 #include "Priority.h"
 
 using namespace loftail;
@@ -121,6 +125,9 @@ private slots:
     void switchingRulesShowsThatRulesSelection();
     void invalidRegexIsFlagged();
     void addedRuleIsInertUntilConfigured();
+    void swatchMenuIsBandedAndFitsAShortScreen();
+    void oneClickRuleSetsBothColours();
+    void reloadingTheListKeepsRulesEnabled();
 };
 
 void TestHighlighterPane::everyAxisIsOfferedAndOptIn()
@@ -254,6 +261,128 @@ void TestHighlighterPane::addedRuleIsInertUntilConfigured()
     priorityEnable(pane)->setChecked(false);
     QVERIFY(!doc.highlighters().anyEnabled());
     QVERIFY(!doc.highlighters().rules.first().match.anyActive());
+}
+
+void TestHighlighterPane::swatchMenuIsBandedAndFitsAShortScreen()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+
+    for (const char *name : {"backgroundColor", "textColor"}) {
+        auto *combo = pane.findChild<QComboBox *>(QString::fromLatin1(name));
+        QVERIFY2(combo, name);
+        // Default, twenty-seven slots, and a separator between each pair of tone
+        // bands. The separators are what make a list this long readable, and they
+        // must stay unselectable data-less rows so currentData() is either a slot
+        // index or the default sentinel and never a stray QVariant.
+        QCOMPARE(combo->count(), 1 + HighlightPalette::count() + (HighlightPalette::kBandCount - 1));
+        int found = 0, separators = 0;
+        for (int row = 0; row < combo->count(); ++row) {
+            const QVariant v = combo->itemData(row);
+            if (!v.isValid()) {
+                ++separators;
+                continue;
+            }
+            if (v.toInt() != HighlightPalette::kDefault) {
+                QCOMPARE(v.toInt(), found);   // in table order, so findData() is exact
+                ++found;
+            }
+        }
+        QCOMPARE(found, HighlightPalette::count());
+        QCOMPARE(separators, HighlightPalette::kBandCount - 1);
+
+        // Every slot is still reachable by index, separators notwithstanding — this is
+        // what setSwatchCombo() relies on to show a loaded rule's colour.
+        for (int i = 0; i < HighlightPalette::count(); ++i)
+            QVERIFY(combo->findData(i) >= 0);
+
+        // The popup must not need more room than a short screen has. Qt scrolls past
+        // maxVisibleItems, so the bound is that cap and not the item count; without it
+        // twenty-seven swatches plus chrome run off a 768-high display.
+        QVERIFY2(combo->maxVisibleItems() < combo->count(),
+                 "the popup would try to show every slot at once");
+        const int rowHeight = combo->view()->sizeHintForRow(0);
+        QVERIFY(rowHeight > 0);
+        QVERIFY2(combo->maxVisibleItems() * rowHeight < 600,
+                 qPrintable(QStringLiteral("popup wants %1 px")
+                                .arg(combo->maxVisibleItems() * rowHeight)));
+    }
+}
+
+void TestHighlighterPane::oneClickRuleSetsBothColours()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+
+    // The record menu's "Highlight This Subsystem" path. It must set the TEXT colour
+    // too: *default* text is unreadable on roughly half the palette now that a
+    // background may be Deep or Soft by choice, and which half flips with the theme.
+    MatchCriteria c;
+    c.loggerEnabled = true;
+    c.loggerNames = QStringList{QStringLiteral("db.pool")};
+    c.loggerCoversAll = false;
+    c.loggerRestrictive = true;
+    pane.addRule(c);
+    pane.addRule(c);
+
+    QCOMPARE(doc.highlighters().rules.size(), 2);
+    QVector<int> backgrounds;
+    for (const HighlightRule &r : doc.highlighters().rules) {
+        QVERIFY(HighlightPalette::isSlot(r.background));
+        // Never a neutral: Ink, Gray and Paper are text colours, not highlights.
+        QVERIFY(!HighlightPalette::isNeutral(r.background));
+        QCOMPARE(r.foreground, HighlightPalette::readableTextSlot(r.background));
+        backgrounds.append(r.background);
+    }
+    // And two one-click rules are told apart at a glance.
+    QVERIFY(backgrounds.at(0) != backgrounds.at(1));
+}
+
+void TestHighlighterPane::reloadingTheListKeepsRulesEnabled()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+
+    // Adding a SECOND rule used to switch every rule off, silently: reloadRuleList()
+    // clears the list, which emits currentRowChanged(-1), which ran loadEditorFor()
+    // — and that used to end by forcing m_updating to false, unguarding the rest of
+    // the rebuild. The loop's setFlags then fired itemChanged before setCheckState
+    // had run, so the handler read an unset check state as Unchecked and wrote
+    // enabled=false back through the reference the next line reads. One rule was
+    // fine (clear() on an empty list emits nothing), which is what hid it.
+    MatchCriteria c;
+    c.priorityEnabled = true;
+    c.minPriority = Priority::Error;
+    for (int n = 0; n < 3; ++n) {
+        pane.addRule(c);
+        QCOMPARE(doc.highlighters().rules.size(), n + 1);
+        for (const HighlightRule &r : doc.highlighters().rules)
+            QVERIFY2(r.enabled, qPrintable(QStringLiteral("rule off after %1 adds").arg(n + 1)));
+        QVERIFY(doc.highlighters().anyEnabled());
+    }
+
+    // A rule the user turned OFF still survives a rebuild as off — the guard must
+    // suppress the rebuild's own signals, not freeze the flag.
+    QListWidget *list = ruleList(pane);
+    QVERIFY(list);
+    list->item(1)->setCheckState(Qt::Unchecked);
+    QVERIFY(!doc.highlighters().rules.at(1).enabled);
+    pane.addRule(c);
+    QVERIFY(doc.highlighters().rules.at(0).enabled);
+    QVERIFY(!doc.highlighters().rules.at(1).enabled);
+    QVERIFY(doc.highlighters().rules.at(3).enabled);
 }
 
 QTEST_MAIN(TestHighlighterPane)

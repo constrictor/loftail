@@ -5,6 +5,8 @@
 #include <QJsonObject>
 #include <QTimeZone>
 
+#include <cmath>
+
 #include "Highlight.h"
 #include "LogFormat.h"
 #include "MatchCriteria.h"
@@ -53,6 +55,7 @@ private slots:
     void disabledRuleIsSkipped();
     void unresolvedSetMatchesNothing();
     void paletteDualThemeResolves();
+    void paletteEveryBackgroundHasReadableText();
 };
 
 Record TestHighlight::rec(quint32 loggerId, Priority p, quint32 threadId, qint64 timestamp)
@@ -520,19 +523,67 @@ void TestHighlight::unresolvedSetMatchesNothing()
 
 void TestHighlight::paletteDualThemeResolves()
 {
-    QCOMPARE(HighlightPalette::count(), 12);
+    // Three tone bands of eight hues plus a neutral (Palette.h).
+    QCOMPARE(HighlightPalette::count(), 27);
+    QCOMPARE(HighlightPalette::kSlotsPerBand * HighlightPalette::kBandCount, 27);
     for (int i = 0; i < HighlightPalette::count(); ++i) {
-        const QColor light = HighlightPalette::color(i, /*dark=*/false);
-        const QColor dark = HighlightPalette::color(i, /*dark=*/true);
-        QVERIFY(light.isValid());
-        QVERIFY(dark.isValid());
-        // The two theme variants of a slot differ — that is the point of a
-        // dual-theme palette (SPEC.md §7).
-        QVERIFY(light != dark);
+        QVERIFY(HighlightPalette::color(i, /*dark=*/false).isValid());
+        QVERIFY(HighlightPalette::color(i, /*dark=*/true).isValid());
     }
+    // The three neutrals close their bands, so Ink, Gray and Paper are exactly the
+    // slots addRule() skips when it picks a background colour by itself.
+    QVERIFY(HighlightPalette::isNeutral(HighlightPalette::kInk));
+    QVERIFY(HighlightPalette::isNeutral(HighlightPalette::kPaper));
+    QVERIFY(HighlightPalette::isNeutral(17));
+    QVERIFY(!HighlightPalette::isNeutral(0));
+    QVERIFY(!HighlightPalette::isNeutral(HighlightPalette::kDefault));
     // The default sentinel resolves to an invalid color in either theme.
     QVERIFY(!HighlightPalette::color(HighlightPalette::kDefault, false).isValid());
     QVERIFY(!HighlightPalette::color(HighlightPalette::kDefault, true).isValid());
+}
+
+void TestHighlight::paletteEveryBackgroundHasReadableText()
+{
+    // The property the palette exists for, and the one it did NOT have before: for
+    // every slot used as a background there is a palette colour that reads on it, in
+    // BOTH themes, and readableTextSlot() names it. The old palette gave each theme a
+    // single tone, so on a dark theme the best of all 144 slot-on-slot pairs measured
+    // 1.85:1 — no readable combination existed at all.
+    //
+    // WCAG relative luminance and contrast, inline: tst_highlight links loftail_core
+    // only, and UiColors (which has the same two functions) is UI-side chrome.
+    const auto luminance = [](const QColor &c) {
+        const auto chan = [](double v) {
+            v /= 255.0;
+            return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * chan(c.red()) + 0.7152 * chan(c.green()) + 0.0722 * chan(c.blue());
+    };
+    const auto contrast = [&](const QColor &a, const QColor &b) {
+        const double la = luminance(a), lb = luminance(b);
+        return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+    };
+
+    for (int i = 0; i < HighlightPalette::count(); ++i) {
+        const int fg = HighlightPalette::readableTextSlot(i);
+        // Only ever one of the two extremes, so the answer is stable across themes.
+        QVERIFY(fg == HighlightPalette::kInk || fg == HighlightPalette::kPaper);
+        for (bool dark : {false, true}) {
+            const double ratio = contrast(HighlightPalette::color(i, dark),
+                                          HighlightPalette::color(fg, dark));
+            QVERIFY2(ratio >= 4.5,
+                     qPrintable(QStringLiteral("%1 on %2 (%3 theme) is only %4:1")
+                                    .arg(QString(HighlightPalette::slot(fg).name),
+                                         QString(HighlightPalette::slot(i).name),
+                                         dark ? QStringLiteral("dark") : QStringLiteral("light"))
+                                    .arg(ratio, 0, 'f', 2)));
+        }
+    }
+    // An out-of-range or default background still answers, rather than reading past
+    // the table: a corrupt persisted index must not crash the paint path.
+    QCOMPARE(HighlightPalette::readableTextSlot(HighlightPalette::kDefault),
+             HighlightPalette::kPaper);
+    QCOMPARE(HighlightPalette::readableTextSlot(9999), HighlightPalette::kPaper);
 }
 
 QTEST_APPLESS_MAIN(TestHighlight)
