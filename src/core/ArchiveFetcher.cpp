@@ -510,6 +510,24 @@ bool ArchiveFetcher::expand(qint64 limit, bool *finished)
         const qint64 want = limit == 0 ? kChunkBytes : qMin(kChunkBytes, limit - written);
         QString readError;
         const qint64 got = m_stream->read(buffer.data(), want, &readError);
+
+        // A CANCEL IS NOT AN OUTCOME, and this is where that has to be said, because the
+        // read above is the only place the worker blocks: awaitInput() parks inside it
+        // waiting for container bytes, and requestStop() is what wakes it. Once it does,
+        // the input simply ends under libarchive, which then reports whatever a truncated
+        // container looks like in that format -- "truncated gzip input" for gzip, a clean
+        // end of stream for a codec that cannot tell. Read either one as an outcome and
+        // the user's own cancel comes back as a corrupt archive (setError below) or, worse,
+        // as a finished one (*finished, and then publishComplete in expandRest, which would
+        // overwrite the Disconnected that requestStop just published and tell the live
+        // controller a cut-short expansion is the whole member).
+        //
+        // Checked AFTER the read rather than only before it: the stop is raised while the
+        // read is in progress, so the check at the top of the loop was made before there
+        // was anything to see.
+        if (stopping())
+            break;
+
         if (got < 0) {
             spool.close();
             setError(readError.isEmpty()
