@@ -345,6 +345,23 @@ The shape of the fix is that **M13 had already built the destination**. A tab th
 
 ---
 
+## M18 — a default log format, and somewhere to put it
+
+Every file loftail had not seen before was tried against one hardcoded constant, and a user whose logs share a house layout that is not that constant confirmed the same Log Format dialog for every file, forever. Reported as "I don't want to enter it each time if I work with similar format log files". Behaviour in `SPEC.md` §4 "Default log format"; design in `ARCHITECTURE.md` §8 and §9.
+
+**Most of the milestone already existed.** `MainWindow::offerFormat()` returns `Matched` and shows *nothing* whenever the format fits, so a pattern that actually parses the user's logs already meant a dialog-free open. What was missing was only that the pattern was a constant. So the work is a store, a dialog, and one line at the single site that consumed the constant — not a new open path.
+
+- [x] **`DefaultFormatStore`** — pattern, encoding, source zone, in their own unversioned `defaultFormat` group. Deliberately three of `FormatSettings`' seven fields: the timestamp display and the run-start axis are statements about one log, and defaulting them would make every new file inherit another's run splitting. `load()` tests for *presence*, so an empty saved pattern stays reachable as "ask me about every log".
+- [x] **`FormatEditor`** — the pattern field, Detect, encoding, source zone and live preview lifted out of `LogFormatDialog` into a widget, so the per-file dialog and the new Preferences dialog cannot drift. It carries through the fields it does not own, and treats an empty sample as ordinary rather than as an error.
+- [x] **`PreferencesDialog`** — Edit ▸ Preferences, always enabled (the default is about the *next* open, so the empty window is exactly when it is wanted), previewing against whichever log is open. Carries **Forget Remembered Formats**: a per-file entry outranks the default, so without it a changed default appears to do nothing for every file already opened, with no way out of the UI.
+- [x] **"Also use this format for new files"** in the Log Format dialog, honoured in *both* places that raise it — including `offerFormat()`, which is the copy most users meet, since it is the one that appears by itself when a log will not parse.
+- [x] **The default is fed through the ordinary open path.** `openFile()` seeds from it only on a cache miss; `offerFormat()` is untouched. That is what keeps "a wrong default costs a dialog, never a mis-split table" a property of the wiring.
+- [x] **Tests.** New `tst_preferences` for the store and the dialog; two cases in `tst_openflow` for the end-to-end, because "no dialog appeared" is observable only from the real open path. `init()` there now clears both format levels, so no case depends on what ran before it.
+
+**Done when:** a pattern set once — in Preferences, or promoted from the Log Format dialog — opens every later log in that layout with no prompt, survives a restart, and still yields to a per-file format until those are forgotten.
+
+---
+
 ## Deliberately deferred
 
 Later-release features are catalogued in `FUTURE.md` (side-by-side views, bookmarks; multi-file views shipped in M9, format autodetection in M8, SSH sources in M11, and compressed/archived sources in M12); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.

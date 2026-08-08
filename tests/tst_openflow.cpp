@@ -8,6 +8,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 
+#include "DefaultFormatStore.h"
 #include "LogFormatDialog.h"
 #include "LogView.h"
 #include "MainWindow.h"
@@ -71,12 +72,22 @@ private slots:
     void escapeCancelsOpenAndKeepsCurrentFile();
     void acceptedPatternOpensTheFile();
     void absentFileOpensAWaitingTabWithNoDialog();
+    // M18 — the DEFAULT format, the level between "this file's remembered format" and
+    // "ask". These are the cases that show it doing its job and knowing its limits.
+    void savedDefaultOpensWithoutADialog();
+    void aDefaultThatDoesNotParseStillAsks();
 };
 
 void TestOpenFlow::init()
 {
     QSettings settings;
     settings.remove(QStringLiteral("session"));
+    // Each case decides for itself what the two format levels hold. A per-file entry
+    // left by the previous case suppresses the very prompt under test, and a leaked
+    // DEFAULT (M18) changes what a never-seen file is tried with — both would make a
+    // case pass or fail depending on what ran before it.
+    settings.remove(QStringLiteral("formatCache"));
+    settings.remove(QStringLiteral("defaultFormat"));
     settings.sync();
 }
 
@@ -203,6 +214,72 @@ void TestOpenFlow::absentFileOpensAWaitingTabWithNoDialog()
     QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() == 1, 5000);
     QVERIFY2(!d.seen, "the format dialog was shown when the log arrived");
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — notyet.log"));
+    w.close();
+}
+
+void TestOpenFlow::savedDefaultOpensWithoutADialog()
+{
+    // THE feature (SPEC.md §4 "Default log format"): a user whose logs all share one
+    // house layout sets it once, and every later log in that layout opens with no
+    // prompt. Nothing below the MainWindow can show this — "no dialog appeared" is only
+    // observable from the real open path, where offerFormat() decides.
+    const QString house = m_dir.filePath(QStringLiteral("house.log"));
+    QVERIFY(write(house,
+        "03/12/26 11:50:47 DEBUG Vms::App [] - starting up\n"
+        "03/12/26 11:50:48 INFO  Vms::Http [7f2a] - listening on 8080\n"));
+
+    FormatSettings def;
+    def.pattern = QStringLiteral("%D{%m/%d/%y %H:%M:%S} %-5p %c [%t] - %m%n");
+    {
+        // Saved BEFORE the window exists: MainWindow reads the default once, in its
+        // constructor, so a test that saved it afterwards would be testing nothing.
+        QSettings store;
+        DefaultFormatStore::save(store, def);
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape); // fires only if a dialog appears, which it must not
+    w.openFile(house);
+    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTest::qWait(200);
+    QVERIFY2(!d.seen, "the format dialog was shown for a log the saved default parses");
+
+    LogView *view = w.findChild<LogView *>();
+    QVERIFY(view);
+    // Parsed, not opened as a wall of unparsed plain text — the default carried its
+    // pattern through, rather than merely suppressing the prompt.
+    QCOMPARE(view->recordCount(), 2);
+    w.close();
+}
+
+void TestOpenFlow::aDefaultThatDoesNotParseStillAsks()
+{
+    // The limit, and the reason the default is fed through the ORDINARY open path rather
+    // than applied on the way past: a wrong default costs a dialog, never a silently
+    // mis-split table (SPEC.md §4). Route it around offerFormat() and this is what breaks.
+    const QString other = m_dir.filePath(QStringLiteral("other.log"));
+    QVERIFY(write(other,
+        "03/12/26 11:50:47 DEBUG Vms::App [] - starting up\n"));
+
+    FormatSettings def;
+    def.pattern = QStringLiteral("%p|%c|%m%n"); // compiles fine; matches nothing here
+    {
+        QSettings store;
+        DefaultFormatStore::save(store, def);
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape);
+    w.openFile(other);
+    QVERIFY2(d.seen, "a default that cannot parse the file was applied without asking");
     w.close();
 }
 

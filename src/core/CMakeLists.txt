@@ -112,6 +112,11 @@ add_library(loftail_core STATIC
     ManualFormatProvider.h
     FormatCache.cpp
     FormatCache.h
+    # M18 — the DEFAULT format, the second level below the per-file cache: what a
+    # never-seen file is tried with, so one house pattern is entered once rather than
+    # confirmed per file. Consulted only when the cache has nothing.
+    DefaultFormatStore.cpp
+    DefaultFormatStore.h
     FormatPreview.cpp
     FormatPreview.h
     # M8 — format autodetection: candidate-library scoring + priority-anchored

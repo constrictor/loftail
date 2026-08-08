@@ -118,4 +118,12 @@ void FormatCache::save(QSettings &settings, const QString &path, const FormatSet
     settings.sync();
 }
 
+void FormatCache::forgetAll(QSettings &settings)
+{
+    // The same whole-array removal save() does before rewriting; here nothing is written
+    // back, so the group goes away entirely and load() returns nullopt for every path.
+    settings.remove(QLatin1String(kArrayPrefix));
+    settings.sync();
+}
+
 } // namespace loftail
