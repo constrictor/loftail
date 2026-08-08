@@ -7,7 +7,9 @@
 #include "ArchiveFetcher.h"
 #include "ArchiveFixtures.h"
 #include "ArchiveLocation.h"
+#include "FakeFetcher.h"
 #include "SourceFetcher.h"
+#include "SourceSpool.h"
 
 using namespace loftail;
 using namespace loftail::fixtures;
@@ -47,6 +49,7 @@ private:
     bool waitForPrime(SourceFetcher &fetcher, int timeoutMs = 30000);
     static bool waitForError(SourceFetcher &fetcher, int timeoutMs = 30000);
     static QByteArray spoolContents(const SourceFetcher &fetcher);
+    static QByteArray fileBytes(const QString &path);
 
     QTemporaryDir m_dir;
     int           m_spools = 0;
@@ -123,6 +126,14 @@ bool TestArchiveFetcher::waitForError(SourceFetcher &fetcher, int timeoutMs)
         QThread::msleep(5);
     }
     return false;
+}
+
+QByteArray TestArchiveFetcher::fileBytes(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return QByteArray();
+    return file.readAll();
 }
 
 QByteArray TestArchiveFetcher::spoolContents(const SourceFetcher &fetcher)
@@ -378,24 +389,55 @@ void TestArchiveFetcher::aStoppedExpansionKeepsWhatItWrote()
     // Cancelling the initial scan cancels the expansion (MainWindow::onIndexFinished),
     // and what was expanded stays readable: a cancelled scan leaves whatever it scanned
     // usable, and the same promise has to hold for the bytes underneath it.
-    const QByteArray body = logBody(200000);
-    const QString gz = path(QStringLiteral("stopped.log.gz"));
-    QVERIFY(writeGzip(gz, body));
+    //
+    // The stop has to land while the expansion is genuinely unfinished, and that is
+    // arranged rather than raced for. A LOCAL container cannot do it: expanding one is
+    // pure CPU and page cache, so even a deliberately huge member is over in a few
+    // milliseconds -- measured at ~6 ms for logBody(200000), which is less than one
+    // Windows scheduler tick. A test that primes, sleeps and then stops is not testing
+    // a stop at all; it is betting that the poll after the sleep lands inside those few
+    // milliseconds, and CI eventually collects on that bet.
+    //
+    // So the container arrives from a fake remote with its tail still outstanding
+    // (setTotalSize past what has been delivered). The expansion then parks in
+    // ArchiveFetcher::awaitInput() waiting for container bytes that never come, and
+    // "still expanding when the stop arrives" is true by construction, on every machine
+    // and at any speed. Only the transport is fake; the archive fetcher is the real one.
+    const QByteArray body = logBody(20000);
+    const QString staging = path(QStringLiteral("staging.log.gz"));
+    QVERIFY(writeGzip(staging, body));
+    const QByteArray compressed = fileBytes(staging);
+    QVERIFY(compressed.size() > 2);
+
+    const QString url = QStringLiteral("ssh://deploy@web1/var/log/stopped.log.gz");
+    FakeRemoteFarm farm;
+    const auto remote = farm.at(url);
+    // Half the container, and a size that says the other half is still coming.
+    remote->setInitialContent(compressed.left(compressed.size() / 2));
+    remote->setTotalSize(compressed.size());
 
     QString error;
-    auto fetcher = makeArchiveFetcher(at(gz), &error);
+    auto fetcher = makeArchiveFetcher(at(url), &error);
     QVERIFY2(fetcher, qPrintable(error));
     QVERIFY2(fetcher->start(spoolDir(), &error), qPrintable(error));
 
     QVERIFY(waitForPrime(*fetcher));
     const qint64 committedBefore = fetcher->status().committedSize;
     QVERIFY(committedBefore > 0);
+    // Nothing can have finished it: the rest of the container has not been delivered.
+    QVERIFY(fetcher->status().state != FetchStatus::State::Complete);
     fetcher->requestStop();
     while (!fetcher->isStopped())
         QThread::msleep(5);
 
     const FetchStatus after = fetcher->status();
-    QVERIFY(after.state != FetchStatus::State::Complete);
+    // Disconnected, which is what requestStop() publishes -- not Complete (a cut-short
+    // expansion is not a finished one) and not Error. The Error is the one worth spelling
+    // out: the stop ends the input under libarchive, so the cancelled read comes back as
+    // "truncated gzip input", and reporting that would tell the user their archive is
+    // corrupt when what actually happened is that they cancelled the scan.
+    QCOMPARE(after.state, FetchStatus::State::Disconnected);
+    QVERIFY2(after.error.isEmpty(), qPrintable(after.error));
     // Never fewer bytes than were published before the stop, and the spool file still
     // holds at least what was committed: nothing is retracted or truncated.
     QVERIFY(after.committedSize >= committedBefore);
