@@ -130,7 +130,18 @@ Because a log file does not describe its own layout, loftail needs to be told th
   Padding and truncation modifiers (`%-5p`, `%.30c`, `%20.30m`) are understood on any of them. A specifier outside this set is rejected with the position of the offending character, rather than being ignored — a pattern written for a different logging library should fail visibly, not produce a table with a column silently missing.
 - If a pattern matches poorly, the file still opens: unparsed lines are shown as plain text rather than being hidden or dropped. The user is never left staring at an empty window because of a format mistake.
 - **Cancelling the dialog cancels the open.** When the dialog is shown because loftail could not parse a file it was asked to open, dismissing it (Cancel or Esc) abandons that open entirely — no file is opened, and whatever was already on screen stays there. Cancelling means "not like that", so loftail does not fall back to opening the file as a wall of unparsed plain text.
-- The chosen format is remembered per file, so a file already configured opens correctly without asking again. It is remembered per file only — a newly opened file is never assumed to share another's format.
+- The chosen format is remembered per file, so a file already configured opens correctly without asking again. A file is never assumed to share the format of another file that happens to be open; what a *never-seen* file is tried with is the configured default, below.
+- The dialog also offers **"Also use this format for new files"**, which promotes what is on screen to that default. A pattern is worth keeping once it has been checked against real lines, which is exactly what this dialog was doing.
+
+### Default log format
+
+Logs loftail has not seen before are opened with a **default format** — the pattern, the encoding and the source time zone — set in **Edit ▸ Preferences**. Somebody whose logs all share one house layout sets it once instead of confirming the same dialog for every file.
+
+- Preferences previews the default against whichever log is open, so it can be checked against real lines rather than typed blind. With nothing open the preview is simply empty; the setting is still editable, which is when most people will want it.
+- **The default is not applied silently.** It is what the file is *tried* with; if it does not parse, the Log Format dialog appears exactly as it would have otherwise, pre-filled with the autodetected pattern. A wrong default costs a dialog, never a mis-split table.
+- Out of the box the default is log4cplus's own conventional layout. Clearing the pattern entirely is a valid answer, and means "ask me about every log".
+- A file that has already been configured keeps **its own** format and ignores the default — the per-file memory above outranks it. **Forget Remembered Formats**, in Preferences, drops every per-file format so all logs fall back to the default; logs already open are unaffected.
+- Only the format is defaulted. The timestamp display mode and the run-start pattern are choices about one particular log and stay per file.
 
 ### Character encoding
 
@@ -299,7 +310,7 @@ On relaunch, loftail restores:
 - Saved presets
 - Window geometry, the order of the tabs, and the arrangement of the side panes (§5a, §8)
 
-**Scoping:** the log format, the timestamp display mode, the run-start pattern, active filters, active highlighters, and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a second view showing wide messages and one showing just timestamps each keep their shape. Presets and the window/pane layout are global.
+**Scoping:** the log format, the timestamp display mode, the run-start pattern, active filters, active highlighters, and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a second view showing wide messages and one showing just timestamps each keep their shape. Presets, the **default log format** (§4) and the window/pane layout are global.
 
 **Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is keyed by file, so instances viewing different logs never conflict. For genuinely global state — window layout, and which files to restore on next launch — **the last instance to close wins**.
 

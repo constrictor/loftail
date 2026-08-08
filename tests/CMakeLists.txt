@@ -390,10 +390,21 @@ set_tests_properties(tst_sessiongui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offs
 # M3 — the open flow around the Log Format dialog: Esc cancels the open (SPEC.md
 # §4) and an accepted pattern opens the file. Drives the real MainWindow and
 # dismisses the modal dialog from a timer; UI layer, offscreen, isolated config.
+# M18 added the two cases that pin the DEFAULT format end to end — a saved default
+# opening a never-seen log with no dialog, and a default that cannot parse one still
+# asking. Both need the real open path, because "no dialog appeared" is only
+# observable there.
 qt_add_executable(tst_openflow tst_openflow.cpp)
 target_link_libraries(tst_openflow PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_openflow COMMAND tst_openflow)
 set_tests_properties(tst_openflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# M18 — the default log format: the store that decides what a default IS, and the
+# Preferences dialog where one is entered. What it DOES on an open is tst_openflow's.
+qt_add_executable(tst_preferences tst_preferences.cpp)
+target_link_libraries(tst_preferences PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_preferences COMMAND tst_preferences)
+set_tests_properties(tst_preferences PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # M9 — several logs open at once as tabs, and several views onto one log
 # (SPEC.md §3, §5a). Covers what multi-document changes: an open adds a tab rather

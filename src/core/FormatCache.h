@@ -35,6 +35,17 @@ public:
     // Remember `s` for `path`, replacing any previous entry for that file.
     static void save(QSettings &settings, const QString &path, const FormatSettings &s);
 
+    // Drop every remembered entry, so all files fall back to the DEFAULT format
+    // (DefaultFormatStore) on their next open. This is the escape hatch behind the
+    // Preferences dialog's "Forget Remembered Formats": a per-file entry outranks the
+    // default, so without it a changed default appears to do nothing for every file the
+    // user has already opened.
+    //
+    // It clears the STORE. Documents already on screen keep their in-memory settings and
+    // will write them back on their next change — the button is about what future opens
+    // do, and the confirmation text says so.
+    static void forgetAll(QSettings &settings);
+
 private:
     FormatCache() = delete;
 };

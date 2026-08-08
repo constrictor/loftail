@@ -87,6 +87,10 @@ private slots:
     void chooseRemoteToOpen();
     void refreshRemoteHostsMenu();
     void showFormatDialog();
+    // Application-wide settings (M18): today the default log format, previewed against
+    // whichever log is open. Unlike every other action here it is always available —
+    // it is not about the active document.
+    void showPreferences();
     void showColumnMenu(const QPoint &pos);
     // Pop up the record menu where the click was (SPEC.md §5). Built per invocation
     // on the stack, exactly as the column menu is.
@@ -191,6 +195,10 @@ private:
     // display-zone change → repaint only (§5.1, §6.1).
     void applySettings(const FormatSettings &newSettings);
     void persistFormat(const QString &path, const FormatSettings &s);
+    // Save `s` as the default for never-seen files (M18) and refresh m_defaultFormat
+    // from what was actually stored. The counterpart to persistFormat(), one level up:
+    // that one remembers a file, this one remembers a habit.
+    void rememberDefaultFormat(const FormatSettings &s);
 
     // What came of asking whether a format fits (offerFormat).
     enum class FormatOutcome {
@@ -304,7 +312,11 @@ private:
     // have been chosen), so the first-open sizing never overrides a restored layout.
     bool m_layoutRestored = false;
 
-    QString m_defaultPattern;
+    // The format a file loftail has not seen before is tried with (M18, SPEC.md §4) —
+    // a saved user setting, falling back to the built-in log4cplus layout. Application
+    // scope, not per file: the per-file choice is the FormatCache, which outranks it.
+    // Kept in step with DefaultFormatStore by showPreferences() and showFormatDialog().
+    FormatSettings m_defaultFormat;
     // The wrap mode new views are created with — a window-wide View-menu choice
     // (SPEC.md §5), not per-file state; each LogView owns its own mode thereafter.
     LogView::WrapMode m_wrapMode = LogView::WrapMode::Off;

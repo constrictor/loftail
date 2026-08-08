@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "Decoder.h"
+#include "DefaultFormatStore.h"
 #include "DetectingFormatProvider.h"
 #include "Document.h"
 #include "DocumentContext.h"
@@ -21,6 +22,7 @@
 #include "HostBookmarkStore.h"
 #include "ArchiveLocation.h"
 #include "OpenArchiveDialog.h"
+#include "PreferencesDialog.h"
 #include "SourceSpool.h"
 #include "SpooledLogSource.h"
 
@@ -66,9 +68,10 @@
 namespace loftail {
 
 namespace {
-// The default log4cplus layout used until the M3 Log Format dialog exists. A file
-// that does not match still opens with unparsed lines as plain text (SPEC.md §4).
-constexpr auto kDefaultPattern = "%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n";
+// The default format a never-seen file is tried with now lives in the core
+// DefaultFormatStore (M18): it is a user setting, and the built-in log4cplus layout is
+// only what it falls back to. A file that matches neither still opens with unparsed
+// lines as plain text (SPEC.md §4).
 constexpr int  kMaxRecentFiles = 10;
 
 // How often the restore checks whether its remote logs have finished connecting, and the
@@ -100,8 +103,16 @@ bool panesMayFloat()
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), m_defaultPattern(QString::fromLatin1(kDefaultPattern))
+    : QMainWindow(parent)
 {
+    {
+        // The saved default format (M18), or the built-in when the user has saved none.
+        // Read once here and kept in step by showPreferences()/showFormatDialog(), so an
+        // open never touches QSettings for it.
+        QSettings store;
+        m_defaultFormat = DefaultFormatStore::load(store);
+    }
+
     setWindowTitle(QStringLiteral("loftail"));
     resize(1100, 720);
     setAcceptDrops(true);
@@ -328,6 +339,17 @@ void MainWindow::buildMenus()
     QAction *findPrevAction = editMenu->addAction(tr("Find Pre&vious"));
     findPrevAction->setShortcut(QKeySequence::FindPrevious); // Shift+F3
     connect(findPrevAction, &QAction::triggered, this, [this]() { runFind(false, false); });
+
+    // M18 — application-wide settings. Deliberately NOT disabled when no log is open:
+    // the default format is what the NEXT open uses, so the moment before there is a
+    // document is exactly when someone wants to set it. PreferencesRole is what moves it
+    // into the application menu on macOS, where the Edit menu is the wrong place for it.
+    editMenu->addSeparator();
+    QAction *preferencesAction = editMenu->addAction(tr("&Preferences..."));
+    preferencesAction->setObjectName(QStringLiteral("preferencesAction")); // findChild, for tests
+    preferencesAction->setShortcut(QKeySequence::Preferences);
+    preferencesAction->setMenuRole(QAction::PreferencesRole);
+    connect(preferencesAction, &QAction::triggered, this, &MainWindow::showPreferences);
 
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
     QMenu *wrapMenu = viewMenu->addMenu(tr("Line &Wrap"));
@@ -846,8 +868,15 @@ void MainWindow::openFile(const QString &rawPath, const QString &pattern)
     }
 
     // Per-file recall (SPEC.md §4): a file already configured reopens with its
-    // saved format and no prompt. A never-seen file gets the supplied (or default)
-    // pattern, and the dialog is offered when that pattern does not match.
+    // saved format and no prompt. A never-seen file gets the supplied pattern, or the
+    // user's DEFAULT format (M18), and the dialog is offered when that does not match.
+    //
+    // The two levels never mix: a cached entry is taken whole, and the default is
+    // consulted only when there is none. The default brings its encoding and source zone
+    // along with its pattern, since those are the same three things the Log Format dialog
+    // sets — but an explicitly supplied pattern still overrides just the pattern, so a
+    // command line naming one keeps the default's encoding rather than silently reverting
+    // it to auto-detect.
     FormatSettings settings;
     QSettings store;
     bool cached = false;
@@ -855,7 +884,9 @@ void MainWindow::openFile(const QString &rawPath, const QString &pattern)
         settings = *loaded;
         cached = true;
     } else {
-        settings.pattern = pattern.isEmpty() ? m_defaultPattern : pattern;
+        settings = m_defaultFormat;
+        if (!pattern.isEmpty())
+            settings.pattern = pattern;
     }
     // Offer the dialog only on an interactive open of a never-seen file that the
     // fallback default fails to parse. An explicitly-supplied pattern (command
@@ -1156,7 +1187,43 @@ MainWindow::FormatOutcome MainWindow::offerFormat(Document *doc, const QString &
     if (dlg.exec() != QDialog::Accepted)
         return FormatOutcome::Declined;
     *settings = dlg.settings();
+    // The checkbox is honoured here as well as in showFormatDialog(), because this is
+    // the dialog most users meet first: it is the one that appears by itself when a log
+    // does not parse, and having just fixed it against real lines is the moment the
+    // answer is worth keeping.
+    if (dlg.useAsDefault())
+        rememberDefaultFormat(*settings);
     return FormatOutcome::Chosen;
+}
+
+void MainWindow::rememberDefaultFormat(const FormatSettings &s)
+{
+    QSettings store;
+    DefaultFormatStore::save(store, s);
+    // Re-read rather than assigning `s`: the store keeps three fields on purpose, and
+    // reading back is what guarantees the in-memory copy holds the same three rather
+    // than quietly carrying this file's timestamp mode and run-start pattern into the
+    // next open (DefaultFormatStore::save).
+    m_defaultFormat = DefaultFormatStore::load(store);
+}
+
+void MainWindow::showPreferences()
+{
+    // Preview the default against whichever log is open, so it can be checked against
+    // real lines instead of typed blind. There may be none — the dialog is reachable
+    // with an empty window, which is when someone most wants to set this up.
+    QByteArray sample;
+    if (DocumentContext *ctx = activeContext(); ctx && ctx->doc && ctx->doc->source()) {
+        const qint64 sampleLen = qMin<qint64>(64 * 1024, ctx->doc->source()->size());
+        if (sampleLen > 0)
+            sample = ctx->doc->source()->bytes(0, sampleLen).toByteArray();
+    }
+
+    PreferencesDialog dlg(sample, m_defaultFormat, this);
+    if (dlg.exec() == QDialog::Accepted)
+        rememberDefaultFormat(dlg.defaultFormat());
+    // dlg.formatCacheCleared() needs no action: nothing here caches the per-file store,
+    // and open documents deliberately keep the format they are displaying.
 }
 
 void MainWindow::showFormatDialog()
@@ -1172,12 +1239,17 @@ void MainWindow::showFormatDialog()
 
     LogFormatDialog dlg(logSourceDisplayName(doc->path()), sample, ctx->settings, this);
     if (dlg.exec() == QDialog::Accepted) {
-        // The dialog does not edit the run-start axis; carry it through unchanged so
-        // accepting a format change never clears the run-start pattern (§3a).
+        // The dialog does not edit the run-start axis. FormatEditor carries it through,
+        // but restate it from the context anyway: this is the one place that KNOWS what
+        // the run-start pattern is, and the cost of the belt is a line (§3a).
         FormatSettings s = dlg.settings();
         s.runStartPattern = ctx->settings.runStartPattern;
         s.runStartIsRegex = ctx->settings.runStartIsRegex;
         s.runStartCaseSensitive = ctx->settings.runStartCaseSensitive;
+        // Ticked "also use for new files" (M18). Saved BEFORE applySettings(), which
+        // rescans and destroys `ctx` and `doc` when the pattern changed.
+        if (dlg.useAsDefault())
+            rememberDefaultFormat(s);
         applySettings(s);
     }
 }

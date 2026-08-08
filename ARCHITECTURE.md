@@ -521,7 +521,20 @@ The one thing that is genuinely new rather than borrowed is the restriction bit 
 - `QSettings` for window geometry, `QMainWindow::saveState()` output (the pane layout), the open files and the views onto them in tab order, per-view column layout and wrap mode, and per-file filters/highlighters. Follow state is **not** persisted: every file opens at its end, following (`SPEC.md` §3), so there is nothing to restore. The schema is at version 3; see §12.3 for its shape, the two migrations, and the restore ordering.
 - Presets as JSON under `QStandardPaths::AppConfigLocation` — a discrete file format, since `SPEC.md` §9 proposes export/import.
 - Per-file format cache, keyed by canonical path, so a configured file reopens without prompting. Per file only — no directory-level fallback; a new file is never assumed to share a sibling's format.
+- The **default format** a never-seen file is tried with (`DefaultFormatStore`, M18); see below.
 - Schema version field in both settings and preset files from day one; migrating unversioned user data later is unpleasant.
+
+**The default format is a second store rather than a row in the first, and the two answer different questions** (`SPEC.md` §4, M18). `FormatCache` answers "what did the user choose for *this* file" and is keyed by canonical path; `DefaultFormatStore` answers "what should a file nobody has configured be tried with" and is keyed by nothing. Folding the second into the first would need a sentinel path for the pathless entry, and then every `readAll()` loop would have to know to skip it — a row that is not a row, in the one structure whose whole contract is that a row is a file.
+
+So it is three scalar keys in their own `defaultFormat` group: `pattern`, `encoding`, `sourceZone`. Three properties are load-bearing:
+
+- **The key spellings are the ones `FormatCache` and `SessionStore` already use** for the same three fields, so the three stores share one vocabulary and a field read out of one can be written into another without a mapping table.
+- **It is unversioned, and that is not an oversight.** There is no structure to migrate: a group that is absent reads as the built-in, which is precisely what an older store should do. The exact-equality gate that makes a bump destructive for `PresetStore` and `SessionStore` has nothing to bite on here.
+- **`load()` tests for *presence*, not for a non-empty pattern.** An empty saved pattern is a real answer — it parses nothing, so every never-seen file reaches the format dialog, which is how a user asks to be consulted about each log. Reading empty as "nothing saved" would silently reinstate the built-in and make that setting unreachable.
+
+**It stores three of `FormatSettings`' seven fields on purpose.** `timeDisplay` belongs to the timestamp column's header menu and the `runStart*` triple to the Run pane; both are statements about one particular log rather than about a format. Widening `save()` to the whole struct would make every newly opened file inherit some other file's timestamp mode and run splitting — invisible until someone wonders why a fresh log opened pre-split. `MainWindow::rememberDefaultFormat()` therefore re-*reads* after writing instead of assigning what it just saved, so the in-memory copy cannot hold more than the store does.
+
+**And the default is fed through the ordinary open path, never applied on the way past.** `MainWindow::openFile()` seeds `settings` from it only when the cache misses, and everything downstream is unchanged: `offerFormat()` still calls `formatFits()` first and still raises the dialog pre-filled with M8's autodetection when it does not. That is what makes "a wrong default costs a dialog, never a mis-split table" a property of the wiring rather than a promise. `tst_openflow::aDefaultThatDoesNotParseStillAsks` is what notices if someone routes around it.
 
 **Highlight rules store two palette references — background and foreground — never RGB values** (`SPEC.md` §7). Each reference is a palette index into a 27-entry table, or a *default* sentinel meaning "leave this role at the theme's normal color." The palette maps each index to a light-theme and a dark-theme color, so switching themes remaps every existing rule automatically. Persisting raw colors would freeze rules to whichever theme was active when they were created — the exact problem the curated palette exists to prevent.
 
@@ -598,6 +611,10 @@ Two constraints on layer 2, both learned the hard way:
 - **Slash dates need an order decision.** `03/12/26` is 12 March or 3 December and nothing in the text says which. The order is inferred once over the sample — a component above 12 can only be a day — and defaults to month-first, which is what log4cplus's `%D{%m/%d/%y}` produces. Getting this wrong is silent: both orders compile to the same regex and score identically, and only the parsed `Record::timestamp` differs (§5.1).
 
 Detection produces a *pattern string*, never a bespoke parser — it reuses the entire P1 path. It also requires no new UI: it pre-fills the existing Log Format dialog for confirmation, which is the second reason to build the manual path first.
+
+**The controls that edit a format are a widget, not a dialog (`FormatEditor`, M18).** Two dialogs edit exactly the same set — `LogFormatDialog` for one file, `PreferencesDialog` for the default a never-seen file is tried with — and the pattern field, the Detect button, the encoding, the source zone and the live preview are the whole of both. Two copies would drift, and the one that drifted would be whichever the user reached for second. So the dialogs are shells: a title, the editor, their own one extra control (a "use for new files" checkbox; a "forget remembered formats" button), and a button box.
+
+Two things the editor must keep doing. It **carries through the fields it does not own** — `timeDisplay` and the `runStart*` triple — because `settings()` builds a fresh `FormatSettings`, so dropping them would silently reset the timestamp mode and clear the run-start pattern on every pattern edit. And it accepts an **empty sample** as an ordinary state rather than an error: Preferences is reachable with no log open, which is exactly when someone sets a default up, so the preview is simply blank and Detect is disabled.
 
 ## 9.1 Localization: translatable, untranslated, and why Qt has to be told
 
