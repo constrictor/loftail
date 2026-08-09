@@ -5,7 +5,12 @@
 #include <QJsonObject>
 #include <QWidget>
 
+#include <optional>
+
+class QLabel;
 class QSpinBox;
+class QTimer;
+class QToolButton;
 
 namespace loftail {
 
@@ -77,18 +82,63 @@ public:
     void setTimeBound(TimeBound which, qint64 utcMs);
     void setTimeRange(qint64 fromUtcMs, qint64 toUtcMs);
 
+    // Back to an unfiltered view in one action: every axis to its default, every
+    // discovered value ticked, context off. The pane's own Clear button and the
+    // View menu's Clear Filters both land here.
+    void clearAll();
+
+    // Whether the bound document is currently having anything hidden from it — asked
+    // of the RESOLVED FilterSet, so an axis that is switched on but excludes nothing
+    // does not count. Drives the pane header and the dock's own marker.
+    bool hasActiveFilters() const;
+
 signals:
     // Emitted whenever any control changes. MainWindow rebuilds the Document's
     // FilterSet from the editor's criteria and reapplies inside a model reset.
     void filtersChanged();
+
+    // hasActiveFilters() may have changed. The pane is one of four tabbed together,
+    // so for three tabs out of four the axes are out of sight while still in force;
+    // MainWindow marks the dock title with this.
+    void activityChanged(bool active);
 
 private:
     // Resolve the editor's criteria into the bound Document's FilterSet — names to
     // interned ids, display-zone wall clock to UTC ms. No-op without a document.
     void applyToDocument();
 
+    // Apply an edit, now or shortly. Every control in the pane goes through
+    // scheduleApply(); applyNow() is the thing it eventually does.
+    //
+    // The point is that a filter edit is not one operation but two: resolving the
+    // criteria, which is trivial, and the full forward pass over the index that
+    // filtersChanged() sets off — a pass that decodes a message per record on the
+    // text axis, resets the model and repaints every view. On an ordinary log that is
+    // microseconds and must stay synchronous, because "type and the view has already
+    // narrowed" is the pane's whole feel and because a caller that edits a control and
+    // then reads the result is entitled to. On a multi-GB index it is the thing that
+    // runs once per KEYSTROKE.
+    //
+    // So the coalescing is measured, not assumed: applyNow() times its own pass, and
+    // scheduleApply() defers only while the last one was slow enough to notice. A
+    // small file never waits — nothing in the suite had to learn about this — and a
+    // huge one starts coalescing after the first pass has proved it needs to.
+    void scheduleApply();
+    void applyNow();
+    // Keep the header's word and its Clear button in step with hasActiveFilters(),
+    // and tell MainWindow. Called from applyToDocument(), which every route that
+    // touches the FilterSet goes through.
+    void updateSummary();
+
     Document   *m_document = nullptr;
     AxisEditor *m_axes = nullptr;
+    QLabel     *m_summary = nullptr;
+    QToolButton *m_clearButton = nullptr;
+    QTimer     *m_applyTimer = nullptr;
+    qint64      m_lastApplyMs = 0; // how long the previous pass took, per above
+    // What the header and the dock marker were last told. Unset until the first
+    // update, so the initial state is published once rather than assumed.
+    std::optional<bool> m_summaryActive;
     // Filter context (M15, SPEC.md §6), grep's -B/-A. Here and not in the AxisEditor:
     // that widget is shared with a highlight rule's editor, where "show the two
     // records either side" means nothing — highlighting removes nothing to begin with.

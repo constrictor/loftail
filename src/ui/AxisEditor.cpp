@@ -19,7 +19,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
-#include <QPushButton>
+#include <QSignalBlocker>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <utility>
@@ -40,12 +41,12 @@ struct AxisBox
     QVBoxLayout *bodyLayout;
 };
 
-AxisBox makeAxisBox(QWidget *parent, const QString &title, const char *objectName,
+AxisBox makeAxisBox(QWidget *parent, const QString &title, const QString &objectName,
                     bool enabledByDefault)
 {
     AxisBox a;
     a.box = new QGroupBox(title, parent);
-    a.box->setObjectName(QString::fromLatin1(objectName));
+    a.box->setObjectName(objectName);
     a.box->setCheckable(true);
     a.box->setChecked(enabledByDefault);
     auto *v = new QVBoxLayout(a.box);
@@ -64,19 +65,35 @@ AxisBox makeAxisBox(QWidget *parent, const QString &title, const char *objectNam
 // The All / None / Invert buttons shared by the two value lists, as a COLUMN beside
 // the list rather than a row under it: the list is the tall thing in the pane, and a
 // button row under each of two lists is two lines that the column reclaims for free.
-QVBoxLayout *makeListButtons(QWidget *parent, const char *namePrefix, QPushButton *&all,
-                             QPushButton *&none, QPushButton *&invert)
+//
+// Tool buttons rather than push buttons. A QPushButton carries a style's full button
+// margins and takes ~90 px of a dock that is only a third of the window wide — width
+// the LIST wants, since a subsystem name is a dotted path and the ones that matter
+// differ at the END.
+//
+// NOT auto-raised, though, unlike the message-text toggles: a flat frameless button
+// with a one-word label and no icon reads as a caption, and "All / None / Invert" in
+// a column beside a list reads as a caption particularly well. The frame is what says
+// these are things to press. Auto-raise earns its keep on a TOGGLE, where the checked
+// state supplies the missing affordance; it does not on a plain command.
+QVBoxLayout *makeListButtons(QWidget *parent, const QString &namePrefix,
+                             QAbstractButton *&all, QAbstractButton *&none,
+                             QAbstractButton *&invert)
 {
     // Not a member, so there is no tr() in scope — the context is named explicitly, and
     // named for the class these buttons belong to.
+    auto make = [parent](const char *label, const QString &name) {
+        auto *b = new QToolButton(parent);
+        b->setText(QCoreApplication::translate("loftail::AxisEditor", label));
+        b->setObjectName(name);
+        // Without this a QToolButton hugs its text and the three end up ragged.
+        b->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        return b;
+    };
     auto *btns = new QVBoxLayout;
-    all = new QPushButton(QCoreApplication::translate("loftail::AxisEditor", "All"), parent);
-    none = new QPushButton(QCoreApplication::translate("loftail::AxisEditor", "None"), parent);
-    invert = new QPushButton(QCoreApplication::translate("loftail::AxisEditor", "Invert"), parent);
-    const QString prefix = QString::fromLatin1(namePrefix);
-    all->setObjectName(prefix + QStringLiteral("All"));
-    none->setObjectName(prefix + QStringLiteral("None"));
-    invert->setObjectName(prefix + QStringLiteral("Invert"));
+    all = make("All", namePrefix + QStringLiteral("All"));
+    none = make("None", namePrefix + QStringLiteral("None"));
+    invert = make("Invert", namePrefix + QStringLiteral("Invert"));
     btns->addWidget(all);
     btns->addWidget(none);
     btns->addWidget(invert);
@@ -93,7 +110,8 @@ QStringList toSortedList(const QSet<QString> &s)
 
 } // namespace
 
-AxisEditor::AxisEditor(Defaults defaults, QWidget *parent) : QWidget(parent)
+AxisEditor::AxisEditor(Defaults defaults, QWidget *parent)
+    : QWidget(parent), m_defaults(defaults)
 {
     buildUi(defaults);
 }
@@ -146,147 +164,83 @@ void AxisEditor::buildUi(Defaults defaults)
 
     // --- Message text -------------------------------------------------------
     {
-        AxisBox a = makeAxisBox(this, tr("Message text"), "messageGroup", false);
+        AxisBox a = makeAxisBox(this, tr("Message text"), QStringLiteral("messageGroup"),
+                                false);
         m_textGroup = a.box;
         m_textBody = a.body;
-        m_textBodyLayout = a.bodyLayout;
         m_textEdit = new QLineEdit(a.body);
         m_textEdit->setObjectName(QStringLiteral("messageText"));
         m_textEdit->setPlaceholderText(tr("Substring or regex..."));
         ensureReadablePlaceholder(m_textEdit);
         m_textEdit->setClearButtonEnabled(true);
         a.bodyLayout->addWidget(m_textEdit);
-        m_textRegex = new QCheckBox(tr("Regular expression"), a.body);
-        m_textCase = new QCheckBox(tr("Case sensitive"), a.body);
-        m_textNegate = new QCheckBox(tr("Hide matching (negate)"), a.body);
-        m_textRegex->setObjectName(QStringLiteral("messageRegex"));
-        m_textCase->setObjectName(QStringLiteral("messageCase"));
-        m_textNegate->setObjectName(QStringLiteral("messageNegate"));
-        a.bodyLayout->addWidget(m_textRegex);
-        a.bodyLayout->addWidget(m_textCase);
-        a.bodyLayout->addWidget(m_textNegate);
+
+        // An invalid regex matches NOTHING, so as a filter it empties the view and as
+        // a highlight rule it colors nothing — in both cases indistinguishable from a
+        // pattern that is merely too narrow, and the status bar's "0 of 4000 records
+        // shown" reads like a legitimate answer. Red text in the field said so only to
+        // someone already looking at the field, and only if they knew what the colour
+        // meant; textPatternValid() existed to be asked and nothing asked it.
+        m_textError = new QLabel(a.body);
+        m_textError->setObjectName(QStringLiteral("messageError"));
+        m_textError->setText(tr("Not a valid regular expression — this matches nothing."));
+        m_textError->setWordWrap(true);
+        m_textError->setVisible(false);
+        a.bodyLayout->addWidget(m_textError);
+
+        // The three options as toggles on ONE row rather than three stacked
+        // checkboxes. This is the search field's own row of modifiers — the shape Qt
+        // Creator, VS Code and the browser inspectors all use — and the three rows it
+        // replaces were, with the context row below them, four fifths of this axis's
+        // height for two bits and a sign. The glyphs are NOT translated (they are not
+        // prose, ARCHITECTURE.md §9.1); the words move to the tooltip, and to the
+        // accessible name so a screen reader still hears them.
+        auto makeToggle = [&a](const QString &glyph, const QString &name,
+                               const QString &prose) {
+            auto *b = new QToolButton(a.body);
+            b->setText(glyph);
+            b->setObjectName(name);
+            b->setCheckable(true);
+            b->setAutoRaise(true);
+            b->setToolTip(prose);
+            b->setAccessibleName(prose);
+            return b;
+        };
+        m_textRegex = makeToggle(QStringLiteral(".*"), QStringLiteral("messageRegex"),
+                                 tr("Regular expression"));
+        m_textCase = makeToggle(QStringLiteral("Aa"), QStringLiteral("messageCase"),
+                                tr("Case sensitive"));
+        m_textNegate = makeToggle(QString::fromUtf8("≠"),
+                                  QStringLiteral("messageNegate"),
+                                  tr("Hide matching records instead of showing them"));
+        m_textOptionsRow = new QHBoxLayout;
+        m_textOptionsRow->addWidget(m_textRegex);
+        m_textOptionsRow->addWidget(m_textCase);
+        m_textOptionsRow->addWidget(m_textNegate);
+        // Whatever addTextExtra() injects lands after this, so it sits at the right
+        // end of the row rather than crowding the toggles.
+        m_textOptionsRow->addStretch(1);
+        a.bodyLayout->addLayout(m_textOptionsRow);
         root->addWidget(a.box);
 
         connect(m_textGroup, &QGroupBox::toggled, this, emitChange);
         connect(m_textEdit, &QLineEdit::textChanged, this,
                 [emitChange](const QString &) { emitChange(); });
-        connect(m_textRegex, &QCheckBox::toggled, this, emitChange);
-        connect(m_textCase, &QCheckBox::toggled, this, emitChange);
-        connect(m_textNegate, &QCheckBox::toggled, this, emitChange);
+        connect(m_textRegex, &QAbstractButton::toggled, this, emitChange);
+        connect(m_textCase, &QAbstractButton::toggled, this, emitChange);
+        connect(m_textNegate, &QAbstractButton::toggled, this, emitChange);
     }
 
-    // --- Subsystem ----------------------------------------------------------
-    {
-        AxisBox a = makeAxisBox(this, tr("Subsystem"), "subsystemGroup", defaults.loggerOn);
-        m_loggerGroup = a.box;
-        m_loggerBody = a.body;
-        m_loggerNarrow = new QLineEdit(a.body);
-        m_loggerNarrow->setPlaceholderText(tr("Narrow list..."));
-        ensureReadablePlaceholder(m_loggerNarrow);
-        m_loggerNarrow->setClearButtonEnabled(true);
-        a.bodyLayout->addWidget(m_loggerNarrow);
-        m_loggerList = new QListWidget(a.body);
-        m_loggerList->setObjectName(QStringLiteral("subsystemList"));
-        m_loggerList->setMinimumHeight(90);
-        QPushButton *all = nullptr, *none = nullptr, *invert = nullptr;
-        auto *listRow = new QHBoxLayout;
-        listRow->addWidget(m_loggerList, 1);
-        listRow->addLayout(makeListButtons(a.body, "subsystem", all, none, invert));
-        a.bodyLayout->addLayout(listRow);
-        auto *manualRow = new QHBoxLayout;
-        m_loggerManual = new QLineEdit(a.body);
-        m_loggerManual->setPlaceholderText(tr("Add subsystem manually..."));
-        ensureReadablePlaceholder(m_loggerManual);
-        auto *add = new QPushButton(tr("Add"), a.body);
-        manualRow->addWidget(m_loggerManual, 1);
-        manualRow->addWidget(add);
-        a.bodyLayout->addLayout(manualRow);
-        root->addWidget(a.box);
-
-        connect(m_loggerGroup, &QGroupBox::toggled, this, emitChange);
-        // A hand edit to the list — one tick, or All / None / Invert, which reach here
-        // the same way — returns the axis to the discovery default: whatever the user
-        // is building now is a statement about the file, so a subsystem that appears
-        // later belongs in it. Only showOnlyValue() says otherwise. The m_populating
-        // guard keeps a repopulation from counting as an edit.
-        connect(m_loggerList, &QListWidget::itemChanged, this,
-                [this, emitChange](QListWidgetItem *) {
-                    if (!m_populating)
-                        m_loggerRestrictive = false;
-                    emitChange();
-                });
-        connect(m_loggerNarrow, &QLineEdit::textChanged, this,
-                [this](const QString &s) { narrowList(m_loggerList, s); });
-        connect(all, &QPushButton::clicked, this, [this] { setAllChecked(m_loggerList, true); });
-        connect(none, &QPushButton::clicked, this, [this] { setAllChecked(m_loggerList, false); });
-        connect(invert, &QPushButton::clicked, this, [this] { invertChecked(m_loggerList); });
-        auto addManual = [this, emitChange] {
-            const QString name = m_loggerManual->text().trimmed();
-            if (name.isEmpty())
-                return;
-            m_loggerManualNames.insert(name);
-            m_loggerRestrictive = false; // typing a name is a hand edit like any other
-            m_loggerManual->clear();
-            refreshDiscoveredLists(); // re-inserts the manual name, checked
-            emitChange();
-        };
-        connect(add, &QPushButton::clicked, this, addManual);
-        connect(m_loggerManual, &QLineEdit::returnPressed, this, addManual);
-    }
-
-    // --- Thread -------------------------------------------------------------
-    {
-        AxisBox a = makeAxisBox(this, tr("Thread"), "threadGroup", false);
-        m_threadGroup = a.box;
-        m_threadBody = a.body;
-        m_threadNarrow = new QLineEdit(a.body);
-        m_threadNarrow->setPlaceholderText(tr("Narrow list..."));
-        ensureReadablePlaceholder(m_threadNarrow);
-        m_threadNarrow->setClearButtonEnabled(true);
-        a.bodyLayout->addWidget(m_threadNarrow);
-        m_threadList = new QListWidget(a.body);
-        m_threadList->setObjectName(QStringLiteral("threadList"));
-        m_threadList->setMinimumHeight(70);
-        QPushButton *all = nullptr, *none = nullptr, *invert = nullptr;
-        auto *listRow = new QHBoxLayout;
-        listRow->addWidget(m_threadList, 1);
-        listRow->addLayout(makeListButtons(a.body, "thread", all, none, invert));
-        a.bodyLayout->addLayout(listRow);
-        auto *manualRow = new QHBoxLayout;
-        m_threadManual = new QLineEdit(a.body);
-        m_threadManual->setPlaceholderText(tr("Add thread manually..."));
-        ensureReadablePlaceholder(m_threadManual);
-        auto *add = new QPushButton(tr("Add"), a.body);
-        manualRow->addWidget(m_threadManual, 1);
-        manualRow->addWidget(add);
-        a.bodyLayout->addLayout(manualRow);
-        root->addWidget(a.box);
-
-        connect(m_threadGroup, &QGroupBox::toggled, this, emitChange);
-        connect(m_threadList, &QListWidget::itemChanged, this,
-                [this, emitChange](QListWidgetItem *) {
-                    if (!m_populating)
-                        m_threadRestrictive = false;
-                    emitChange();
-                });
-        connect(m_threadNarrow, &QLineEdit::textChanged, this,
-                [this](const QString &s) { narrowList(m_threadList, s); });
-        connect(all, &QPushButton::clicked, this, [this] { setAllChecked(m_threadList, true); });
-        connect(none, &QPushButton::clicked, this, [this] { setAllChecked(m_threadList, false); });
-        connect(invert, &QPushButton::clicked, this, [this] { invertChecked(m_threadList); });
-        auto addManual = [this, emitChange] {
-            const QString name = m_threadManual->text().trimmed();
-            if (name.isEmpty())
-                return;
-            m_threadManualNames.insert(name);
-            m_threadRestrictive = false;
-            m_threadManual->clear();
-            refreshDiscoveredLists();
-            emitChange();
-        };
-        connect(add, &QPushButton::clicked, this, addManual);
-        connect(m_threadManual, &QLineEdit::returnPressed, this, addManual);
-    }
+    // --- Subsystem, then Thread ---------------------------------------------
+    //
+    // One function, twice. These two axes differ in a title, an object-name prefix, a
+    // list height and whether they ship on; everything else — the discovery rule, the
+    // narrowing, the manual add, the three list buttons — was written out twice and
+    // had to be kept in step by hand.
+    buildValueAxis(root, ValueAxis::Subsystem, tr("Subsystem"), QStringLiteral("subsystem"),
+                   /*listMinHeight=*/90, defaults.loggerOn);
+    buildValueAxis(root, ValueAxis::Thread, tr("Thread"), QStringLiteral("thread"),
+                   /*listMinHeight=*/70, false);
 
     // --- Time range ---------------------------------------------------------
     {
@@ -324,15 +278,227 @@ void AxisEditor::buildUi(Defaults defaults)
         a.bodyLayout->addLayout(row);
         root->addWidget(a.box);
 
-        connect(m_timeGroup, &QGroupBox::toggled, this, emitChange);
-        connect(m_timeStart, &QDateTimeEdit::dateTimeChanged, this,
-                [emitChange](const QDateTime &) { emitChange(); });
-        connect(m_timeEnd, &QDateTimeEdit::dateTimeChanged, this,
-                [emitChange](const QDateTime &) { emitChange(); });
+        // Seed on the way ON as well as from refreshDiscoveredLists(): a log that is
+        // still scanning when the axis is switched on has a span now that it did not
+        // have at open time, and the alternative is the year-2000 default that hides
+        // every record. Seeding first means the emitChange() below resolves the bounds
+        // the user is about to see rather than the ones being replaced.
+        connect(m_timeGroup, &QGroupBox::toggled, this, [this, emitChange](bool on) {
+            if (on)
+                refreshObservedSpan();
+            emitChange();
+        });
+        // A bound the user moved is theirs; the seed must not take it back on the next
+        // repopulation. m_populating covers every programmatic write, including
+        // refreshObservedSpan()'s own.
+        auto timeEdited = [this, emitChange](const QDateTime &) {
+            if (!m_populating)
+                m_timeUserEdited = true;
+            emitChange();
+        };
+        connect(m_timeStart, &QDateTimeEdit::dateTimeChanged, this, timeEdited);
+        connect(m_timeEnd, &QDateTimeEdit::dateTimeChanged, this, timeEdited);
     }
 
     root->addStretch(1);
     updateTextValidity();
+}
+
+void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString &title,
+                                const QString &prefix, int listMinHeight,
+                                bool enabledByDefault)
+{
+    const bool subsystem = axis == ValueAxis::Subsystem;
+    AxisBox a = makeAxisBox(this, title, prefix + QStringLiteral("Group"), enabledByDefault);
+    (subsystem ? m_loggerGroup : m_threadGroup) = a.box;
+    (subsystem ? m_loggerBody : m_threadBody) = a.body;
+
+    // The narrow field is ALSO the add field. It used to be one of two look-alike line
+    // edits — "Narrow list..." above the list and "Add subsystem manually..." below it
+    // with its own button — which spent a row and a button per axis on telling them
+    // apart, and put the rarer of the two in the more prominent place.
+    //
+    // The "+" appears while the typed text is not ALREADY a name in the list, which is
+    // most of the time during a narrowing and all of the time once the narrowing has
+    // come up empty. Not "only when the list is empty", tempting as that is: a parent
+    // logger is a strict prefix of its children, so "com.acme" would be unaddable for
+    // exactly as long as "com.acme.db.Pool" was listed.
+    auto *narrowRow = new QHBoxLayout;
+    auto *narrow = new QLineEdit(a.body);
+    narrow->setObjectName(prefix + QStringLiteral("Narrow"));
+    narrow->setPlaceholderText(tr("Narrow the list, or type a name to add..."));
+    ensureReadablePlaceholder(narrow);
+    narrow->setClearButtonEnabled(true);
+    auto *add = new QToolButton(a.body);
+    add->setObjectName(prefix + QStringLiteral("Add"));
+    add->setText(QStringLiteral("+")); // a glyph, not prose — never translated
+    // Framed, like the list buttons and for the same reason: it is a command, not a
+    // toggle, so there is no checked state to supply the affordance. It appears only
+    // when the typed text names nothing, which makes it easy to miss if it also looks
+    // like punctuation.
+    add->setVisible(false);
+    add->setToolTip(subsystem
+                        ? tr("Add this subsystem to the list, ticked. Use it for a "
+                             "subsystem the scan has not reached yet.")
+                        : tr("Add this thread to the list, ticked. Use it for a thread "
+                             "the scan has not reached yet."));
+    narrowRow->addWidget(narrow, 1);
+    narrowRow->addWidget(add);
+    a.bodyLayout->addLayout(narrowRow);
+    (subsystem ? m_loggerNarrow : m_threadNarrow) = narrow;
+
+    auto *list = new QListWidget(a.body);
+    list->setObjectName(prefix + QStringLiteral("List"));
+    list->setMinimumHeight(listMinHeight);
+    (subsystem ? m_loggerList : m_threadList) = list;
+
+    QAbstractButton *all = nullptr, *none = nullptr, *invert = nullptr;
+    auto *listRow = new QHBoxLayout;
+    listRow->addWidget(list, 1);
+    listRow->addLayout(makeListButtons(a.body, prefix, all, none, invert));
+    a.bodyLayout->addLayout(listRow);
+    QAbstractButton **slot = subsystem ? m_loggerListButtons : m_threadListButtons;
+    slot[0] = all;
+    slot[1] = none;
+    slot[2] = invert;
+
+    root->addWidget(a.box);
+
+    connect(a.box, &QGroupBox::toggled, this, [this] { emitChanged(); });
+    // A hand edit to the list — one tick, or All / None / Invert, which reach here the
+    // same way — returns the axis to the discovery default: whatever the user is
+    // building now is a statement about the file, so a subsystem that appears later
+    // belongs in it. Only showOnlyValue() says otherwise. The m_populating guard keeps
+    // a repopulation from counting as an edit.
+    connect(list, &QListWidget::itemChanged, this, [this, axis](QListWidgetItem *) {
+        if (!m_populating)
+            restrictiveFor(axis) = false;
+        emitChanged();
+    });
+    connect(all, &QAbstractButton::clicked, this,
+            [this, axis] { setAllChecked(listFor(axis), true); });
+    connect(none, &QAbstractButton::clicked, this,
+            [this, axis] { setAllChecked(listFor(axis), false); });
+    connect(invert, &QAbstractButton::clicked, this,
+            [this, axis] { invertChecked(listFor(axis)); });
+
+    // Adding is only offered for a name the list does not already hold — otherwise the
+    // "+" would promise a second copy of a value that is right there under it.
+    auto addTyped = [this, axis, narrow, add] {
+        const QString name = narrow->text().trimmed();
+        if (!canAddTyped(axis, name))
+            return;
+        manualFor(axis).insert(name);
+        restrictiveFor(axis) = false; // typing a name is a hand edit like any other
+        {
+            // Blocked so the clear does not re-narrow a list that is about to be
+            // rebuilt; refreshDiscoveredLists() re-narrows with the now-empty text.
+            const QSignalBlocker block(narrow);
+            narrow->clear();
+        }
+        add->setVisible(false);
+        refreshDiscoveredLists(); // re-inserts the manual name, checked, and un-narrows
+        emitChanged();
+    };
+    connect(add, &QAbstractButton::clicked, this, addTyped);
+    connect(narrow, &QLineEdit::returnPressed, this, addTyped);
+    connect(narrow, &QLineEdit::textChanged, this, [this, axis, add](const QString &s) {
+        narrowList(listFor(axis), s);
+        add->setVisible(canAddTyped(axis, s.trimmed()));
+        updateListButtonHints(axis);
+    });
+}
+
+bool AxisEditor::canAddTyped(ValueAxis axis, const QString &name) const
+{
+    if (name.isEmpty())
+        return false;
+    const QListWidget *list = listFor(axis);
+    if (!list)
+        return false;
+    // Exact, case-sensitive: a logger name is an identifier, and "Net.Http" alongside
+    // "net.http" is two subsystems, not a typo to be swallowed.
+    for (int i = 0; i < list->count(); ++i)
+        if (list->item(i)->text() == name)
+            return false;
+    return true;
+}
+
+void AxisEditor::updateListButtonHints(ValueAxis axis)
+{
+    const QListWidget *list = listFor(axis);
+    QAbstractButton **btns =
+        axis == ValueAxis::Subsystem ? m_loggerListButtons : m_threadListButtons;
+    if (!list || !btns[0])
+        return;
+
+    // All / None / Invert act on the NARROWED view, deliberately — there the user can
+    // see what they are acting on, which is the same reasoning showOnlyValue() states
+    // for going the other way. The trap is that a hidden entry keeps its tick, so
+    // "None" over a narrowed list can leave the axis still letting records through
+    // while the list on screen reads as fully cleared. Nothing said so; now the
+    // buttons do, and only when there is something to say.
+    int hidden = 0;
+    for (int i = 0; i < list->count(); ++i)
+        if (list->item(i)->isHidden())
+            ++hidden;
+    QString note;
+    if (hidden == 1)
+        note = tr(" One entry hidden by the text above keeps its current state.");
+    else if (hidden > 1)
+        note = tr(" %1 entries hidden by the text above keep their current state.")
+                   .arg(hidden);
+
+    btns[0]->setToolTip(tr("Tick every entry shown.") + note);
+    btns[1]->setToolTip(tr("Untick every entry shown.") + note);
+    btns[2]->setToolTip(tr("Tick what is unticked and untick what is ticked.") + note);
+}
+
+void AxisEditor::clearAll()
+{
+    // Back to the state a freshly-bound editor is in — the DEFAULTS it was built with,
+    // not "everything off": for the Filters pane that means priority and subsystem
+    // still ticked but excluding nothing, which is what the pane has always meant by
+    // unfiltered and what applyToDocument()'s NoOpAxes::Collapse then writes as
+    // inactive. Turning them off instead would make "clear" leave the pane in a state
+    // no fresh document ever starts in.
+    m_populating = true;
+    m_priorityEnable->setChecked(m_defaults.priorityOn);
+    m_priorityCombo->setCurrentIndex(0); // the widest level; PriorityChoice is ordered
+
+    m_loggerGroup->setChecked(m_defaults.loggerOn);
+    m_threadGroup->setChecked(false);
+    m_timeGroup->setChecked(false);
+
+    m_textGroup->setChecked(false);
+    m_textEdit->clear();
+    m_textRegex->setChecked(false);
+    m_textCase->setChecked(false);
+    m_textNegate->setChecked(false);
+
+    if (m_loggerNarrow)
+        m_loggerNarrow->clear();
+    if (m_threadNarrow)
+        m_threadNarrow->clear();
+    m_loggerManualNames.clear();
+    m_threadManualNames.clear();
+    m_loggerRestrictive = false;
+    m_threadRestrictive = false;
+    m_timeUserEdited = false;
+    // Every value ticked again. "Seen" is what makes an already-listed name keep its
+    // state across a repopulation (populateList's discovery rule), so clearing it is
+    // exactly how a value the user unticked comes back — and the only way, short of
+    // walking the lists by hand.
+    m_loggerSeen.clear();
+    m_threadSeen.clear();
+    m_populating = false;
+
+    repopulate({}, {}, /*exact=*/false); // nothing seen, nothing restrictive: all ticked
+    refreshObservedSpan();
+    updateCollapse();
+    updateTextValidity();
+    // One notification for the whole reset, as restoreState() does for its own.
+    emitChanged();
 }
 
 void AxisEditor::emitChanged()
@@ -346,9 +512,9 @@ void AxisEditor::emitChanged()
 
 void AxisEditor::addTextExtra(QWidget *w)
 {
-    if (!w || !m_textBodyLayout)
+    if (!w || !m_textOptionsRow)
         return;
-    m_textBodyLayout->addWidget(w);
+    m_textOptionsRow->addWidget(w);
 }
 
 void AxisEditor::setCollapsible(bool collapsible)
@@ -375,6 +541,14 @@ void AxisEditor::updateCollapse()
         if (p.body)
             p.body->setVisible(!m_collapsible || p.on);
     }
+
+    // The four group-box axes get this from Qt, which greys a checkable box's contents
+    // while it is unchecked. Priority has no group box — it is a checkbox and a combo
+    // on one row — so nothing was doing it, and the combo stayed bright and spinnable
+    // with the axis off: exactly the "changing the minimum level did nothing" failure
+    // the enabled-by-default choice above was made to avoid, merely moved one click away.
+    if (m_priorityCombo && m_priorityEnable)
+        m_priorityCombo->setEnabled(m_priorityEnable->isChecked());
 }
 
 void AxisEditor::updateTextValidity()
@@ -385,9 +559,7 @@ void AxisEditor::updateTextValidity()
     // false rather than throwing), which as a filter silently empties the view and as
     // a highlight rule silently colors nothing. Say so instead of leaving the user to
     // infer it — the Find bar already does.
-    TextMatcher probe;
-    probe.set(m_textEdit->text(), m_textRegex->isChecked(), Qt::CaseInsensitive);
-    const bool bad = !probe.isValid();
+    const bool bad = !textPatternValid();
 
     // Start from the field's OWN palette, not a default-constructed one: this runs on
     // every keystroke, and a fresh QPalette would drop the readable-placeholder repair
@@ -398,6 +570,18 @@ void AxisEditor::updateTextValidity()
     m_textEdit->setPalette(pal);
     m_textEdit->setToolTip(bad ? tr("Invalid regular expression — matches nothing.")
                                : QString());
+
+    // And say it in words under the field, not only as a colour. The colour is the
+    // cue for someone already typing; the line is for someone looking at an empty
+    // view and wondering.
+    if (m_textError) {
+        if (bad) {
+            QPalette errPal = m_textError->palette();
+            errPal.setColor(QPalette::WindowText, errorColor(errPal));
+            m_textError->setPalette(errPal);
+        }
+        m_textError->setVisible(bad);
+    }
 }
 
 bool AxisEditor::textPatternValid() const
@@ -429,6 +613,9 @@ void AxisEditor::setDocument(Document *document)
     // discovers arriving unticked.
     m_loggerRestrictive = false;
     m_threadRestrictive = false;
+    // Also a statement about the previous file: a bound the user set on that log is
+    // not a bound they set on this one, so this file's span is free to seed.
+    m_timeUserEdited = false;
 
     const bool hasDoc = document != nullptr;
     const bool hasThread = hasDoc && document->format().threadGroup > 0;
@@ -436,11 +623,24 @@ void AxisEditor::setDocument(Document *document)
 
     setEnabled(hasDoc);
     // Thread and time axes exist only when the format carries those fields
-    // (SPEC.md §6). Disable rather than hide so the layout is stable.
-    if (m_threadGroup)
+    // (SPEC.md §6). Disable rather than hide so the layout is stable — and say WHY in
+    // the title, because a greyed axis otherwise explains nothing and a preset or a
+    // restored session can leave one greyed AND TICKED, at which point resolve()
+    // drops it and the pane shows a selection that is not in force.
+    //
+    // In the title and not in a tooltip: Qt delivers no mouse events to a disabled
+    // widget, so a tooltip on one is never seen. Whatever is said here has to be said
+    // where it is already visible.
+    if (m_threadGroup) {
         m_threadGroup->setEnabled(hasThread);
-    if (m_timeGroup)
+        m_threadGroup->setTitle(hasThread ? tr("Thread")
+                                          : tr("Thread — not in this log's format"));
+    }
+    if (m_timeGroup) {
         m_timeGroup->setEnabled(hasDate);
+        m_timeGroup->setTitle(hasDate ? tr("Time range")
+                                      : tr("Time range — no timestamps in this log"));
+    }
 
     refreshDiscoveredLists();
 
@@ -451,17 +651,49 @@ void AxisEditor::setDocument(Document *document)
         m_renderZone = document->displayZone();
 
     // Seed the time editors to the file's observed span so the pickers open near
-    // useful values rather than the epoch.
-    if (hasDate) {
-        m_populating = true;
-        qint64 lo = 0, hi = 0;
-        if (observedSpan(lo, hi)) {
-            m_timeStart->setDateTime(wallClockOf(lo));
-            m_timeEnd->setDateTime(wallClockOf(hi));
-        }
-        m_populating = false;
-    }
+    // useful values rather than the epoch. Almost always a no-op HERE: this runs from
+    // activeDocumentChanged at open time, before the scan has produced a record. The
+    // seed that does the work is the one refreshDiscoveredLists() makes as the index
+    // grows; this one only matters when rebinding to a document already scanned.
+    refreshObservedSpan();
     updateCollapse();
+}
+
+void AxisEditor::refreshObservedSpan()
+{
+    if (!m_document || !m_timeStart || !m_timeEnd || !supportsTime())
+        return;
+    if (m_timeUserEdited)
+        return;
+    // A programmatic write is in progress and owns the bounds. This matters because
+    // the group's toggled() handler calls us: setTimeBound() sets its bound, then
+    // ticks the axis, and without this the seed would overwrite the bound between
+    // those two lines — which is a record-menu time filter that silently does nothing.
+    if (m_populating)
+        return;
+    qint64 lo = 0, hi = 0;
+    if (!observedSpan(lo, hi))
+        return; // nothing parsed yet — leave the editors alone and try again next time
+
+    // Re-read the zone before rendering, rather than trusting the one captured when
+    // the pane bound. m_renderZone means "the zone the digits currently in the editors
+    // are written in", and we are about to write both of them — so taking the
+    // document's zone now IS keeping that invariant, not bending it.
+    //
+    // It also has to be re-read: setDocument() runs from activeDocumentChanged, which
+    // for a session-restored or not-yet-arrived log (SPEC.md §3, M13/M17) fires before
+    // the document has a format or a zone at all. A default-constructed QTimeZone is
+    // INVALID, fromMSecsSinceEpoch() through it yields an invalid QDateTime, and
+    // QDateTimeEdit::setDateTime() ignores that and stays at its year-2000 minimum —
+    // silently reinstating the very bug this function exists to fix.
+    m_renderZone = m_document->displayZone();
+
+    // m_populating, so the editors' own dateTimeChanged does not read this back as a
+    // hand edit and latch m_timeUserEdited against every later seed.
+    m_populating = true;
+    m_timeStart->setDateTime(wallClockOf(lo));
+    m_timeEnd->setDateTime(wallClockOf(hi));
+    m_populating = false;
 }
 
 QDateTime AxisEditor::wallClockOf(qint64 utcMs) const
@@ -547,6 +779,10 @@ void AxisEditor::refreshDiscoveredLists()
         return;
     }
     repopulate(checkedNames(m_loggerList), checkedNames(m_threadList), /*exact=*/false);
+    // The other thing the index tells the editor. Both callers of this function mean
+    // "the scan has moved on", and a time axis seeded once at open time is seeded from
+    // an empty file.
+    refreshObservedSpan();
 }
 
 void AxisEditor::repopulate(const QSet<QString> &loggerChecked,
@@ -566,6 +802,10 @@ void AxisEditor::repopulate(const QSet<QString> &loggerChecked,
                  exact, m_threadRestrictive);
     narrowList(m_loggerList, m_loggerNarrow ? m_loggerNarrow->text() : QString());
     narrowList(m_threadList, m_threadNarrow ? m_threadNarrow->text() : QString());
+    // The list just changed under the narrowing, so the hidden count the buttons
+    // report has too.
+    updateListButtonHints(ValueAxis::Subsystem);
+    updateListButtonHints(ValueAxis::Thread);
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +865,10 @@ void AxisEditor::setCriteria(const MatchCriteria &c)
         m_timeStart->setDateTime(c.start);
     if (c.end.isValid())
         m_timeEnd->setDateTime(c.end);
+    // A stored range with the axis ON is a bound somebody chose, and the seed must not
+    // take it back the moment the scan reports a wider span. With the axis off the
+    // bounds are whatever the editors happened to hold, so leave them seedable.
+    m_timeUserEdited = c.timeEnabled;
 
     // A selected name the scan has not produced yet is carried as a manual entry, so
     // it is listed (and stays listed) rather than silently dropping out of the rule
@@ -784,6 +1028,9 @@ void AxisEditor::setTimeBound(TimeBound which, qint64 utcMs)
         if (!wasEnabled || m_timeStart->dateTime() > at)
             m_timeStart->setDateTime(openStart);
     }
+    // Before setChecked(), not after: ticking the group emits toggled(), which seeds
+    // the span unless a bound is already spoken for.
+    m_timeUserEdited = true; // pointed at a record, so as deliberate as typing it
     m_timeGroup->setChecked(true);
     m_populating = false;
 
@@ -799,6 +1046,7 @@ void AxisEditor::setTimeRange(qint64 fromUtcMs, qint64 toUtcMs)
     m_populating = true;
     m_timeStart->setDateTime(wallClockOf(fromUtcMs));
     m_timeEnd->setDateTime(wallClockOf(toUtcMs));
+    m_timeUserEdited = true; // before setChecked(), as in setTimeBound()
     m_timeGroup->setChecked(true);
     m_populating = false;
     emitChanged();
