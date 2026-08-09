@@ -79,8 +79,13 @@ public:
 
     // Collapse each axis to its title row — which is also its enable control, bar
     // priority's, whose row keeps the checkbox and drops the combo — while it is off.
-    // The Highlighters pane needs it — five axes plus a rule list do not fit a dock
-    // otherwise — and the Filters pane, which has the pane to itself, leaves it off.
+    //
+    // The Highlighters pane needs it: five axes plus a rule list plus a colour row do
+    // not fit a dock otherwise. The Filters pane deliberately does NOT use it, because
+    // an axis that reveals its controls only once it is ticked hides what the axis even
+    // offers — the user has to switch a filter on to find out whether it is the one
+    // they wanted. Off, its controls stay on screen and Qt greys them, which says the
+    // same thing without moving anything.
     void setCollapsible(bool collapsible);
 
     // Rebind to a document (or nullptr to clear). Repopulates the auto-discovered
@@ -214,7 +219,13 @@ private:
     QListWidget *listFor(ValueAxis axis) const;
     QGroupBox   *enableFor(ValueAxis axis) const;
     QSet<QString> &manualFor(ValueAxis axis);
-    bool          &restrictiveFor(ValueAxis axis);
+    // The discovery rule, read off and written to the axis's "New" checkbox — which IS
+    // the state, so there is no bool for the two to fall out of step over. Restrictive
+    // is the box unticked: a value the file has not produced yet is not part of what
+    // the user asked to see.
+    bool          restrictiveFor(ValueAxis axis) const;
+    void          setRestrictiveFor(ValueAxis axis, bool restrictive);
+    QCheckBox    *newValuesBoxFor(ValueAxis axis) const;
     // Make sure `name` is in the axis's list — refreshing from the intern table
     // first, and only carrying it as a manual entry if the file has genuinely not
     // emitted it. Without this a menu edit could silently do nothing while the
@@ -248,10 +259,12 @@ private:
     QAbstractButton *m_loggerListButtons[3] = {}; // All, None, Invert
     QSet<QString> m_loggerManualNames; // manually-added subsystems (may be absent)
     QSet<QString> m_loggerSeen;        // every subsystem name ever listed
-    // "This list is a restriction, not a snapshot" — set by showOnlyValue() and
-    // cleared by any hand edit to the list, which returns the axis to the discovery
-    // default. See MatchCriteria::loggerRestrictive.
-    bool          m_loggerRestrictive = false;
+    // "Tick subsystems that turn up later" — the discovery rule as a control the user
+    // can see and set, sitting under All/None/Invert because those three set it too.
+    // Unticked is MatchCriteria::loggerRestrictive: the list is a restriction, not a
+    // snapshot. showOnlyValue() unticks it; nothing else moves it behind the user's
+    // back, which is the difference between a flag and a control.
+    QCheckBox    *m_loggerNewValues = nullptr;
 
     // Thread
     QGroupBox    *m_threadGroup = nullptr;
@@ -261,7 +274,7 @@ private:
     QAbstractButton *m_threadListButtons[3] = {};
     QSet<QString> m_threadManualNames;
     QSet<QString> m_threadSeen;
-    bool          m_threadRestrictive = false;
+    QCheckBox    *m_threadNewValues = nullptr;
 
     // Message text
     QGroupBox   *m_textGroup = nullptr;
@@ -283,9 +296,10 @@ private:
     QWidget       *m_timeBody = nullptr;
     // Whether a bound came from the user rather than from the observed span. The seed
     // has to keep tracking a growing file, but it must never overwrite a deliberate
-    // bound — the same distinction m_loggerRestrictive draws between a hand edit and a
-    // repopulation. Set by the editors' own signals (outside m_populating) and by the
-    // record-menu setters; cleared on a rebind and on loading criteria with the axis off.
+    // bound — the same distinction the "New" checkbox draws between a value the user
+    // chose and one the scan turned up. Set by the editors' own signals (outside
+    // m_populating) and by the record-menu setters; cleared on a rebind and on loading
+    // criteria with the axis off.
     bool           m_timeUserEdited = false;
 };
 

@@ -61,14 +61,13 @@ FilterPane::FilterPane(QWidget *parent) : QWidget(parent)
     // The two metadata axes ship enabled so their controls act on the first click
     // (SPEC.md §6); applyToDocument() collapses the resulting no-op state.
     m_axes = new AxisEditor(AxisEditor::Defaults{/*priorityOn=*/true, /*loggerOn=*/true}, scroll);
-    // Collapse an axis that is switched off to its title row, exactly as the
-    // Highlighters pane does. This pane has the dock to itself, which is why it used
-    // not to bother — but "to itself" is only true horizontally: five expanded axes
-    // are taller than an ordinary dock, so at the default window size Thread and Time
-    // range sat below the fold while showing nothing but greyed, unusable controls.
-    // Collapsed, the two axes that ship off cost one title row each and every axis is
-    // reachable without scrolling.
-    m_axes->setCollapsible(true);
+    // Every axis shows its controls whether it is switched on or not — deliberately NOT
+    // setCollapsible(true), which is what the Highlighters pane needs and this pane
+    // briefly borrowed to save height. Height is the wrong thing to buy here: a pane
+    // whose controls appear only once their axis is ticked cannot be read, only
+    // explored, and the user has to switch a filter ON to find out whether it was the
+    // one they wanted. Off, Qt greys the body, which says "not in force" without the
+    // pane relaying out under the pointer. The scroll area above absorbs the height.
     scroll->setWidget(m_axes);
 
     // Filter context (SPEC.md §6), injected into the message-text axis rather than
@@ -92,6 +91,17 @@ FilterPane::FilterPane(QWidget *parent) : QWidget(parent)
         spin->setAccelerated(true);
         spin->setToolTip(prose);
         spin->setAccessibleName(prose);
+        // Sized for the value people type, not for kMaxContext. The same
+        // Ignored-plus-floor trick the time editors use, and needed for the same
+        // reason: a four-digit spin box asks for ~70 px, two of them plus the toggles
+        // made the message axis the widest thing in the pane, and the pane pays that
+        // in a horizontal scrollbar whose first casualty is the All/None/Invert
+        // column. A maximum as well as a floor, because unlike a time bound there is
+        // nothing to see in a wider box — Ignored expands, and without the cap these
+        // two would eat every spare pixel of a wide dock.
+        spin->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        spin->setMinimumWidth(46);
+        spin->setMaximumWidth(62);
         return spin;
     };
     m_contextBefore = makeSpin(tr("Records to show before each match"));

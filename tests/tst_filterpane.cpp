@@ -74,6 +74,14 @@ private:
         return pane.findChild<QCheckBox *>(QStringLiteral("priorityEnable"));
     }
 
+    // "New" — the discovery rule as a control, under each value axis's
+    // All / None / Invert column. Ticked, a value the scan turns up later arrives
+    // ticked; unticked, the list is a restriction (MatchCriteria::loggerRestrictive).
+    static QCheckBox *newValuesBox(FilterPane &pane, const char *name)
+    {
+        return pane.findChild<QCheckBox *>(QString::fromLatin1(name));
+    }
+
     // The subsystem list is the one holding the logger names.
     static QListWidget *loggerList(FilterPane &pane, const QString &anyName)
     {
@@ -137,7 +145,8 @@ private slots:
     // all about the one place it contradicts the discovery rule above.
     void showOnlyRestrictsToOneSubsystem();
     void showOnlyDoesNotWidenWhenTheScanFindsMore();
-    void aHandEditGivesTheDiscoveryRuleBack();
+    void aHandEditLeavesTheDiscoveryRuleAlone();
+    void theListButtonsCarryTheDiscoveryRule();
     void hideLeavesTheRestAloneAndKeepsDiscovering();
     void priorityFloorComesFromTheRecord();
     void timeBoundKeepsTheRangeNonEmpty();
@@ -155,7 +164,7 @@ private slots:
     void timeRangeOpensOnTheFilesOwnSpan();
     void aTimeBoundSetByHandSurvivesTheScan();
     void priorityComboFollowsItsCheckbox();
-    void switchedOffAxesCollapseToTheirTitleRow();
+    void switchedOffAxesStayVisibleAndGreyed();
     void anAxisTheFormatLacksSaysSo();
     void typingAnUnlistedNameOffersToAddIt();
     void listButtonsOwnUpToWhatTheNarrowingHides();
@@ -361,9 +370,16 @@ void TestFilterPane::showOnlyDoesNotWidenWhenTheScanFindsMore()
     QCOMPARE(doc.filtered().recordCount(), 1); // still just db.pool
 }
 
-// ...and the restriction is not permanent. Touching the list by hand is the user
-// taking the axis back, so it returns to the discovery default and widens again.
-void TestFilterPane::aHandEditGivesTheDiscoveryRuleBack()
+// ...and the restriction is not permanent — but the way out of it is the control that
+// states it, not a side effect of some other edit.
+//
+// A hand tick used to clear the restriction, on the reasoning that whatever the user
+// is building now is a statement about the file. That was defensible while the
+// discovery rule was invisible and showOnlyValue() was the only way into it. It is not
+// now that the rule is a checkbox in the pane: a box that unticks itself when the user
+// ticks something ELSE is worse than no box, and the whole point of showing the rule is
+// that the user can see which one is in force and say otherwise.
+void TestFilterPane::aHandEditLeavesTheDiscoveryRuleAlone()
 {
     QTemporaryFile file;
     Document doc;
@@ -372,20 +388,72 @@ void TestFilterPane::aHandEditGivesTheDiscoveryRuleBack()
     FilterPane pane;
     pane.setDocument(&doc);
     pane.showOnlyValue(ValueAxis::Subsystem, QStringLiteral("db.pool"));
+    QCheckBox *newValues = newValuesBox(pane, "subsystemNewValues");
+    QVERIFY(newValues);
+    QVERIFY(!newValues->isChecked()); // the restriction, stated where it can be seen
 
     QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
     QVERIFY(list);
     setStateOf(list, QStringLiteral("net.socket"), Qt::Checked);
+    QVERIFY(!newValues->isChecked()); // ...and one more tick is not a retraction of it
 
     QVERIFY2(appendAndReindex(doc, file, "2026-07-21 12:00:02,000 [main] INFO  ui.window - c\n"),
              qPrintable(doc.lastError()));
     pane.refreshDiscoveredLists();
-
     list = loggerList(pane, QStringLiteral("ui.window"));
     QVERIFY(list);
-    QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Checked);
+    QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Unchecked);
+
+    // Ticking the box IS the retraction, and it applies to the next value to appear —
+    // not retroactively to the one already listed and already unticked, which the user
+    // can see and tick for themselves.
+    newValues->setChecked(true);
+    QVERIFY2(appendAndReindex(doc, file, "2026-07-21 12:00:03,000 [main] INFO  fs.cache - d\n"),
+             qPrintable(doc.lastError()));
+    pane.refreshDiscoveredLists();
+    list = loggerList(pane, QStringLiteral("fs.cache"));
+    QVERIFY(list);
+    QCOMPARE(stateOf(list, QStringLiteral("fs.cache")), Qt::Checked);
+}
+
+// All / None / Invert carry the same answer to the values that have NOT turned up yet.
+// "Everything" and "nothing" are claims about the axis, not about the handful of names
+// that happen to be listed a third of the way through a scan — and the checkbox under
+// the three buttons is where that claim shows.
+void TestFilterPane::theListButtonsCarryTheDiscoveryRule()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    QCheckBox *newValues = newValuesBox(pane, "subsystemNewValues");
+    auto *none = pane.findChild<QAbstractButton *>(QStringLiteral("subsystemNone"));
+    auto *all = pane.findChild<QAbstractButton *>(QStringLiteral("subsystemAll"));
+    auto *invert = pane.findChild<QAbstractButton *>(QStringLiteral("subsystemInvert"));
+    QVERIFY(newValues && none && all && invert);
+
+    QVERIFY(newValues->isChecked()); // discovery is the default (SPEC.md §6)
+    none->click();
+    QVERIFY(!newValues->isChecked());
+    invert->click();
+    QVERIFY(newValues->isChecked());
+    invert->click();
+    QVERIFY(!newValues->isChecked());
+    all->click();
+    QVERIFY(newValues->isChecked());
+
+    // And "None" really does mean nothing, including what turns up next.
+    none->click();
+    QVERIFY2(appendAndReindex(doc, file, "2026-07-21 12:00:02,000 [main] INFO  ui.window - c\n"),
+             qPrintable(doc.lastError()));
+    pane.refreshDiscoveredLists();
+    QListWidget *list = loggerList(pane, QStringLiteral("ui.window"));
+    QVERIFY(list);
+    QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Unchecked);
     doc.applyFilters();
-    QCOMPARE(doc.filtered().recordCount(), 3);
+    QCOMPARE(doc.filtered().recordCount(), 0);
 }
 
 // Hiding one value says nothing about the next value to appear, so it must NOT
@@ -677,21 +745,34 @@ void TestFilterPane::priorityComboFollowsItsCheckbox()
     QVERIFY(combo->isEnabled());
 }
 
-// Five expanded axes are taller than a dock, so the two that ship off used to sit
-// below the fold showing nothing but greyed controls. The Highlighters pane had asked
-// for this since M10; the Filters pane had not.
-void TestFilterPane::switchedOffAxesCollapseToTheirTitleRow()
+// A switched-off axis keeps its controls on screen, greyed. The pane briefly borrowed
+// the Highlighters pane's setCollapsible(true) to save height, and height was the wrong
+// thing to buy: an axis whose controls appear only once it is ticked cannot be read,
+// only explored — the user has to switch a filter ON to find out whether it was the one
+// they wanted, and the pane relays out under the pointer while they find out.
+void TestFilterPane::switchedOffAxesStayVisibleAndGreyed()
 {
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
     FilterPane pane;
+    // Bound, because the editor disables itself wholesale without a document and the
+    // question here is what an AXIS does to its own body.
+    pane.setDocument(&doc);
     QGroupBox *message = axis(pane, "messageGroup");
     QVERIFY(message && !message->isChecked());
     // The body is everything under the title row; the title row is the check control.
     const auto *field = pane.findChild<QLineEdit *>(QStringLiteral("messageText"));
     QVERIFY(field);
-    QVERIFY(!field->isVisibleTo(message));
+    QVERIFY(field->isVisibleTo(message));
+    // Qt greys a checkable group box's contents while it is unchecked, which is what
+    // carries "not in force" now that nothing is hidden.
+    QVERIFY(!field->isEnabled());
 
     message->setChecked(true);
     QVERIFY(field->isVisibleTo(message));
+    QVERIFY(field->isEnabled());
 }
 
 // A format with no %t greys the thread axis — but a preset or a restored session can
