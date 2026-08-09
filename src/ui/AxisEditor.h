@@ -8,11 +8,14 @@
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
+class QAbstractButton;
 class QCheckBox;
 class QComboBox;
 class QDateTimeEdit;
 class QGroupBox;
 class QLineEdit;
+class QHBoxLayout;
+class QLabel;
 class QListWidget;
 class QVBoxLayout;
 QT_END_NAMESPACE
@@ -87,11 +90,24 @@ public:
     void setDocument(Document *document);
     Document *document() const { return m_document; }
 
-    // Refresh the auto-discovered lists from the document's intern tables — called as
-    // indexing progresses so newly-seen subsystems and threads appear (SPEC.md §6).
-    // A name never listed before arrives CHECKED; one the user unticked stays
-    // unticked. Does not emit changed(): a plain repopulation is not a user edit.
+    // Refresh everything the editor derives from the index — called as indexing
+    // progresses (SPEC.md §6). Two things:
+    //
+    //   - the auto-discovered subsystem/thread lists, from the intern tables. A name
+    //     never listed before arrives CHECKED; one the user unticked stays unticked.
+    //   - the time editors' seed, via refreshObservedSpan().
+    //
+    // The time seed belongs here and not only in setDocument() because setDocument()
+    // runs from activeDocumentChanged at OPEN time, before the scan has produced a
+    // single record: observedSpan() fails, the editors keep QDateTimeEdit's year-2000
+    // default, and ticking the time axis on a freshly opened log hides every record.
+    // Does not emit changed(): a plain repopulation is not a user edit.
     void refreshDiscoveredLists();
+
+    // Re-seed the time editors to the file's observed span, so the pickers open near
+    // useful values instead of the year 2000. A no-op once the user has set a bound
+    // by hand — theirs is the answer, however far outside the span it lands.
+    void refreshObservedSpan();
 
     // Re-render the time editors after the display zone moves (a timestamp
     // display-mode change, SPEC.md §4). The editors hold wall clock and criteria()
@@ -111,6 +127,12 @@ public:
     // False when the text axis holds a regex that failed to compile. The pattern edit
     // flags it inline; without this a malformed regex silently matches nothing.
     bool textPatternValid() const;
+
+    // Every axis back to the state a freshly-built editor is in — the Defaults it was
+    // constructed with, every discovered value ticked again, and every text, manual
+    // and restriction flag dropped. Emits changed() exactly once, so the owning pane
+    // recomputes on the ordinary path.
+    void clearAll();
 
     // --- Edits driven from a record, not typed (the record menu, SPEC.md §5) ----
     //
@@ -155,6 +177,17 @@ signals:
 
 private:
     void buildUi(Defaults defaults);
+    // The subsystem and thread axes, which differ only in a title, an object-name
+    // prefix, a list height and whether they ship enabled. Everything else — the
+    // discovery rule, the narrowing, the manual add, the three list buttons — is one
+    // body of code rather than two that have to be kept in step by hand.
+    void buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString &title,
+                        const QString &prefix, int listMinHeight, bool enabledByDefault);
+    // Whether `name` is worth offering to add: non-empty and not already listed.
+    bool canAddTyped(ValueAxis axis, const QString &name) const;
+    // Keep the All / None / Invert tooltips telling the truth about how many entries
+    // the current narrowing is hiding from them.
+    void updateListButtonHints(ValueAxis axis);
     void emitChanged();
     void updateCollapse();
     void updateTextValidity();
@@ -193,6 +226,7 @@ private:
     QDateTime wallClockOf(qint64 utcMs) const;
 
     Document *m_document = nullptr;
+    Defaults  m_defaults;           // what clearAll() returns the axes to
     bool      m_populating = false; // guards itemChanged storms during (re)population
     bool      m_collapsible = false;
 
@@ -208,10 +242,10 @@ private:
 
     // Subsystem
     QGroupBox    *m_loggerGroup = nullptr;
-    QLineEdit    *m_loggerNarrow = nullptr;
+    QLineEdit    *m_loggerNarrow = nullptr; // narrows the list, and adds to it
     QListWidget  *m_loggerList = nullptr;
-    QLineEdit    *m_loggerManual = nullptr;
     QWidget      *m_loggerBody = nullptr;
+    QAbstractButton *m_loggerListButtons[3] = {}; // All, None, Invert
     QSet<QString> m_loggerManualNames; // manually-added subsystems (may be absent)
     QSet<QString> m_loggerSeen;        // every subsystem name ever listed
     // "This list is a restriction, not a snapshot" — set by showOnlyValue() and
@@ -223,19 +257,23 @@ private:
     QGroupBox    *m_threadGroup = nullptr;
     QLineEdit    *m_threadNarrow = nullptr;
     QListWidget  *m_threadList = nullptr;
-    QLineEdit    *m_threadManual = nullptr;
     QWidget      *m_threadBody = nullptr;
+    QAbstractButton *m_threadListButtons[3] = {};
     QSet<QString> m_threadManualNames;
     QSet<QString> m_threadSeen;
     bool          m_threadRestrictive = false;
 
     // Message text
     QGroupBox   *m_textGroup = nullptr;
-    QVBoxLayout *m_textBodyLayout = nullptr; // where addTextExtra() appends
+    QHBoxLayout *m_textOptionsRow = nullptr; // the toggles, and where addTextExtra() appends
     QLineEdit *m_textEdit = nullptr;
-    QCheckBox *m_textRegex = nullptr;
-    QCheckBox *m_textCase = nullptr;
-    QCheckBox *m_textNegate = nullptr;
+    // Checkable QToolButtons, not QCheckBoxes: three words stacked down the pane
+    // became three glyphs across one row (see buildUi). QAbstractButton is all any
+    // caller needs — setChecked/isChecked/toggled are the same either way.
+    QAbstractButton *m_textRegex = nullptr;
+    QAbstractButton *m_textCase = nullptr;
+    QAbstractButton *m_textNegate = nullptr;
+    QLabel    *m_textError = nullptr; // "not a valid regular expression", when it is not
     QWidget   *m_textBody = nullptr;
 
     // Time range
@@ -243,6 +281,12 @@ private:
     QDateTimeEdit *m_timeStart = nullptr;
     QDateTimeEdit *m_timeEnd = nullptr;
     QWidget       *m_timeBody = nullptr;
+    // Whether a bound came from the user rather than from the observed span. The seed
+    // has to keep tracking a growing file, but it must never overwrite a deliberate
+    // bound — the same distinction m_loggerRestrictive draws between a hand edit and a
+    // repopulation. Set by the editors' own signals (outside m_populating) and by the
+    // record-menu setters; cleared on a rebind and on loading criteria with the axis off.
+    bool           m_timeUserEdited = false;
 };
 
 } // namespace loftail

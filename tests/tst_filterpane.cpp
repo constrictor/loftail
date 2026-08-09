@@ -1,8 +1,12 @@
 #include <QtTest>
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
+#include <QDateTimeEdit>
 #include <QGroupBox>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QSpinBox>
 #include <QFile>
@@ -11,6 +15,7 @@
 #include "Document.h"
 #include "FilterPane.h"
 #include "Filter.h"
+#include "LogFormat.h"
 #include "Priority.h"
 #include "RecordIndex.h"
 
@@ -144,6 +149,18 @@ private slots:
     void contextLivesInsideTheMessageAxis();
     void contextSpinnersReachTheDocument();
     void contextRidesTheSavedStateOnlyWhenSet();
+
+    // The pane has to fit a dock and say what it is doing. Each of these pins a fix
+    // for something that was silently wrong rather than a preference about layout.
+    void timeRangeOpensOnTheFilesOwnSpan();
+    void aTimeBoundSetByHandSurvivesTheScan();
+    void priorityComboFollowsItsCheckbox();
+    void switchedOffAxesCollapseToTheirTitleRow();
+    void anAxisTheFormatLacksSaysSo();
+    void typingAnUnlistedNameOffersToAddIt();
+    void listButtonsOwnUpToWhatTheNarrowingHides();
+    void clearAllReturnsToAnUnfilteredView();
+    void activityTracksTheResolvedSetNotTheTicks();
 };
 
 void TestFilterPane::metadataAxesAreOnByDefault()
@@ -577,6 +594,261 @@ void TestFilterPane::contextRidesTheSavedStateOnlyWhenSet()
     legacy.remove(QStringLiteral("contextBefore"));
     restored.restoreState(legacy);
     QCOMPARE(other.contextBefore(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Fitting a dock, and saying what is going on
+// ---------------------------------------------------------------------------
+
+// The one that was actually broken. The time editors were seeded ONCE, from
+// setDocument(), which runs at open time — before the scan has produced a record. So
+// observedSpan() failed, the editors kept QDateTimeEdit's year-2000 default, and
+// ticking Time range on a freshly opened log applied 2000-01-01 .. 2000-01-01 and hid
+// every record. It only ever worked when switching back to an already-indexed tab.
+void TestFilterPane::timeRangeOpensOnTheFilesOwnSpan()
+{
+    Document doc;
+    QTemporaryFile file;
+    FilterPane pane;
+    // Bind BEFORE there is anything to see, which is the order MainWindow uses.
+    pane.setDocument(&doc);
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+    pane.refreshDiscoveredLists(); // what onIndexFinished() calls
+
+    axis(pane, "timeGroup")->setChecked(true);
+
+    const auto *start = pane.findChild<QDateTimeEdit *>(QStringLiteral("timeStart"));
+    const auto *end = pane.findChild<QDateTimeEdit *>(QStringLiteral("timeEnd"));
+    QVERIFY(start && end);
+    QCOMPARE(start->dateTime().date().year(), 2026);
+    QCOMPARE(end->dateTime().date().year(), 2026);
+    QVERIFY(start->dateTime() <= end->dateTime());
+
+    // And the point of all that: switching the axis on hides nothing.
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), doc.index().records.size());
+}
+
+// The seed keeps tracking a growing file, so it must never take back a bound the user
+// set. Same distinction m_loggerRestrictive draws between a hand edit and a repopulation.
+void TestFilterPane::aTimeBoundSetByHandSurvivesTheScan()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+    FilterPane pane;
+    pane.setDocument(&doc);
+
+    auto *start = pane.findChild<QDateTimeEdit *>(QStringLiteral("timeStart"));
+    QVERIFY(start);
+    const QDateTime chosen(QDate(2020, 1, 2), QTime(3, 4, 5));
+    start->setDateTime(chosen);
+
+    // The scan finds more, and every repopulation re-seeds — except over this.
+    QVERIFY(appendAndReindex(doc, file, "2026-07-21 12:00:02,000 [main] INFO  net.http - c\n"));
+    pane.refreshDiscoveredLists();
+
+    QCOMPARE(start->dateTime(), chosen);
+}
+
+// Priority is the one axis with no QGroupBox, so Qt was not greying its body for it:
+// with the box unticked the combo stayed bright and spinnable and did nothing. The
+// pane also collapses a switched-off axis now, so the combo is hidden as well —
+// but the enabled state is what makes it right in a pane that does not collapse.
+void TestFilterPane::priorityComboFollowsItsCheckbox()
+{
+    // A document, because the editor disables itself wholesale without one and every
+    // child would then report isEnabled() false for a reason that is not this one.
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+    FilterPane pane;
+    pane.setDocument(&doc);
+
+    auto *combo = pane.findChild<QComboBox *>(QStringLiteral("priorityCombo"));
+    QVERIFY(combo);
+    QVERIFY(priorityEnable(pane)->isChecked());
+    QVERIFY(combo->isEnabled());
+
+    priorityEnable(pane)->setChecked(false);
+    QVERIFY(!combo->isEnabled());
+
+    priorityEnable(pane)->setChecked(true);
+    QVERIFY(combo->isEnabled());
+}
+
+// Five expanded axes are taller than a dock, so the two that ship off used to sit
+// below the fold showing nothing but greyed controls. The Highlighters pane had asked
+// for this since M10; the Filters pane had not.
+void TestFilterPane::switchedOffAxesCollapseToTheirTitleRow()
+{
+    FilterPane pane;
+    QGroupBox *message = axis(pane, "messageGroup");
+    QVERIFY(message && !message->isChecked());
+    // The body is everything under the title row; the title row is the check control.
+    const auto *field = pane.findChild<QLineEdit *>(QStringLiteral("messageText"));
+    QVERIFY(field);
+    QVERIFY(!field->isVisibleTo(message));
+
+    message->setChecked(true);
+    QVERIFY(field->isVisibleTo(message));
+}
+
+// A format with no %t greys the thread axis — but a preset or a restored session can
+// leave it greyed AND TICKED, at which point resolve() drops it and the pane shows a
+// selection that is not in force. The title carries the reason, because Qt delivers no
+// mouse events to a disabled widget and so never shows its tooltip.
+void TestFilterPane::anAxisTheFormatLacksSaysSo()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, "2026-07-21 12:00:00,000 INFO  net.socket - a\n"));
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    QGroupBox *thread = axis(pane, "threadGroup");
+    QVERIFY(thread);
+    QVERIFY(!thread->isEnabled());
+    // Not asserting the wording — only that it stopped being the bare axis name, so
+    // the greyed box is no longer silent about why.
+    QVERIFY(thread->title() != QStringLiteral("Thread"));
+    QVERIFY(thread->title().contains(QStringLiteral("Thread")));
+
+    // The axis that IS in the format keeps its plain name.
+    QCOMPARE(axis(pane, "subsystemGroup")->title(), QStringLiteral("Subsystem"));
+}
+
+// The "Add ... manually" row and its button are gone; the narrow field does both, and
+// the "+" says which one it is about to do.
+void TestFilterPane::typingAnUnlistedNameOffersToAddIt()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+    FilterPane pane;
+    pane.setDocument(&doc);
+
+    auto *narrow = pane.findChild<QLineEdit *>(QStringLiteral("subsystemNarrow"));
+    auto *add = pane.findChild<QAbstractButton *>(QStringLiteral("subsystemAdd"));
+    QVERIFY(narrow && add);
+    QVERIFY(!add->isVisibleTo(narrow->parentWidget())); // nothing typed, nothing to add
+
+    // A name the file already has is a narrowing, not an addition.
+    narrow->setText(QStringLiteral("net.socket"));
+    QVERIFY(!add->isVisibleTo(narrow->parentWidget()));
+
+    narrow->setText(QStringLiteral("net.http"));
+    QVERIFY(add->isVisibleTo(narrow->parentWidget()));
+
+    add->click();
+    QListWidget *loggers = loggerList(pane, QStringLiteral("net.socket"));
+    QVERIFY(loggers);
+    QCOMPARE(stateOf(loggers, QStringLiteral("net.http")), Qt::Checked);
+    QVERIFY(narrow->text().isEmpty()); // cleared, so the list un-narrows around it
+}
+
+// All / None / Invert act on the narrowed view, deliberately. The trap is that a
+// hidden entry keeps its tick, so "None" over a narrowed list can leave the axis still
+// letting records through while the list on screen reads as fully cleared.
+void TestFilterPane::listButtonsOwnUpToWhatTheNarrowingHides()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+    FilterPane pane;
+    pane.setDocument(&doc);
+
+    auto *narrow = pane.findChild<QLineEdit *>(QStringLiteral("subsystemNarrow"));
+    auto *none = pane.findChild<QAbstractButton *>(QStringLiteral("subsystemNone"));
+    QVERIFY(narrow && none);
+    QVERIFY(!none->toolTip().contains(QStringLiteral("hidden")));
+
+    narrow->setText(QStringLiteral("net")); // hides db.pool
+    QVERIFY2(none->toolTip().contains(QStringLiteral("hidden")), qPrintable(none->toolTip()));
+
+    // ...and the behaviour the tooltip is warning about is genuinely what happens.
+    none->click();
+    QListWidget *loggers = loggerList(pane, QStringLiteral("net.socket"));
+    QVERIFY(loggers);
+    QCOMPARE(stateOf(loggers, QStringLiteral("net.socket")), Qt::Unchecked);
+    QCOMPARE(stateOf(loggers, QStringLiteral("db.pool")), Qt::Checked);
+
+    narrow->clear();
+    QVERIFY(!none->toolTip().contains(QStringLiteral("hidden")));
+}
+
+// One action back to an unfiltered view, from a state built out of every axis at once.
+void TestFilterPane::clearAllReturnsToAnUnfilteredView()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+    FilterPane pane;
+    pane.setDocument(&doc);
+
+    QListWidget *loggers = loggerList(pane, QStringLiteral("net.socket"));
+    QVERIFY(loggers);
+    setStateOf(loggers, QStringLiteral("db.pool"), Qt::Unchecked);
+    axis(pane, "messageGroup")->setChecked(true);
+    pane.findChild<QLineEdit *>(QStringLiteral("messageText"))->setText(QStringLiteral("a"));
+    axis(pane, "timeGroup")->setChecked(true);
+    contextSpin(pane, "contextBefore")->setValue(3);
+    QVERIFY(pane.hasActiveFilters());
+
+    QSignalSpy changed(&pane, &FilterPane::filtersChanged);
+    pane.clearAll();
+
+    // One notification for the whole reset, as a restore gives for its own.
+    QCOMPARE(changed.count(), 1);
+    QVERIFY(!pane.hasActiveFilters());
+    QVERIFY(!doc.filters().anyActive());
+    QCOMPARE(doc.contextBefore(), 0);
+    QCOMPARE(doc.contextAfter(), 0);
+    // Every value ticked again, and the axes back to the defaults a fresh pane has.
+    QCOMPARE(stateOf(loggers, QStringLiteral("db.pool")), Qt::Checked);
+    QVERIFY(!axis(pane, "messageGroup")->isChecked());
+    QVERIFY(!axis(pane, "timeGroup")->isChecked());
+    QVERIFY(priorityEnable(pane)->isChecked());
+    QVERIFY(axis(pane, "subsystemGroup")->isChecked());
+
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), doc.index().records.size());
+}
+
+// The dock marker asks the RESOLVED FilterSet, not the ticks. Priority and subsystem
+// ship ENABLED, so reading the checkboxes would put a marker on every file the moment
+// it opened — which is exactly the no-op state NoOpAxes::Collapse exists to write away.
+void TestFilterPane::activityTracksTheResolvedSetNotTheTicks()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+    FilterPane pane;
+    QSignalSpy activity(&pane, &FilterPane::activityChanged);
+    pane.setDocument(&doc);
+
+    QVERIFY(priorityEnable(pane)->isChecked()); // on, and excluding nothing
+    QVERIFY(axis(pane, "subsystemGroup")->isChecked());
+    QVERIFY(!pane.hasActiveFilters());
+
+    QListWidget *loggers = loggerList(pane, QStringLiteral("net.socket"));
+    QVERIFY(loggers);
+    setStateOf(loggers, QStringLiteral("db.pool"), Qt::Unchecked);
+    QVERIFY(pane.hasActiveFilters());
+    QVERIFY(!activity.isEmpty());
+    QCOMPARE(activity.last().first().toBool(), true);
+
+    // Context alone counts: it changes what is shown, and it is a thing the user set.
+    setStateOf(loggers, QStringLiteral("db.pool"), Qt::Checked);
+    QVERIFY(!pane.hasActiveFilters());
+    axis(pane, "messageGroup")->setChecked(true);
+    pane.findChild<QLineEdit *>(QStringLiteral("messageText"))->setText(QStringLiteral("a"));
+    contextSpin(pane, "contextBefore")->setValue(2);
+    QVERIFY(pane.hasActiveFilters());
 }
 
 QTEST_MAIN(TestFilterPane)

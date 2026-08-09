@@ -181,6 +181,16 @@ MainWindow::MainWindow(QWidget *parent)
                                           tr("Filters"));
     connect(this, &MainWindow::activeDocumentChanged, m_filterPane, &FilterPane::setDocument);
     connect(m_filterPane, &FilterPane::filtersChanged, this, &MainWindow::applyActiveFilters);
+    // Mark the dock while anything is being hidden. The four panes ship TABBED, so
+    // three times out of four the Filters pane is behind another tab with every axis
+    // still in force — and a tab label is the only part of it still on screen. The
+    // marker rides the window TITLE, which is what a QDockWidget's tab shows, and the
+    // object name (what restoreState() keys off) is untouched.
+    m_filtersDock = filterDock;
+    connect(m_filterPane, &FilterPane::activityChanged, this, [this](bool active) {
+        if (m_filtersDock)
+            m_filtersDock->setWindowTitle(active ? tr("Filters •") : tr("Filters"));
+    });
 
     m_highlighterPane = new HighlighterPane(this);
     QDockWidget *highlightDock = addPaneDock(m_highlighterPane,
@@ -386,6 +396,18 @@ void MainWindow::buildMenus()
     connect(m_followAction, &QAction::triggered, this, [this]() {
         if (LogView *v = activeLogView())
             v->followTail();
+    });
+
+    // The one way back to an unfiltered view that does not mean visiting five axes by
+    // hand. On the menu as well as on the pane's own header because the pane can be
+    // closed outright (View ▸ Panes), and a filter left in force with no pane to
+    // clear it from is the state this exists for.
+    viewMenu->addSeparator();
+    m_clearFiltersAction = viewMenu->addAction(tr("&Clear Filters"));
+    m_clearFiltersAction->setObjectName(QStringLiteral("clearFiltersAction"));
+    connect(m_clearFiltersAction, &QAction::triggered, this, [this] {
+        if (m_filterPane)
+            m_filterPane->clearAll();
     });
 
     // Panes are closable docks, so without this a closed pane could not be brought

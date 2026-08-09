@@ -140,6 +140,14 @@ void HighlighterPane::buildUi()
     m_removeBtn = new QPushButton(tr("Remove"), this);
     m_upBtn = new QPushButton(tr("Up"), this);
     m_downBtn = new QPushButton(tr("Down"), this);
+    // Object names, never translated: the test contract (ARCHITECTURE.md §9.1). Not
+    // decoration — the pane embeds an AxisEditor, so "the button that says Add" was
+    // ambiguous the moment that editor also had one, and which of them a by-text
+    // lookup returned was decided by construction order.
+    m_addBtn->setObjectName(QStringLiteral("ruleAdd"));
+    m_removeBtn->setObjectName(QStringLiteral("ruleRemove"));
+    m_upBtn->setObjectName(QStringLiteral("ruleUp"));
+    m_downBtn->setObjectName(QStringLiteral("ruleDown"));
     btnRow->addWidget(m_addBtn);
     btnRow->addWidget(m_removeBtn);
     btnRow->addWidget(m_upBtn);

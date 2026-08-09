@@ -298,6 +298,8 @@ private:
     PresetPane      *m_presetPane = nullptr;      // M5 presets side pane
     RunPane         *m_runPane = nullptr;         // run selection side pane (§3a)
     QVector<QDockWidget *> m_paneDocks;                     // the four above, for View ▸ Panes
+    QDockWidget *m_filtersDock = nullptr;                   // marked while filters are in force
+    QAction     *m_clearFiltersAction = nullptr;
     // How those docks' title bars are painted (PaneTitleStyle.h). Shared by all four
     // and parented to the window, so it outlives every dock that points at it.
     PaneTitleStyle        *m_paneStyle = nullptr;

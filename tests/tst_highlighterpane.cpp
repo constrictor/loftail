@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QAbstractButton>
 #include <QAbstractItemView>
 #include <QGroupBox>
 #include <QLineEdit>
@@ -71,13 +72,12 @@ private:
         return w.findChild<QCheckBox *>(QStringLiteral("priorityEnable"));
     }
 
-    static QPushButton *button(QWidget &w, const QString &label)
+    // By object name, never by visible text: the pane embeds an AxisEditor, so more
+    // than one button here can carry the same label, and a translated build would
+    // change every one of them (ARCHITECTURE.md §9.1).
+    static QPushButton *button(QWidget &w, const QString &objectName)
     {
-        const QList<QPushButton *> buttons = w.findChildren<QPushButton *>();
-        for (QPushButton *b : buttons)
-            if (b->text() == label)
-                return b;
-        return nullptr;
+        return w.findChild<QPushButton *>(objectName);
     }
 
     static QLineEdit *patternEdit(QWidget &w)
@@ -154,14 +154,14 @@ void TestHighlighterPane::typingARegexReachesTheDocument()
 
     HighlighterPane pane;
     pane.setDocument(&doc);
-    button(pane, QStringLiteral("Add"))->click();
+    button(pane, QStringLiteral("ruleAdd"))->click();
     QCOMPARE(doc.highlighters().rules.size(), 1);
 
     axis(pane, "messageGroup")->setChecked(true);
     QLineEdit *edit = patternEdit(pane);
     QVERIFY(edit);
     edit->setText(QStringLiteral("timeout.*retry"));
-    pane.findChild<QCheckBox *>(QStringLiteral("messageRegex"))->setChecked(true);
+    pane.findChild<QAbstractButton *>(QStringLiteral("messageRegex"))->setChecked(true);
 
     const HighlightRule &r = doc.highlighters().rules.first();
     QVERIFY(r.match.text.enabled);
@@ -188,7 +188,7 @@ void TestHighlighterPane::switchingRulesShowsThatRulesSelection()
 
     HighlighterPane pane;
     pane.setDocument(&doc);
-    QPushButton *add = button(pane, QStringLiteral("Add"));
+    QPushButton *add = button(pane, QStringLiteral("ruleAdd"));
     add->click();
     add->click();
     QCOMPARE(doc.highlighters().rules.size(), 2);
@@ -227,10 +227,10 @@ void TestHighlighterPane::invalidRegexIsFlagged()
 
     HighlighterPane pane;
     pane.setDocument(&doc);
-    button(pane, QStringLiteral("Add"))->click();
+    button(pane, QStringLiteral("ruleAdd"))->click();
 
     axis(pane, "messageGroup")->setChecked(true);
-    pane.findChild<QCheckBox *>(QStringLiteral("messageRegex"))->setChecked(true);
+    pane.findChild<QAbstractButton *>(QStringLiteral("messageRegex"))->setChecked(true);
     QLineEdit *edit = patternEdit(pane);
     edit->setText(QStringLiteral("("));
 
@@ -252,7 +252,7 @@ void TestHighlighterPane::addedRuleIsInertUntilConfigured()
 
     HighlighterPane pane;
     pane.setDocument(&doc);
-    button(pane, QStringLiteral("Add"))->click();
+    button(pane, QStringLiteral("ruleAdd"))->click();
 
     // Add seeds one axis so a new rule does something visible immediately, but turning
     // that axis back off must leave the rule matching nothing at all — not matching
