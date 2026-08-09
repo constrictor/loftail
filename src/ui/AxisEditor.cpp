@@ -76,9 +76,17 @@ AxisBox makeAxisBox(QWidget *parent, const QString &title, const QString &object
 // a column beside a list reads as a caption particularly well. The frame is what says
 // these are things to press. Auto-raise earns its keep on a TOGGLE, where the checked
 // state supplies the missing affordance; it does not on a plain command.
+//
+// The column ends in the "New" checkbox, which is the same question asked about the
+// values the list does not hold YET: All, None and Invert say what happens to what is
+// listed, and it says what happens to what turns up next. It goes here rather than in
+// a row of its own because it is one word wide and this column is exactly one word
+// wide — and because the three buttons set it, which is far more obvious when it is
+// the next thing under them.
 QVBoxLayout *makeListButtons(QWidget *parent, const QString &namePrefix,
                              QAbstractButton *&all, QAbstractButton *&none,
-                             QAbstractButton *&invert)
+                             QAbstractButton *&invert, QCheckBox *&newValues,
+                             const QString &newValuesHint)
 {
     // Not a member, so there is no tr() in scope — the context is named explicitly, and
     // named for the class these buttons belong to.
@@ -97,6 +105,15 @@ QVBoxLayout *makeListButtons(QWidget *parent, const QString &namePrefix,
     btns->addWidget(all);
     btns->addWidget(none);
     btns->addWidget(invert);
+
+    newValues = new QCheckBox(QCoreApplication::translate("loftail::AxisEditor", "New"),
+                              parent);
+    newValues->setObjectName(namePrefix + QStringLiteral("NewValues"));
+    newValues->setChecked(true); // discovery is the default (populateList)
+    newValues->setToolTip(newValuesHint);
+    newValues->setAccessibleName(newValuesHint);
+    btns->addWidget(newValues);
+
     btns->addStretch(1);
     return btns;
 }
@@ -123,7 +140,12 @@ AxisEditor::AxisEditor(Defaults defaults, QWidget *parent)
 void AxisEditor::buildUi(Defaults defaults)
 {
     auto *root = new QVBoxLayout(this);
-    root->setContentsMargins(0, 0, 0, 0);
+    // Not flush. A group box is a rounded, framed panel, and a rounded frame whose left
+    // and right edges are 0 px from the pane's own edge reads as a rendering fault
+    // rather than as a group — the corners curve away from a border that is not there.
+    // Both users put this widget in a QScrollArea with no frame of its own, so these
+    // few pixels are the only thing standing between the frames and the dock edge.
+    root->setContentsMargins(6, 4, 6, 4);
 
     auto emitChange = [this] { emitChanged(); };
 
@@ -353,34 +375,49 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
     (subsystem ? m_loggerList : m_threadList) = list;
 
     QAbstractButton *all = nullptr, *none = nullptr, *invert = nullptr;
+    QCheckBox *newValues = nullptr;
     auto *listRow = new QHBoxLayout;
     listRow->addWidget(list, 1);
-    listRow->addLayout(makeListButtons(a.body, prefix, all, none, invert));
+    listRow->addLayout(makeListButtons(
+        a.body, prefix, all, none, invert, newValues,
+        subsystem ? tr("Tick a subsystem the scan turns up later. Untick and the list "
+                       "is a restriction: only what is ticked here is ever shown.")
+                  : tr("Tick a thread the scan turns up later. Untick and the list is a "
+                       "restriction: only what is ticked here is ever shown.")));
     a.bodyLayout->addLayout(listRow);
     QAbstractButton **slot = subsystem ? m_loggerListButtons : m_threadListButtons;
     slot[0] = all;
     slot[1] = none;
     slot[2] = invert;
+    (subsystem ? m_loggerNewValues : m_threadNewValues) = newValues;
 
     root->addWidget(a.box);
 
     connect(a.box, &QGroupBox::toggled, this, [this] { emitChanged(); });
-    // A hand edit to the list — one tick, or All / None / Invert, which reach here the
-    // same way — returns the axis to the discovery default: whatever the user is
-    // building now is a statement about the file, so a subsystem that appears later
-    // belongs in it. Only showOnlyValue() says otherwise. The m_populating guard keeps
-    // a repopulation from counting as an edit.
-    connect(list, &QListWidget::itemChanged, this, [this, axis](QListWidgetItem *) {
-        if (!m_populating)
-            restrictiveFor(axis) = false;
-        emitChanged();
+    // A tick is a statement about ONE value and nothing else. It used to also return
+    // the axis to the discovery default, on the reasoning that whatever the user is
+    // building now is a statement about the file — which was defensible while the
+    // discovery rule was invisible and showOnlyValue() was the only way into it, and
+    // is not now that "New" is a control sitting right there. A checkbox that unticks
+    // itself when the user ticks something else is worse than no checkbox.
+    connect(list, &QListWidget::itemChanged, this,
+            [this](QListWidgetItem *) { emitChanged(); });
+    // All / None / Invert carry the same answer to the values that have not turned up
+    // yet: "everything" and "nothing" are claims about the axis, not about the six
+    // names that happen to be listed a third of the way through a scan.
+    connect(all, &QAbstractButton::clicked, this, [this, axis] {
+        setAllChecked(listFor(axis), true);
+        setRestrictiveFor(axis, false);
     });
-    connect(all, &QAbstractButton::clicked, this,
-            [this, axis] { setAllChecked(listFor(axis), true); });
-    connect(none, &QAbstractButton::clicked, this,
-            [this, axis] { setAllChecked(listFor(axis), false); });
-    connect(invert, &QAbstractButton::clicked, this,
-            [this, axis] { invertChecked(listFor(axis)); });
+    connect(none, &QAbstractButton::clicked, this, [this, axis] {
+        setAllChecked(listFor(axis), false);
+        setRestrictiveFor(axis, true);
+    });
+    connect(invert, &QAbstractButton::clicked, this, [this, axis] {
+        invertChecked(listFor(axis));
+        setRestrictiveFor(axis, !restrictiveFor(axis));
+    });
+    connect(newValues, &QCheckBox::toggled, this, [this] { emitChanged(); });
 
     // Adding is only offered for a name the list does not already hold — otherwise the
     // "+" would promise a second copy of a value that is right there under it.
@@ -388,8 +425,11 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
         const QString name = narrow->text().trimmed();
         if (!canAddTyped(axis, name))
             return;
+        // The name goes in ticked whatever "New" says — populateList treats a manual
+        // entry as the user asking to see it, which is exactly what typing it in is —
+        // so the discovery rule is left alone here. Adding one name says nothing about
+        // the ones the scan has not reached.
         manualFor(axis).insert(name);
-        restrictiveFor(axis) = false; // typing a name is a hand edit like any other
         {
             // Blocked so the clear does not re-narrow a list that is about to be
             // rebuilt; refreshDiscoveredLists() re-narrows with the now-empty text.
@@ -482,8 +522,8 @@ void AxisEditor::clearAll()
         m_threadNarrow->clear();
     m_loggerManualNames.clear();
     m_threadManualNames.clear();
-    m_loggerRestrictive = false;
-    m_threadRestrictive = false;
+    setRestrictiveFor(ValueAxis::Subsystem, false);
+    setRestrictiveFor(ValueAxis::Thread, false);
     m_timeUserEdited = false;
     // Every value ticked again. "Seen" is what makes an already-listed name keep its
     // state across a repopulation (populateList's discovery rule), so clearing it is
@@ -610,9 +650,14 @@ void AxisEditor::setDocument(Document *document)
     m_threadSeen.clear();
     // Likewise a statement about the previous file's values, and a wrong one about
     // this file's: carried across, a new file would open with every subsystem it
-    // discovers arriving unticked.
-    m_loggerRestrictive = false;
-    m_threadRestrictive = false;
+    // discovers arriving unticked. Guarded, because the discovery rule is a CHECKBOX
+    // now and setting it emits toggled(): a rebind is not a user edit, and letting one
+    // reach changed() would have the Highlighters pane write the incoming document's
+    // defaults into whichever rule happened to be selected.
+    m_populating = true;
+    setRestrictiveFor(ValueAxis::Subsystem, false);
+    setRestrictiveFor(ValueAxis::Thread, false);
+    m_populating = false;
     // Also a statement about the previous file: a bound the user set on that log is
     // not a bound they set on this one, so this file's span is free to seed.
     m_timeUserEdited = false;
@@ -797,9 +842,9 @@ void AxisEditor::repopulate(const QSet<QString> &loggerChecked,
     threads.append(m_threadManualNames.values());
 
     populateList(m_loggerList, loggers, loggerChecked, m_loggerManualNames, m_loggerSeen,
-                 exact, m_loggerRestrictive);
+                 exact, restrictiveFor(ValueAxis::Subsystem));
     populateList(m_threadList, threads, threadChecked, m_threadManualNames, m_threadSeen,
-                 exact, m_threadRestrictive);
+                 exact, restrictiveFor(ValueAxis::Thread));
     narrowList(m_loggerList, m_loggerNarrow ? m_loggerNarrow->text() : QString());
     narrowList(m_threadList, m_threadNarrow ? m_threadNarrow->text() : QString());
     // The list just changed under the narrowing, so the hidden count the buttons
@@ -825,12 +870,12 @@ MatchCriteria AxisEditor::criteria() const
     // table: the table grows mid-scan and the list lags it, so asking the table would
     // make a discovered-but-not-yet-listed subsystem look excluded.
     c.loggerCoversAll = allChecked(m_loggerList);
-    c.loggerRestrictive = m_loggerRestrictive;
+    c.loggerRestrictive = restrictiveFor(ValueAxis::Subsystem);
 
     c.threadEnabled = m_threadGroup->isChecked();
     c.threadNames = toSortedList(checkedNames(m_threadList));
     c.threadCoversAll = allChecked(m_threadList);
-    c.threadRestrictive = m_threadRestrictive;
+    c.threadRestrictive = restrictiveFor(ValueAxis::Thread);
 
     c.text.enabled = m_textGroup->isChecked();
     c.text.negate = m_textNegate->isChecked();
@@ -881,8 +926,8 @@ void AxisEditor::setCriteria(const MatchCriteria &c)
     // Restore how the selection is meant to grow along with the selection itself: a
     // preset or session that restricted must not widen when this file turns up a
     // value the one it was made on never had.
-    m_loggerRestrictive = c.loggerRestrictive;
-    m_threadRestrictive = c.threadRestrictive;
+    setRestrictiveFor(ValueAxis::Subsystem, c.loggerRestrictive);
+    setRestrictiveFor(ValueAxis::Thread, c.threadRestrictive);
 
     m_populating = false;
 
@@ -914,9 +959,21 @@ QSet<QString> &AxisEditor::manualFor(ValueAxis axis)
     return axis == ValueAxis::Subsystem ? m_loggerManualNames : m_threadManualNames;
 }
 
-bool &AxisEditor::restrictiveFor(ValueAxis axis)
+QCheckBox *AxisEditor::newValuesBoxFor(ValueAxis axis) const
 {
-    return axis == ValueAxis::Subsystem ? m_loggerRestrictive : m_threadRestrictive;
+    return axis == ValueAxis::Subsystem ? m_loggerNewValues : m_threadNewValues;
+}
+
+bool AxisEditor::restrictiveFor(ValueAxis axis) const
+{
+    const QCheckBox *box = newValuesBoxFor(axis);
+    return box && !box->isChecked();
+}
+
+void AxisEditor::setRestrictiveFor(ValueAxis axis, bool restrictive)
+{
+    if (QCheckBox *box = newValuesBoxFor(axis))
+        box->setChecked(!restrictive); // toggled() -> emitChanged(), unless populating
 }
 
 void AxisEditor::ensureListed(ValueAxis axis, const QString &name)
@@ -961,7 +1018,7 @@ void AxisEditor::showOnlyValue(ValueAxis axis, const QString &name)
     }
     if (QGroupBox *enable = enableFor(axis))
         enable->setChecked(true);
-    restrictiveFor(axis) = true;
+    setRestrictiveFor(axis, true);
     m_populating = false;
 
     emitChanged();
