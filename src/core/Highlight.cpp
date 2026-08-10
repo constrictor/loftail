@@ -36,6 +36,49 @@ MatchCriteria legacyCriteriaFromJson(const QJsonObject &o)
     return c;
 }
 
+// Action <-> canonical token (M19). Never translated and never a number: the token is
+// what makes a rule portable across a version that has learned a new action, and the
+// American spelling matches the code side of the repo's split (rowColors,
+// HighlightPalette::color) rather than the prose side.
+struct ActionToken
+{
+    HighlightAction action;
+    const char     *token;
+};
+constexpr ActionToken kActionTokens[] = {
+    { HighlightAction::Color,  "color"  },
+    { HighlightAction::Digest, "digest" },
+    { HighlightAction::Tab,    "tab"    },
+    { HighlightAction::Notify, "notify" },
+};
+
+QJsonArray actionsToJson(HighlightActions actions)
+{
+    QJsonArray a;
+    for (const ActionToken &t : kActionTokens)
+        if (actions.testFlag(t.action))
+            a.append(QLatin1String(t.token));
+    return a;
+}
+
+// Unknown tokens are IGNORED rather than preserved: round-tripping them would need a
+// string list on a struct whose whole point is that it is small and portable, and it
+// would buy a forward compatibility nothing here promises (PresetStore already refuses
+// a schema it does not know). But ignoring must not collapse into the absent case —
+// see fromJson: a rule whose only token is unknown has NO actions, because the key was
+// there and the user's intent was recorded, just not in a vocabulary this build has.
+HighlightActions actionsFromJson(const QJsonArray &a)
+{
+    HighlightActions actions;
+    for (const QJsonValue &v : a) {
+        const QString s = v.toString();
+        for (const ActionToken &t : kActionTokens)
+            if (s == QLatin1String(t.token))
+                actions |= t.action;
+    }
+    return actions;
+}
+
 } // namespace
 
 QJsonObject HighlightRule::toJson() const
@@ -43,6 +86,12 @@ QJsonObject HighlightRule::toJson() const
     QJsonObject o;
     o.insert(QStringLiteral("enabled"), enabled);
     o.insert(QStringLiteral("match"), match.toJson());
+    // Written ONLY when the rule does something other than exactly colour, so a
+    // colour-only rule — every rule that predates M19 — serializes byte-identically to
+    // what it did before and neither store's schema version has to move. The same habit
+    // as MatchCriteria's loggerRestrictive.
+    if (actions != HighlightActions(HighlightAction::Color))
+        o.insert(QStringLiteral("actions"), actionsToJson(actions));
     // Palette INDICES, never RGB (ARCHITECTURE.md §8): -1 == default.
     o.insert(QStringLiteral("background"), background);
     o.insert(QStringLiteral("foreground"), foreground);
@@ -64,6 +113,16 @@ HighlightRule HighlightRule::fromJson(const QJsonObject &o)
         // opt into each axis explicitly.
         r.match = legacyCriteriaFromJson(o);
     }
+
+    // contains(), NEVER the array's emptiness. An absent key is a rule written before
+    // actions existed, which means {Color}; a PRESENT but empty array is the answer
+    // "this rule matches and does nothing", which is a state the user can reach in one
+    // click by unticking Colour. Reading the second as the first would silently
+    // re-colour every parked rule on the next launch, invisibly until someone wondered
+    // why the setting would not stick — the same trap DefaultFormatStore::load()'s
+    // contains("pattern") records for an empty saved pattern.
+    if (o.contains(QStringLiteral("actions")))
+        r.actions = actionsFromJson(o.value(QStringLiteral("actions")).toArray());
 
     // Clamp a corrupt index back to the default sentinel rather than out of range.
     auto readSlot = [](const QJsonValue &v) {
@@ -94,6 +153,14 @@ bool HighlighterSet::anyEnabled() const
 {
     for (const HighlightRule &r : rules)
         if (r.enabled && r.match.anyActive())
+            return true;
+    return false;
+}
+
+bool HighlighterSet::anyEnabled(HighlightActions actions) const
+{
+    for (const HighlightRule &r : rules)
+        if (r.enabled && (r.actions & actions) && r.match.anyActive())
             return true;
     return false;
 }

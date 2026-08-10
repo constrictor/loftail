@@ -59,8 +59,11 @@
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QStyle>
+#include <QSystemTrayIcon>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <utility>
@@ -566,7 +569,17 @@ void MainWindow::onViewDestroyed(QObject *obj)
         m_activeView = nullptr;
 
     // A file with no views left is closed: its index, workers and model go with it.
-    std::erase_if(m_contexts, [](const auto &ctx) { return ctx->views.isEmpty(); });
+    const auto before = m_contexts.size();
+    std::erase_if(m_contexts, [this](const auto &ctx) {
+        if (!ctx->views.isEmpty())
+            return false;
+        if (m_lastNotified == ctx.get())
+            m_lastNotified = nullptr; // about to dangle
+        return true;
+    });
+    // Closing the last log that wanted notifications takes the tray icon with it (M19).
+    if (m_contexts.size() != before)
+        updateTrayPresence();
 
     // A file down to its last view is a plain name again, not "name [1]".
     for (auto &ctx : m_contexts)
@@ -656,6 +669,11 @@ void MainWindow::setActiveView(DocumentView *view)
         emit activeDocumentChanged(after);
         hydratePanes(activeContext());
     }
+
+    // Arriving at a log is what "seen" means (M19, SPEC.md §7). Outside the
+    // file-changed branch above, because switching between two views of one file still
+    // brings that file forward even though the panes do not rebind.
+    clearUnseenMatch(activeContext());
 
     updateStatus();
 }
@@ -1138,9 +1156,20 @@ void MainWindow::buildContext(DocumentContext *ctx)
 {
     Document *doc = ctx->doc.get();
 
+    const bool dark = palette().base().color().lightness()
+                      < palette().text().color().lightness();
+
     ctx->model = new LogModel(doc);
-    ctx->model->setDarkTheme(palette().base().color().lightness()
-                             < palette().text().color().lightness());
+    ctx->model->setDarkTheme(dark);
+
+    // The digest strip's model (M19): the same Document, read through its digest subset
+    // instead of its filtered one, and coloured by the Digest action rather than the
+    // Color one — which is what makes a digest row wear the colours of the rule that put
+    // it there whether or not that rule also colours the log above.
+    ctx->digestModel = new LogModel(doc);
+    ctx->digestModel->setDarkTheme(dark);
+    ctx->digestModel->setViewIndex(&doc->digest());
+    ctx->digestModel->setHighlightAction(HighlightAction::Digest);
 
     // Configure the run-start matcher from the (remembered) format before binding the
     // panes, so the Run pane shows the pattern. Runs are detected once indexing
@@ -1364,6 +1393,18 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
         // that is empty from one that is not there (SPEC.md §3). The tooltip carries
         // the sentence; the title only has room for the mark.
         base = QStringLiteral("◦ %1").arg(name);
+    else if (ctx->unseenMatch)
+        // A highlight rule carrying the Tab action matched something while this log was
+        // not on screen (M19, SPEC.md §7). Filled against the hollow mark above, so the
+        // pair reads as "something arrived" against "not there yet" with no legend.
+        //
+        // The order of these three is not cosmetic. A LiveController only exists once
+        // indexing has finished, and a waiting document ingests nothing — so both
+        // earlier branches are states in which this marker cannot arise, and putting
+        // this one first would only make the "indexing" text unreachable for a tab that
+        // matched something on a previous open. tst_multidoc's waitUntilIndexed() polls
+        // for the absence of "indexing" in every title, which "● " does not contain.
+        base = QStringLiteral("● %1").arg(name);
     // Several views onto one file are numbered, so two identically-named tabs are
     // still tellable apart. The numbering runs left to right along the tab bar, not
     // in creation order, so a dragged tab does not end up as [2] left of [1].
@@ -1441,6 +1482,10 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
         m_runPane->refresh();
     if (doc->filters().anyActive() || doc->viewRestricted())
         applyFiltersFor(ctx);
+    // AFTER the run selection settles, never with resolveHighlighters() above it: the
+    // digest is bounded by the selected run, so building it before selectNewestRun()
+    // would scan the whole file and then describe the wrong part of it.
+    rebuildDigestFor(ctx);
 
     for (DocumentView *v : std::as_const(ctx->views)) {
         v->logView()->viewport()->update(); // repaint with resolved highlights
@@ -1469,7 +1514,15 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
     // controller's first check catches up anything appended while it ran.
     {
         ctx->live = new LiveController(doc, ctx->model);
+        // So the digest's wholesale ordinal remap is bracketed by a model reset before
+        // the mutation rather than after it (M19).
+        ctx->live->setDigestModel(ctx->digestModel);
         connect(ctx->live, &LiveController::ingested, this, [this, ctx](qint64) {
+            // ABOVE the early return, deliberately (M19). A background tab is the ONLY
+            // case the tab marker and the notification exist for, so anything that
+            // handles them below this line works perfectly with one tab open and never
+            // fires in real use.
+            handleAlerts(ctx);
             if (ctx != activeContext()) {
                 updateStatus();
                 return;
@@ -1507,6 +1560,9 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
                     updateStatus();
                 });
         connect(ctx->live, &LiveController::rescanned, this, [this, ctx]() {
+            // A rotation replaced every record, so anything this log was owing a
+            // notification about described records that no longer exist (M19).
+            ctx->alerts.reset();
             // Rotation/truncation reloaded silently (SPEC.md §3): refresh the panes
             // against the fresh index and keep following if we were.
             if (ctx == activeContext()) {
@@ -1541,13 +1597,18 @@ void MainWindow::resumeWaitingDocument(DocumentContext *ctx)
     ManualFormatProvider provider(ctx->settings.pattern);
 
     ctx->model->beginFilterReset();
+    if (ctx->digestModel)
+        ctx->digestModel->beginFilterReset();
     const bool ok = doc->resume(provider);
     if (ok) {
-        // The intern tables were built from scratch, exactly as after a rotation.
-        doc->resolveHighlighters();
+        // The intern tables were built from scratch, exactly as after a rotation — and
+        // so was the digest, which resume() cleared along with the filtered subset.
+        doc->refreshHighlighting();
         if (doc->filters().anyActive() || doc->viewRestricted())
             doc->applyFilters();
     }
+    if (ctx->digestModel)
+        ctx->digestModel->endFilterReset();
     ctx->model->endFilterReset();
 
     // The log can go again between the watch tick that saw it and this open. That is
@@ -1653,11 +1714,173 @@ void MainWindow::applyActiveHighlighters()
     DocumentContext *ctx = activeContext();
     if (!ctx)
         return;
-    // Highlighting recolors visible rows in place (SPEC.md §7): no rows are added or
-    // removed, so a viewport repaint is enough — no model reset, unlike filtering.
-    ctx->doc->resolveHighlighters();
+    // The COLOUR action recolors visible rows in place (SPEC.md §7): no rows are added
+    // or removed, so a viewport repaint is enough — no model reset, unlike filtering.
+    // The DIGEST action is the opposite: its subset is a wholesale ordinal remap, so it
+    // follows applyFiltersFor()'s shape and is bracketed by a model reset.
+    if (ctx->digestModel)
+        ctx->digestModel->beginFilterReset();
+    ctx->doc->refreshHighlighting();
+    if (ctx->digestModel)
+        ctx->digestModel->endFilterReset();
     for (DocumentView *v : std::as_const(ctx->views))
         v->logView()->viewport()->update();
+    // Whether any rule still asks to be notified may have changed with that edit.
+    updateTrayPresence();
+}
+
+// --- Highlight actions beyond colour (M19, SPEC.md §7, ARCHITECTURE.md §7.5) ------
+
+void MainWindow::rebuildDigestFor(DocumentContext *ctx)
+{
+    if (!ctx || !ctx->digestModel)
+        return;
+    ctx->digestModel->beginFilterReset();
+    ctx->doc->rebuildDigest();
+    ctx->digestModel->endFilterReset();
+}
+
+bool MainWindow::isBeingRead(const DocumentContext *ctx) const
+{
+    // "Being looked at" is both halves: the right tab AND the window in front. A tab in
+    // the foreground of a window behind three others is not being read.
+    return ctx && ctx == activeContext() && isActiveWindow();
+}
+
+void MainWindow::handleAlerts(DocumentContext *ctx)
+{
+    if (!ctx || !ctx->live)
+        return;
+    const LiveController::BatchAlerts &batch = ctx->live->lastBatchAlerts();
+    if (batch.tabMatches == 0 && batch.notifyMatches == 0)
+        return;
+    // A match in the log the user is already reading is not news; the rows are on
+    // screen, in their rule's colours, and interrupting would be noise.
+    if (isBeingRead(ctx))
+        return;
+
+    if (batch.tabMatches > 0 && !ctx->unseenMatch) {
+        ctx->unseenMatch = true;
+        updateTabTitles(ctx);
+    }
+
+    if (batch.notifyMatches > 0) {
+        // Where the desktop offers no notification service, a Notify rule behaves as if
+        // it carried Tab rather than being silently ignored — the pane has already said
+        // so, and dropping the event entirely would be the one outcome the user cannot
+        // tell from a broken rule.
+        if (!m_tray) {
+            if (!ctx->unseenMatch) {
+                ctx->unseenMatch = true;
+                updateTabTitles(ctx);
+            }
+            return;
+        }
+        const AlertPolicy::Decision d =
+            ctx->alerts.recordBatch(m_alertClock.elapsed(), batch.notifyMatches);
+        if (!d.notify)
+            return;
+        m_lastNotified = ctx;
+        const QString title = logSourceDisplayName(ctx->doc->path());
+        const QString body = d.count == 1
+                                 ? tr("A highlight rule matched a new record.")
+                                 : tr("%n matching records.", "", d.count);
+        m_tray->showMessage(title, body, QSystemTrayIcon::Information);
+    }
+}
+
+void MainWindow::clearUnseenMatch(DocumentContext *ctx)
+{
+    // Edge-triggered. Re-setting a tab's title relays out the whole bar, and this runs
+    // from every activation event and every tab change — the same discipline the panes'
+    // activityChanged uses, and for the same reason.
+    if (!ctx || !ctx->unseenMatch || !isBeingRead(ctx))
+        return;
+    ctx->unseenMatch = false;
+    updateTabTitles(ctx);
+}
+
+bool MainWindow::notificationsAvailable()
+{
+    // isSystemTrayAvailable() is false on a stock GNOME/Wayland session — no
+    // StatusNotifierWatcher and no XEmbed tray — which is the reference desktop, so
+    // this returning false is the ORDINARY answer there rather than an edge case.
+    return QSystemTrayIcon::isSystemTrayAvailable() && QSystemTrayIcon::supportsMessages();
+}
+
+bool MainWindow::anyRuleWantsNotifications() const
+{
+    for (const auto &ctx : m_contexts)
+        if (ctx->doc && ctx->doc->highlighters().anyEnabled(HighlightAction::Notify))
+            return true;
+    return false;
+}
+
+void MainWindow::updateTrayPresence()
+{
+    const bool wanted = notificationsAvailable() && anyRuleWantsNotifications();
+
+    if (!wanted) {
+        // Destroyed rather than merely hidden: an icon sitting in the user's tray for a
+        // feature nothing is currently asking for is a claim on their desktop that
+        // loftail has not earned.
+        delete m_tray;
+        m_tray = nullptr;
+        m_lastNotified = nullptr;
+        if (m_alertPump)
+            m_alertPump->stop();
+        return;
+    }
+    if (m_tray)
+        return;
+
+    m_tray = new QSystemTrayIcon(this);
+    QIcon icon = windowIcon();
+    if (icon.isNull())
+        icon = style()->standardIcon(QStyle::SP_MessageBoxInformation);
+    m_tray->setIcon(icon);
+    m_tray->setToolTip(tr("loftail — a highlight rule is watching for matches"));
+    connect(m_tray, &QSystemTrayIcon::messageClicked, this, [this] {
+        // Raise the log the message was about. Qt gives a message no identity, so only
+        // the most recent can be honoured — and the rate limiter makes that a
+        // distinction without a difference.
+        if (!m_lastNotified)
+            return;
+        for (DocumentView *v : std::as_const(m_lastNotified->views)) {
+            if (const int index = m_tabs->indexOf(v); index >= 0) {
+                m_tabs->setCurrentIndex(index);
+                break;
+            }
+        }
+        raise();
+        activateWindow();
+    });
+    // showMessage() is a silent no-op on a hidden icon, so this show() is not
+    // decoration — it is what makes the whole action work.
+    m_tray->show();
+
+    if (!m_alertClock.isValid())
+        m_alertClock.start();
+    if (!m_alertPump) {
+        m_alertPump = new QTimer(this);
+        m_alertPump->setInterval(5000);
+        connect(m_alertPump, &QTimer::timeout, this, [this] {
+            if (!m_tray)
+                return;
+            for (auto &ctx : m_contexts) {
+                if (ctx->alerts.pending() <= 0 || isBeingRead(ctx.get()))
+                    continue;
+                const AlertPolicy::Decision d = ctx->alerts.poll(m_alertClock.elapsed());
+                if (!d.notify)
+                    continue;
+                m_lastNotified = ctx.get();
+                m_tray->showMessage(logSourceDisplayName(ctx->doc->path()),
+                                    tr("%n matching records.", "", d.count),
+                                    QSystemTrayIcon::Information);
+            }
+        });
+    }
+    m_alertPump->start();
 }
 
 void MainWindow::onRunStartChanged(const QString &pattern, bool regex, bool caseSensitive)
@@ -1717,8 +1940,12 @@ void MainWindow::updateModelTheme()
         if (!ctx->model || dark == ctx->model->darkTheme())
             continue;
         ctx->model->setDarkTheme(dark);
-        for (DocumentView *v : std::as_const(ctx->views))
+        if (ctx->digestModel)
+            ctx->digestModel->setDarkTheme(dark); // the strip paints rule colours too
+        for (DocumentView *v : std::as_const(ctx->views)) {
             v->logView()->viewport()->update();
+            v->digestView()->viewport()->update();
+        }
     }
 }
 
@@ -1727,6 +1954,11 @@ void MainWindow::changeEvent(QEvent *event)
     QMainWindow::changeEvent(event);
     if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange)
         updateModelTheme();
+    // Raising the window is the other half of "being looked at" (M19): a marked tab
+    // that was already current must lose its mark when loftail comes to the front, not
+    // only when the user clicks another tab and back.
+    if (event->type() == QEvent::ActivationChange && isActiveWindow())
+        clearUnseenMatch(activeContext());
 }
 
 void MainWindow::runFind(bool forward, bool fromStart)
@@ -2469,6 +2701,10 @@ void MainWindow::restoreSession()
     // Activate the saved view, which binds the panes to its file, then start every
     // scan. Indexing goes last so worker batches never race the layout settling.
     showView(toActivate ? toActivate : m_views.first());
+
+    // Restored rules go straight onto their Documents rather than through the pane, so
+    // nothing above has asked whether any of them wants notifications (M19).
+    updateTrayPresence();
 
     for (auto &ctx : m_contexts) {
         if (ctx->controller)

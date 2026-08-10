@@ -8,7 +8,9 @@
 #include "RecordIndex.h"
 
 #include <QBrush>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QGridLayout>
 #include <QCoreApplication>
 #include <QFrame>
 #include <QGroupBox>
@@ -21,6 +23,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
+#include <QSystemTrayIcon>
 #include <QVBoxLayout>
 #include <QVector>
 
@@ -190,19 +193,64 @@ void HighlighterPane::buildUi()
     m_axes->setCollapsible(true);
     cv->addWidget(m_axes);
 
+    // --- What the rule DOES (M19, SPEC.md §7) --------------------------------
+    //
+    // Colour is one action among four, but it is not a peer of the other three: it is
+    // the only one with configuration attached. So it is a checkable group box whose
+    // title row is the enable control and whose body is the two colour combos — the
+    // Filters pane's established pattern, which is also why AxisEditor's enable
+    // controls are QGroupBox* rather than QCheckBox*. Unticking it greys the combos,
+    // which is the clearest possible rendering of "matches and does not colour".
+    //
+    // The other three are plain checkboxes in a grid below. No glyphs: four abstract
+    // actions have none that are self-evident, and Windows offscreen testing resolves
+    // no fonts at all, so a glyph there is a guaranteed blank.
+    m_colorGroup = new QGroupBox(tr("Colour"), content);
+    m_colorGroup->setObjectName(QStringLiteral("actionColor")); // test contract, never translated
+    m_colorGroup->setCheckable(true);
+    m_colorGroup->setToolTip(tr("Recolour matching records in the log."));
+    auto *colorBody = new QVBoxLayout(m_colorGroup);
+
     auto *bgRow = new QHBoxLayout;
-    bgRow->addWidget(new QLabel(tr("Background:"), content));
-    m_bgCombo = makeSwatchCombo(content);
-    m_bgCombo->setObjectName(QStringLiteral("backgroundColor")); // test contract, never translated
+    bgRow->addWidget(new QLabel(tr("Background:"), m_colorGroup));
+    m_bgCombo = makeSwatchCombo(m_colorGroup);
+    m_bgCombo->setObjectName(QStringLiteral("backgroundColor"));
     bgRow->addWidget(m_bgCombo, 1);
-    cv->addLayout(bgRow);
+    colorBody->addLayout(bgRow);
 
     auto *fgRow = new QHBoxLayout;
-    fgRow->addWidget(new QLabel(tr("Text:"), content));
-    m_fgCombo = makeSwatchCombo(content);
+    fgRow->addWidget(new QLabel(tr("Text:"), m_colorGroup));
+    m_fgCombo = makeSwatchCombo(m_colorGroup);
     m_fgCombo->setObjectName(QStringLiteral("textColor"));
     fgRow->addWidget(m_fgCombo, 1);
-    cv->addLayout(fgRow);
+    colorBody->addLayout(fgRow);
+
+    cv->addWidget(m_colorGroup);
+
+    auto *actionGrid = new QGridLayout;
+    m_digestCheck = new QCheckBox(tr("Digest"), content);
+    m_digestCheck->setObjectName(QStringLiteral("actionDigest"));
+    m_digestCheck->setToolTip(tr("Show this rule's newest match in the strip under the log."));
+    m_tabCheck = new QCheckBox(tr("Mark tab"), content);
+    m_tabCheck->setObjectName(QStringLiteral("actionTab"));
+    m_tabCheck->setToolTip(tr("Mark this log's tab when a match arrives while it is not "
+                              "the log on screen."));
+    m_notifyCheck = new QCheckBox(tr("Notify"), content);
+    m_notifyCheck->setObjectName(QStringLiteral("actionNotify"));
+    // Said before the box can be ticked, not after — the same habit as naming
+    // hosts.json before the "remember this password" checkbox is offered.
+    if (notificationsSupported()) {
+        m_notifyCheck->setToolTip(tr("Raise a desktop notification on the same trigger, "
+                                     "at most one every ten seconds."));
+    } else {
+        m_notifyCheck->setEnabled(false);
+        m_notifyCheck->setToolTip(tr("This desktop offers no notification service, so "
+                                     "this rule marks the tab instead."));
+    }
+    actionGrid->addWidget(m_digestCheck, 0, 0);
+    actionGrid->addWidget(m_tabCheck, 0, 1);
+    actionGrid->addWidget(m_notifyCheck, 1, 0);
+    cv->addLayout(actionGrid);
 
     cv->addStretch(1);
     root->addWidget(m_editor, 1);
@@ -289,6 +337,7 @@ void HighlighterPane::buildUi()
         r.match = m_axes->criteria();
         r.background = swatchValue(m_bgCombo);
         r.foreground = swatchValue(m_fgCombo);
+        r.actions = readActions();
         commit();
         // Refresh only this row's summary so the current selection is preserved.
         // Guard the setText so its itemChanged does not re-enter the enable handler.
@@ -302,6 +351,37 @@ void HighlighterPane::buildUi()
     connect(m_axes, &AxisEditor::changed, this, editorChanged);
     connect(m_bgCombo, &QComboBox::currentIndexChanged, this, [editorChanged](int) { editorChanged(); });
     connect(m_fgCombo, &QComboBox::currentIndexChanged, this, [editorChanged](int) { editorChanged(); });
+    // The four action controls join the SAME lambda and are written back only from
+    // loadEditorFor(), which already saves and restores m_updating. That reuse is the
+    // entire guard — a second path with a guard of its own is how the bug documented
+    // at loadEditorFor() got in the first time.
+    connect(m_colorGroup, &QGroupBox::toggled, this, [editorChanged](bool) { editorChanged(); });
+    connect(m_digestCheck, &QCheckBox::toggled, this, [editorChanged](bool) { editorChanged(); });
+    connect(m_tabCheck, &QCheckBox::toggled, this, [editorChanged](bool) { editorChanged(); });
+    connect(m_notifyCheck, &QCheckBox::toggled, this, [editorChanged](bool) { editorChanged(); });
+}
+
+bool HighlighterPane::notificationsSupported()
+{
+    return QSystemTrayIcon::isSystemTrayAvailable() && QSystemTrayIcon::supportsMessages();
+}
+
+HighlightActions HighlighterPane::readActions() const
+{
+    HighlightActions a;
+    if (m_colorGroup->isChecked())
+        a |= HighlightAction::Color;
+    if (m_digestCheck->isChecked())
+        a |= HighlightAction::Digest;
+    if (m_tabCheck->isChecked())
+        a |= HighlightAction::Tab;
+    // Read even when the control is disabled: a rule that arrived from a preset or
+    // another machine carrying Notify keeps it, rather than being quietly rewritten by
+    // a desktop that happens not to offer notifications. It behaves as if it carried
+    // Tab there (MainWindow::handleAlerts) and colours normally.
+    if (m_notifyCheck->isChecked())
+        a |= HighlightAction::Notify;
+    return a;
 }
 
 int HighlighterPane::currentRow() const
@@ -315,7 +395,23 @@ QString HighlighterPane::ruleSummary(const HighlightRule &r) const
     // (paintItem), so naming them as well spent dock width saying twice what one look
     // answers — and a colour is recognised faster than "bg:Deep Amber" is read.
     const QString axes = axisSummary(r.match);
-    return axes.isEmpty() ? tr("(no match set)") : axes;
+    QString text = axes.isEmpty() ? tr("(no match set)") : axes;
+
+    // The NON-colour actions do have to be named, because §7 promises the list previews
+    // the rules and the row's own paint can no longer say what a rule does: a rule that
+    // only feeds the digest is painted exactly like one that does nothing at all.
+    QStringList extras;
+    if (r.actions.testFlag(HighlightAction::Digest))
+        extras << tr("digest");
+    if (r.actions.testFlag(HighlightAction::Tab))
+        extras << tr("tab");
+    if (r.actions.testFlag(HighlightAction::Notify))
+        extras << tr("notify");
+    if (!extras.isEmpty())
+        text += QStringLiteral(" · ") + extras.join(QStringLiteral(", "));
+    else if (!r.actions)
+        text += QStringLiteral(" · ") + tr("does nothing");
+    return text;
 }
 
 void HighlighterPane::paintItem(QListWidgetItem *item, const HighlightRule &r) const
@@ -421,6 +517,10 @@ void HighlighterPane::loadEditorFor(int row)
         m_axes->setCriteria(r.match);
         setSwatchCombo(m_bgCombo, r.background);
         setSwatchCombo(m_fgCombo, r.foreground);
+        m_colorGroup->setChecked(r.actions.testFlag(HighlightAction::Color));
+        m_digestCheck->setChecked(r.actions.testFlag(HighlightAction::Digest));
+        m_tabCheck->setChecked(r.actions.testFlag(HighlightAction::Tab));
+        m_notifyCheck->setChecked(r.actions.testFlag(HighlightAction::Notify));
     }
     m_updating = wasUpdating;
 }

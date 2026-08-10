@@ -336,6 +336,67 @@ public:
     // rule list unchanged. Rules match nothing until it has run at least once.
     void resolveHighlighters() { m_highlighters.resolve(m_index, m_format, displayZone()); }
 
+    // --- The highlight digest (M19, SPEC.md §7, ARCHITECTURE.md §7.5.2) -------------
+    //
+    // A second visible subset of THIS document: for every enabled rule carrying
+    // HighlightAction::Digest, the LAST record that rule matches. Ascending, deduped
+    // (one record can be the newest match of two rules), and at most one row per rule —
+    // which is exactly FilteredIndex::setVisible()'s contract, the same lever M15's
+    // filter context pulled one level down.
+    //
+    // It is per-FILE and not per-view, despite what ideas.md #12 assumed: the ordinals
+    // derive from per-file rules, the per-file index and the per-file run bound, so two
+    // views of one log could only ever compute the same list. What is per-view is the
+    // widget that renders it.
+    //
+    // BOUND BY THE SELECTED RUN, and deliberately NOT by the filters. The run bound
+    // because a digest row from the *previous* run, presented as the newest, is the
+    // error §7.2.1 already ruled out for context. The filters not, because the digest
+    // answers a question about the FILE while the main view is filtered somewhere else
+    // — coupling it to applyFilters() would empty the strip exactly when its premise
+    // applies. The honest cost of that: a digest row may name a record the main view is
+    // not showing, so the strip is for reading and copying, not for navigating.
+    const FilteredIndex &digest() const { return m_digest; }
+
+    // How far back rebuildDigest() will look, in in-bound records. A FENCE, not a
+    // disclosure, and this is the number that keeps the feature usable:
+    // HighlighterPane::commit() fires on every KEYSTROKE in the message-text field, so
+    // an unbounded backward scan with a decode per record would hang the window once
+    // per character typed into a digest rule on a large log. A rule whose newest match
+    // is further back than this simply has no row — which is also honest about what the
+    // strip is for.
+    static constexpr int kDigestLookback = 100000;
+
+    // Recompute the digest from scratch: one backward walk from the newest in-bound
+    // record, stopping when every digest rule has been answered or the fence bites.
+    // Cheap when no rule carries Digest (it clears and returns). Call after the rules
+    // change, after the run selection moves, and after indexing finishes.
+    //
+    // A backward walk over the ALREADY-BUILT index is not an indexer pass: invariant #9
+    // governs the scan that produces records, and §7.2 already permits random access in
+    // data() on the paint path for the same reason.
+    void rebuildDigest();
+
+    // Fold newly appended records into the digest without rescanning. Returns true when
+    // the digest actually changed and so must be republished to its model.
+    //
+    // `provisionalChanged` and `provisionalRow` carry the live path's re-read of the
+    // trailing record. They matter even when the ordinal list does NOT change, because
+    // FilteredIndex holds a 32-byte COPY of each Record: a digest row whose record grew
+    // a continuation line would otherwise render at a stale height for the rest of the
+    // session. And when the provisional record STOPS matching a rule it was the newest
+    // match of, that rule's entry is re-found by a bounded backward scan.
+    bool updateDigestAfterAppend(int firstNewRow, bool provisionalChanged, int provisionalRow);
+
+    // resolveHighlighters() and rebuildDigest() together — what every caller that edits
+    // rules actually wants. Kept as one name so a new call site cannot resolve the
+    // rules and leave the digest describing the previous ones.
+    void refreshHighlighting()
+    {
+        resolveHighlighters();
+        rebuildDigest();
+    }
+
     // Decode one record's message text through the Decoder (invariant #8, no raw
     // byte scans) — the message field when the pattern defines one, else the whole
     // record so text filtering still works on plain-text/unparsed logs (SPEC.md §6).
@@ -407,6 +468,20 @@ private:
     // Drop the index, runs and filtered subset, leaving a valid empty index.
     void clearIndex();
 
+    // Publish m_digestLast as the digest FilteredIndex (sorted, deduped). Returns
+    // true when it published, and skips the work when the ordinals are unchanged —
+    // which is what stops a quiet tick from jolting the strip. `force` republishes
+    // anyway, for the one case where the ordinals are right and the copied Records
+    // behind them are not (a digest row that grew a continuation line).
+    bool publishDigest(bool force = false);
+    // Back to an ACTIVE, empty digest — never FilteredIndex::clear(), which would make
+    // it the identity view over the whole index. See the definition.
+    void clearDigest();
+    // The newest record at or before `fromRow` that rule `ruleIndex` matches, or -1.
+    // Fenced by kDigestLookback like the full scan. Used when the trailing record
+    // stops matching a rule it was the newest match of.
+    int findLastMatchBefore(int ruleIndex, int fromRow) const;
+
     QString                    m_path;
     QString                    m_lastError;
     QString                    m_waitReason;
@@ -426,6 +501,12 @@ private:
     int                        m_contextBefore = 0;
     int                        m_contextAfter = 0;
     HighlighterSet             m_highlighters;
+    // The digest subset, and per rule the source ordinal of its newest match (-1 for
+    // none). m_digestLast is what makes an append O(rules) rather than O(n): the
+    // backward scan runs once, and afterwards each new record can only push an entry
+    // forward. Sized to m_highlighters.rules by rebuildDigest().
+    FilteredIndex              m_digest;
+    QVector<qint32>            m_digestLast;
     QTimeZone                  m_sourceZone;
     QTimeZone                  m_displayZone;   // derived; see recomputeDisplayZone()
     TimeDisplay                m_timeDisplay = TimeDisplay::AsWritten;

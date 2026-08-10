@@ -93,7 +93,7 @@ void TestSessionGui::roundTripRestoresFileFiltersHighlighters()
         w.resize(920, 640);
         w.show();
         w.openFile(m_sample);
-        QTRY_COMPARE(w.findChildren<LogView *>().size(), 1); // the file opened
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1); // the file opened
         QTest::qWait(300);                                // let indexing finish
 
         auto *hp = w.findChild<HighlighterPane *>();
@@ -112,7 +112,7 @@ void TestSessionGui::roundTripRestoresFileFiltersHighlighters()
         MainWindow w; // constructor calls restoreSession()
         w.show();
         // Exactly one: restoring one saved file must not resurrect a second view.
-        QTRY_COMPARE(w.findChildren<LogView *>().size(), 1); // the last file reopened
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1); // the last file reopened
         QTest::qWait(300);
 
         auto *hp = w.findChild<HighlighterPane *>();
@@ -155,8 +155,8 @@ void TestSessionGui::missingLastFileRestoresAsWaiting()
     MainWindow w;
     w.show();
     QTest::qWait(100);
-    QCOMPARE(w.findChildren<LogView *>().size(), 1); // the tab is there, and waiting
-    auto *view = w.findChild<LogView *>();
+    QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1); // the tab is there, and waiting
+    auto *view = w.findChild<LogView *>(QStringLiteral("logView"));
     QVERIFY(view);
     QCOMPARE(view->recordCount(), 0);
     QVERIFY(!view->placeholderText().isEmpty()); // it says why, in the view itself
@@ -166,7 +166,7 @@ void TestSessionGui::missingLastFileRestoresAsWaiting()
     auto *closeAll = w.findChild<QAction *>(QStringLiteral("closeAllAction"));
     QVERIFY(closeAll);
     closeAll->trigger();
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 0);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 0);
     w.close();
 }
 
@@ -197,7 +197,7 @@ void TestSessionGui::runSelectionThroughUiAndPersists()
         w.resize(900, 600);
         w.show();
         w.openFile(path);
-        QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
         QTest::qWait(300); // let indexing finish
 
         auto *rp = w.findChild<RunPane *>();
@@ -221,7 +221,7 @@ void TestSessionGui::runSelectionThroughUiAndPersists()
     {
         MainWindow w;
         w.show();
-        QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
         QTest::qWait(300);
 
         auto *rp = w.findChild<RunPane *>();

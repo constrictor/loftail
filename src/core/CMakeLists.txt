@@ -131,6 +131,11 @@ add_library(loftail_core STATIC
     Palette.h
     Highlight.cpp
     Highlight.h
+    # M19 — how often a rule carrying the Notify action may interrupt. QObject-free and
+    # clock-injected on purpose: the rate limit is the part with no honest CI coverage
+    # of its delivery, so the part that DECIDES has to be testable without a desktop.
+    AlertPolicy.cpp
+    AlertPolicy.h
     AtomicJson.cpp
     AtomicJson.h
     PresetStore.cpp

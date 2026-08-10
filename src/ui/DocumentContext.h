@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AlertPolicy.h"
 #include "FormatSettings.h"
 
 #include <QJsonObject>
@@ -62,6 +63,25 @@ public:
     LogModel        *model = nullptr;
     IndexController *controller = nullptr;
     LiveController  *live = nullptr;
+
+    // A second model over the SAME Document, reading its digest subset instead of its
+    // filtered one (M19, ARCHITECTURE.md §7.5.1). Per FILE and not per view: the digest
+    // ordinals derive from per-file rules, the per-file index and the per-file run
+    // bound, so two views of one log could only compute the same list — what is per-view
+    // is the strip that renders it. Destroyed after `live`, which points at it.
+    LogModel        *digestModel = nullptr;
+
+    // Set when a rule carrying HighlightAction::Tab matched a record that arrived while
+    // this log was not the one on screen (SPEC.md §7). Rendered as a marker in the tab
+    // title and cleared when the tab is brought forward with the window in front. Per
+    // FILE rather than per view, because the marker is on the tab and every view of one
+    // file shares its rules.
+    bool             unseenMatch = false;
+
+    // How often this log may raise a desktop notification, and what it owes when it has
+    // been suppressed. Transient window state rather than a property of the file, which
+    // is why it sits here and not on the Document.
+    AlertPolicy      alerts;
 
     // The format choice for this file (SPEC.md §4). Held here as UI configuration;
     // the source of truth across sessions is the per-file FormatCache. The pattern

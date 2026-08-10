@@ -5,6 +5,7 @@
 #include "LogView.h"
 #include "SshPromptDialogs.h"
 
+#include <QElapsedTimer>
 #include <QMainWindow>
 #include <QString>
 #include <QVector>
@@ -20,7 +21,9 @@ class QLabel;
 class QMenu;
 class QProgressBar;
 class QStackedWidget;
+class QSystemTrayIcon;
 class QTabWidget;
+class QTimer;
 QT_END_NAMESPACE
 
 namespace loftail {
@@ -149,8 +152,43 @@ private:
     void updateStatus();
     void updateModelTheme(); // push the light/dark cue into the model (highlighting)
 
-    // Retitle a file's tabs, folding in its indexing progress.
+    // Retitle a file's tabs, folding in its indexing progress and its unseen-match
+    // marker.
     void updateTabTitles(DocumentContext *ctx);
+
+    // --- Highlight actions beyond colour (M19, SPEC.md §7) -------------------------
+
+    // Recompute one file's digest subset and republish it to its model. A wholesale
+    // ordinal remap, so it is bracketed by a model reset exactly as applyFiltersFor()
+    // is — the contrast with applyActiveHighlighters()'s bare repaint is the point.
+    void rebuildDigestFor(DocumentContext *ctx);
+
+    // What a finished ingest tick's matches mean for the tab marker and the
+    // notification. Called from the `ingested` handler ABOVE its
+    // `ctx != activeContext()` early return — the background tab is the only case the
+    // marker exists for, and below that return it would never fire in real use.
+    void handleAlerts(DocumentContext *ctx);
+
+    // Clear `ctx`'s unseen-match marker if the log is now genuinely being looked at
+    // (its tab is current AND the window is in front). Edge-triggered: retitling a tab
+    // relays out the whole bar, so it must not run on every activation event.
+    void clearUnseenMatch(DocumentContext *ctx);
+
+    // Is this log being looked at right now? The gate for setting the marker and for
+    // raising a notification at all.
+    bool isBeingRead(const DocumentContext *ctx) const;
+
+    // Create the tray icon when some open file has an enabled rule carrying Notify, and
+    // destroy it when none does. QSystemTrayIcon::showMessage is a silent no-op unless
+    // the icon is SHOWN, so "notify" necessarily means "loftail puts an icon in the
+    // tray" — which is a visible thing to do to a user's desktop and is therefore
+    // scoped to the feature rather than created at startup and left there.
+    void updateTrayPresence();
+    bool anyRuleWantsNotifications() const;
+    // Whether this desktop offers notifications at all. False on a stock GNOME/Wayland
+    // session — the reference desktop — so the degrade path is the COMMON path there,
+    // not a corner: the pane says so and a Notify rule behaves as if it carried Tab.
+    static bool notificationsAvailable();
 
     // Indexing progress/completion for ONE file. Taken per context rather than as a
     // plain slot because a background file keeps scanning while another is active.
@@ -323,6 +361,21 @@ private:
     // The wrap mode new views are created with — a window-wide View-menu choice
     // (SPEC.md §5), not per-file state; each LogView owns its own mode thereafter.
     LogView::WrapMode m_wrapMode = LogView::WrapMode::Off;
+
+    // --- Notification surface (M19) ------------------------------------------------
+    // Created only while some rule asks for one; see updateTrayPresence().
+    QSystemTrayIcon *m_tray = nullptr;
+    // Releases a backlog AlertPolicy suppressed. Needed because `ingested` only fires
+    // on a tick that produced records: a burst followed by silence would otherwise
+    // leave its suppressed matches unreported forever. Runs only while m_tray exists.
+    QTimer          *m_alertPump = nullptr;
+    // Monotonic, and the only clock AlertPolicy ever sees — so the policy itself stays
+    // testable with a plain counter.
+    QElapsedTimer    m_alertClock;
+    // The log whose notification is currently on screen, so clicking it raises the
+    // right tab. Qt gives a message no identity, so only the most recent can be
+    // honoured — which the rate limiter makes a distinction without a difference.
+    DocumentContext *m_lastNotified = nullptr;
 };
 
 } // namespace loftail

@@ -9,6 +9,7 @@
 #include <optional>
 
 QT_BEGIN_NAMESPACE
+class QCheckBox;
 class QComboBox;
 class QGroupBox;
 class QListWidget;
@@ -106,6 +107,13 @@ private:
     int swatchValue(const QComboBox *combo) const;
     bool isDark() const;
 
+    // The four action controls, read as one set (M19, SPEC.md §7).
+    HighlightActions readActions() const;
+    // Whether this desktop offers a notification service at all. False on a stock
+    // GNOME/Wayland session, so the Notify control is disabled and says why rather
+    // than accepting a tick that would do nothing.
+    static bool notificationsSupported();
+
     Document *m_document = nullptr;
     QVector<HighlightRule> m_rules;
     bool m_updating = false; // guards signal storms during (re)load
@@ -121,8 +129,15 @@ private:
     // Editor for the selected rule.
     QGroupBox  *m_editor = nullptr;
     AxisEditor *m_axes = nullptr;
+    // Colour is an ACTION, so its enable control is the group box's own title row and
+    // the two combos are its body — hence QGroupBox* rather than a separate checkbox,
+    // the same shape AxisEditor's axis enables take and for the same reason.
+    QGroupBox  *m_colorGroup = nullptr;
     QComboBox  *m_bgCombo = nullptr;
     QComboBox  *m_fgCombo = nullptr;
+    QCheckBox  *m_digestCheck = nullptr;
+    QCheckBox  *m_tabCheck = nullptr;
+    QCheckBox  *m_notifyCheck = nullptr;
 };
 
 } // namespace loftail

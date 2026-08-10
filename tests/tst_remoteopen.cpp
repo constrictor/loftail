@@ -328,7 +328,7 @@ void TestRemoteOpen::unreachableRemoteOpensAWaitingTab()
     QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log (web1)"));
     QVERIFY(statusText(window).contains(QStringLiteral("Connection refused")));
 
-    auto *view = window.findChild<LogView *>();
+    auto *view = window.findChild<LogView *>(QStringLiteral("logView"));
     QVERIFY(view);
     QCOMPARE(view->recordCount(), 0);
     QVERIFY(!view->placeholderText().isEmpty()); // and it says so in the view itself
@@ -427,7 +427,7 @@ void TestRemoteOpen::aTransportRefusalKeepsTheTabAndSaysWhy()
     QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log (web1)"));
     QVERIFY(statusText(window).contains(QStringLiteral("Authentication")));
 
-    auto *view = window.findChild<LogView *>();
+    auto *view = window.findChild<LogView *>(QStringLiteral("logView"));
     QVERIFY(view);
     QCOMPARE(view->recordCount(), 0);
     QVERIFY(view->placeholderText().contains(QStringLiteral("Authentication")));
@@ -514,7 +514,7 @@ void TestRemoteOpen::aBackgroundResumeRaisesNoFormatDialog()
     remote->becomeAvailable();
 
     // Wait for the resume to have happened, then check nothing was raised on the way.
-    auto *view = window.findChild<LogView *>();
+    auto *view = window.findChild<LogView *>(QStringLiteral("logView"));
     QVERIFY(view);
     QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() > 0, 5000);
     settle(300);

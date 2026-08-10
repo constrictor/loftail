@@ -14,6 +14,9 @@ DocumentContext::~DocumentContext()
     stopWorkers();
     delete model;
     model = nullptr;
+    // After the live controller, which holds a pointer to it (setDigestModel).
+    delete digestModel;
+    digestModel = nullptr;
 }
 
 void DocumentContext::stopWorkers()

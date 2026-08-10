@@ -9,6 +9,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QSystemTrayIcon>
 #include <QTemporaryFile>
 
 #include "Document.h"
@@ -131,6 +132,15 @@ private slots:
     void swatchMenuIsBandedAndFitsAShortScreen();
     void oneClickRuleSetsBothColours();
     void reloadingTheListKeepsRulesEnabled();
+
+    // M19 — a rule's effect is a set of actions, and colour is one of them.
+    void everyActionIsOfferedAndOnlyColourStartsOn();
+    void togglingAnActionReachesTheDocument();
+    void untickingColourLeavesTheRuleMatching();
+    void newCopiesTheSelectedRulesActions();
+    void theOneClickRuleColoursOnly();
+    void reloadingTheListKeepsActions();
+    void notifySaysWhyWhenTheDesktopOffersNoNotifications();
 };
 
 void TestHighlighterPane::everyAxisIsOfferedAndOptIn()
@@ -515,6 +525,191 @@ void TestHighlighterPane::reloadingTheListKeepsRulesEnabled()
     QVERIFY(doc.highlighters().rules.at(0).enabled);
     QVERIFY(!doc.highlighters().rules.at(1).enabled);
     QVERIFY(doc.highlighters().rules.at(3).enabled);
+}
+
+// --- M19: the four action controls -------------------------------------------
+
+void TestHighlighterPane::everyActionIsOfferedAndOnlyColourStartsOn()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+
+    // Colour is not a peer of the other three — it is the only action with
+    // configuration attached — so it is the checkable group box holding the two colour
+    // combos, exactly the shape the Filters pane's axes take.
+    QGroupBox *colour = axis(pane, "actionColor");
+    QVERIFY(colour);
+    QVERIFY(colour->isCheckable());
+    QVERIFY(pane.findChild<QComboBox *>(QStringLiteral("backgroundColor")));
+    QVERIFY(pane.findChild<QComboBox *>(QStringLiteral("textColor")));
+
+    auto *digest = pane.findChild<QCheckBox *>(QStringLiteral("actionDigest"));
+    auto *tab = pane.findChild<QCheckBox *>(QStringLiteral("actionTab"));
+    auto *notify = pane.findChild<QCheckBox *>(QStringLiteral("actionNotify"));
+    QVERIFY(digest);
+    QVERIFY(tab);
+    QVERIFY(notify);
+
+    button(pane, QStringLiteral("ruleNew"))->click();
+
+    // A new rule colours and nothing else — what a rule has always done, and the only
+    // action with a self-evident meaning before it has been configured.
+    QCOMPARE(doc.highlighters().rules.size(), 1);
+    QCOMPARE(doc.highlighters().rules.first().actions,
+             HighlightActions(HighlightAction::Color));
+    QVERIFY(colour->isChecked());
+    QVERIFY(!digest->isChecked());
+    QVERIFY(!tab->isChecked());
+    QVERIFY(!notify->isChecked());
+}
+
+void TestHighlighterPane::togglingAnActionReachesTheDocument()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
+
+    pane.findChild<QCheckBox *>(QStringLiteral("actionDigest"))->setChecked(true);
+    QVERIFY(doc.highlighters().rules.first().actions.testFlag(HighlightAction::Digest));
+
+    pane.findChild<QCheckBox *>(QStringLiteral("actionTab"))->setChecked(true);
+    QVERIFY(doc.highlighters().rules.first().actions.testFlag(HighlightAction::Tab));
+
+    pane.findChild<QCheckBox *>(QStringLiteral("actionDigest"))->setChecked(false);
+    QVERIFY(!doc.highlighters().rules.first().actions.testFlag(HighlightAction::Digest));
+    QVERIFY(doc.highlighters().rules.first().actions.testFlag(HighlightAction::Tab));
+}
+
+void TestHighlighterPane::untickingColourLeavesTheRuleMatching()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
+    priorityEnable(pane)->setChecked(true); // give it something to match
+
+    QVERIFY(doc.highlighters().rules.first().match.anyActive());
+
+    axis(pane, "actionColor")->setChecked(false);
+    const HighlightRule &r = doc.highlighters().rules.first();
+
+    // The rule still MATCHES; it just does nothing about it. That is a legitimate,
+    // deliberate state — it is how a rule is parked without being deleted — and it
+    // must survive a round trip rather than being read back as "colour, as of old".
+    QVERIFY(r.match.anyActive());
+    QVERIFY(!r.actions.testFlag(HighlightAction::Color));
+    QCOMPARE(HighlightRule::fromJson(r.toJson()).actions, HighlightActions());
+}
+
+void TestHighlighterPane::newCopiesTheSelectedRulesActions()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
+    pane.findChild<QCheckBox *>(QStringLiteral("actionDigest"))->setChecked(true);
+    axis(pane, "actionColor")->setChecked(false);
+
+    // New starts from the SELECTED rule (SPEC.md §7), and its actions are part of what
+    // "a variant of the one in front of you" means.
+    button(pane, QStringLiteral("ruleNew"))->click();
+    QCOMPARE(doc.highlighters().rules.size(), 2);
+    QCOMPARE(doc.highlighters().rules.at(1).actions,
+             HighlightActions(HighlightAction::Digest));
+    QVERIFY(doc.highlighters().rules.at(1).enabled); // ...and enabled, as always
+}
+
+void TestHighlighterPane::theOneClickRuleColoursOnly()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+
+    MatchCriteria c;
+    c.priorityEnabled = true;
+    c.minPriority = Priority::Error;
+    pane.addRule(c);
+
+    // The record menu's one-click rule is a HIGHLIGHT: colour, and nothing the user
+    // did not ask for. Digest, a tab marker or a notification arriving from a single
+    // menu click would be the application deciding to interrupt on its own.
+    QCOMPARE(doc.highlighters().rules.size(), 1);
+    QCOMPARE(doc.highlighters().rules.first().actions,
+             HighlightActions(HighlightAction::Color));
+}
+
+void TestHighlighterPane::reloadingTheListKeepsActions()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+
+    // Four rules with distinct action sets, then a rebuild of the list — the companion
+    // to reloadingTheListKeepsRulesEnabled(). loadEditorFor() is re-entered by
+    // reloadRuleList() without either saying so, and the four action controls are new
+    // surface on exactly that path: they are set only there, and they write back only
+    // through the shared editorChanged lambda.
+    for (int i = 0; i < 4; ++i)
+        button(pane, QStringLiteral("ruleNew"))->click();
+    QCOMPARE(doc.highlighters().rules.size(), 4);
+
+    pane.findChild<QCheckBox *>(QStringLiteral("actionDigest"))->setChecked(true);
+    ruleList(pane)->setCurrentRow(1);
+    pane.findChild<QCheckBox *>(QStringLiteral("actionTab"))->setChecked(true);
+    axis(pane, "actionColor")->setChecked(false);
+
+    const QVector<HighlightRule> before = doc.highlighters().rules;
+
+    // Force the rebuild the way the application does: a move reloads the whole list.
+    button(pane, QStringLiteral("ruleUp"))->click();
+    button(pane, QStringLiteral("ruleDown"))->click();
+
+    const QVector<HighlightRule> after = doc.highlighters().rules;
+    QCOMPARE(after.size(), before.size());
+    for (int i = 0; i < after.size(); ++i) {
+        QVERIFY2(after.at(i).actions == before.at(i).actions,
+                 qPrintable(QStringLiteral("rule %1 lost its actions").arg(i)));
+        QVERIFY2(after.at(i).enabled, qPrintable(QStringLiteral("rule %1 switched off").arg(i)));
+    }
+}
+
+void TestHighlighterPane::notifySaysWhyWhenTheDesktopOffersNoNotifications()
+{
+    HighlighterPane pane;
+    auto *notify = pane.findChild<QCheckBox *>(QStringLiteral("actionNotify"));
+    QVERIFY(notify);
+
+    // Offscreen — and on a stock GNOME/Wayland session, which is the reference desktop
+    // — there is no notification service, so the control is disabled and SAYS SO rather
+    // than accepting a tick that would silently do nothing. Said before the box can be
+    // ticked, the same habit as naming hosts.json before offering to remember a
+    // password. Where a service does exist the control is simply live.
+    const bool available = QSystemTrayIcon::isSystemTrayAvailable()
+                           && QSystemTrayIcon::supportsMessages();
+    QCOMPARE(notify->isEnabled(), available);
+    QVERIFY(!notify->toolTip().isEmpty());
+    if (!available)
+        QVERIFY(notify->toolTip().contains(QStringLiteral("tab")));
 }
 
 QTEST_MAIN(TestHighlighterPane)

@@ -11,10 +11,15 @@
 #include <QTemporaryDir>
 
 #include "Document.h"
+#include "DocumentContext.h"
+#include "DocumentView.h"
 #include "FilterPane.h"
+#include "Highlight.h"
+#include "LiveController.h"
 #include "LogModel.h"
 #include "LogView.h"
 #include "MainWindow.h"
+#include "MatchCriteria.h"
 
 using namespace loftail;
 
@@ -115,6 +120,15 @@ private slots:
     void timestampModeIsPerFileNotPerView();
     void timestampModeSharedAcrossViewsOfOneFile();
     void timestampModeSurvivesRestart();
+
+    // M19 — the tab marker. A rule carrying HighlightAction::Tab marks its tab when a
+    // match arrives while that log is not the one on screen (SPEC.md §7). Asserted on
+    // the BACKGROUND tab throughout: the active tab's other half of the gate is
+    // isActiveWindow(), which is not reliable under the offscreen platform.
+    void aMatchInABackgroundTabMarksIt();
+    void aRuleWithoutTheTabActionMarksNothing();
+    void returningToTheTabClearsTheMark();
+    void theTabMarkerIsNotTheWordIndexing();
 };
 
 namespace {
@@ -170,7 +184,7 @@ void TestMultiDoc::documentsAndPanesLiveInSeparateShells()
     w.show();
     w.openFile(m_a);
     w.openFile(m_b);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 2);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
 
     QTabWidget *t = tabs(w);
     QVERIFY(t);
@@ -181,13 +195,15 @@ void TestMultiDoc::documentsAndPanesLiveInSeparateShells()
     // Every open file is a page of it...
     QCOMPARE(t->count(), 2);
     for (int i = 0; i < t->count(); ++i)
-        QVERIFY(t->widget(i)->findChild<LogView *>());
+        QVERIFY(t->widget(i)->findChild<LogView *>(QStringLiteral("logView")));
 
     // ...and the docks are the panes and nothing else: no log inside a dock, no dock
     // inside the well.
     const QList<QDockWidget *> docks = w.findChildren<QDockWidget *>();
     QVERIFY(!docks.isEmpty()); // the panes are still dockable among themselves
     for (QDockWidget *d : docks) {
+        // Unnamed on purpose, unlike every other LogView lookup in this file: the claim
+        // is that a dock holds NO log view of any kind, digest strip included.
         QVERIFY2(!d->findChild<LogView *>(), qPrintable(d->objectName()));
         QVERIFY2(!t->isAncestorOf(d), qPrintable(d->objectName()));
     }
@@ -227,7 +243,7 @@ void TestMultiDoc::oneOpenFileIsEnoughToEnableTheFileActions()
     w.resize(900, 600);
     w.show();
     w.openFile(m_a);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
 
     for (const char *name : {"closeTabAction", "closeAllAction", "newViewAction"}) {
         QAction *a = w.findChild<QAction *>(QLatin1String(name));
@@ -243,11 +259,11 @@ void TestMultiDoc::secondFileOpensAsAnotherTab()
     w.show();
 
     w.openFile(m_a);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
 
     w.openFile(m_b);
     // The point of the milestone: the first file is still open.
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 2);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
     QCOMPARE(tabCount(w), 2);
 
     // The file just opened is the visible, active one — its name is in the title.
@@ -260,10 +276,10 @@ void TestMultiDoc::reopeningAnOpenFileRaisesItInsteadOfDuplicating()
     w.show();
     w.openFile(m_a);
     w.openFile(m_b);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 2);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
 
     w.openFile(m_a); // already open
-    QCOMPARE(w.findChildren<LogView *>().size(), 2); // no third view
+    QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2); // no third view
     QVERIFY(w.windowTitle().endsWith(QStringLiteral("a.log"))); // but it is raised
 }
 
@@ -273,10 +289,10 @@ void TestMultiDoc::newViewSharesOneDocumentAndModel()
     w.resize(900, 600);
     w.show();
     w.openFile(m_a);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
 
     trigger(w, "newViewAction");
-    QCOMPARE(w.findChildren<LogView *>().size(), 2);
+    QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
     QCOMPARE(tabCount(w), 2);
 
     // Two views, ONE file: the index, filters and highlighters are shared, so the
@@ -285,7 +301,7 @@ void TestMultiDoc::newViewSharesOneDocumentAndModel()
 
     // The views are independent in what they show: moving one leaves the other.
     waitUntilIndexed(w); // records must exist before a record can be selected
-    const QList<LogView *> views = w.findChildren<LogView *>();
+    const QList<LogView *> views = w.findChildren<LogView *>(QStringLiteral("logView"));
     views.at(0)->setCurrentRecord(0);
     views.at(1)->setCurrentRecord(20);
     QCOMPARE(views.at(0)->currentRecord(), 0);
@@ -298,7 +314,7 @@ void TestMultiDoc::switchingViewsOfOneFileDoesNotRebindPanes()
     w.resize(900, 600);
     w.show();
     w.openFile(m_a);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
 
     QSignalSpy spy(&w, &MainWindow::activeDocumentChanged);
 
@@ -310,7 +326,7 @@ void TestMultiDoc::switchingViewsOfOneFileDoesNotRebindPanes()
 
     // A second FILE does rebind them.
     w.openFile(m_b);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 3);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 3);
     QCOMPARE(spy.count(), 1);
 }
 
@@ -321,10 +337,10 @@ void TestMultiDoc::closingATabLeavesTheOtherFileOpen()
     w.show();
     w.openFile(m_a);
     w.openFile(m_b);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 2);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
 
     trigger(w, "closeTabAction"); // closes b.log, the active tab
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     QCOMPARE(tabCount(w), 1);
     QVERIFY(w.windowTitle().endsWith(QStringLiteral("a.log")));
 }
@@ -335,15 +351,15 @@ void TestMultiDoc::fileClosesWithItsLastViewOnly()
     w.resize(900, 600);
     w.show();
     w.openFile(m_a);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     trigger(w, "newViewAction");
-    QCOMPARE(w.findChildren<LogView *>().size(), 2);
+    QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
 
     QSignalSpy spy(&w, &MainWindow::activeDocumentChanged);
 
     // Closing ONE of two views leaves the file open — nothing unbinds.
     trigger(w, "closeTabAction");
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     QVERIFY(w.windowTitle().endsWith(QStringLiteral("a.log")));
     // ...and the survivor drops the "[1]" it wore only to be told apart from its twin
     // (the title may still carry an indexing suffix, which is why this is not exact).
@@ -354,7 +370,7 @@ void TestMultiDoc::fileClosesWithItsLastViewOnly()
 
     // Closing the last one closes the file.
     trigger(w, "closeTabAction");
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 0);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 0);
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail"));
 }
 
@@ -365,12 +381,12 @@ void TestMultiDoc::closingEverythingUnbindsThePanes()
     w.show();
     w.openFile(m_a);
     w.openFile(m_b);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 2);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
 
     QSignalSpy spy(&w, &MainWindow::activeDocumentChanged);
     trigger(w, "closeAllAction");
 
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 0);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 0);
     QCOMPARE(tabCount(w), 0);
     // The panes must be told there is no document (invariant #7).
     QVERIFY(spy.count() >= 1);
@@ -386,7 +402,7 @@ void TestMultiDoc::timestampModeIsPerFileNotPerView()
     w.resize(900, 600);
     w.show();
     w.openFile(m_a);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     waitUntilIndexed(w);
 
     QCOMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplayAsWrittenAction"));
@@ -395,7 +411,7 @@ void TestMultiDoc::timestampModeIsPerFileNotPerView()
 
     // A second FILE carries its own mode; choosing one for a.log must not leak.
     w.openFile(m_b);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 2);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
     waitUntilIndexed(w);
     QCOMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplayAsWrittenAction"));
     trigger(w, "timeDisplayRunSecondsAction");
@@ -413,13 +429,13 @@ void TestMultiDoc::timestampModeSharedAcrossViewsOfOneFile()
     w.resize(900, 600);
     w.show();
     w.openFile(m_a);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     waitUntilIndexed(w);
 
     trigger(w, "newViewAction");
-    QCOMPARE(w.findChildren<LogView *>().size(), 2);
+    QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
 
-    const QList<LogView *> views = w.findChildren<LogView *>();
+    const QList<LogView *> views = w.findChildren<LogView *>(QStringLiteral("logView"));
     LogModel *m0 = modelOf(views.at(0));
     LogModel *m1 = modelOf(views.at(1));
     QVERIFY(m0);
@@ -446,7 +462,7 @@ void TestMultiDoc::timestampModeSurvivesRestart()
         w.resize(900, 600);
         w.show();
         w.openFile(m_a);
-        QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
         waitUntilIndexed(w);
         trigger(w, "timeDisplayRunSecondsAction");
         w.close(); // saves the session
@@ -456,13 +472,170 @@ void TestMultiDoc::timestampModeSurvivesRestart()
     // relaunch restores it along with the rest of the file's format.
     MainWindow w;
     w.show();
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     waitUntilIndexed(w);
     QCOMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplayRunSecondsAction"));
 
-    LogModel *m = modelOf(w.findChildren<LogView *>().at(0));
+    LogModel *m = modelOf(w.findChildren<LogView *>(QStringLiteral("logView")).at(0));
     QVERIFY(m);
     QCOMPARE(m->data(m->index(0, 0)).toString(), QStringLiteral("0.000"));
+
+    w.close();
+}
+
+// --- M19: the tab marker -----------------------------------------------------
+
+namespace {
+
+// The class's own tabs() is private, and these helpers are free functions so the
+// case bodies below read as prose. Same lookup, same object name.
+QTabWidget *docTabs(const MainWindow &w)
+{
+    return w.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+}
+
+// Add a rule to a file's Document directly, the way session restore does. The pane
+// holds one file's rules at a time and these cases care about the file that is NOT on
+// screen, so going through the pane would be the wrong route as well as a longer one.
+void addRule(MainWindow &w, int tabIndex, HighlightActions actions, const char *needle)
+{
+    auto *view = qobject_cast<DocumentView *>(docTabs(w)->widget(tabIndex));
+    QVERIFY(view);
+    Document *doc = view->context()->doc.get();
+
+    HighlightRule r;
+    r.actions = actions;
+    r.match.text.enabled = true;
+    r.match.text.matcher.set(QString::fromLatin1(needle), /*regex=*/false,
+                             Qt::CaseInsensitive);
+    doc->highlighters().rules.append(r);
+    doc->refreshHighlighting();
+}
+
+void appendLine(const QString &path, const char *text)
+{
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::Append));
+    f.write(QStringLiteral("2026-07-21 11:00:00,000 [main] ERROR svc - %1\n")
+                .arg(QLatin1String(text))
+                .toUtf8());
+    f.close();
+}
+
+// Drive one live tick on the file behind `tabIndex`, deterministically — the watcher's
+// own poll would make these cases wait on a timer for no reason.
+void tick(MainWindow &w, int tabIndex)
+{
+    auto *view = qobject_cast<DocumentView *>(docTabs(w)->widget(tabIndex));
+    QVERIFY(view);
+    LiveController *live = view->context()->live;
+    QVERIFY(live);
+    live->checkNow();
+}
+
+bool tabIsMarked(const MainWindow &w, int index)
+{
+    return docTabs(w)->tabText(index).startsWith(QStringLiteral("● "));
+}
+
+} // namespace
+
+void TestMultiDoc::aMatchInABackgroundTabMarksIt()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    w.openFile(m_b);
+    waitUntilIndexed(w);
+    QCOMPARE(tabCount(w), 2);
+
+    // b is the active tab (opened last); mark a rule on a, which is behind it.
+    tabs(w)->setCurrentIndex(1);
+    addRule(w, 0, HighlightAction::Tab, "boom");
+    QVERIFY(!tabIsMarked(w, 0));
+
+    appendLine(m_a, "boom");
+    tick(w, 0);
+
+    // The background tab is the only case the marker exists for — which is why the
+    // handling sits ABOVE the ingested handler's `ctx != activeContext()` early return.
+    QVERIFY(tabIsMarked(w, 0));
+    QVERIFY(!tabIsMarked(w, 1));
+
+    w.close();
+}
+
+void TestMultiDoc::aRuleWithoutTheTabActionMarksNothing()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    w.openFile(m_b);
+    waitUntilIndexed(w);
+
+    tabs(w)->setCurrentIndex(1);
+    addRule(w, 0, HighlightAction::Color, "boom"); // colours, and only colours
+
+    appendLine(m_a, "boom");
+    tick(w, 0);
+
+    // Every action is opt-in per rule: an ordinary colouring rule must never start
+    // marking tabs because the machinery to do so now exists.
+    QVERIFY(!tabIsMarked(w, 0));
+
+    w.close();
+}
+
+void TestMultiDoc::returningToTheTabClearsTheMark()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    w.openFile(m_b);
+    waitUntilIndexed(w);
+
+    tabs(w)->setCurrentIndex(1);
+    addRule(w, 0, HighlightAction::Tab, "boom");
+    appendLine(m_a, "boom");
+    tick(w, 0);
+    QVERIFY(tabIsMarked(w, 0));
+
+    // Arriving at a log is what "seen" means. Under offscreen the window may not report
+    // itself active, so activate it explicitly — the gate is deliberately BOTH halves
+    // (the right tab AND the window in front), and a test that could only prove one of
+    // them would be asserting less than the feature promises.
+    w.activateWindow();
+    tabs(w)->setCurrentIndex(0);
+    if (!w.isActiveWindow())
+        QSKIP("the offscreen platform does not report window activation");
+    QVERIFY(!tabIsMarked(w, 0));
+
+    w.close();
+}
+
+void TestMultiDoc::theTabMarkerIsNotTheWordIndexing()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    w.openFile(m_b);
+    waitUntilIndexed(w);
+
+    tabs(w)->setCurrentIndex(1);
+    addRule(w, 0, HighlightAction::Tab, "boom");
+    appendLine(m_a, "boom");
+    tick(w, 0);
+    QVERIFY(tabIsMarked(w, 0));
+
+    // waitUntilIndexed() above polls for the ABSENCE of "indexing" in every tab title,
+    // so a marker containing that word would deadlock every case in this file that uses
+    // it. Pinned directly rather than left to be rediscovered as a hang.
+    for (int i = 0; i < tabCount(w); ++i)
+        QVERIFY(!tabs(w)->tabText(i).contains(QStringLiteral("indexing")));
 
     w.close();
 }

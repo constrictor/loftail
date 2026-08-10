@@ -1,11 +1,15 @@
 #pragma once
 
+#include "Highlight.h"
+
 #include <QAbstractTableModel>
 #include <QColor>
 
 namespace loftail {
 
 class Document;
+class FilteredIndex;
+class RecordIndex;
 
 // Rows are records, columns come from LogFormat::fields (ARCHITECTURE.md §7.2).
 // data() parses LAZILY from the mapped bytes and stores nothing (invariant #1):
@@ -32,6 +36,35 @@ public:
     // Convenience for the view: the display text of one cell without a
     // QModelIndex round-trip.
     QString cellText(int row, int column) const;
+
+    // --- Which subset of the document this model shows (M19, ARCHITECTURE.md §7.5) ---
+    //
+    // A model reads ONE FilteredIndex to turn view rows into source records; everything
+    // else it touches — the intern tables, the format, the decoder, the bytes — is the
+    // document's source index and is shared. Pointing a second model at a second
+    // FilteredIndex over the same document is therefore the whole of what a digest strip
+    // needs, and it is why the digest is not a second model class duplicating cellText().
+    //
+    // nullptr, the default, means the document's own filtered view — so every existing
+    // caller behaves exactly as it did, which is why tst_logmodel, tst_logview,
+    // tst_filtercontext and tst_tail pass unaltered. The index must outlive the model.
+    void setViewIndex(const FilteredIndex *index);
+    const FilteredIndex *viewIndex() const { return m_view; }
+
+    // The RecordIndex the view scrolls over — the compact one when this model's view
+    // index is active, the document's source index otherwise. LogView's geometry reads
+    // this rather than the document, so there is ONE seam and not two.
+    const RecordIndex &viewGeometry() const;
+
+    // View row -> source record ordinal in THIS model's view index, or -1.
+    int sourceRow(int viewRow) const;
+
+    // Which highlight action decides this model's row colours (M19, SPEC.md §7).
+    // Color for the log itself; Digest for the digest strip, so a digest row wears the
+    // colours of the rule that put it there whether or not that rule also colours the
+    // log — which is what tells the user which rule a row is for.
+    void setHighlightAction(HighlightAction action) { m_action = action; }
+    HighlightAction highlightAction() const { return m_action; }
 
     // Highlighting (M5): the active theme decides which of each palette slot's two
     // colors data() resolves for the Background/Foreground roles (SPEC.md §7). The
@@ -92,8 +125,14 @@ private:
     // have admitted the record (invariant #4).
     int matchedRule(int row) const;
 
-    const Document *m_document;
-    bool            m_darkTheme = false;
+    // The subset this model shows: m_view when set, the document's own otherwise. The
+    // FOUR places that map view rows to source records go through here and nowhere else.
+    const FilteredIndex &view() const;
+
+    const Document      *m_document;
+    const FilteredIndex *m_view = nullptr;
+    HighlightAction      m_action = HighlightAction::Color;
+    bool                 m_darkTheme = false;
 };
 
 } // namespace loftail
