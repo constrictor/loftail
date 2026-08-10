@@ -34,7 +34,9 @@ namespace {
 // on the axis name and then a checkbox on "Filter by <the same name>" cost two lines
 // per axis for one fact; a checkable group box states it once, and Qt greys the body
 // out while it is off instead of leaving dead controls live. The body is one widget
-// rather than loose rows so setCollapsible() can hide the whole axis in a single call.
+// rather than loose rows so that greying, and the axis's own geometry, are one thing
+// each — it is what setCollapsible() used to hide in a single call, back when an axis
+// could collapse to its title row at all.
 struct AxisBox
 {
     SectionBox  *box;
@@ -46,13 +48,23 @@ AxisBox makeAxisBox(QWidget *parent, const QString &title, const QString &object
                     bool enabledByDefault)
 {
     AxisBox a;
-    // A SectionBox, which is a QGroupBox that can also draw a hairline along its title
-    // row (setFlatAxes). Nothing else about the box changes, which is why every axis
+    // A SectionBox: a QGroupBox that draws a hairline along its own title row instead of a
+    // frame round its body. Nothing else about the box changes, which is why every axis
     // enable control is still a QGroupBox * to its callers.
+    //
+    // Unconditional, in both panes. It began as a per-pane answer — the Highlighters
+    // pane's axes sit inside a framed "Condition" box, and a framed axis in there is a
+    // border inside a border, three deep by the subsystem list — but the Filters pane
+    // wanted the same look for a reason that turns out to be the same one: an axis is a
+    // section of a pane, and a pane is a frame already. Five framed panels stacked inside
+    // one dock is five borders saying "this belongs together" about things nothing else
+    // groups. So there is no flag; a divider per axis is what an axis looks like.
     a.box = new SectionBox(title, parent);
     a.box->setObjectName(objectName);
     a.box->setCheckable(true);
     a.box->setChecked(enabledByDefault);
+    a.box->setFlat(true);
+    a.box->setTitleDivider(true);
     auto *v = new QVBoxLayout(a.box);
     // Tighter than the style default all round: five stacked group boxes pay these
     // margins five times, and the top one twice over — the title row already sits
@@ -143,11 +155,13 @@ AxisEditor::AxisEditor(Defaults defaults, QWidget *parent)
 void AxisEditor::buildUi(Defaults defaults)
 {
     auto *root = new QVBoxLayout(this);
-    // Not flush. A group box is a rounded, framed panel, and a rounded frame whose left
-    // and right edges are 0 px from the pane's own edge reads as a rendering fault
-    // rather than as a group — the corners curve away from a border that is not there.
-    // Both users put this widget in a QScrollArea with no frame of its own, so these
-    // few pixels are the only thing standing between the frames and the dock edge.
+    // Not flush. An axis now draws a hairline rather than a frame, and a line that runs
+    // into the dock's own edge reads as a rendering seam rather than as a division inside
+    // the pane; before that it was a rounded frame 0 px from the edge, whose corners
+    // curved away from a border that was not there. Both users put this widget in a
+    // QScrollArea with no frame of its own, so these few pixels are the only gap there is
+    // — and the Highlighters pane insets its action rows by the same kSideMargin, which is
+    // what puts all nine title rows in one column.
     root->setContentsMargins(kSideMargin, 4, kSideMargin, 4);
 
     auto emitChange = [this] { emitChanged(); };
@@ -566,22 +580,6 @@ void AxisEditor::setHidesUnsupportedAxes(bool hide)
 {
     m_hideUnsupported = hide;
     updateAxisState();
-}
-
-void AxisEditor::setFlatAxes(bool flat)
-{
-    // The frame off and the title-row hairline on, and nothing else: the box is still a
-    // checkable group box, still titled and still greys its own body, so every rule about
-    // an axis holds unchanged and there is no second layout to keep in step with the
-    // framed one.
-    for (QGroupBox *box : {m_priorityEnable, m_textGroup, m_loggerGroup, m_threadGroup,
-                           m_timeGroup}) {
-        if (!box)
-            continue;
-        box->setFlat(flat);
-        if (auto *section = qobject_cast<SectionBox *>(box))
-            section->setTitleDivider(flat);
-    }
 }
 
 void AxisEditor::updateAxisState()

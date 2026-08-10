@@ -250,10 +250,6 @@ void HighlighterPane::buildUi()
     // Filters pane keeps it and explains it, and that asymmetry is deliberate — see
     // AxisEditor::setHidesUnsupportedAxes.
     m_axes->setHidesUnsupportedAxes(true);
-    // A line per axis rather than a frame per axis: the Condition box round them all is
-    // the frame now, and a framed axis inside it puts three borders between the pane and
-    // the subsystem list. See AxisEditor::setFlatAxes.
-    m_axes->setFlatAxes(true);
     conditionBody->addWidget(m_axes);
 
     QGroupBox *actionBox = makeSection(tr("Action"),

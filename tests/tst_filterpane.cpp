@@ -172,7 +172,7 @@ private slots:
     void listButtonsOwnUpToWhatTheNarrowingHides();
     void clearAllReturnsToAnUnfilteredView();
     void activityTracksTheResolvedSetNotTheTicks();
-    void theAxesKeepTheirFrames();
+    void theAxesAreLinesNotFrames();
     void theAxisEnableControlsSitAtTheLeftEdge();
 };
 
@@ -937,14 +937,14 @@ void TestFilterPane::activityTracksTheResolvedSetNotTheTicks()
     QVERIFY(pane.hasActiveFilters());
 }
 
-// AxisEditor can draw an axis either way — framed, or flat with a dividing line under
-// its title — and this pane must keep the frames. Here the axes ARE the pane's content,
-// so a frame is the only thing saying where one axis stops and the next starts; in the
-// Highlighters pane they sit inside a Condition box that says it already, and a framed
-// axis there is a frame inside a frame. The flat mode is opt-in for exactly that reason,
-// and a default that flipped would flatten this pane silently — nothing else here would
-// notice.
-void TestFilterPane::theAxesKeepTheirFrames()
+// An axis is a title row with a hairline, not a framed panel — in THIS pane as much as in
+// the rule editor, since the axes are one shared widget and how an axis looks is not
+// something the two panes may disagree about. Five framed panels stacked in one dock put
+// five borders around things nothing else groups, and the dock is a frame already.
+//
+// Nothing here is optional any more: the flat look was a per-pane flag for exactly one
+// milestone, and this is what notices if a frame ever comes back on one side only.
+void TestFilterPane::theAxesAreLinesNotFrames()
 {
     QTemporaryFile file;
     Document doc;
@@ -957,18 +957,17 @@ void TestFilterPane::theAxesKeepTheirFrames()
                              "threadGroup", "timeGroup"}) {
         auto *box = pane.findChild<SectionBox *>(QString::fromLatin1(name));
         QVERIFY2(box, name);
-        QVERIFY2(!box->isFlat(), name);
-        // Every axis is the kind of box that CAN draw a title-row hairline — one class,
-        // both panes — so what has to hold here is that this one has not been asked to.
-        QVERIFY2(!box->hasTitleDivider(), name);
+        QVERIFY2(box->isFlat(), name);
+        QVERIFY2(box->hasTitleDivider(), name);
+        // A control, not a caption: centred and bold belongs to the rule editor's two
+        // section headings and to nothing in this pane.
+        QVERIFY2(!box->isHeading(), name);
+        // And still a checkable group box, which is what keeps the title row the enable
+        // control and lets Qt grey the body (switchedOffAxesStayVisibleAndGreyed).
+        QVERIFY2(box->isCheckable(), name);
     }
 }
 
-// An axis's title row IS its enable control, so it belongs at the left edge where every
-// control it governs starts — on every style, not only on the ones that already do it.
-// Breeze centres a group box title and ignores QGroupBox::alignment() while doing it, so
-// on a KDE desktop all five enable controls sat in the middle of the pane; SectionBox
-// carries the style sheet rule that is the only lever which moves them.
 void TestFilterPane::theAxisEnableControlsSitAtTheLeftEdge()
 {
     QTemporaryFile file;
