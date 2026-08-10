@@ -199,6 +199,15 @@ MainWindow::MainWindow(QWidget *parent)
     connect(this, &MainWindow::activeDocumentChanged, m_highlighterPane, &HighlighterPane::setDocument);
     connect(m_highlighterPane, &HighlighterPane::highlightersChanged,
             this, &MainWindow::applyActiveHighlighters);
+    // The same marker the Filters dock carries, for the same reason: with the panes
+    // tabbed, rules colour the log while the pane that holds them is out of sight.
+    // "Present", not "in force" — a rule in the list is something the user put there,
+    // where a filter axis can be switched on and still exclude nothing.
+    m_highlightersDock = highlightDock;
+    connect(m_highlighterPane, &HighlighterPane::activityChanged, this, [this](bool active) {
+        if (m_highlightersDock)
+            m_highlightersDock->setWindowTitle(active ? tr("Highlighters •") : tr("Highlighters"));
+    });
 
     m_presetPane = new PresetPane(m_filterPane, m_highlighterPane, this);
     QDockWidget *presetDock = addPaneDock(m_presetPane, QStringLiteral("presetsDock"),

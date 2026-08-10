@@ -125,6 +125,9 @@ private slots:
     void switchingRulesShowsThatRulesSelection();
     void invalidRegexIsFlagged();
     void addedRuleIsInertUntilConfigured();
+    void newCopiesTheSelectedRule();
+    void listRowsWearTheirRuleColours();
+    void clearRemovesEveryRuleAndMarksThePane();
     void swatchMenuIsBandedAndFitsAShortScreen();
     void oneClickRuleSetsBothColours();
     void reloadingTheListKeepsRulesEnabled();
@@ -154,7 +157,7 @@ void TestHighlighterPane::typingARegexReachesTheDocument()
 
     HighlighterPane pane;
     pane.setDocument(&doc);
-    button(pane, QStringLiteral("ruleAdd"))->click();
+    button(pane, QStringLiteral("ruleNew"))->click();
     QCOMPARE(doc.highlighters().rules.size(), 1);
 
     axis(pane, "messageGroup")->setChecked(true);
@@ -188,7 +191,7 @@ void TestHighlighterPane::switchingRulesShowsThatRulesSelection()
 
     HighlighterPane pane;
     pane.setDocument(&doc);
-    QPushButton *add = button(pane, QStringLiteral("ruleAdd"));
+    QPushButton *add = button(pane, QStringLiteral("ruleNew"));
     add->click();
     add->click();
     QCOMPARE(doc.highlighters().rules.size(), 2);
@@ -227,7 +230,7 @@ void TestHighlighterPane::invalidRegexIsFlagged()
 
     HighlighterPane pane;
     pane.setDocument(&doc);
-    button(pane, QStringLiteral("ruleAdd"))->click();
+    button(pane, QStringLiteral("ruleNew"))->click();
 
     axis(pane, "messageGroup")->setChecked(true);
     pane.findChild<QAbstractButton *>(QStringLiteral("messageRegex"))->setChecked(true);
@@ -252,15 +255,144 @@ void TestHighlighterPane::addedRuleIsInertUntilConfigured()
 
     HighlighterPane pane;
     pane.setDocument(&doc);
-    button(pane, QStringLiteral("ruleAdd"))->click();
+    button(pane, QStringLiteral("ruleNew"))->click();
 
-    // Add seeds one axis so a new rule does something visible immediately, but turning
-    // that axis back off must leave the rule matching nothing at all — not matching
-    // everything, which is what an "all axes inactive" filter would mean.
-    QVERIFY(doc.highlighters().anyEnabled());
-    priorityEnable(pane)->setChecked(false);
+    // With nothing selected, New makes an EMPTY rule: every axis off, so it matches
+    // nothing at all — not everything, which is what an "all axes inactive" filter
+    // would mean. It still takes a colour, so it is visible in the list on arrival.
+    QCOMPARE(doc.highlighters().rules.size(), 1);
+    const HighlightRule &fresh = doc.highlighters().rules.first();
+    QVERIFY(!fresh.match.anyActive());
     QVERIFY(!doc.highlighters().anyEnabled());
-    QVERIFY(!doc.highlighters().rules.first().match.anyActive());
+    QVERIFY(HighlightPalette::isSlot(fresh.background));
+    QCOMPARE(fresh.foreground, HighlightPalette::readableTextSlot(fresh.background));
+
+    // And configuring an axis is what wakes it up.
+    priorityEnable(pane)->setChecked(true);
+    QVERIFY(doc.highlighters().anyEnabled());
+    QVERIFY(doc.highlighters().rules.first().match.anyActive());
+}
+
+void TestHighlighterPane::newCopiesTheSelectedRule()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    QPushButton *newBtn = button(pane, QStringLiteral("ruleNew"));
+    QVERIFY(newBtn);
+    newBtn->click();
+
+    // Configure rule 0, then ask for another. A second rule is nearly always a variant
+    // of the one on screen, so New starts from it — criteria and colours alike — rather
+    // than from a blank the user has to rebuild.
+    axis(pane, "subsystemGroup")->setChecked(true);
+    QListWidget *loggers = listContaining(pane, QStringLiteral("db.pool"));
+    QVERIFY(loggers);
+    check(loggers, QStringLiteral("net.socket"), false);
+    check(loggers, QStringLiteral("db.pool"), true);
+    priorityEnable(pane)->setChecked(true);
+
+    const HighlightRule source = doc.highlighters().rules.first();
+    newBtn->click();
+
+    QCOMPARE(doc.highlighters().rules.size(), 2);
+    const HighlightRule &copy = doc.highlighters().rules.at(1);
+    QCOMPARE(copy.match.loggerEnabled, source.match.loggerEnabled);
+    QCOMPARE(copy.match.loggerNames, source.match.loggerNames);
+    QCOMPARE(copy.match.priorityEnabled, source.match.priorityEnabled);
+    QCOMPARE(copy.match.minPriority, source.match.minPriority);
+    QCOMPARE(copy.background, source.background);
+    QCOMPARE(copy.foreground, source.foreground);
+    // The copy is the one being edited, so the editor is already showing it.
+    QCOMPARE(ruleList(pane)->currentRow(), 1);
+
+    // A copy of a rule the user switched OFF still arrives on: a rule that appeared
+    // dead on the click that asked for it would read as the button having failed.
+    ruleList(pane)->item(1)->setCheckState(Qt::Unchecked);
+    QVERIFY(!doc.highlighters().rules.at(1).enabled);
+    ruleList(pane)->setCurrentRow(1);
+    newBtn->click();
+    QCOMPARE(doc.highlighters().rules.size(), 3);
+    QVERIFY(doc.highlighters().rules.at(2).enabled);
+}
+
+void TestHighlighterPane::listRowsWearTheirRuleColours()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+
+    MatchCriteria c;
+    c.priorityEnabled = true;
+    c.minPriority = Priority::Error;
+    pane.addRule(c);
+
+    // The row is a preview of the rule, not a description of it: it is painted in the
+    // rule's own two palette slots, resolved for the theme the pane is showing.
+    QListWidget *list = ruleList(pane);
+    QVERIFY(list);
+    QCOMPARE(list->count(), 1);
+    const HighlightRule &r = doc.highlighters().rules.first();
+    const bool dark = pane.palette().base().color().lightness()
+                      < pane.palette().text().color().lightness();
+    QCOMPARE(list->item(0)->background().color(), HighlightPalette::color(r.background, dark));
+    QCOMPARE(list->item(0)->foreground().color(), HighlightPalette::color(r.foreground, dark));
+
+    // ...and it follows the colour combos, which are edits like any other.
+    auto *bg = pane.findChild<QComboBox *>(QStringLiteral("backgroundColor"));
+    QVERIFY(bg);
+    const int other = (r.background + 3) % HighlightPalette::count();
+    bg->setCurrentIndex(bg->findData(other));
+    QCOMPARE(doc.highlighters().rules.first().background, other);
+    QCOMPARE(list->item(0)->background().color(), HighlightPalette::color(other, dark));
+}
+
+void TestHighlighterPane::clearRemovesEveryRuleAndMarksThePane()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    QSignalSpy activity(&pane, &HighlighterPane::activityChanged);
+    pane.setDocument(&doc);
+
+    QPushButton *clear = button(pane, QStringLiteral("ruleClear"));
+    QVERIFY(clear);
+    // Nothing to clear yet, and nothing to mark: the dock wears its marker only while
+    // the pane holds rules, because it is usually tabbed behind three others.
+    QVERIFY(!clear->isEnabled());
+    QVERIFY(!pane.hasRules());
+
+    MatchCriteria c;
+    c.priorityEnabled = true;
+    c.minPriority = Priority::Error;
+    pane.addRule(c);
+    pane.addRule(c);
+    QVERIFY(pane.hasRules());
+    QVERIFY(clear->isEnabled());
+    QCOMPARE(activity.count(), 1);
+    QCOMPARE(activity.takeFirst().at(0).toBool(), true);
+
+    // One action back to an uncoloured log, where before it was Remove per rule.
+    clear->click();
+    QVERIFY(doc.highlighters().rules.isEmpty());
+    QVERIFY(!pane.hasRules());
+    QVERIFY(!clear->isEnabled());
+    QCOMPARE(activity.count(), 1);
+    QCOMPARE(activity.takeFirst().at(0).toBool(), false);
+
+    // Edge-triggered: adding a second rule to a pane that already had one must not
+    // rewrite the dock title, which is a QTabBar entry while the panes are tabbed.
+    pane.addRule(c);
+    pane.addRule(c);
+    QCOMPARE(activity.count(), 1);
 }
 
 void TestHighlighterPane::swatchMenuIsBandedAndFitsAShortScreen()
