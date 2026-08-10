@@ -80,13 +80,62 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
 11. **Bookmarks** — already scoped in `FUTURE.md`, including the open question of what identifies a
     bookmarked record across a reindex.
 
+## Added 2026-08-10 — a highlight rule that does more than colour
+
+Today a rule has exactly one effect: it recolours the records it matches. The idea is that the
+effect becomes a *choice* per rule — colour is one action among several, all sharing the five match
+axes and the ordered first-match-wins list already built (`SPEC.md` §7). Numbered after Tier 3 so
+the tiers above keep their numbers; the three are not one milestone and are not equally safe.
+
+12. **A highlight digest pane under the log.** A strip below the record table showing the **last
+    matching record per rule** — one row per enabled rule, rendered exactly as it is in the log
+    (same columns, same rule colours), and **sized to fit its rows** rather than scrolled, so with
+    three rules it is three lines tall and with none it is not there at all. Answers "what is the
+    newest of each thing I care about" while the view is somewhere else entirely, which is the
+    question a tailed log with rules is really being asked. Also the honest version of "alert me":
+    it *shows* rather than interrupts.
+    *Per rule, opt-in* — a rule is in the digest only if it is enabled for it, since a rule that
+    colours every INFO is not a rule whose latest match is worth a permanent line.
+    *Carried by:* the digest is an ascending list of source ordinals of length ≤ rule count, which
+    is precisely what `FilteredIndex::setVisible()` takes — the same lever context reuse turned on
+    in M15, and it maintains itself on the live path from the match the highlighter already runs
+    per appended record.
+    *Not carried, and this is the cost:* it is a **second view of the same document showing a
+    different subset**, and `LogModel` binds to a `const Document *` and reads *the* document's
+    `FilteredIndex`. Either the model gains an index to read that is not the document's, or the
+    digest gets a small model of its own that reuses the cell formatting. Decide that before
+    anything else here.
+    *Scope check:* it is **not** a dock. `SPEC.md` §8 promises panes attach left or right and never
+    as a strip above or below the log, and §5a keeps the document area free of them — so this
+    belongs inside the view, under the table and above the Find bar, which also makes it **per-view
+    state** (invariant #7): two views of one log may want different digests, and both read the same
+    per-file rules.
+
+13. **Flash the window on a match.** A rule marks its tab, or bounces the taskbar entry, when a new
+    matching record arrives while the log is not being looked at.
+
+14. **A desktop notification on a match.** The same trigger, out to the OS notification service.
+
+**13 and 14 need a product ruling before either is designed, and the ruling may well be "no".**
+`SPEC.md` §11 lists alerting as a non-goal and the Watch-outs below already call "alert me when
+ERROR appears" squarely out of scope. That was written about *filters*; these arrive attached to a
+rule the user configured by hand, which is a narrower thing, and #12 does not cross the line at all
+— it is a view. But 13 and 14 land on the far side of it as stated: a background process that
+interrupts is a different product from a viewer, and it brings the whole tail of questions with it
+(rate limiting, what happens when a rule matches ten thousand records, whether the notification
+outlives the app). If they are wanted, the cheapest honest version is the **tab marker only** —
+in-window, no OS surface, no daemon — and it should be judged on its own rather than smuggled in
+behind #12.
+
 ## Watch-outs
 
 - **Per-subsystem record counts in the Filters pane** would be genuinely useful and sit right on
   §11's "no charts, statistics, or alerting" line. Worth an explicit ruling rather than drifting
   into it.
 - **Anything shaped like "alert me when ERROR appears"** is squarely a non-goal. The tailing
-  equivalent that is not is #3's unread marker.
+  equivalent that is not is #3's unread marker — and, arguably, #12's digest pane, which shows the
+  newest match per rule without interrupting anything. #13 and #14 are the ones that need the
+  ruling; see the note under them.
 
 ## A suggested order
 
