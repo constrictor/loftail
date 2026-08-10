@@ -145,7 +145,7 @@ void AxisEditor::buildUi(Defaults defaults)
     // rather than as a group — the corners curve away from a border that is not there.
     // Both users put this widget in a QScrollArea with no frame of its own, so these
     // few pixels are the only thing standing between the frames and the dock edge.
-    root->setContentsMargins(6, 4, 6, 4);
+    root->setContentsMargins(kSideMargin, 4, kSideMargin, 4);
 
     auto emitChange = [this] { emitChanged(); };
 
@@ -174,9 +174,6 @@ void AxisEditor::buildUi(Defaults defaults)
         for (int i = 0; i < PriorityChoice::count(); ++i)
             m_priorityCombo->addItem(priorityName(PriorityChoice::at(i)));
         row->addWidget(m_priorityCombo, 1);
-        // The combo is this axis's whole body, so setCollapsible() hides it and the
-        // row shrinks to the checkbox — the same one-line stub the group boxes leave.
-        m_priorityBody = m_priorityCombo;
         root->addLayout(row);
 
         connect(m_priorityEnable, &QCheckBox::toggled, this, emitChange);
@@ -189,7 +186,6 @@ void AxisEditor::buildUi(Defaults defaults)
         AxisBox a = makeAxisBox(this, tr("Message text"), QStringLiteral("messageGroup"),
                                 false);
         m_textGroup = a.box;
-        m_textBody = a.body;
         m_textEdit = new QLineEdit(a.body);
         m_textEdit->setObjectName(QStringLiteral("messageText"));
         m_textEdit->setPlaceholderText(tr("Substring or regex..."));
@@ -268,7 +264,6 @@ void AxisEditor::buildUi(Defaults defaults)
     {
         AxisBox a = makeAxisBox(this, tr("Time range"), "timeGroup", false);
         m_timeGroup = a.box;
-        m_timeBody = a.body;
         const QString fmt = QStringLiteral("yyyy-MM-dd HH:mm:ss");
         // Both bounds on one row. Two second-resolution editors with calendar popups
         // want ~150 px each, which would make this row alone the widest thing in the
@@ -333,7 +328,6 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
     const bool subsystem = axis == ValueAxis::Subsystem;
     AxisBox a = makeAxisBox(this, title, prefix + QStringLiteral("Group"), enabledByDefault);
     (subsystem ? m_loggerGroup : m_threadGroup) = a.box;
-    (subsystem ? m_loggerBody : m_threadBody) = a.body;
 
     // The narrow field is ALSO the add field. It used to be one of two look-alike line
     // edits — "Narrow list..." above the list and "Add subsystem manually..." below it
@@ -535,7 +529,7 @@ void AxisEditor::clearAll()
 
     repopulate({}, {}, /*exact=*/false); // nothing seen, nothing restrictive: all ticked
     refreshObservedSpan();
-    updateCollapse();
+    updateAxisState();
     updateTextValidity();
     // One notification for the whole reset, as restoreState() does for its own.
     emitChanged();
@@ -545,7 +539,7 @@ void AxisEditor::emitChanged()
 {
     if (m_populating)
         return;
-    updateCollapse();
+    updateAxisState();
     updateTextValidity();
     emit changed();
 }
@@ -557,30 +551,27 @@ void AxisEditor::addTextExtra(QWidget *w)
     m_textOptionsRow->addWidget(w);
 }
 
-void AxisEditor::setCollapsible(bool collapsible)
+void AxisEditor::setHidesUnsupportedAxes(bool hide)
 {
-    m_collapsible = collapsible;
-    updateCollapse();
+    m_hideUnsupported = hide;
+    updateAxisState();
 }
 
-void AxisEditor::updateCollapse()
+void AxisEditor::updateAxisState()
 {
-    // Hide the body of a disabled axis so the whole editor shrinks to five title rows
-    // when nothing is configured — what makes a five-axis rule editor fit a dock.
-    // Priority's "title row" is its checkbox and its body is the combo beside it; the
-    // other four are checkable group boxes, whose title row is the control itself.
-    struct Pair { bool on; QWidget *body; };
-    const Pair pairs[] = {
-        {m_priorityEnable && m_priorityEnable->isChecked(), m_priorityBody},
-        {m_loggerGroup && m_loggerGroup->isChecked(), m_loggerBody},
-        {m_threadGroup && m_threadGroup->isChecked(), m_threadBody},
-        {m_textGroup && m_textGroup->isChecked(), m_textBody},
-        {m_timeGroup && m_timeGroup->isChecked(), m_timeBody},
-    };
-    for (const Pair &p : pairs) {
-        if (p.body)
-            p.body->setVisible(!m_collapsible || p.on);
-    }
+    // An axis the format cannot fill is left out entirely for a caller that asked
+    // (setHidesUnsupportedAxes) and greyed-with-the-reason for one that did not; a
+    // supported axis is always on screen, ticked or not. Hiding the whole group box
+    // rather than its body, because a title row saying "Thread — not in this log's
+    // format" is the thing being removed, not the thing being kept.
+    //
+    // Nothing else changes: setDocument() has already disabled the axis, so a rule or
+    // preset that arrives with it ticked is still dropped by MatchCriteria::resolve()
+    // and still cannot be edited into force from here.
+    if (m_threadGroup)
+        m_threadGroup->setVisible(!m_hideUnsupported || supportsThread());
+    if (m_timeGroup)
+        m_timeGroup->setVisible(!m_hideUnsupported || supportsTime());
 
     // The four group-box axes get this from Qt, which greys a checkable box's contents
     // while it is unchecked. Priority has no group box — it is a checkbox and a combo
@@ -668,10 +659,13 @@ void AxisEditor::setDocument(Document *document)
 
     setEnabled(hasDoc);
     // Thread and time axes exist only when the format carries those fields
-    // (SPEC.md §6). Disable rather than hide so the layout is stable — and say WHY in
-    // the title, because a greyed axis otherwise explains nothing and a preset or a
-    // restored session can leave one greyed AND TICKED, at which point resolve()
-    // drops it and the pane shows a selection that is not in force.
+    // (SPEC.md §6). Disabled here, and say WHY in the title, because a greyed axis
+    // otherwise explains nothing and a preset or a restored session can leave one
+    // greyed AND TICKED, at which point resolve() drops it and the pane shows a
+    // selection that is not in force. A caller that would rather not see the axis at
+    // all asks for that separately (setHidesUnsupportedAxes), and updateAxisState()
+    // below applies it — the disabling stands either way, so what a hidden axis
+    // carries can never come back into force unseen.
     //
     // In the title and not in a tooltip: Qt delivers no mouse events to a disabled
     // widget, so a tooltip on one is never seen. Whatever is said here has to be said
@@ -701,7 +695,7 @@ void AxisEditor::setDocument(Document *document)
     // seed that does the work is the one refreshDiscoveredLists() makes as the index
     // grows; this one only matters when rebinding to a document already scanned.
     refreshObservedSpan();
-    updateCollapse();
+    updateAxisState();
 }
 
 void AxisEditor::refreshObservedSpan()
@@ -936,7 +930,7 @@ void AxisEditor::setCriteria(const MatchCriteria &c)
     // own subsystems instead of inheriting the previous rule's.
     repopulate(loggerSel, threadSel, /*exact=*/true);
 
-    updateCollapse();
+    updateAxisState();
     updateTextValidity();
 }
 

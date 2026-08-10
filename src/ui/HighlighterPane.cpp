@@ -12,6 +12,7 @@
 #include <QComboBox>
 #include <QGridLayout>
 #include <QCoreApplication>
+#include <QFont>
 #include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -36,6 +37,33 @@ QIcon swatchIcon(const QColor &c)
     QPixmap pm(14, 14);
     pm.fill(c.isValid() ? c : Qt::transparent);
     return QIcon(pm);
+}
+
+// A section heading: a bold word and a rule running out to the right edge, marking
+// where the rule's conditions end and its actions begin.
+//
+// Not a group box, although everything under it is. Two more frames around blocks that
+// are themselves stacks of framed group boxes is three nested borders deep at the
+// subsystem list, and by then a frame has stopped meaning "these belong together". A
+// line does the same job with no box.
+QWidget *makeHeading(const QString &text, const QString &objectName, QWidget *parent)
+{
+    auto *row = new QWidget(parent);
+    row->setObjectName(objectName); // test contract, never translated
+    auto *layout = new QHBoxLayout(row);
+    // Flush left and right so the line reaches as far as the group boxes below it do;
+    // the space is above, separating this section from the one before.
+    layout->setContentsMargins(AxisEditor::kSideMargin, 6, AxisEditor::kSideMargin, 0);
+    auto *label = new QLabel(text, row);
+    QFont f = label->font();
+    f.setBold(true);
+    label->setFont(f);
+    layout->addWidget(label);
+    auto *line = new QFrame(row);
+    line->setFrameShape(QFrame::HLine);
+    line->setFrameShadow(QFrame::Sunken);
+    layout->addWidget(line, 1);
+    return row;
 }
 
 // One axis's contribution to a rule's one-line summary, or an empty string when the
@@ -168,10 +196,17 @@ void HighlighterPane::buildUi()
 
     // --- Editor for the selected rule --------------------------------------
     //
-    // Five axes plus two color pickers do not fit a dock, so the whole editor lives
-    // in a scroll area and the AxisEditor collapses each axis to its title row until
-    // that axis is enabled. A rule with two axes set therefore shows two open groups
-    // and three one-line stubs.
+    // A rule is two questions — which records it matches, and what it does to them —
+    // and the editor is laid out to say so: a "Matches" heading over the five axes, a
+    // "Does" heading over the four actions. Without them the colour group read as a
+    // sixth axis, which is precisely backwards: it is the only one of the four actions
+    // with configuration attached, and configuration is what an axis looks like.
+    //
+    // Five axes and four actions do not fit a dock, so the whole thing lives in a
+    // scroll area. Deliberately NOT collapsed down to title rows while an axis is off,
+    // which is what this pane used to do: an axis that shows its controls only once it
+    // is ticked has to be switched on to be read, and the answer to a rule editor that
+    // does not fit is a scroll bar, not a rule the user cannot see the shape of.
     m_editor = new QGroupBox(tr("Selected rule"), this);
     auto *ev = new QVBoxLayout(m_editor);
 
@@ -185,13 +220,20 @@ void HighlighterPane::buildUi()
     auto *cv = new QVBoxLayout(content);
     cv->setContentsMargins(0, 0, 0, 0);
 
+    cv->addWidget(makeHeading(tr("Matches"), QStringLiteral("matchHeading"), content));
+
     // Every axis is opt-in for a highlight rule: an unconfigured rule must stay inert
     // (SPEC.md §7), the opposite of the Filters pane's enabled-by-default metadata
     // axes, which exist so their controls act on the first click.
     m_axes = new AxisEditor(AxisEditor::Defaults{/*priorityOn=*/false, /*loggerOn=*/false},
                             content);
-    m_axes->setCollapsible(true);
+    // An axis this log's format cannot fill is left out rather than shown greyed. The
+    // Filters pane keeps it and explains it, and that asymmetry is deliberate — see
+    // AxisEditor::setHidesUnsupportedAxes.
+    m_axes->setHidesUnsupportedAxes(true);
     cv->addWidget(m_axes);
+
+    cv->addWidget(makeHeading(tr("Does"), QStringLiteral("actionHeading"), content));
 
     // --- What the rule DOES (M19, SPEC.md §7) --------------------------------
     //
@@ -209,23 +251,29 @@ void HighlighterPane::buildUi()
     m_colorGroup->setObjectName(QStringLiteral("actionColor")); // test contract, never translated
     m_colorGroup->setCheckable(true);
     m_colorGroup->setToolTip(tr("Recolour matching records in the log."));
-    auto *colorBody = new QVBoxLayout(m_colorGroup);
-
-    auto *bgRow = new QHBoxLayout;
-    bgRow->addWidget(new QLabel(tr("Background:"), m_colorGroup));
+    // A grid, not two rows of an HBox each: the two labels differ in width, so laying
+    // each row out on its own started the two combos at different x and made a pair of
+    // controls that set one thing look like two unrelated ones. One grid gives column 0
+    // the wider label's width — so the labels align and the combos begin together — and
+    // column 1 the same stretch for both, so the swatch lists are the same size as well.
+    auto *colorBody = new QGridLayout(m_colorGroup);
     m_bgCombo = makeSwatchCombo(m_colorGroup);
     m_bgCombo->setObjectName(QStringLiteral("backgroundColor"));
-    bgRow->addWidget(m_bgCombo, 1);
-    colorBody->addLayout(bgRow);
-
-    auto *fgRow = new QHBoxLayout;
-    fgRow->addWidget(new QLabel(tr("Text:"), m_colorGroup));
     m_fgCombo = makeSwatchCombo(m_colorGroup);
     m_fgCombo->setObjectName(QStringLiteral("textColor"));
-    fgRow->addWidget(m_fgCombo, 1);
-    colorBody->addLayout(fgRow);
+    colorBody->addWidget(new QLabel(tr("Background:"), m_colorGroup), 0, 0);
+    colorBody->addWidget(m_bgCombo, 0, 1);
+    colorBody->addWidget(new QLabel(tr("Text:"), m_colorGroup), 1, 0);
+    colorBody->addWidget(m_fgCombo, 1, 1);
+    colorBody->setColumnStretch(1, 1);
 
-    cv->addWidget(m_colorGroup);
+    // Both action blocks inset by the same 6 px AxisEditor puts round its own group
+    // boxes, so the Colour frame's left edge lines up with the Subsystem frame's above
+    // it rather than sitting six pixels proud of it — which reads as a rendering fault
+    // in a stack whose whole job is to look like one column.
+    auto *actionsColumn = new QVBoxLayout;
+    actionsColumn->setContentsMargins(AxisEditor::kSideMargin, 0, AxisEditor::kSideMargin, 0);
+    actionsColumn->addWidget(m_colorGroup);
 
     auto *actionGrid = new QGridLayout;
     m_digestCheck = new QCheckBox(tr("Digest"), content);
@@ -250,7 +298,8 @@ void HighlighterPane::buildUi()
     actionGrid->addWidget(m_digestCheck, 0, 0);
     actionGrid->addWidget(m_tabCheck, 0, 1);
     actionGrid->addWidget(m_notifyCheck, 1, 0);
-    cv->addLayout(actionGrid);
+    actionsColumn->addLayout(actionGrid);
+    cv->addLayout(actionsColumn);
 
     cv->addStretch(1);
     root->addWidget(m_editor, 1);
