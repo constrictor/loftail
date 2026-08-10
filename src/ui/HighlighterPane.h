@@ -9,7 +9,6 @@
 #include <optional>
 
 QT_BEGIN_NAMESPACE
-class QCheckBox;
 class QComboBox;
 class QGroupBox;
 class QListWidget;
@@ -21,6 +20,7 @@ namespace loftail {
 
 class AxisEditor;
 class Document;
+class SectionBox;
 
 // M5 — the Highlighters side pane (SPEC.md §7, §8). A dockable widget bound to the
 // ACTIVE document by signal (invariant #7): setDocument() rebinds it, never a
@@ -126,18 +126,23 @@ private:
     QPushButton *m_upBtn = nullptr;
     QPushButton *m_downBtn = nullptr;
 
-    // Editor for the selected rule.
-    QGroupBox  *m_editor = nullptr;
+    // Editor for the selected rule. A bare container, not a captioned group box: the two
+    // sections inside it carry the frames, and setEnabled() on it is what greys the whole
+    // editor while no rule is selected.
+    QWidget    *m_editor = nullptr;
     AxisEditor *m_axes = nullptr;
-    // Colour is an ACTION, so its enable control is the group box's own title row and
+    // Highlight is an ACTION, so its enable control is the group box's own title row and
     // the two combos are its body — hence QGroupBox* rather than a separate checkbox,
     // the same shape AxisEditor's axis enables take and for the same reason.
     QGroupBox  *m_colorGroup = nullptr;
     QComboBox  *m_bgCombo = nullptr;
     QComboBox  *m_fgCombo = nullptr;
-    QCheckBox  *m_digestCheck = nullptr;
-    QCheckBox  *m_tabCheck = nullptr;
-    QCheckBox  *m_notifyCheck = nullptr;
+    // The other three actions. SectionBoxes rather than plain checkboxes, so that all
+    // four actions are one shape — a checkable title row with a hairline — and only
+    // Highlight, the one with settings, has a body under its line.
+    SectionBox *m_digestAction = nullptr;
+    SectionBox *m_tabAction = nullptr;
+    SectionBox *m_notifyAction = nullptr;
 };
 
 } // namespace loftail

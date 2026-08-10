@@ -6,13 +6,12 @@
 #include "Palette.h"
 #include "Priority.h"
 #include "RecordIndex.h"
+#include "SectionBox.h"
 
 #include <QBrush>
-#include <QCheckBox>
 #include <QComboBox>
 #include <QGridLayout>
 #include <QCoreApplication>
-#include <QFont>
 #include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -39,31 +38,29 @@ QIcon swatchIcon(const QColor &c)
     return QIcon(pm);
 }
 
-// A section heading: a bold word and a rule running out to the right edge, marking
-// where the rule's conditions end and its actions begin.
+// A section of the rule editor: Condition, or Action.
 //
-// Not a group box, although everything under it is. Two more frames around blocks that
-// are themselves stacks of framed group boxes is three nested borders deep at the
-// subsystem list, and by then a frame has stopped meaning "these belong together". A
-// line does the same job with no box.
-QWidget *makeHeading(const QString &text, const QString &objectName, QWidget *parent)
+// A FRAMED box, where the bold-word-and-a-line heading these replaced was deliberately
+// not one — the objection then was nesting, three borders deep by the time the eye
+// reached the subsystem list, at which point a border stops meaning "these belong
+// together". What paid for it is the frame that went away above: with no "Selected rule"
+// box wrapping the editor, these two ARE the outer frame rather than a third one inside
+// it, and everything they contain is flat.
+//
+// A SectionBox although it draws no hairline of its own, for the other thing that class
+// settles: which of the two things a title row can be. These two are HEADINGS — centred
+// and bold — while every title row inside them is a control, pinned left. Both answers
+// have to come from one place, because on the style that centres every group box title
+// (Breeze, see SectionBox) the difference between a caption and a control was invisible:
+// the enable controls were centred too, and once they were dragged left, leaving these
+// two with them made a caption in the corner look like a control that had lost its
+// checkbox.
+SectionBox *makeSection(const QString &text, const QString &objectName, QWidget *parent)
 {
-    auto *row = new QWidget(parent);
-    row->setObjectName(objectName); // test contract, never translated
-    auto *layout = new QHBoxLayout(row);
-    // Flush left and right so the line reaches as far as the group boxes below it do;
-    // the space is above, separating this section from the one before.
-    layout->setContentsMargins(AxisEditor::kSideMargin, 6, AxisEditor::kSideMargin, 0);
-    auto *label = new QLabel(text, row);
-    QFont f = label->font();
-    f.setBold(true);
-    label->setFont(f);
-    layout->addWidget(label);
-    auto *line = new QFrame(row);
-    line->setFrameShape(QFrame::HLine);
-    line->setFrameShadow(QFrame::Sunken);
-    layout->addWidget(line, 1);
-    return row;
+    auto *box = new SectionBox(text, parent);
+    box->setObjectName(objectName); // test contract, never translated
+    box->setHeading(true);
+    return box;
 }
 
 // One axis's contribution to a rule's one-line summary, or an empty string when the
@@ -197,18 +194,27 @@ void HighlighterPane::buildUi()
     // --- Editor for the selected rule --------------------------------------
     //
     // A rule is two questions — which records it matches, and what it does to them —
-    // and the editor is laid out to say so: a "Matches" heading over the five axes, a
-    // "Does" heading over the four actions. Without them the colour group read as a
+    // and the editor is laid out to say so: a "Condition" box round the five axes, an
+    // "Action" box round the four actions. Without them the colour group read as a
     // sixth axis, which is precisely backwards: it is the only one of the four actions
     // with configuration attached, and configuration is what an axis looks like.
+    //
+    // The editor itself is a bare QWidget and no longer a captioned group box. "Selected
+    // rule" said what the list above it already says — a row is selected there, and the
+    // controls below change as the selection moves — and it charged a frame and a title
+    // row of height for it, in the pane that has the least height to spare and now has
+    // two section frames of its own to fit.
     //
     // Five axes and four actions do not fit a dock, so the whole thing lives in a
     // scroll area. Deliberately NOT collapsed down to title rows while an axis is off,
     // which is what this pane used to do: an axis that shows its controls only once it
     // is ticked has to be switched on to be read, and the answer to a rule editor that
     // does not fit is a scroll bar, not a rule the user cannot see the shape of.
-    m_editor = new QGroupBox(tr("Selected rule"), this);
+    m_editor = new QWidget(this);
     auto *ev = new QVBoxLayout(m_editor);
+    // Flush: the group boxes inside supply the inset now, and the pane's own root layout
+    // supplies the gap to the dock edge.
+    ev->setContentsMargins(0, 0, 0, 0);
 
     auto *scroll = new QScrollArea(m_editor);
     scroll->setWidgetResizable(true);
@@ -218,88 +224,138 @@ void HighlighterPane::buildUi()
     auto *content = new QWidget(scroll);
     scroll->setWidget(content);
     auto *cv = new QVBoxLayout(content);
-    cv->setContentsMargins(0, 0, 0, 0);
+    // Flush at the sides, but air above and between: a section's heading lives in the box's
+    // top margin, above its frame, so the space over it is the layout's to give and the
+    // default leaves the caption crowded between the row above and its own frame below.
+    cv->setContentsMargins(0, 4, 0, 0);
+    cv->setSpacing(10);
 
-    cv->addWidget(makeHeading(tr("Matches"), QStringLiteral("matchHeading"), content));
+    QGroupBox *conditionBox = makeSection(tr("Condition"),
+                                          QStringLiteral("conditionSection"), content);
+    // Flush at the sides: AxisEditor's own kSideMargin is the inset, exactly as it was
+    // when the axes sat against the pane edge, so a new frame costs its own two pixels
+    // of width and nothing more. Width in this pane is spent, not free — the message
+    // axis alone asks 290 px, and the first casualty of an overrun is a horizontal
+    // scrollbar over the value lists' All/None/Invert column.
+    auto *conditionBody = new QVBoxLayout(conditionBox);
+    conditionBody->setContentsMargins(0, 4, 0, 6);
+    cv->addWidget(conditionBox);
 
     // Every axis is opt-in for a highlight rule: an unconfigured rule must stay inert
     // (SPEC.md §7), the opposite of the Filters pane's enabled-by-default metadata
     // axes, which exist so their controls act on the first click.
     m_axes = new AxisEditor(AxisEditor::Defaults{/*priorityOn=*/false, /*loggerOn=*/false},
-                            content);
+                            conditionBox);
     // An axis this log's format cannot fill is left out rather than shown greyed. The
     // Filters pane keeps it and explains it, and that asymmetry is deliberate — see
     // AxisEditor::setHidesUnsupportedAxes.
     m_axes->setHidesUnsupportedAxes(true);
-    cv->addWidget(m_axes);
+    // A line per axis rather than a frame per axis: the Condition box round them all is
+    // the frame now, and a framed axis inside it puts three borders between the pane and
+    // the subsystem list. See AxisEditor::setFlatAxes.
+    m_axes->setFlatAxes(true);
+    conditionBody->addWidget(m_axes);
 
-    cv->addWidget(makeHeading(tr("Does"), QStringLiteral("actionHeading"), content));
+    QGroupBox *actionBox = makeSection(tr("Action"),
+                                       QStringLiteral("actionSection"), content);
+    auto *actionBody = new QVBoxLayout(actionBox);
+    actionBody->setContentsMargins(0, 4, 0, 6);
+    cv->addWidget(actionBox);
 
     // --- What the rule DOES (M19, SPEC.md §7) --------------------------------
     //
-    // Colour is one action among four, but it is not a peer of the other three: it is
-    // the only one with configuration attached. So it is a checkable group box whose
-    // title row is the enable control and whose body is the two colour combos — the
-    // Filters pane's established pattern, which is also why AxisEditor's enable
-    // controls are QGroupBox* rather than QCheckBox*. Unticking it greys the combos,
-    // which is the clearest possible rendering of "matches and does not colour".
+    // All four actions are the same shape — a checkable SectionBox whose title row is the
+    // enable control and whose hairline runs out to the right edge — stacked one per row.
+    // Three of them stop there; Highlighting has a body under its line, because it is the
+    // only action with configuration attached. So what tells it apart is that it HAS
+    // settings, not that it is drawn in a different grammar from its peers, and unticking
+    // it greys those settings the way unticking an axis greys its controls.
     //
-    // The other three are plain checkboxes in a grid below. No glyphs: four abstract
-    // actions have none that are self-evident, and Windows offscreen testing resolves
-    // no fonts at all, so a glyph there is a guaranteed blank.
-    m_colorGroup = new QGroupBox(tr("Colour"), content);
+    // They were plain checkboxes in a two-column grid, which was wrong twice: a grid put
+    // "Mark tab" beside "Digest" and "Notify" under it, so the three were neither a list
+    // nor a row of pairs, and a bare checkbox next to a lined title row read as a
+    // different kind of thing than the action above it.
+    //
+    // No glyphs: four abstract actions have none that are self-evident, and Windows
+    // offscreen testing resolves no fonts at all, so a glyph there is a guaranteed blank.
+    auto *colorSection = new SectionBox(tr("Highlight"), actionBox);
+    m_colorGroup = colorSection;
     m_colorGroup->setObjectName(QStringLiteral("actionColor")); // test contract, never translated
     m_colorGroup->setCheckable(true);
+    // Flat with a hairline along its title row, for the same reason the axes are and by
+    // the same means: the one action with a body would otherwise be the only framed thing
+    // in either section, and a frame that appears once reads as "this one is different in
+    // kind" rather than as "this one has settings".
+    m_colorGroup->setFlat(true);
+    colorSection->setTitleDivider(true);
     m_colorGroup->setToolTip(tr("Recolour matching records in the log."));
     // A grid, not two rows of an HBox each: the two labels differ in width, so laying
     // each row out on its own started the two combos at different x and made a pair of
     // controls that set one thing look like two unrelated ones. One grid gives column 0
     // the wider label's width — so the labels align and the combos begin together — and
     // column 1 the same stretch for both, so the swatch lists are the same size as well.
+    // The same margins makeAxisBox() gives an axis body, so the two combos indent under
+    // the Highlight title by exactly as much as the priority combo does under its own.
     auto *colorBody = new QGridLayout(m_colorGroup);
+    colorBody->setContentsMargins(8, 4, 8, 6);
     m_bgCombo = makeSwatchCombo(m_colorGroup);
     m_bgCombo->setObjectName(QStringLiteral("backgroundColor"));
     m_fgCombo = makeSwatchCombo(m_colorGroup);
     m_fgCombo->setObjectName(QStringLiteral("textColor"));
-    colorBody->addWidget(new QLabel(tr("Background:"), m_colorGroup), 0, 0);
-    colorBody->addWidget(m_bgCombo, 0, 1);
-    colorBody->addWidget(new QLabel(tr("Text:"), m_colorGroup), 1, 0);
-    colorBody->addWidget(m_fgCombo, 1, 1);
+    // Text above background: a record is read as text on a background, so the pair reads
+    // top-down in the order the eye takes them, and the one that decides legibility comes
+    // first rather than being the afterthought under the box that made it necessary.
+    colorBody->addWidget(new QLabel(tr("Text:"), m_colorGroup), 0, 0);
+    colorBody->addWidget(m_fgCombo, 0, 1);
+    colorBody->addWidget(new QLabel(tr("Background:"), m_colorGroup), 1, 0);
+    colorBody->addWidget(m_bgCombo, 1, 1);
     colorBody->setColumnStretch(1, 1);
 
     // Both action blocks inset by the same 6 px AxisEditor puts round its own group
-    // boxes, so the Colour frame's left edge lines up with the Subsystem frame's above
-    // it rather than sitting six pixels proud of it — which reads as a rendering fault
-    // in a stack whose whole job is to look like one column.
+    // boxes, so the Highlight frame's left edge lines up with the Subsystem frame's in
+    // the box above rather than sitting six pixels proud of it — which reads as a
+    // rendering fault in a stack whose whole job is to look like one column. That is why
+    // the two section boxes are flush at the sides and the inset is applied in here.
     auto *actionsColumn = new QVBoxLayout;
     actionsColumn->setContentsMargins(AxisEditor::kSideMargin, 0, AxisEditor::kSideMargin, 0);
     actionsColumn->addWidget(m_colorGroup);
 
-    auto *actionGrid = new QGridLayout;
-    m_digestCheck = new QCheckBox(tr("Digest"), content);
-    m_digestCheck->setObjectName(QStringLiteral("actionDigest"));
-    m_digestCheck->setToolTip(tr("Show this rule's newest match in the strip under the log."));
-    m_tabCheck = new QCheckBox(tr("Mark tab"), content);
-    m_tabCheck->setObjectName(QStringLiteral("actionTab"));
-    m_tabCheck->setToolTip(tr("Mark this log's tab when a match arrives while it is not "
-                              "the log on screen."));
-    m_notifyCheck = new QCheckBox(tr("Notify"), content);
-    m_notifyCheck->setObjectName(QStringLiteral("actionNotify"));
+    // The three body-less actions, one per row and in the same column as Highlight above
+    // them, so all four enable controls share one left edge and one hairline length. A
+    // body-less SectionBox is just its title row: no layout at all, since an empty one
+    // would still charge the row its margins.
+    const auto makeAction = [this, actionBox, actionsColumn](const QString &title,
+                                                             const QString &objectName,
+                                                             const QString &hint) {
+        auto *box = new SectionBox(title, actionBox);
+        box->setObjectName(objectName); // test contract, never translated
+        box->setCheckable(true);
+        box->setChecked(false);
+        box->setFlat(true);
+        box->setTitleDivider(true);
+        box->setToolTip(hint);
+        actionsColumn->addWidget(box);
+        return box;
+    };
+
+    m_digestAction =
+        makeAction(tr("Digest"), QStringLiteral("actionDigest"),
+                   tr("Show this rule's newest match in the strip under the log."));
+    m_tabAction = makeAction(tr("Mark tab"), QStringLiteral("actionTab"),
+                             tr("Mark this log's tab when a match arrives while it is not "
+                                "the log on screen."));
+    m_notifyAction = makeAction(tr("Notify"), QStringLiteral("actionNotify"), QString());
     // Said before the box can be ticked, not after — the same habit as naming
     // hosts.json before the "remember this password" checkbox is offered.
     if (notificationsSupported()) {
-        m_notifyCheck->setToolTip(tr("Raise a desktop notification on the same trigger, "
-                                     "at most one every ten seconds."));
+        m_notifyAction->setToolTip(tr("Raise a desktop notification on the same trigger, "
+                                      "at most one every ten seconds."));
     } else {
-        m_notifyCheck->setEnabled(false);
-        m_notifyCheck->setToolTip(tr("This desktop offers no notification service, so "
-                                     "this rule marks the tab instead."));
+        m_notifyAction->setEnabled(false);
+        m_notifyAction->setToolTip(tr("This desktop offers no notification service, so "
+                                      "this rule marks the tab instead."));
     }
-    actionGrid->addWidget(m_digestCheck, 0, 0);
-    actionGrid->addWidget(m_tabCheck, 0, 1);
-    actionGrid->addWidget(m_notifyCheck, 1, 0);
-    actionsColumn->addLayout(actionGrid);
-    cv->addLayout(actionsColumn);
+    actionBody->addLayout(actionsColumn);
 
     cv->addStretch(1);
     root->addWidget(m_editor, 1);
@@ -405,9 +461,9 @@ void HighlighterPane::buildUi()
     // entire guard — a second path with a guard of its own is how the bug documented
     // at loadEditorFor() got in the first time.
     connect(m_colorGroup, &QGroupBox::toggled, this, [editorChanged](bool) { editorChanged(); });
-    connect(m_digestCheck, &QCheckBox::toggled, this, [editorChanged](bool) { editorChanged(); });
-    connect(m_tabCheck, &QCheckBox::toggled, this, [editorChanged](bool) { editorChanged(); });
-    connect(m_notifyCheck, &QCheckBox::toggled, this, [editorChanged](bool) { editorChanged(); });
+    connect(m_digestAction, &QGroupBox::toggled, this, [editorChanged](bool) { editorChanged(); });
+    connect(m_tabAction, &QGroupBox::toggled, this, [editorChanged](bool) { editorChanged(); });
+    connect(m_notifyAction, &QGroupBox::toggled, this, [editorChanged](bool) { editorChanged(); });
 }
 
 bool HighlighterPane::notificationsSupported()
@@ -420,15 +476,15 @@ HighlightActions HighlighterPane::readActions() const
     HighlightActions a;
     if (m_colorGroup->isChecked())
         a |= HighlightAction::Color;
-    if (m_digestCheck->isChecked())
+    if (m_digestAction->isChecked())
         a |= HighlightAction::Digest;
-    if (m_tabCheck->isChecked())
+    if (m_tabAction->isChecked())
         a |= HighlightAction::Tab;
     // Read even when the control is disabled: a rule that arrived from a preset or
     // another machine carrying Notify keeps it, rather than being quietly rewritten by
     // a desktop that happens not to offer notifications. It behaves as if it carried
     // Tab there (MainWindow::handleAlerts) and colours normally.
-    if (m_notifyCheck->isChecked())
+    if (m_notifyAction->isChecked())
         a |= HighlightAction::Notify;
     return a;
 }
@@ -567,9 +623,9 @@ void HighlighterPane::loadEditorFor(int row)
         setSwatchCombo(m_bgCombo, r.background);
         setSwatchCombo(m_fgCombo, r.foreground);
         m_colorGroup->setChecked(r.actions.testFlag(HighlightAction::Color));
-        m_digestCheck->setChecked(r.actions.testFlag(HighlightAction::Digest));
-        m_tabCheck->setChecked(r.actions.testFlag(HighlightAction::Tab));
-        m_notifyCheck->setChecked(r.actions.testFlag(HighlightAction::Notify));
+        m_digestAction->setChecked(r.actions.testFlag(HighlightAction::Digest));
+        m_tabAction->setChecked(r.actions.testFlag(HighlightAction::Tab));
+        m_notifyAction->setChecked(r.actions.testFlag(HighlightAction::Notify));
     }
     m_updating = wasUpdating;
 }
