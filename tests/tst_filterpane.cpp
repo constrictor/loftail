@@ -58,8 +58,9 @@ private:
                         Encoding::Utf8, QTimeZone::utc());
     }
 
-    // The four group axes: each is a checkable QGroupBox whose title row IS the
-    // enable control. Found by OBJECT NAME, never by the title it shows — a visible
+    // Each of the FIVE axes is a checkable QGroupBox whose title row IS the enable
+    // control — priority included, which used to be a bare checkbox and combo on a
+    // row of its own. Found by OBJECT NAME, never by the title it shows — a visible
     // string is a translator's to change (CLAUDE.md), and these names are the test
     // contract precisely because they are not.
     static QGroupBox *axis(FilterPane &pane, const char *name)
@@ -67,11 +68,9 @@ private:
         return pane.findChild<QGroupBox *>(QString::fromLatin1(name));
     }
 
-    // Priority is the exception: one checkbox and one combo on a single row, with no
-    // group box to be the enable control.
-    static QCheckBox *priorityEnable(FilterPane &pane)
+    static QGroupBox *priorityEnable(FilterPane &pane)
     {
-        return pane.findChild<QCheckBox *>(QStringLiteral("priorityEnable"));
+        return axis(pane, "priorityGroup");
     }
 
     // "New" — the discovery rule as a control, under each value axis's
@@ -719,10 +718,11 @@ void TestFilterPane::aTimeBoundSetByHandSurvivesTheScan()
     QCOMPARE(start->dateTime(), chosen);
 }
 
-// Priority is the one axis with no QGroupBox, so Qt was not greying its body for it:
-// with the box unticked the combo stayed bright and spinnable and did nothing. The
-// pane also collapses a switched-off axis now, so the combo is hidden as well —
-// but the enabled state is what makes it right in a pane that does not collapse.
+// Priority used to be the one axis with no QGroupBox, so Qt was not greying its body
+// for it: with the box unticked the combo stayed bright and spinnable and did nothing,
+// and a hand-written setEnabled() had to stand in. It is a checkable group box like
+// the other four now and Qt does it, which is what this still checks — the failure it
+// guards against ("changing the minimum level did nothing") is the same either way.
 void TestFilterPane::priorityComboFollowsItsCheckbox()
 {
     // A document, because the editor disables itself wholesale without one and every

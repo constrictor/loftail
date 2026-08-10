@@ -57,8 +57,9 @@ private:
                         QTimeZone::utc());
     }
 
-    // The four group axes: each is a checkable QGroupBox whose title row IS the
-    // enable control. Found by OBJECT NAME, never by the title it shows — a visible
+    // Each of the FIVE axes is a checkable QGroupBox whose title row IS the enable
+    // control — priority included, which used to be a bare checkbox and combo on a
+    // row of its own. Found by OBJECT NAME, never by the title it shows — a visible
     // string is a translator's to change (CLAUDE.md), and these names are the test
     // contract precisely because they are not.
     static QGroupBox *axis(QWidget &w, const char *name)
@@ -66,11 +67,9 @@ private:
         return w.findChild<QGroupBox *>(QString::fromLatin1(name));
     }
 
-    // Priority is the exception: one checkbox and one combo on a single row, with no
-    // group box to be the enable control.
-    static QCheckBox *priorityEnable(QWidget &w)
+    static QGroupBox *priorityEnable(QWidget &w)
     {
-        return w.findChild<QCheckBox *>(QStringLiteral("priorityEnable"));
+        return axis(w, "priorityGroup");
     }
 
     // By object name, never by visible text: the pane embeds an AxisEditor, so more

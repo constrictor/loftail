@@ -156,27 +156,35 @@ void AxisEditor::buildUi(Defaults defaults)
 
     // --- Priority -----------------------------------------------------------
     {
-        // One row, and no group box: an enable control plus a single combo does not
-        // need a frame and a title to say so.
+        // A checkable group box like the other four, although this axis is one combo
+        // and needs no frame to hold it together. It was a bare checkbox-plus-combo
+        // row, and that was the mistake: an axis is a section, and the one axis laid
+        // out unlike the rest read as a stray setting above the matchers rather than
+        // as the first of them — while its title row was the only enable control in
+        // the pane that did not look like the others.
         //
-        // Enabled by default for filtering (SPEC.md §6): off, the combo beside it was
-        // inert — changing the minimum level did nothing until the box was also
-        // ticked, which reads as a broken control. At the default TRACE the axis
-        // narrows nothing, and the caller collapses that no-op state so it costs
-        // nothing either. A highlight rule opts in instead.
-        auto *row = new QHBoxLayout;
-        m_priorityEnable = new QCheckBox(tr("Minimum priority:"), this);
-        m_priorityEnable->setObjectName(QStringLiteral("priorityEnable"));
-        m_priorityEnable->setChecked(defaults.priorityOn);
-        row->addWidget(m_priorityEnable);
-        m_priorityCombo = new QComboBox(this);
+        // Two things stop being special cases with it. Every enable control is now a
+        // QGroupBox *, so there is no exception for a caller to remember; and Qt greys
+        // a checkable box's body, which is what kept the combo from staying live with
+        // the axis off — a hand-written setEnabled() used to do that, and it had to,
+        // because "changing the minimum level did nothing" is exactly what the
+        // enabled-by-default choice below exists to avoid.
+        //
+        // Enabled by default for filtering (SPEC.md §6) so the combo acts on the first
+        // click. At the default TRACE the axis narrows nothing, and the caller
+        // collapses that no-op state so it costs nothing either. A highlight rule opts
+        // in instead.
+        AxisBox a = makeAxisBox(this, tr("Minimum priority"),
+                                QStringLiteral("priorityGroup"), defaults.priorityOn);
+        m_priorityEnable = a.box;
+        m_priorityCombo = new QComboBox(a.body);
         m_priorityCombo->setObjectName(QStringLiteral("priorityCombo"));
         for (int i = 0; i < PriorityChoice::count(); ++i)
             m_priorityCombo->addItem(priorityName(PriorityChoice::at(i)));
-        row->addWidget(m_priorityCombo, 1);
-        root->addLayout(row);
+        a.bodyLayout->addWidget(m_priorityCombo);
+        root->addWidget(a.box);
 
-        connect(m_priorityEnable, &QCheckBox::toggled, this, emitChange);
+        connect(m_priorityEnable, &QGroupBox::toggled, this, emitChange);
         connect(m_priorityCombo, &QComboBox::currentIndexChanged, this,
                 [emitChange](int) { emitChange(); });
     }
@@ -573,13 +581,12 @@ void AxisEditor::updateAxisState()
     if (m_timeGroup)
         m_timeGroup->setVisible(!m_hideUnsupported || supportsTime());
 
-    // The four group-box axes get this from Qt, which greys a checkable box's contents
-    // while it is unchecked. Priority has no group box — it is a checkbox and a combo
-    // on one row — so nothing was doing it, and the combo stayed bright and spinnable
-    // with the axis off: exactly the "changing the minimum level did nothing" failure
-    // the enabled-by-default choice above was made to avoid, merely moved one click away.
-    if (m_priorityCombo && m_priorityEnable)
-        m_priorityCombo->setEnabled(m_priorityEnable->isChecked());
+    // Greying a switched-off axis's body is Qt's, not ours: a checkable QGroupBox
+    // disables its contents while it is unchecked. Priority used to be the exception
+    // — a bare checkbox and combo with no box to do it — and carried a hand-written
+    // setEnabled() here. It is a group box now, so the exception is gone; do not
+    // reintroduce one, because a hand-written enable RE-ENABLES a body Qt has just
+    // greyed if the two ever disagree about which way the axis is set.
 }
 
 void AxisEditor::updateTextValidity()
