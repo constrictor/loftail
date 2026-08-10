@@ -265,8 +265,9 @@ private:
     // it in the new zone.
     QTimeZone m_renderZone = QTimeZone::utc();
 
-    // Priority
-    QCheckBox *m_priorityEnable = nullptr;
+    // Priority. A checkable group box like the other four axes: every enable control
+    // in this editor is a QGroupBox *, with no exception left to remember.
+    QGroupBox *m_priorityEnable = nullptr;
     QComboBox *m_priorityCombo = nullptr;
 
     // Subsystem
