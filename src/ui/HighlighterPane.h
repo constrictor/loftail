@@ -6,6 +6,8 @@
 #include <QVector>
 #include <QWidget>
 
+#include <optional>
+
 QT_BEGIN_NAMESPACE
 class QComboBox;
 class QGroupBox;
@@ -58,6 +60,11 @@ public:
     QJsonObject saveState() const;
     void restoreState(const QJsonObject &state);
 
+    // True when the pane holds any rule at all, enabled or not. What the dock's
+    // marker reflects: unlike a filter axis, which can be switched on and still
+    // exclude nothing, a rule in the list is something the user put there.
+    bool hasRules() const { return !m_rules.isEmpty(); }
+
     // Add a rule built from the record under the cursor (the record menu, SPEC.md §5)
     // and select it, so the pane shows what was just added and it can be recolored or
     // removed without hunting for it. APPENDED, never inserted: rules are
@@ -72,15 +79,28 @@ signals:
     // model reset is needed since highlighting recolors rows without adding/removing.
     void highlightersChanged();
 
+    // Emitted only when hasRules() CHANGES, so MainWindow can mark the dock while the
+    // pane holds rules — it ships tabbed behind three others, so rules are usually in
+    // force with the pane out of sight. Edge-triggered for the same reason the Filters
+    // pane's is: the title rides a QTabBar entry, and re-setting it relays out the bar.
+    void activityChanged(bool active);
+
 private:
     void buildUi();
     void reloadRuleList();       // rebuild the rule list widget from m_rules
     void loadEditorFor(int row); // fill the editor from m_rules[row]
     void commit();               // push m_rules into the document + emit change
     void syncToDocument();
+    void updateActivity();       // emit activityChanged() when hasRules() flips
 
     int currentRow() const;
     QString ruleSummary(const HighlightRule &r) const;
+    // Paint a list row in its own rule's colours, so the list shows what the rule
+    // does rather than only naming it.
+    void paintItem(QListWidgetItem *item, const HighlightRule &r) const;
+    // The first palette slot no existing rule paints with, cycling once every slot is
+    // spoken for. Shared by the New button and the record menu's one-click rule.
+    int nextFreeBackground() const;
     QComboBox *makeSwatchCombo(QWidget *parent);
     void setSwatchCombo(QComboBox *combo, int paletteIndex);
     int swatchValue(const QComboBox *combo) const;
@@ -89,10 +109,12 @@ private:
     Document *m_document = nullptr;
     QVector<HighlightRule> m_rules;
     bool m_updating = false; // guards signal storms during (re)load
+    std::optional<bool> m_activeState; // last hasRules() reported by activityChanged()
 
     QListWidget *m_ruleList = nullptr;
-    QPushButton *m_addBtn = nullptr;
+    QPushButton *m_newBtn = nullptr;
     QPushButton *m_removeBtn = nullptr;
+    QPushButton *m_clearBtn = nullptr;
     QPushButton *m_upBtn = nullptr;
     QPushButton *m_downBtn = nullptr;
 

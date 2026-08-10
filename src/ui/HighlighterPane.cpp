@@ -7,6 +7,7 @@
 #include "Priority.h"
 #include "RecordIndex.h"
 
+#include <QBrush>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QFrame>
@@ -136,20 +137,28 @@ void HighlighterPane::buildUi()
     root->addWidget(m_ruleList);
 
     auto *btnRow = new QHBoxLayout;
-    m_addBtn = new QPushButton(tr("Add"), this);
+    // "New", not "Add": it now starts from the selected rule rather than from nothing,
+    // so the word has to promise a rule to edit and not an entry appearing complete.
+    m_newBtn = new QPushButton(tr("New"), this);
     m_removeBtn = new QPushButton(tr("Remove"), this);
+    m_clearBtn = new QPushButton(tr("Clear"), this);
     m_upBtn = new QPushButton(tr("Up"), this);
     m_downBtn = new QPushButton(tr("Down"), this);
+    m_newBtn->setToolTip(tr("Add a copy of the selected rule, or an empty rule when "
+                            "nothing is selected."));
+    m_clearBtn->setToolTip(tr("Remove every rule, leaving the log uncoloured."));
     // Object names, never translated: the test contract (ARCHITECTURE.md §9.1). Not
     // decoration — the pane embeds an AxisEditor, so "the button that says Add" was
     // ambiguous the moment that editor also had one, and which of them a by-text
     // lookup returned was decided by construction order.
-    m_addBtn->setObjectName(QStringLiteral("ruleAdd"));
+    m_newBtn->setObjectName(QStringLiteral("ruleNew"));
     m_removeBtn->setObjectName(QStringLiteral("ruleRemove"));
+    m_clearBtn->setObjectName(QStringLiteral("ruleClear"));
     m_upBtn->setObjectName(QStringLiteral("ruleUp"));
     m_downBtn->setObjectName(QStringLiteral("ruleDown"));
-    btnRow->addWidget(m_addBtn);
+    btnRow->addWidget(m_newBtn);
     btnRow->addWidget(m_removeBtn);
+    btnRow->addWidget(m_clearBtn);
     btnRow->addWidget(m_upBtn);
     btnRow->addWidget(m_downBtn);
     root->addLayout(btnRow);
@@ -213,13 +222,27 @@ void HighlighterPane::buildUi()
         }
     });
 
-    connect(m_addBtn, &QPushButton::clicked, this, [this] {
+    connect(m_newBtn, &QPushButton::clicked, this, [this] {
         if (!m_document)
             return;
-        HighlightRule r;                              // inert until an axis is configured
-        r.match.priorityEnabled = true;               // a sensible starting axis
-        r.match.minPriority = Priority::Error;
-        r.background = 0;                             // Red
+        const int from = currentRow();
+        HighlightRule r; // inert until an axis is configured
+        if (from >= 0 && from < m_rules.size()) {
+            // A copy of what is selected, criteria and colours alike: a second rule is
+            // nearly always a variant of the one in front of the user — the same axes
+            // with one value changed — and retyping it was the whole cost of the old
+            // "Add", which produced a rule resembling nothing on screen.
+            r = m_rules.at(from);
+            // ...but enabled, whatever the source was. A rule the user asked for
+            // arriving switched off would read as the button having failed.
+            r.enabled = true;
+        } else {
+            // Nothing selected: an empty rule, every axis off, so it colours nothing
+            // until it is configured. It still takes a colour no other rule is using,
+            // so it is visible in the list the moment it appears.
+            r.background = nextFreeBackground();
+            r.foreground = HighlightPalette::readableTextSlot(r.background);
+        }
         m_rules.append(r);
         commit();
         reloadRuleList();
@@ -233,6 +256,15 @@ void HighlighterPane::buildUi()
         commit();
         reloadRuleList();
         m_ruleList->setCurrentRow(qMin(row, m_rules.size() - 1));
+    });
+    connect(m_clearBtn, &QPushButton::clicked, this, [this] {
+        // The counterpart of the Filters pane's Clear: one action back to an
+        // uncoloured log, which was otherwise Remove pressed once per rule.
+        if (m_rules.isEmpty())
+            return;
+        m_rules.clear();
+        commit();
+        reloadRuleList();
     });
     auto move = [this](int delta) {
         const int row = currentRow();
@@ -261,8 +293,10 @@ void HighlighterPane::buildUi()
         // Refresh only this row's summary so the current selection is preserved.
         // Guard the setText so its itemChanged does not re-enter the enable handler.
         m_updating = true;
-        if (QListWidgetItem *item = m_ruleList->item(row))
+        if (QListWidgetItem *item = m_ruleList->item(row)) {
             item->setText(ruleSummary(r));
+            paintItem(item, r); // the colour combos are edits like any other
+        }
         m_updating = false;
     };
     connect(m_axes, &AxisEditor::changed, this, editorChanged);
@@ -277,16 +311,29 @@ int HighlighterPane::currentRow() const
 
 QString HighlighterPane::ruleSummary(const HighlightRule &r) const
 {
-    QString axes = axisSummary(r.match);
-    if (axes.isEmpty())
-        axes = tr("(no match set)");
+    // What the rule MATCHES, and nothing about its colours: the row is painted in them
+    // (paintItem), so naming them as well spent dock width saying twice what one look
+    // answers — and a colour is recognised faster than "bg:Deep Amber" is read.
+    const QString axes = axisSummary(r.match);
+    return axes.isEmpty() ? tr("(no match set)") : axes;
+}
 
-    auto slotName = [](int i) {
-        return HighlightPalette::isSlot(i) ? QString(HighlightPalette::slot(i).name)
-                                           : tr("default");
-    };
-    return tr("%1  →  bg:%2 / text:%3")
-        .arg(axes, slotName(r.background), slotName(r.foreground));
+void HighlighterPane::paintItem(QListWidgetItem *item, const HighlightRule &r) const
+{
+    // A rule's own colours, resolved for the current theme exactly as the view
+    // resolves them, so the list is a preview rather than a description. *default*
+    // leaves the role alone: an invalid QColor means "the theme's normal colour", and
+    // a default-constructed QBrush is how an item says it has no override.
+    //
+    // The SELECTED row still paints in the theme's selection colours, hiding its own —
+    // Qt's ordinary behaviour, kept deliberately. Which row is selected is now an input
+    // to a command ("New" copies it), so selection has to stay unmistakable; and the
+    // rule under the cursor is the one whose two swatch combos are on screen anyway.
+    const bool dark = isDark();
+    const QColor bg = HighlightPalette::color(r.background, dark);
+    const QColor fg = HighlightPalette::color(r.foreground, dark);
+    item->setBackground(bg.isValid() ? QBrush(bg) : QBrush());
+    item->setForeground(fg.isValid() ? QBrush(fg) : QBrush());
 }
 
 void HighlighterPane::reloadRuleList()
@@ -297,14 +344,55 @@ void HighlighterPane::reloadRuleList()
         auto *item = new QListWidgetItem(ruleSummary(r), m_ruleList);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(r.enabled ? Qt::Checked : Qt::Unchecked);
+        paintItem(item, r);
     }
     m_updating = false;
     const bool has = !m_rules.isEmpty();
     m_editor->setEnabled(has);
+    m_clearBtn->setEnabled(has);
     if (has)
         m_ruleList->setCurrentRow(0);
     else
         loadEditorFor(-1);
+    updateActivity();
+}
+
+void HighlighterPane::updateActivity()
+{
+    // Only on a CHANGE, for the reason FilterPane::updateSummary() spells out: the
+    // marker rides the dock's window title, which is a QTabBar entry while the panes
+    // are tabbed, and re-setting it relays out the whole bar.
+    const bool active = hasRules();
+    if (m_activeState.has_value() && *m_activeState == active)
+        return;
+    m_activeState = active;
+    emit activityChanged(active);
+}
+
+int HighlighterPane::nextFreeBackground() const
+{
+    // The first palette slot no existing rule paints with, so a second rule is
+    // distinguishable from the first at a glance. Once every slot is spoken for,
+    // cycle rather than refuse — a repeated colour is a small annoyance, a button
+    // that silently does nothing is not.
+    //
+    // Offered in band order — Deep, then Vivid, then Soft — and skipping the three
+    // neutrals, which are foreground colours far more often than they are anyone's
+    // idea of a highlight. Deep leads because it is the band that reads as a fill in
+    // either theme without shouting.
+    QVector<int> offered;
+    for (int i = 0; i < HighlightPalette::count(); ++i) {
+        if (!HighlightPalette::isNeutral(i))
+            offered.append(i);
+    }
+    QSet<int> used;
+    for (const HighlightRule &r : m_rules)
+        used.insert(r.background);
+    for (int i : offered) {
+        if (!used.contains(i))
+            return i;
+    }
+    return offered.at(m_rules.size() % offered.size());
 }
 
 void HighlighterPane::loadEditorFor(int row)
@@ -394,29 +482,9 @@ void HighlighterPane::addRule(const MatchCriteria &criteria)
         return;
 
     // The first palette slot no existing rule paints with, so a second "highlight
-    // this thread" is distinguishable from the first at a glance. Once every slot is
-    // spoken for, cycle rather than refuse — a repeated color is a small annoyance,
-    // a menu item that silently does nothing is not.
-    //
-    // Offered in band order — Deep, then Vivid, then Soft — and skipping the three
-    // neutrals, which are foreground colors far more often than they are anyone's
-    // idea of a highlight. Deep leads because it is the band that reads as a fill in
-    // either theme without shouting.
-    QVector<int> offered;
-    for (int i = 0; i < HighlightPalette::count(); ++i) {
-        if (!HighlightPalette::isNeutral(i))
-            offered.append(i);
-    }
-    QSet<int> used;
-    for (const HighlightRule &r : m_rules)
-        used.insert(r.background);
-    int slot = offered.at(m_rules.size() % offered.size());
-    for (int i : offered) {
-        if (!used.contains(i)) {
-            slot = i;
-            break;
-        }
-    }
+    // this thread" is distinguishable from the first at a glance (nextFreeBackground,
+    // shared with the New button).
+    const int slot = nextFreeBackground();
 
     HighlightRule r;
     r.match = criteria;

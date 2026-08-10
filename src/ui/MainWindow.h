@@ -299,6 +299,7 @@ private:
     RunPane         *m_runPane = nullptr;         // run selection side pane (§3a)
     QVector<QDockWidget *> m_paneDocks;                     // the four above, for View ▸ Panes
     QDockWidget *m_filtersDock = nullptr;                   // marked while filters are in force
+    QDockWidget *m_highlightersDock = nullptr;              // marked while rules are present
     QAction     *m_clearFiltersAction = nullptr;
     // How those docks' title bars are painted (PaneTitleStyle.h). Shared by all four
     // and parented to the window, so it outlives every dock that points at it.
