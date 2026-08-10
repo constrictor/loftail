@@ -80,12 +80,28 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
 11. **Bookmarks** — already scoped in `FUTURE.md`, including the open question of what identifies a
     bookmarked record across a reindex.
 
-## Added 2026-08-10 — a highlight rule that does more than colour
+## ~~Added 2026-08-10 — a highlight rule that does more than colour~~ — SHIPPED in M19
 
 Today a rule has exactly one effect: it recolours the records it matches. The idea is that the
 effect becomes a *choice* per rule — colour is one action among several, all sharing the five match
 axes and the ordered first-match-wins list already built (`SPEC.md` §7). Numbered after Tier 3 so
 the tiers above keep their numbers; the three are not one milestone and are not equally safe.
+
+**All three shipped in M19, on 2026-08-10, and the ruling on 13/14 went the other way from what is
+predicted below** — the user's call, recorded rather than argued: ship them, and leave `SPEC.md`
+§11's alerting non-goal untouched even though the notification contradicts it as written. The
+contradiction lives in the commit message and in `PLAN.md` M19, not in the spec.
+
+**Two predictions below were wrong, and both are worth keeping visible.** #12 said the decision to
+make first is whether `LogModel` gains an index it does not own or the digest gets a model of its
+own; that held, and the answer was the first — seven call sites, four in `LogModel` and three in
+`LogView`, routed through one accessor. But #12 also called the digest **per-view state
+(invariant #7), and that is wrong on the facts**: the ordinals come from per-*file* rules over the
+per-*file* index inside the per-*file* run bound, so two views of one log can only compute the same
+list. What is per-view is the widget. And #12 said the digest "maintains itself on the live path
+from the match the highlighter already runs per appended record" — **there was no such match**.
+Highlighting was entirely lazy and pull-based, so the live pass had to be written, gated on one
+`anyEnabled()` walk so a plain colouring setup still pays nothing. See `ARCHITECTURE.md` §7.5.
 
 12. **A highlight digest pane under the log.** A strip below the record table showing the **last
     matching record per rule** — one row per enabled rule, rendered exactly as it is in the log

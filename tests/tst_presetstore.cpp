@@ -7,7 +7,10 @@
 #include <QTemporaryDir>
 
 #include "AtomicJson.h"
+#include "Highlight.h"
+#include "MatchCriteria.h"
 #include "PresetStore.h"
+#include "Priority.h"
 
 using namespace loftail;
 
@@ -30,6 +33,10 @@ private slots:
     void exportImportRoundTrip();
     void exportImportIsThemePortable();
     void importRejectsWrongSchema();
+
+    // M19 — actions ride inside the same content blob, at the same schema version.
+    void aPresetWithNoActionsRestoresColouringRules();
+    void aPresetWithActionsRoundTripsAtTheSameSchema();
 };
 
 QJsonObject TestPresetStore::sampleContent()
@@ -195,6 +202,60 @@ void TestPresetStore::importRejectsWrongSchema()
 
     PresetStore store(dir.path());
     QVERIFY(!store.importPreset(file)); // an unknown schema is refused, not mangled
+}
+
+void TestPresetStore::aPresetWithNoActionsRestoresColouringRules()
+{
+    QTemporaryDir dir;
+    PresetStore store(dir.path());
+
+    // sampleContent() is deliberately the ORIGINAL two-axis, no-actions rule shape —
+    // a preset a user saved before either the axis set or the action set existed. It
+    // must come back colouring, at the same schema version, with no migration.
+    QVERIFY(store.save(PresetStore::Kind::Highlighters, QStringLiteral("old"),
+                       sampleContent()));
+
+    const QJsonObject back =
+        store.preset(PresetStore::Kind::Highlighters, QStringLiteral("old"));
+    const HighlighterSet set =
+        HighlighterSet::fromJson(back.value(QStringLiteral("rules")).toArray());
+
+    QCOMPARE(set.rules.size(), 1);
+    QCOMPARE(set.rules.first().actions, HighlightActions(HighlightAction::Color));
+    QCOMPARE(set.rules.first().match.minPriority, Priority::Error);
+    QCOMPARE(PresetStore::kSchemaVersion, 1); // and the version did not move
+}
+
+void TestPresetStore::aPresetWithActionsRoundTripsAtTheSameSchema()
+{
+    QTemporaryDir dir;
+    PresetStore store(dir.path());
+
+    HighlightRule digestOnly;
+    digestOnly.actions = HighlightAction::Digest | HighlightAction::Notify;
+    digestOnly.match.priorityEnabled = true;
+    digestOnly.match.minPriority = Priority::Error;
+    HighlightRule parked;
+    parked.actions = HighlightActions(); // matches and does nothing
+    parked.match.priorityEnabled = true;
+
+    HighlighterSet set;
+    set.rules = {digestOnly, parked};
+
+    QJsonObject content;
+    content.insert(QStringLiteral("rules"), set.toJson());
+    QVERIFY(store.save(PresetStore::Kind::Highlighters, QStringLiteral("new"), content));
+
+    const HighlighterSet back = HighlighterSet::fromJson(
+        store.preset(PresetStore::Kind::Highlighters, QStringLiteral("new"))
+            .value(QStringLiteral("rules"))
+            .toArray());
+
+    QCOMPARE(back.rules.size(), 2);
+    QCOMPARE(back.rules.at(0).actions, digestOnly.actions);
+    // The one an isEmpty()-based read would silently turn back into a colouring rule.
+    QCOMPARE(back.rules.at(1).actions, HighlightActions());
+    QCOMPARE(PresetStore::kSchemaVersion, 1);
 }
 
 QTEST_APPLESS_MAIN(TestPresetStore)

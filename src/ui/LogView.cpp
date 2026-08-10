@@ -125,8 +125,8 @@ QString LogView::columnsToTsv(const QVector<QVector<QString>> &rows)
 // Construction
 // ---------------------------------------------------------------------------
 
-LogView::LogView(const Document *document, LogModel *model, QWidget *parent)
-    : QAbstractScrollArea(parent), m_document(document), m_model(model)
+LogView::LogView(const Document *document, LogModel *model, QWidget *parent, Role role)
+    : QAbstractScrollArea(parent), m_document(document), m_model(model), m_role(role)
 {
     // Every column, and the header, render in the same fixed-pitch font: cells
     // line up vertically, and the estimated-geometry path's character-count model
@@ -157,8 +157,14 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent)
 
     verticalScrollBar()->setSingleStep(1);
 
-    connect(m_header, &QHeaderView::sectionResized, this, [this](int, int, int) { recomputeGeometry(); });
-    connect(m_header, &QHeaderView::sectionMoved, this, [this](int, int, int) { viewport()->update(); });
+    connect(m_header, &QHeaderView::sectionResized, this, [this](int, int, int) {
+        recomputeGeometry();
+        emit columnLayoutChanged();
+    });
+    connect(m_header, &QHeaderView::sectionMoved, this, [this](int, int, int) {
+        viewport()->update();
+        emit columnLayoutChanged();
+    });
     connect(m_model, &QAbstractItemModel::rowsInserted, this, &LogView::handleRowsInserted);
     connect(m_model, &QAbstractItemModel::rowsRemoved, this, &LogView::handleRowsRemoved);
     connect(m_model, &QAbstractItemModel::modelReset, this, &LogView::handleModelReset);
@@ -169,14 +175,37 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent)
             [this](const QModelIndex &, const QModelIndex &, const QList<int> &) { handleTailChanged(); });
 
     // Return-to-bottom control (SPEC.md §3): a small overlay shown only when follow
-    // has detached; clicking it re-attaches and jumps to the newest record.
-    m_followButton = new QToolButton(viewport());
-    m_followButton->setText(tr("Follow tail ↓"));
-    m_followButton->setToolTip(tr("Jump to the newest record and follow new ones"));
-    m_followButton->setCursor(Qt::PointingHandCursor);
-    m_followButton->setAutoRaise(false);
-    m_followButton->hide();
-    connect(m_followButton, &QToolButton::clicked, this, &LogView::followTail);
+    // has detached; clicking it re-attaches and jumps to the newest record. A digest
+    // strip does not scroll, so it has nothing to detach from and no button to offer.
+    if (m_role == Role::Main) {
+        m_followButton = new QToolButton(viewport());
+        m_followButton->setText(tr("Follow tail ↓"));
+        m_followButton->setToolTip(tr("Jump to the newest record and follow new ones"));
+        m_followButton->setCursor(Qt::PointingHandCursor);
+        m_followButton->setAutoRaise(false);
+        m_followButton->hide();
+        connect(m_followButton, &QToolButton::clicked, this, &LogView::followTail);
+    }
+
+    if (m_role == Role::Digest) {
+        // The strip borrows the table's column layout rather than carrying a second
+        // set of captions, and it is sized to its rows rather than scrolled — so both
+        // scrollbars go, and the vertical one comes back only when the height cap bites
+        // (see sizeHint). Its height is its whole contract, so it must be able to ask
+        // for one and must not be stretched past it.
+        m_header->hide();
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        // Click-focus, not strong: Tab must not stop on a strip of at most a few rows
+        // on the way from the table to the Find bar.
+        setFocusPolicy(Qt::ClickFocus);
+        // Its rows are a different ordinal space from the main view's, so the size hint
+        // has to be recomputed whenever the content changes rather than only on resize.
+        connect(m_model, &QAbstractItemModel::modelReset, this, [this] { refreshDigestCap(); });
+        connect(m_model, &QAbstractItemModel::rowsInserted, this, [this] { refreshDigestCap(); });
+        connect(m_model, &QAbstractItemModel::rowsRemoved, this, [this] { refreshDigestCap(); });
+    }
 
     layoutHeader();
     recomputeGeometry();
@@ -190,8 +219,12 @@ LogView::~LogView() = default;
 
 int LogView::lineHeight() const { return qMax(1, fontMetrics().height()); }
 int LogView::visibleLines() const { return qMax(1, viewport()->height() / lineHeight()); }
-int LogView::recordCount() const { return m_document->filtered().recordCount(); }
-const RecordIndex &LogView::geom() const { return m_document->filtered().geometry(); }
+// Both go through the MODEL, not the document (M19, ARCHITECTURE.md §7.5): which
+// subset a view shows is the model's question now that a second model can point at a
+// second FilteredIndex over the same document. With no view index set — every view but
+// the digest strip — these are exactly what they were.
+int LogView::recordCount() const { return m_model->rowCount(); }
+const RecordIndex &LogView::geom() const { return m_model->viewGeometry(); }
 
 int LogView::messageColumn() const
 {
@@ -447,9 +480,77 @@ void LogView::updateScrollBars()
 
 void LogView::layoutHeader()
 {
+    // A hidden header reserves NOTHING. Asking unconditionally would leave a
+    // header-tall blank band above the digest strip — which reads as a rendering fault
+    // rather than a bug, in the one widget whose whole claim is that it is exactly as
+    // tall as its rows.
+    if (m_header->isHidden()) {
+        setViewportMargins(0, 0, 0, 0);
+        return;
+    }
     const int h = m_header->sizeHint().height();
     setViewportMargins(0, h, 0, 0);
     m_header->setGeometry(viewport()->x(), viewport()->y() - h, viewport()->width(), h);
+}
+
+qint64 LogView::digestContentLines(bool *capped) const
+{
+    const qint64 lines = m_model->rowCount() > 0 ? mapTotalLines() : 0;
+
+    // The cap. A single digest record can legitimately be a hundred-line stack trace,
+    // and a strip that ate the log it sits under would be worse than no strip. A third
+    // of the parent's height, or kDigestMaxLines, whichever is smaller.
+    qint64 capLines = kDigestMaxLines;
+    if (const QWidget *p = parentWidget(); p && p->height() > 0)
+        capLines = qMin<qint64>(capLines, qMax(1, p->height() / (3 * lineHeight())));
+
+    const qint64 shown = qMin(lines, capLines);
+    if (capped)
+        *capped = shown < lines;
+    return shown;
+}
+
+void LogView::refreshDigestCap()
+{
+    if (m_role != Role::Digest)
+        return;
+    bool capped = false;
+    digestContentLines(&capped);
+    // The strip is "not scrolled" in every ordinary case; the scrollbar comes back only
+    // where the cap bit, so the content past it stays reachable rather than truncated.
+    //
+    // Guarded on an actual change, and kept OUT of sizeHint(), which must stay a pure
+    // query: QAbstractScrollArea::setVerticalScrollBarPolicy() calls layoutChildren()
+    // whether or not the policy moved, and layout asks for the size hint — so setting
+    // it from inside the hint is an infinite recursion. It hung tst_multidoc.
+    const Qt::ScrollBarPolicy wanted =
+        capped ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff;
+    if (verticalScrollBarPolicy() != wanted)
+        setVerticalScrollBarPolicy(wanted);
+    updateGeometry();
+}
+
+QSize LogView::sizeHint() const
+{
+    if (m_role != Role::Digest)
+        return QAbstractScrollArea::sizeHint();
+
+    // Display lines, not rows: a digest record renders at full height exactly as it
+    // does in the log, which is the point of showing it here rather than summarising it.
+    return QSize(QAbstractScrollArea::sizeHint().width(),
+                 frameWidth() * 2 + int(digestContentLines(nullptr)) * lineHeight());
+}
+
+void LogView::setHorizontalOffset(int value)
+{
+    if (horizontalScrollBar()->value() == value)
+        return;
+    // Past the strip's own range when the table is wider than it is; clamping keeps the
+    // columns as aligned as they can be rather than snapping back to zero.
+    horizontalScrollBar()->setValue(
+        qBound(horizontalScrollBar()->minimum(), value, horizontalScrollBar()->maximum()));
+    m_header->setOffset(horizontalScrollBar()->value());
+    viewport()->update();
 }
 
 void LogView::resizeEvent(QResizeEvent *event)
@@ -493,8 +594,10 @@ void LogView::applyDebouncedResize()
 
 void LogView::scrollContentsBy(int dx, int dy)
 {
-    if (dx != 0)
+    if (dx != 0) {
         m_header->setOffset(horizontalScrollBar()->value());
+        emit horizontalOffsetChanged(horizontalScrollBar()->value());
+    }
     if (dy != 0)
         updateFollowFromScrollPosition(); // a vertical move may detach/re-attach follow
     viewport()->update();
@@ -839,7 +942,6 @@ void LogView::copySelectionRaw() const
     if (rows.isEmpty())
         return;
     const RecordIndex &idx = m_document->index();
-    const FilteredIndex &filtered = m_document->filtered();
     LogSource *src = m_document->source();
     const Decoder &dec = m_document->decoder();
     QStringList parts;
@@ -847,7 +949,8 @@ void LogView::copySelectionRaw() const
     for (int viewRow : rows) {
         // Selection rows are VIEW rows; copy must read the SOURCE record's true byte
         // range (invariant #6 mapping, and the full text regardless of display cap).
-        const int r = filtered.sourceRow(viewRow);
+        // Through the model, so a digest strip copies the record its own row names.
+        const int r = m_model->sourceRow(viewRow);
         if (r < 0 || r >= idx.records.size())
             continue;
         const Record &rec = idx.records.at(r);
@@ -922,6 +1025,10 @@ bool LogView::restoreColumnState(const QByteArray &state)
 {
     const bool ok = m_header->restoreState(state);
     recomputeGeometry();
+    // Session restore moves every section at once and QHeaderView reports none of it,
+    // so a digest strip mirroring only sectionResized/sectionMoved would sit under the
+    // restored layout with the default one until the user touched a divider.
+    emit columnLayoutChanged();
     return ok;
 }
 

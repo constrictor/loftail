@@ -5,6 +5,8 @@
 #include <QSettings>
 #include <QTemporaryDir>
 
+#include "Highlight.h"
+#include "MatchCriteria.h"
 #include "SessionStore.h"
 
 using namespace loftail;
@@ -30,6 +32,10 @@ private slots:
     void v1SessionMigrates();
     void v2SessionMigratesWithoutItsWindowState();
     void legacyDisplayZoneKeyMigrates();
+
+    // M19 — highlight actions ride inside the same opaque `highlighters` blob, so the
+    // session schema did not have to move for them.
+    void highlightActionsRoundTripWithoutASchemaBump();
 };
 
 void TestSession::documentsArrayRoundTrip()
@@ -470,6 +476,60 @@ void TestSession::runSelectionAbsentInOldSession()
     QVERIFY(od.format.runStartPattern.isEmpty());
     QCOMPARE(od.runAll, false);
     QCOMPARE(od.selectedRunStartOffset, qint64(-1));
+}
+
+void TestSession::highlightActionsRoundTripWithoutASchemaBump()
+{
+    QTemporaryDir dir;
+    const QString ini = dir.filePath(QStringLiteral("s.ini"));
+
+    HighlightRule colouring; // the shape everything written before M19 has
+    colouring.match.priorityEnabled = true;
+    HighlightRule digestOnly;
+    digestOnly.actions = HighlightAction::Digest | HighlightAction::Tab;
+    digestOnly.match.priorityEnabled = true;
+    HighlightRule parked;
+    parked.actions = HighlightActions();
+    parked.match.priorityEnabled = true;
+
+    HighlighterSet set;
+    set.rules = {colouring, digestOnly, parked};
+
+    Session in;
+    SessionDocument d;
+    d.path = QStringLiteral("/tmp/a.log");
+    QJsonObject hl;
+    hl.insert(QStringLiteral("rules"), set.toJson());
+    d.highlighters = hl;
+    in.documents = {d};
+    SessionView v;
+    in.views = {v};
+
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        SessionStore::save(s, in);
+    }
+    QSettings s(ini, QSettings::IniFormat);
+    const Session out = SessionStore::load(s);
+
+    QCOMPARE(out.documents.size(), 1);
+    const HighlighterSet back = HighlighterSet::fromJson(
+        out.documents.first().highlighters.value(QStringLiteral("rules")).toArray());
+
+    QCOMPARE(back.rules.size(), 3);
+    QCOMPARE(back.rules.at(0).actions, HighlightActions(HighlightAction::Color));
+    QCOMPARE(back.rules.at(1).actions, digestOnly.actions);
+    QCOMPARE(back.rules.at(2).actions, HighlightActions());
+
+    // The version did NOT move. A session bump migrates upward but is unreadable by any
+    // already-shipped binary, and the preset file — the same rule blob — gates on exact
+    // equality with no migration at all, so it would discard every preset a user has.
+    QCOMPARE(out.schemaVersion, SessionStore::kSchemaVersion);
+    QCOMPARE(SessionStore::kSchemaVersion, 3);
+
+    // And a colour-only rule still writes exactly what it wrote before actions existed,
+    // which is what makes that true rather than merely intended.
+    QVERIFY(!colouring.toJson().contains(QStringLiteral("actions")));
 }
 
 QTEST_APPLESS_MAIN(TestSession)

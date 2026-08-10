@@ -378,6 +378,36 @@ target_link_libraries(tst_highlighterpane PRIVATE loftail_ui Qt6::Test Qt6::Widg
 add_test(NAME tst_highlighterpane COMMAND tst_highlighterpane)
 set_tests_properties(tst_highlighterpane PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# M19 — a highlight rule's effect is a SET of actions, and colour is one of them.
+#
+# The digest is a second visible subset of one document: last match per opted-in rule,
+# bounded by the run and deliberately not by the filters, fenced at a fixed look-back.
+# Core-only and guiless like tst_filtercontext, because the derivation is per FILE — the
+# view that draws it is the only per-view part. Its live cases are the ones that earn
+# their keep: the incremental update has to agree with a one-shot scan while the
+# trailing record is still being re-read.
+qt_add_executable(tst_digest tst_digest.cpp)
+target_link_libraries(tst_digest PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_digest COMMAND tst_digest)
+
+# The rate limit behind the Notify action. UNGATED and clock-injected, because the
+# DELIVERY path has no honest CI coverage — the runners are headless with no tray and no
+# notification server, so isSystemTrayAvailable() is false and showMessage() is
+# unreachable (the tst_sshlive / tst_keychainlive shape). What decides whether a
+# notification happens, and what it says, is testable without a desktop and is here.
+qt_add_executable(tst_alertpolicy tst_alertpolicy.cpp)
+target_link_libraries(tst_alertpolicy PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_alertpolicy COMMAND tst_alertpolicy)
+
+# The digest STRIP: that it is exactly as tall as its rows and not scrolled, that it
+# appears and vanishes with its content, that it tracks the table's columns and
+# horizontal scroll, and that a digest row wears its own rule's colours while the log
+# above stays uncoloured. Links the UI layer, runs offscreen.
+qt_add_executable(tst_digestview tst_digestview.cpp)
+target_link_libraries(tst_digestview PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_digestview COMMAND tst_digestview)
+set_tests_properties(tst_digestview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # M5 — full session round-trip through the real MainWindow (open a file, set
 # filters + highlighters, quit, relaunch, confirm restored) and graceful handling
 # of a missing last file. Drives two MainWindow instances under an isolated config

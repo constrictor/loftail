@@ -112,7 +112,7 @@ void TestOpenFlow::escapeWithNothingOpenLeavesEmptyView()
 {
     MainWindow w;
     w.show();
-    QCOMPARE(w.findChildren<LogView *>().size(), 0);
+    QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 0);
 
     Dismisser d;
     dismissWhenShown(d, Qt::Key_Escape);
@@ -122,7 +122,7 @@ void TestOpenFlow::escapeWithNothingOpenLeavesEmptyView()
     // Cancelled with nothing to fall back to: no view at all, rather than a table
     // of unparsed plain text.
     QTest::qWait(100);
-    QCOMPARE(w.findChildren<LogView *>().size(), 0);
+    QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 0);
     w.close();
 }
 
@@ -133,9 +133,9 @@ void TestOpenFlow::escapeCancelsOpenAndKeepsCurrentFile()
     w.show();
 
     w.openFile(m_good); // parses with the default pattern: no prompt
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     QTest::qWait(200); // let indexing finish
-    LogView *before = w.findChild<LogView *>();
+    LogView *before = w.findChild<LogView *>(QStringLiteral("logView"));
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — good.log"));
 
     Dismisser d;
@@ -147,8 +147,8 @@ void TestOpenFlow::escapeCancelsOpenAndKeepsCurrentFile()
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — good.log"));
     // A cancelled open must create NOTHING: with several files openable, "the view is
     // unchanged" also has to mean "no second tab appeared".
-    QCOMPARE(w.findChildren<LogView *>().size(), 1);
-    QCOMPARE(w.findChild<LogView *>(), before);
+    QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QCOMPARE(w.findChild<LogView *>(QStringLiteral("logView")), before);
     w.close();
 }
 
@@ -176,7 +176,7 @@ void TestOpenFlow::acceptedPatternOpensTheFile()
 
     w.openFile(m_weird);
     QVERIFY2(d.seen, "the format dialog was never shown");
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     QTest::qWait(200);
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — weird.log"));
     w.close();
@@ -199,10 +199,10 @@ void TestOpenFlow::absentFileOpensAWaitingTabWithNoDialog()
     Dismisser d;
     dismissWhenShown(d, Qt::Key_Escape); // fires only if a dialog appears, which it must not
     w.openFile(absent);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     QVERIFY2(!d.seen, "the format dialog was shown for a log with no bytes in it");
 
-    LogView *view = w.findChild<LogView *>();
+    LogView *view = w.findChild<LogView *>(QStringLiteral("logView"));
     QVERIFY(view);
     QCOMPARE(view->recordCount(), 0);
     QVERIFY(!view->placeholderText().isEmpty());
@@ -244,11 +244,11 @@ void TestOpenFlow::savedDefaultOpensWithoutADialog()
     Dismisser d;
     dismissWhenShown(d, Qt::Key_Escape); // fires only if a dialog appears, which it must not
     w.openFile(house);
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 1);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     QTest::qWait(200);
     QVERIFY2(!d.seen, "the format dialog was shown for a log the saved default parses");
 
-    LogView *view = w.findChild<LogView *>();
+    LogView *view = w.findChild<LogView *>(QStringLiteral("logView"));
     QVERIFY(view);
     // Parsed, not opened as a wall of unparsed plain text — the default carried its
     // pattern through, rather than merely suppressing the prompt.

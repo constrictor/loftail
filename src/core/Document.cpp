@@ -37,6 +37,20 @@ Document::Document()
     // of the Document (a member), so binding once here is enough even though
     // m_index's contents are reassigned on each prepare()/open().
     m_filtered.setSource(&m_index);
+    m_digest.setSource(&m_index); // same reasoning; a second view over the same index
+    clearDigest();
+}
+
+void Document::clearDigest()
+{
+    m_digestLast.clear();
+    // setVisible({}), never clear(). A cleared FilteredIndex is the IDENTITY view — it
+    // reports every source record — which is the right meaning of "no filter" and the
+    // exactly wrong meaning of "no digest". The digest is therefore ALWAYS active, from
+    // construction onwards, so that "nothing to show" is zero rows and never the whole
+    // log. The strip's visibility is driven straight off its model's rowCount(), so an
+    // inactive digest would put the entire file in the strip under the file.
+    m_digest.setVisible({});
 }
 
 Document::~Document() = default;
@@ -209,6 +223,9 @@ void Document::clearIndex()
 {
     m_index = RecordIndex();
     m_filtered.clear(); // the previous subset indexed records that no longer exist
+    // Same reason, and this is why the digest needs no bookkeeping of its own for a
+    // rescan, a rotation or a wait: it clears wherever the filtered subset does.
+    clearDigest();
     m_runs.clear();
     m_selectedRun = -1;
     recomputeViewBounds();
@@ -309,6 +326,7 @@ bool Document::rescan()
     // FilteredIndex is bound to &m_index (a stable member), so reassigning the
     // index's contents keeps that binding valid; we only clear its active subset.
     m_filtered.clear();
+    clearDigest();
     invalidateTimeBaselines(); // every record is about to be replaced
     // Reuse: this runs from the live watch tick, on the GUI thread, so a rotation must
     // not become a reconnect here. A remote file's spool is shared and already live,
@@ -427,6 +445,189 @@ void Document::applyFilters()
         });
 
     m_filtered.setVisible(std::move(visible), std::move(context));
+}
+
+// --- The highlight digest (M19, ARCHITECTURE.md §7.5.2) ------------------------
+
+namespace {
+
+// Which actions a digest rebuild is asking about. Named once so the fence, the gate
+// and the scan cannot drift apart.
+constexpr HighlightActions kDigestAction = HighlightAction::Digest;
+
+} // namespace
+
+// Publish m_digestLast as a FilteredIndex: the sorted, deduped set of ordinals it
+// names. Returns true when the published subset actually changed — the caller uses
+// that to decide whether a model reset is owed, because resetting on every quiet tick
+// jolts the strip for nothing.
+bool Document::publishDigest(bool force)
+{
+    QVector<qint32> ordinals;
+    ordinals.reserve(m_digestLast.size());
+    for (const qint32 row : m_digestLast)
+        if (row >= 0)
+            ordinals.append(row);
+    std::sort(ordinals.begin(), ordinals.end());
+    ordinals.erase(std::unique(ordinals.begin(), ordinals.end()), ordinals.end());
+
+    // `force` is not belt and braces. setVisible() COPIES each 32-byte Record into the
+    // compact index, so a digest row whose record grew a continuation line has the same
+    // ordinal and a stale height — and skipping the republish on unchanged ordinals,
+    // which is what keeps a quiet tick from jolting the strip, is exactly what would
+    // then freeze that row's height for the rest of the session. The live path passes
+    // force when the provisional record changed under an ordinal the digest holds.
+    if (!force && ordinals == m_digest.visible())
+        return false;
+    // ALWAYS setVisible, never clear(), even for an empty result — see clearDigest().
+    m_digest.setVisible(std::move(ordinals));
+    return true;
+}
+
+void Document::rebuildDigest()
+{
+    m_digestLast.assign(m_highlighters.rules.size(), -1);
+
+    // No enabled rule asks for a digest: nothing to scan. Published as an ACTIVE empty
+    // subset rather than cleared — see publishDigest() for why an inactive one would
+    // put the whole log in the strip.
+    if (!m_highlighters.anyEnabled(kDigestAction)) {
+        publishDigest();
+        return;
+    }
+
+    // How many rules are still looking, so the walk can stop the moment they are all
+    // answered rather than always paying the fence.
+    int outstanding = 0;
+    for (int i = 0; i < m_highlighters.rules.size(); ++i) {
+        const HighlightRule &r = m_highlighters.rules.at(i);
+        if (r.enabled && r.actions.testFlag(HighlightAction::Digest) && r.match.anyActive())
+            ++outstanding;
+    }
+
+    // Backward from the newest record. Only IN-BOUND records count against the fence,
+    // so a log split into runs never scans past the selected run's first record — and
+    // a record outside the bound is skipped on one integer comparison.
+    int examined = 0;
+    for (int row = m_index.records.size() - 1; row >= 0 && outstanding > 0; --row) {
+        const Record &rec = m_index.records.at(row);
+        if (!inRunBound(rec))
+            continue;
+        if (++examined > kDigestLookback)
+            break;
+        // Walking backward, the first time a rule is seen to match IS that rule's last
+        // match. Asked per rule rather than through matchActions(), because two digest
+        // rules can both want this record and first-match-wins would name only one of
+        // them. The memo is shared across the rules so the record decodes at most once.
+        std::optional<QString> message;
+        for (int i = 0; i < m_digestLast.size() && outstanding > 0; ++i) {
+            if (m_digestLast.at(i) >= 0)
+                continue;
+            if (!m_highlighters.rules.at(i).actions.testFlag(HighlightAction::Digest))
+                continue;
+            if (!m_highlighters.ruleMatches(i, rec, message,
+                                            [this, &rec] { return messageText(rec); }))
+                continue;
+            m_digestLast[i] = row;
+            --outstanding;
+        }
+    }
+
+    publishDigest();
+}
+
+bool Document::updateDigestAfterAppend(int firstNewRow, bool provisionalChanged,
+                                       int provisionalRow)
+{
+    if (!m_highlighters.anyEnabled(kDigestAction)) {
+        // A rule may have been switched off since the last rebuild; make sure the
+        // strip goes with it rather than freezing on its last content.
+        m_digestLast.assign(m_highlighters.rules.size(), -1);
+        return publishDigest();
+    }
+    // The rule list changed shape since the last rebuild (a rule added or removed):
+    // m_digestLast's indices no longer name the same rules, so nothing incremental is
+    // safe. The full scan is the correct answer and the cheap one, since a rule list
+    // only changes when the user edits it.
+    if (m_digestLast.size() != m_highlighters.rules.size()) {
+        rebuildDigest();
+        return true;
+    }
+
+    bool changed = false;
+    // A digest row's RECORD changed even though its ordinal did not — the stale-copy
+    // case publishDigest()'s `force` exists for.
+    bool staleRow = false;
+
+    // The trailing record was re-read in place. It may have STOPPED matching a rule it
+    // was the newest match of — a provisional record can flip either way as its
+    // continuation lines arrive — in which case that rule's entry must be re-found
+    // behind it rather than left pointing at a record that no longer qualifies.
+    if (provisionalChanged && provisionalRow >= 0
+        && provisionalRow < m_index.records.size()) {
+        const Record &prov = m_index.records.at(provisionalRow);
+        for (int i = 0; i < m_digestLast.size(); ++i) {
+            if (m_digestLast.at(i) != provisionalRow)
+                continue;
+            const bool stillMatches =
+                inRunBound(prov)
+                && m_highlighters.ruleMatches(i, prov,
+                                              [this, &prov] { return messageText(prov); });
+            if (stillMatches) {
+                // The ordinal list has not changed, but the Record behind it has, and
+                // FilteredIndex holds a 32-byte COPY — so the strip would render this
+                // row at its old height forever. Republish rather than skip.
+                changed = true;
+                staleRow = true;
+                continue;
+            }
+            m_digestLast[i] = findLastMatchBefore(i, provisionalRow - 1);
+            changed = true;
+        }
+    }
+
+    // Forward over the genuinely new records: each can only push an entry later, so
+    // this is O(new records × rules) with the same lazy, memoized decode the paint
+    // path uses.
+    const int from = qMax(0, firstNewRow);
+    for (int row = from; row < m_index.records.size(); ++row) {
+        const Record &rec = m_index.records.at(row);
+        if (!inRunBound(rec))
+            continue;
+        std::optional<QString> message;
+        for (int i = 0; i < m_digestLast.size(); ++i) {
+            if (m_digestLast.at(i) == row)
+                continue;
+            if (!m_highlighters.rules.at(i).actions.testFlag(HighlightAction::Digest))
+                continue;
+            if (!m_highlighters.ruleMatches(i, rec, message,
+                                            [this, &rec] { return messageText(rec); }))
+                continue;
+            m_digestLast[i] = row;
+            changed = true;
+        }
+    }
+
+    if (!changed)
+        return false;
+    publishDigest(staleRow);
+    return true;
+}
+
+int Document::findLastMatchBefore(int ruleIndex, int fromRow) const
+{
+    int examined = 0;
+    for (int row = qMin(fromRow, m_index.records.size() - 1); row >= 0; --row) {
+        const Record &rec = m_index.records.at(row);
+        if (!inRunBound(rec))
+            continue;
+        if (++examined > kDigestLookback)
+            break;
+        if (m_highlighters.ruleMatches(ruleIndex, rec,
+                                       [this, &rec] { return messageText(rec); }))
+            return row;
+    }
+    return -1;
 }
 
 bool Document::inRunBound(const Record &r) const

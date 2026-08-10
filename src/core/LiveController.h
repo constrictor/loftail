@@ -89,6 +89,23 @@ public:
 
     void setPollInterval(int ms);
 
+    // The model showing the DIGEST subset of this document (M19), or nullptr when the
+    // owner has none. Held so the digest's wholesale ordinal remap can be bracketed by
+    // a model reset BEFORE the mutation, exactly as doRescan() brackets the main model,
+    // rather than being reset after the fact. Non-owning; must outlive this controller.
+    void setDigestModel(LogModel *model) { m_digestModel = model; }
+
+    // What the last ingest tick's records did to the Tab and Notify actions (M19).
+    // Stashed rather than carried in a new signal: the owner reads it at the top of its
+    // `ingested` handler, so no metatype and no signal-ordering question arises. Reset
+    // at the start of every tick.
+    struct BatchAlerts
+    {
+        int tabMatches = 0;    // records matching an enabled rule carrying Tab
+        int notifyMatches = 0; // ... carrying Notify
+    };
+    const BatchAlerts &lastBatchAlerts() const { return m_lastAlerts; }
+
     // How long the log must be MISSING before the document is cleared to the waiting
     // state. This is hysteresis, and it is what keeps a rotation silent: `logrotate`
     // renames and then recreates, and a check landing in that gap would otherwise blank
@@ -136,6 +153,12 @@ signals:
 
 private:
     void ingestAppended();
+    // Run the highlight rules over the records this tick appended, for the three
+    // actions that need to know as the record ARRIVES rather than as it is painted
+    // (M19). Highlighting was entirely lazy and pull-based before this; the whole cost
+    // of it for a document whose rules only colour is one anyEnabled() walk of the rule
+    // list, which is the first line of the body.
+    void runMatchActions(int firstNewRow, bool provisionalChanged, int provisionalRow);
     void doRescan();
     void syncBaseline();
     void publishSourceStatus();
@@ -145,6 +168,8 @@ private:
 
     Document    *m_document;
     LogModel    *m_model;
+    LogModel    *m_digestModel = nullptr;
+    BatchAlerts  m_lastAlerts;
     LiveWatcher *m_watcher = nullptr;
     qint64       m_lastSize = 0;
     bool         m_started = false;

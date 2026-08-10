@@ -310,14 +310,21 @@ void LiveController::doRescan()
     // right signal — the visible set is wholesale replaced — with the re-index and
     // any active-filter recompute done between begin/end so rowCount() is consistent.
     m_model->beginFilterReset();
+    if (m_digestModel)
+        m_digestModel->beginFilterReset();
     const bool ok = m_document->rescan();
     if (ok) {
-        // The intern tables were rebuilt, so rebind highlight rules to the new ids
-        // and re-materialize the visible subset if a filter is active.
-        m_document->resolveHighlighters();
+        // The intern tables were rebuilt, so rebind highlight rules to the new ids and
+        // re-materialize the visible subset if a filter is active. refreshHighlighting()
+        // rather than resolveHighlighters() because rescan() cleared the digest along
+        // with the filtered subset — every ordinal it held named a record that no longer
+        // exists — and it has to be recomputed over the records that replaced them.
+        m_document->refreshHighlighting();
         if (m_document->filters().anyActive() || m_document->viewRestricted())
             m_document->applyFilters();
     }
+    if (m_digestModel)
+        m_digestModel->endFilterReset();
     m_model->endFilterReset();
 
     syncBaseline();
@@ -483,12 +490,64 @@ void LiveController::ingestAppended()
         }
     }
 
-    // Newly-interned subsystems may match highlight rules; rebind ids cheaply.
+    // Newly-interned subsystems may match highlight rules; rebind ids cheaply. This
+    // must precede runMatchActions() — the rules it is about to evaluate are the ones
+    // just rebound, and a subsystem interned by this very batch is exactly the case a
+    // rule naming it was written for.
     m_document->resolveHighlighters();
+    runMatchActions(oldCount, provisionalChanged, base);
 
     const qint64 newSourceRecords = tail.size() - firstTailNew;
     syncBaseline();
     emit ingested(newSourceRecords);
+}
+
+void LiveController::runMatchActions(int firstNewRow, bool provisionalChanged,
+                                     int provisionalRow)
+{
+    m_lastAlerts = BatchAlerts();
+
+    // The whole cost for a document whose rules only colour: one walk of the rule list
+    // per tick, touching no record and decoding nothing (ARCHITECTURE.md §7.5). Every
+    // action below is opt-in per rule, so this is the ordinary case and not the corner.
+    static constexpr HighlightActions kLiveActions =
+        HighlightAction::Digest | HighlightAction::Tab | HighlightAction::Notify;
+    const HighlighterSet &set = m_document->highlighters();
+    if (!set.anyEnabled(kLiveActions))
+        return;
+
+    // --- Tab and Notify: per record, over the genuinely new ones -----------------
+    //
+    // The run bound is asked first and is integer comparisons only, for §3a's reason
+    // and so the tab marker and the digest cannot disagree about the same record.
+    if (set.anyEnabled(HighlightAction::Tab | HighlightAction::Notify)) {
+        const RecordIndex &idx = m_document->index();
+        for (int row = qMax(0, firstNewRow); row < idx.records.size(); ++row) {
+            const Record &rec = idx.records.at(row);
+            if (!m_document->inRunBound(rec))
+                continue;
+            const ActionMatch m = set.matchActions(
+                rec, HighlightAction::Tab | HighlightAction::Notify,
+                [this, &rec] { return m_document->messageText(rec); });
+            if (m.tab >= 0)
+                ++m_lastAlerts.tabMatches;
+            if (m.notify >= 0)
+                ++m_lastAlerts.notifyMatches;
+        }
+    }
+
+    // --- Digest: a wholesale ordinal remap, so bracket the reset ----------------
+    //
+    // FilteredIndex has no interior replace and a digest row can move backwards in the
+    // list when one rule's newest match overtakes another's, so the update republishes
+    // the whole (at most rule-count long) ordinal list. That is a model RESET, not an
+    // append — cheap at this size, and bracketed BEFORE the mutation the way doRescan()
+    // brackets the main model rather than reset after the fact.
+    if (m_digestModel)
+        m_digestModel->beginFilterReset();
+    m_document->updateDigestAfterAppend(firstNewRow, provisionalChanged, provisionalRow);
+    if (m_digestModel)
+        m_digestModel->endFilterReset();
 }
 
 } // namespace loftail

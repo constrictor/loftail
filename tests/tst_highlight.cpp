@@ -17,6 +17,21 @@
 
 using namespace loftail;
 
+// M19 — every case written before actions existed asks "which rule COLOURS this
+// record", because colour was then a rule's only effect. Phrasing them through one
+// helper rather than rewriting thirty assertions is deliberate: it keeps them a
+// regression statement about the Color action, and leaves the per-action cases below
+// as the only place matchActions() is exercised directly.
+static int colorRule(const HighlighterSet &set, const Record &r)
+{
+    return set.match(r, HighlightAction::Color);
+}
+template <class MessageFn>
+static int colorRule(const HighlighterSet &set, const Record &r, MessageFn &&msg)
+{
+    return set.match(r, HighlightAction::Color, std::forward<MessageFn>(msg));
+}
+
 // M5 — the highlight core (SPEC.md §7, ARCHITECTURE.md §8, invariant #4). Pure,
 // UI-free: rules persist palette INDICES (not RGB) and portable match criteria (not
 // interned ids), match first-match-wins over the same five axes a filter offers, and
@@ -56,6 +71,18 @@ private slots:
     void unresolvedSetMatchesNothing();
     void paletteDualThemeResolves();
     void paletteEveryBackgroundHasReadableText();
+
+    // M19 — a rule's effect is a SET of actions, and colour is one of them.
+    void actionsRoundTripAsTokens();
+    void absentActionsMeansColourOnly();
+    void anEmptyActionsArrayIsNotColour();
+    void unknownActionTokensAreIgnoredWithoutResurrectingColour();
+    void aColourOnlyRuleSerializesWithoutTheActionsKey();
+    void aDigestOnlyRuleDoesNotShadowAColouringRule();
+    void firstMatchWinsIsDecidedPerAction();
+    void matchActionsDecodesOnceAcrossEveryWantedAction();
+    void anyEnabledFiltersByAction();
+    void aRuleWithNoActionsIsNeverACandidate();
 };
 
 Record TestHighlight::rec(quint32 loggerId, Priority p, quint32 threadId, qint64 timestamp)
@@ -187,9 +214,9 @@ void TestHighlight::legacyFlatRuleJsonStillLoads()
     set.rules = {r};
     const RecordIndex idx = makeIndex();
     resolve(set, idx);
-    QCOMPARE(set.match(rec(2, Priority::Error)), 0);
-    QCOMPARE(set.match(rec(2, Priority::Info)), -1);
-    QCOMPARE(set.match(rec(1, Priority::Error)), -1);
+    QCOMPARE(colorRule(set, rec(2, Priority::Error)), 0);
+    QCOMPARE(colorRule(set, rec(2, Priority::Info)), -1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Error)), -1);
 }
 
 void TestHighlight::firstMatchWins()
@@ -210,9 +237,9 @@ void TestHighlight::firstMatchWins()
     set.rules = {r0, r1};
     resolve(set, idx);
 
-    QCOMPARE(set.match(rec(1, Priority::Fatal)), 0); // both match -> the earlier one
-    QCOMPARE(set.match(rec(1, Priority::Warn)), 1);  // only rule 1
-    QCOMPARE(set.match(rec(1, Priority::Info)), -1); // neither
+    QCOMPARE(colorRule(set, rec(1, Priority::Fatal)), 0); // both match -> the earlier one
+    QCOMPARE(colorRule(set, rec(1, Priority::Warn)), 1);  // only rule 1
+    QCOMPARE(colorRule(set, rec(1, Priority::Info)), -1); // neither
 }
 
 void TestHighlight::defaultRoleFallsBackToTheme()
@@ -228,7 +255,7 @@ void TestHighlight::defaultRoleFallsBackToTheme()
     const RecordIndex idx = makeIndex();
     resolve(set, idx);
 
-    const int m = set.match(rec(1, Priority::Info));
+    const int m = colorRule(set, rec(1, Priority::Info));
     QCOMPARE(m, 0);
     const HighlightRule &hit = set.rules.at(m);
 
@@ -247,11 +274,11 @@ void TestHighlight::priorityIsMinLevelAndExemptsUnknown()
     set.rules = {r};
     resolve(set, makeIndex());
 
-    QCOMPARE(set.match(rec(1, Priority::Warn)), 0);   // >= WARN
-    QCOMPARE(set.match(rec(1, Priority::Error)), 0);
-    QCOMPARE(set.match(rec(1, Priority::Info)), -1);  // below the minimum
+    QCOMPARE(colorRule(set, rec(1, Priority::Warn)), 0);   // >= WARN
+    QCOMPARE(colorRule(set, rec(1, Priority::Error)), 0);
+    QCOMPARE(colorRule(set, rec(1, Priority::Info)), -1);  // below the minimum
     // Unparsed (Unknown) carries no priority, so a priority rule never colors it.
-    QCOMPARE(set.match(rec(1, Priority::Unknown)), -1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Unknown)), -1);
 }
 
 void TestHighlight::loggerAxisMatchesInternedIds()
@@ -264,8 +291,8 @@ void TestHighlight::loggerAxisMatchesInternedIds()
     set.rules = {r};
     resolve(set, idx);
 
-    QCOMPARE(set.match(rec(2, Priority::Info)), 0);  // db.pool
-    QCOMPARE(set.match(rec(1, Priority::Info)), -1); // net.io — not selected
+    QCOMPARE(colorRule(set, rec(2, Priority::Info)), 0);  // db.pool
+    QCOMPARE(colorRule(set, rec(1, Priority::Info)), -1); // net.io — not selected
 
     // A rule naming a subsystem the file has not produced resolves to no id, so it
     // matches nothing until that subsystem appears (then a re-resolve binds it).
@@ -275,7 +302,7 @@ void TestHighlight::loggerAxisMatchesInternedIds()
     HighlighterSet g;
     g.rules = {ghost};
     resolve(g, idx);
-    QCOMPARE(g.match(rec(1, Priority::Info)), -1);
+    QCOMPARE(colorRule(g, rec(1, Priority::Info)), -1);
 }
 
 void TestHighlight::threadAxisMatchesInternedIds()
@@ -288,8 +315,8 @@ void TestHighlight::threadAxisMatchesInternedIds()
     set.rules = {r};
     resolve(set, idx);
 
-    QCOMPARE(set.match(rec(1, Priority::Info, /*threadId=*/2)), 0);
-    QCOMPARE(set.match(rec(1, Priority::Info, /*threadId=*/1)), -1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Info, /*threadId=*/2)), 0);
+    QCOMPARE(colorRule(set, rec(1, Priority::Info, /*threadId=*/1)), -1);
 
     // The axis is gated on the format carrying a thread field, exactly as the filter
     // axis is (SPEC.md §6): with no %t there is nothing to match on.
@@ -298,7 +325,7 @@ void TestHighlight::threadAxisMatchesInternedIds()
     HighlighterSet gated;
     gated.rules = {r};
     gated.resolve(idx, noThread, QTimeZone::utc());
-    QCOMPARE(gated.match(rec(1, Priority::Info, /*threadId=*/2)), -1);
+    QCOMPARE(colorRule(gated, rec(1, Priority::Info, /*threadId=*/2)), -1);
 }
 
 void TestHighlight::timeRangeAxisIsInclusive()
@@ -314,11 +341,11 @@ void TestHighlight::timeRangeAxisIsInclusive()
     set.rules = {r};
     resolve(set, idx);
 
-    QCOMPARE(set.match(rec(1, Priority::Info, 1, /*timestamp=*/10000)), 0); // lower bound
-    QCOMPARE(set.match(rec(1, Priority::Info, 1, /*timestamp=*/15000)), 0);
-    QCOMPARE(set.match(rec(1, Priority::Info, 1, /*timestamp=*/20000)), 0); // upper bound
-    QCOMPARE(set.match(rec(1, Priority::Info, 1, /*timestamp=*/9999)), -1);
-    QCOMPARE(set.match(rec(1, Priority::Info, 1, /*timestamp=*/20001)), -1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Info, 1, /*timestamp=*/10000)), 0); // lower bound
+    QCOMPARE(colorRule(set, rec(1, Priority::Info, 1, /*timestamp=*/15000)), 0);
+    QCOMPARE(colorRule(set, rec(1, Priority::Info, 1, /*timestamp=*/20000)), 0); // upper bound
+    QCOMPARE(colorRule(set, rec(1, Priority::Info, 1, /*timestamp=*/9999)), -1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Info, 1, /*timestamp=*/20001)), -1);
 }
 
 void TestHighlight::textAxisSubstringRegexCaseNegate()
@@ -328,7 +355,7 @@ void TestHighlight::textAxisSubstringRegexCaseNegate()
         HighlighterSet set;
         set.rules = {r};
         set.resolve(idx, makeFormat(), QTimeZone::utc());
-        return set.match(rec(1, Priority::Info), [&message] { return message; });
+        return colorRule(set, rec(1, Priority::Info), [&message] { return message; });
     };
 
     HighlightRule sub;
@@ -375,7 +402,7 @@ void TestHighlight::axesCombineWithAnd()
     resolve(set, idx);
 
     auto hit = [&set](const Record &rr, const QString &msg) {
-        return set.match(rr, [&msg] { return msg; });
+        return colorRule(set, rr, [&msg] { return msg; });
     };
     // Across axes it is AND (SPEC.md §6): all three must hold.
     QCOMPARE(hit(rec(2, Priority::Error), QStringLiteral("deadlock detected")), 0);
@@ -416,7 +443,7 @@ void TestHighlight::absentFieldNeverMatches()
         HighlighterSet set;
         set.rules = {r};
         resolve(set, idx);
-        QCOMPARE(set.match(plain), -1);
+        QCOMPARE(colorRule(set, plain), -1);
     }
 
     // The text axis has no "absent" case: an unparsed record's whole line IS its
@@ -427,7 +454,7 @@ void TestHighlight::absentFieldNeverMatches()
     HighlighterSet set;
     set.rules = {byText};
     resolve(set, idx);
-    QCOMPARE(set.match(plain, [] { return QStringLiteral("*** segfault ***"); }), 0);
+    QCOMPARE(colorRule(set, plain, [] { return QStringLiteral("*** segfault ***"); }), 0);
 }
 
 void TestHighlight::textDecodeIsLazyAndMemoized()
@@ -459,13 +486,13 @@ void TestHighlight::textDecodeIsLazyAndMemoized()
     };
 
     // net.io fails every rule's subsystem axis, so no rule ever reaches its text axis.
-    QCOMPARE(set.match(rec(1, Priority::Info), message), -1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Info), message), -1);
     QCOMPARE(decodes, 0);
 
     // db.pool passes all three subsystem axes; three text axes are consulted, but the
     // decode is memoized across the rule loop.
     decodes = 0;
-    QCOMPARE(set.match(rec(2, Priority::Info), message), 2);
+    QCOMPARE(colorRule(set, rec(2, Priority::Info), message), 2);
     QCOMPARE(decodes, 1);
 }
 
@@ -478,7 +505,7 @@ void TestHighlight::unconfiguredRuleIsInert()
     HighlighterSet set;
     set.rules = {r};
     resolve(set, makeIndex());
-    QCOMPARE(set.match(rec(1, Priority::Fatal)), -1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Fatal)), -1);
     QVERIFY(!set.anyEnabled());
 
     // An enabled text axis with an empty pattern is still inert: an empty query would
@@ -489,7 +516,7 @@ void TestHighlight::unconfiguredRuleIsInert()
     e.rules = {empty};
     resolve(e, makeIndex());
     QVERIFY(!e.anyEnabled());
-    QCOMPARE(e.match(rec(1, Priority::Fatal), [] { return QStringLiteral("x"); }), -1);
+    QCOMPARE(colorRule(e, rec(1, Priority::Fatal), [] { return QStringLiteral("x"); }), -1);
 }
 
 void TestHighlight::disabledRuleIsSkipped()
@@ -501,7 +528,7 @@ void TestHighlight::disabledRuleIsSkipped()
     HighlighterSet set;
     set.rules = {r};
     resolve(set, makeIndex());
-    QCOMPARE(set.match(rec(1, Priority::Fatal)), -1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Fatal)), -1);
     QVERIFY(!set.anyEnabled());
 }
 
@@ -515,10 +542,10 @@ void TestHighlight::unresolvedSetMatchesNothing()
     r.match.minPriority = Priority::Trace;
     HighlighterSet set;
     set.rules = {r};
-    QCOMPARE(set.match(rec(1, Priority::Fatal)), -1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Fatal)), -1);
 
     resolve(set, makeIndex());
-    QCOMPARE(set.match(rec(1, Priority::Fatal)), 0);
+    QCOMPARE(colorRule(set, rec(1, Priority::Fatal)), 0);
 }
 
 void TestHighlight::paletteDualThemeResolves()
@@ -584,6 +611,250 @@ void TestHighlight::paletteEveryBackgroundHasReadableText()
     QCOMPARE(HighlightPalette::readableTextSlot(HighlightPalette::kDefault),
              HighlightPalette::kPaper);
     QCOMPARE(HighlightPalette::readableTextSlot(9999), HighlightPalette::kPaper);
+}
+
+// --- M19: a rule's effect is a set of actions -------------------------------
+
+void TestHighlight::actionsRoundTripAsTokens()
+{
+    HighlightRule r;
+    r.actions = HighlightAction::Color | HighlightAction::Digest | HighlightAction::Notify;
+    r.match.priorityEnabled = true;
+    r.match.minPriority = Priority::Warn;
+
+    const QJsonObject o = r.toJson();
+    // TOKENS, never the flags integer: a token still means what it meant after a
+    // version has learned a fifth action, and a bitfield does not.
+    QVERIFY(o.value(QStringLiteral("actions")).isArray());
+    const QJsonArray a = o.value(QStringLiteral("actions")).toArray();
+    QCOMPARE(a.size(), 3);
+    QCOMPARE(a.at(0).toString(), QStringLiteral("color"));
+    QCOMPARE(a.at(1).toString(), QStringLiteral("digest"));
+    QCOMPARE(a.at(2).toString(), QStringLiteral("notify"));
+
+    QCOMPARE(HighlightRule::fromJson(o).actions, r.actions);
+}
+
+void TestHighlight::absentActionsMeansColourOnly()
+{
+    // Every rule ever written before M19. Colour was a rule's only effect, so an absent
+    // key means exactly that — and this is why no preset or session schema had to move.
+    QJsonObject o;
+    o.insert(QStringLiteral("enabled"), true);
+    o.insert(QStringLiteral("background"), 3);
+
+    const HighlightRule r = HighlightRule::fromJson(o);
+    QCOMPARE(r.actions, HighlightActions(HighlightAction::Color));
+    QCOMPARE(r.background, 3);
+}
+
+void TestHighlight::anEmptyActionsArrayIsNotColour()
+{
+    // The distinction the read is easy to get wrong on. A PRESENT but empty array is
+    // "this rule matches and does nothing" — which is one click away, the moment the
+    // user unticks Colour — and reading it as "nothing saved" would silently re-colour
+    // every parked rule on the next launch. Hence contains(), never isEmpty().
+    QJsonObject o;
+    o.insert(QStringLiteral("enabled"), true);
+    o.insert(QStringLiteral("actions"), QJsonArray());
+
+    QCOMPARE(HighlightRule::fromJson(o).actions, HighlightActions());
+}
+
+void TestHighlight::unknownActionTokensAreIgnoredWithoutResurrectingColour()
+{
+    // A rule from a later version naming an action this build has never heard of.
+    QJsonObject o;
+    o.insert(QStringLiteral("actions"),
+             QJsonArray({QStringLiteral("digest"), QStringLiteral("teleport")}));
+    QCOMPARE(HighlightRule::fromJson(o).actions, HighlightActions(HighlightAction::Digest));
+
+    // And the corner that must not collapse into the absent case: unknown tokens ONLY.
+    // The key was there and the user's intent was recorded, just not in a vocabulary
+    // this build has — so the answer is no actions, not "colour, as of old".
+    QJsonObject onlyUnknown;
+    onlyUnknown.insert(QStringLiteral("actions"), QJsonArray({QStringLiteral("teleport")}));
+    QCOMPARE(HighlightRule::fromJson(onlyUnknown).actions, HighlightActions());
+}
+
+void TestHighlight::aColourOnlyRuleSerializesWithoutTheActionsKey()
+{
+    // The whole reason neither store's schema version moved: a colour-only rule — which
+    // is every rule that predates M19 and most that follow it — writes byte-identically
+    // to what it wrote before. PresetStore gates on EXACT version equality with no
+    // migration, so a bump discards every preset a user has.
+    HighlightRule plain;
+    plain.match.priorityEnabled = true;
+    QVERIFY(!plain.toJson().contains(QStringLiteral("actions")));
+
+    // ...and anything else says so explicitly, including "no actions at all".
+    HighlightRule parked = plain;
+    parked.actions = HighlightActions();
+    QVERIFY(parked.toJson().contains(QStringLiteral("actions")));
+    QVERIFY(parked.toJson().value(QStringLiteral("actions")).toArray().isEmpty());
+}
+
+void TestHighlight::aDigestOnlyRuleDoesNotShadowAColouringRule()
+{
+    const RecordIndex idx = makeIndex();
+
+    HighlightRule digestOnly;
+    digestOnly.actions = HighlightAction::Digest;
+    digestOnly.match.priorityEnabled = true;
+    digestOnly.match.minPriority = Priority::Info;
+
+    HighlightRule colouring;
+    colouring.actions = HighlightAction::Color;
+    colouring.match.priorityEnabled = true;
+    colouring.match.minPriority = Priority::Info;
+
+    HighlighterSet set;
+    set.rules = {digestOnly, colouring}; // the digest rule sits FIRST
+    resolve(set, idx);
+
+    // First-match-wins is per ACTION, so the rule above was never a candidate for
+    // Color at all. Getting this wrong would mean adding a digest rule silently
+    // switched off the colouring of everything below it.
+    QCOMPARE(set.match(rec(1, Priority::Error), HighlightAction::Color), 1);
+    QCOMPARE(set.match(rec(1, Priority::Error), HighlightAction::Digest), 0);
+}
+
+void TestHighlight::firstMatchWinsIsDecidedPerAction()
+{
+    const RecordIndex idx = makeIndex();
+
+    HighlightRule first;
+    first.actions = HighlightAction::Color | HighlightAction::Tab;
+    first.match.priorityEnabled = true;
+    first.match.minPriority = Priority::Error;
+
+    HighlightRule second;
+    second.actions = HighlightAction::Color | HighlightAction::Digest;
+    second.match.priorityEnabled = true;
+    second.match.minPriority = Priority::Info;
+
+    HighlighterSet set;
+    set.rules = {first, second};
+    resolve(set, idx);
+
+    // An ERROR: both rules match. Color and Tab go to the first, Digest to the second
+    // — the first does not carry it — and Notify to nobody.
+    const ActionMatch m = set.matchActions(
+        rec(1, Priority::Error),
+        HighlightAction::Color | HighlightAction::Digest | HighlightAction::Tab
+            | HighlightAction::Notify,
+        [] { return QString(); });
+    QCOMPARE(m.color, 0);
+    QCOMPARE(m.tab, 0);
+    QCOMPARE(m.digest, 1);
+    QCOMPARE(m.notify, -1);
+
+    // An INFO: only the second rule matches, and it answers what it carries.
+    const ActionMatch info = set.matchActions(
+        rec(1, Priority::Info),
+        HighlightAction::Color | HighlightAction::Digest | HighlightAction::Tab,
+        [] { return QString(); });
+    QCOMPARE(info.color, 1);
+    QCOMPARE(info.digest, 1);
+    QCOMPARE(info.tab, -1);
+}
+
+void TestHighlight::matchActionsDecodesOnceAcrossEveryWantedAction()
+{
+    // The reason matchActions() is ONE pass over a wanted-set rather than one call per
+    // action. The live path wants Digest, Tab and Notify for the same record; three
+    // calls would be three decodes of the same message, which is exactly the cost
+    // invariant #4 exists to stop.
+    const RecordIndex idx = makeIndex();
+
+    HighlightRule a;
+    a.actions = HighlightAction::Digest;
+    a.match.text.enabled = true;
+    a.match.text.matcher.set(QStringLiteral("zzz"), false, Qt::CaseInsensitive);
+    HighlightRule b = a;
+    b.actions = HighlightAction::Tab;
+    b.match.text.matcher.set(QStringLiteral("yyy"), false, Qt::CaseInsensitive);
+    HighlightRule c = a;
+    c.actions = HighlightAction::Notify;
+    c.match.text.matcher.set(QStringLiteral("boom"), false, Qt::CaseInsensitive);
+
+    HighlighterSet set;
+    set.rules = {a, b, c};
+    resolve(set, idx);
+
+    int decodes = 0;
+    auto message = [&decodes] {
+        ++decodes;
+        return QStringLiteral("boom");
+    };
+
+    const ActionMatch m = set.matchActions(
+        rec(1, Priority::Info),
+        HighlightAction::Digest | HighlightAction::Tab | HighlightAction::Notify, message);
+    QCOMPARE(decodes, 1);
+    QCOMPARE(m.digest, -1);
+    QCOMPARE(m.tab, -1);
+    QCOMPARE(m.notify, 2);
+
+    // And a record no candidate rule's axes admit still costs nothing: asking for an
+    // action no rule carries never reaches a text axis at all.
+    decodes = 0;
+    QCOMPARE(set.match(rec(1, Priority::Info), HighlightAction::Color, message), -1);
+    QCOMPARE(decodes, 0);
+}
+
+void TestHighlight::anyEnabledFiltersByAction()
+{
+    const RecordIndex idx = makeIndex();
+
+    HighlightRule colourOnly;
+    colourOnly.actions = HighlightAction::Color;
+    colourOnly.match.priorityEnabled = true;
+
+    HighlighterSet set;
+    set.rules = {colourOnly};
+    resolve(set, idx);
+
+    // This is the live path's whole cost for a document whose rules only colour: one
+    // walk of the rule list per watch tick, touching no record and decoding nothing.
+    QVERIFY(set.anyEnabled());
+    QVERIFY(set.anyEnabled(HighlightAction::Color));
+    QVERIFY(!set.anyEnabled(HighlightAction::Digest | HighlightAction::Tab
+                            | HighlightAction::Notify));
+
+    set.rules[0].actions |= HighlightAction::Tab;
+    resolve(set, idx);
+    QVERIFY(set.anyEnabled(HighlightAction::Digest | HighlightAction::Tab
+                           | HighlightAction::Notify));
+
+    // A disabled rule counts for nothing, whatever it carries.
+    set.rules[0].enabled = false;
+    resolve(set, idx);
+    QVERIFY(!set.anyEnabled(HighlightAction::Tab));
+}
+
+void TestHighlight::aRuleWithNoActionsIsNeverACandidate()
+{
+    const RecordIndex idx = makeIndex();
+
+    HighlightRule parked;
+    parked.actions = HighlightActions(); // matches, and does nothing
+    parked.match.priorityEnabled = true;
+    parked.match.minPriority = Priority::Trace;
+
+    HighlightRule colouring;
+    colouring.actions = HighlightAction::Color;
+    colouring.match.priorityEnabled = true;
+    colouring.match.minPriority = Priority::Trace;
+
+    HighlighterSet set;
+    set.rules = {parked, colouring};
+    resolve(set, idx);
+
+    // Parking a rule is how it is kept without being deleted, so it must not shadow
+    // what follows it — the same rule as a digest-only rule above, in its limit case.
+    QCOMPARE(set.match(rec(1, Priority::Info), HighlightAction::Color), 1);
+    QVERIFY(!set.anyEnabled(HighlightAction::Digest));
 }
 
 QTEST_APPLESS_MAIN(TestHighlight)

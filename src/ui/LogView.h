@@ -57,8 +57,46 @@ public:
         AlwaysOn,           // every record wraps; estimated geometry (M2c, §7.1.1)
     };
 
-    LogView(const Document *document, LogModel *model, QWidget *parent = nullptr);
+    // What this view is FOR (M19, SPEC.md §7). Configuration, not a subclass: the
+    // digest strip differs from the log table only in what it is allowed to do.
+    //
+    //   Main    the record table — scrolls, follows the tail, offers the record menu.
+    //   Digest  the strip under it: at most one row per highlight rule, no header of
+    //           its own (it borrows the table's column layout), no scrollbars, no
+    //           follow control, sized to fit its rows rather than scrolled.
+    enum class Role { Main, Digest };
+
+    LogView(const Document *document, LogModel *model, QWidget *parent = nullptr,
+            Role role = Role::Main);
     ~LogView() override;
+
+    Role role() const { return m_role; }
+
+    // The most display lines a digest strip will occupy however tall the window is.
+    // Twelve is a handful of rules with a multi-line record among them; past that the
+    // strip is competing with the log rather than annotating it.
+    static constexpr int kDigestMaxLines = 12;
+
+    // How tall this view wants to be. Meaningful in Role::Digest, where it is the
+    // widget's whole contract: header (hidden, so zero) + one line per display line +
+    // frame, CAPPED — a single digest record can legitimately be a hundred-line stack
+    // trace, and the strip must never eat the log it sits under. Only when the cap
+    // bites does a vertical scrollbar appear, so "not scrolled" is true in every
+    // ordinary case. Role::Main falls through to QAbstractScrollArea's own hint.
+    QSize sizeHint() const override;
+
+    // Adopt another view's horizontal scroll position. The digest mirrors the main
+    // view's, because "rendered exactly as it is in the log" is otherwise only true at
+    // offset zero: mirroring the column STATE lines the columns up until the user
+    // scrolls right, and then it does not.
+    void setHorizontalOffset(int value);
+
+    // Re-decide the height cap and the scrollbar policy, then updateGeometry(). Public
+    // because the cap is a fraction of the PARENT's height, which the strip's own
+    // resize cannot observe — DocumentView calls this from its resizeEvent. Deliberately
+    // separate from sizeHint(), which must stay a pure query: setting a scrollbar policy
+    // relayouts, and layout asks for the size hint.
+    void refreshDigestCap();
 
     QItemSelectionModel *selectionModel() const { return m_selection; }
     QHeaderView *header() const { return m_header; }
@@ -140,6 +178,13 @@ signals:
     // Follow attached/detached, so the window can reflect it (menu check, control).
     void followingChanged(bool following);
 
+    // The column layout moved — a section resized, moved, or a whole state restored
+    // (M19). The digest strip mirrors it so its cells sit under the table's own.
+    void columnLayoutChanged();
+
+    // The horizontal scroll position moved. Mirrored for the same reason.
+    void horizontalOffsetChanged(int value);
+
     // A record was right-clicked (SPEC.md §5). The view reports WHERE — the view row,
     // the column under the cursor, and where to pop up — and nothing else: the menu
     // is assembled by the window, which is the only place that can reach both the
@@ -157,6 +202,11 @@ private slots:
 private:
     int lineHeight() const;
     int visibleLines() const;
+
+    // Digest role only: how many display lines the strip will actually show, after the
+    // cap, and (out) whether the cap bit. A pure query — sizeHint() calls it and must
+    // stay pure, since setting a scrollbar policy relayouts and layout asks the hint.
+    qint64 digestContentLines(bool *capped) const;
 
     // The RecordIndex the view scrolls over: the filtered subset when a filter is
     // active, the full index (identity) otherwise (M4, invariant #6). Every
@@ -217,6 +267,7 @@ private:
 
     const Document *m_document;
     LogModel       *m_model;
+    Role            m_role = Role::Main;
     QHeaderView    *m_header;
     QItemSelectionModel *m_selection;
 

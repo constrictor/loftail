@@ -47,13 +47,37 @@ LogModel::LogModel(const Document *document, QObject *parent)
 {
 }
 
+void LogModel::setViewIndex(const FilteredIndex *index)
+{
+    if (m_view == index)
+        return;
+    beginResetModel();
+    m_view = index;
+    endResetModel();
+}
+
+const FilteredIndex &LogModel::view() const
+{
+    return m_view ? *m_view : m_document->filtered();
+}
+
+const RecordIndex &LogModel::viewGeometry() const
+{
+    return view().geometry();
+}
+
+int LogModel::sourceRow(int viewRow) const
+{
+    return m_document ? view().sourceRow(viewRow) : -1;
+}
+
 int LogModel::rowCount(const QModelIndex &parent) const
 {
     if (parent.isValid() || !m_document)
         return 0;
     // Rows are the VISIBLE records: identity over the index when no filter is
     // active, the filtered subset otherwise (M4, invariant #6).
-    return m_document->filtered().recordCount();
+    return view().recordCount();
 }
 
 int LogModel::columnCount(const QModelIndex &parent) const
@@ -76,7 +100,7 @@ QString LogModel::cellText(int row, int column) const
     // `row` is a VIEW row: map it to the source record ordinal (identity when no
     // filter is active). The intern tables and byte reads all key off the source
     // index; only the row addressing goes through the filtered mapping (M4).
-    const int srcRow = m_document->filtered().sourceRow(row);
+    const int srcRow = view().sourceRow(row);
     if (srcRow < 0 || srcRow >= idx.records.size())
         return QString();
 
@@ -211,16 +235,16 @@ int LogModel::matchedRule(int row) const
     if (!m_document)
         return -1;
 
-    // Early-out before touching the index: with no enabled, configured rule there is
-    // nothing to evaluate and, in particular, no message decode to risk.
+    // Early-out before touching the index: with no enabled rule carrying THIS model's
+    // action there is nothing to evaluate and, in particular, no message decode to risk.
     const HighlighterSet &set = m_document->highlighters();
-    if (!set.anyEnabled())
+    if (!set.anyEnabled(m_action))
         return -1;
 
     // Map the view row to the source record (identity when no filter is active),
     // then run the ordered rules first-match-wins (invariant #4).
     const RecordIndex &idx = m_document->index();
-    const int srcRow = m_document->filtered().sourceRow(row);
+    const int srcRow = view().sourceRow(row);
     if (srcRow < 0 || srcRow >= idx.records.size())
         return -1;
 
@@ -230,7 +254,7 @@ int LogModel::matchedRule(int row) const
     // memoizes the result across rules. Document::messageText is the filter path's
     // decode (capture-free recordStartRe, whole-line fallback for unparsed records) —
     // deliberately not cellText(), which runs the full-capture recordRe per column.
-    return set.match(rec, [this, &rec] { return m_document->messageText(rec); });
+    return set.match(rec, m_action, [this, &rec] { return m_document->messageText(rec); });
 }
 
 void LogModel::rowColors(int row, QColor &background, QColor &foreground) const
@@ -253,7 +277,7 @@ void LogModel::rowColors(int row, QColor &background, QColor &foreground) const
 
 bool LogModel::rowIsContext(int row) const
 {
-    return m_document && m_document->filtered().isContext(row);
+    return m_document && view().isContext(row);
 }
 
 QColor LogModel::highlightColor(int row, bool background) const

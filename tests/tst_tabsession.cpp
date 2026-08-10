@@ -65,7 +65,7 @@ private:
     static LogView *viewInTab(const MainWindow &w, int index)
     {
         QTabWidget *t = tabs(w);
-        return t && index >= 0 && index < t->count() ? t->widget(index)->findChild<LogView *>()
+        return t && index >= 0 && index < t->count() ? t->widget(index)->findChild<LogView *>(QStringLiteral("logView"))
                                                      : nullptr;
     }
 
@@ -118,7 +118,7 @@ void TestTabSession::tabOrderAndPerViewStateRestore()
         w.show();
         w.openFile(m_a);
         w.openFile(m_b);
-        QTRY_COMPARE(w.findChildren<LogView *>().size(), 2);
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
 
         QAction *newView = w.findChild<QAction *>(QStringLiteral("newViewAction"));
         QVERIFY(newView);
@@ -150,7 +150,7 @@ void TestTabSession::tabOrderAndPerViewStateRestore()
     // --- Round 2: relaunch ------------------------------------------------------
     MainWindow w;
     w.show();
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 3);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 3);
     waitUntilIndexed(w);
 
     QVERIFY(tabs(w));
@@ -190,7 +190,7 @@ void TestTabSession::missingFileRestoresAsWaitingAndTheRestStillOpen()
         w.show();
         w.openFile(m_a);
         w.openFile(doomed);
-        QTRY_COMPARE(w.findChildren<LogView *>().size(), 2);
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
         QCloseEvent ev;
         QCoreApplication::sendEvent(&w, &ev);
     }
@@ -199,7 +199,7 @@ void TestTabSession::missingFileRestoresAsWaitingAndTheRestStillOpen()
 
     MainWindow w;
     w.show();
-    QTRY_COMPARE(w.findChildren<LogView *>().size(), 2); // both tabs, one of them waiting
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2); // both tabs, one of them waiting
     waitUntilIndexed(w);
     // The waiting tab is marked, so the tab bar tells a log that is empty from one that
     // is not there.
