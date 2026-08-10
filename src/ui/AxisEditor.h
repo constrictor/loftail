@@ -9,7 +9,6 @@
 
 QT_BEGIN_NAMESPACE
 class QAbstractButton;
-class QCheckBox;
 class QComboBox;
 class QDateTimeEdit;
 class QGroupBox;
@@ -17,6 +16,7 @@ class QLineEdit;
 class QHBoxLayout;
 class QLabel;
 class QListWidget;
+class QListWidgetItem;
 class QVBoxLayout;
 QT_END_NAMESPACE
 
@@ -72,6 +72,22 @@ public:
     // axis, and six pixels of disagreement between two framed columns reads as a
     // rendering fault rather than as two sections.
     static constexpr int kSideMargin = 6;
+
+    // Row 0 of a value list is NOT a value. "Others" stands for everything the list
+    // does not hold — every subsystem or thread the scan has not reached yet — and its
+    // tick IS the discovery rule (MatchCriteria::loggerRestrictive). It is marked with
+    // this role rather than recognised by its label, because its label is translated
+    // prose and nothing may be identified by the text it happens to show
+    // (ARCHITECTURE.md §9.1). Public so a test can point at the row without reading it.
+    static constexpr int kOthersRole = Qt::UserRole + 1;
+    static bool          isOthersRow(const QListWidgetItem *item);
+    // Every loop that walks VALUES starts here, because row 0 is the "Others" row and
+    // is not one. Missing it is silent in both directions: "Others" would arrive in
+    // criteria() as a subsystem nothing is ever logged under, and All / None / Invert
+    // would set the discovery rule twice per click — Invert, which reads it back after
+    // flipping the list, would then flip it straight back. Public for the same reason
+    // as the role: a test counts values, and the count is off by this row.
+    static constexpr int kFirstValueRow = 1;
 
     // Append a widget to the bottom of the MESSAGE TEXT axis's body, where it lives
     // and dies with that axis: greyed out with the rest of the body while the axis
@@ -238,13 +254,18 @@ private:
     QListWidget *listFor(ValueAxis axis) const;
     QGroupBox   *enableFor(ValueAxis axis) const;
     QSet<QString> &manualFor(ValueAxis axis);
-    // The discovery rule, read off and written to the axis's "New" checkbox — which IS
+    // The discovery rule, read off and written to the axis's "Others" row — which IS
     // the state, so there is no bool for the two to fall out of step over. Restrictive
-    // is the box unticked: a value the file has not produced yet is not part of what
+    // is the row unticked: a value the file has not produced yet is not part of what
     // the user asked to see.
-    bool          restrictiveFor(ValueAxis axis) const;
-    void          setRestrictiveFor(ValueAxis axis, bool restrictive);
-    QCheckBox    *newValuesBoxFor(ValueAxis axis) const;
+    bool             restrictiveFor(ValueAxis axis) const;
+    void             setRestrictiveFor(ValueAxis axis, bool restrictive);
+    QListWidgetItem *othersItemFor(ValueAxis axis) const;
+    // Drop the value rows and keep the "Others" row. QListWidget::clear() must never
+    // be called on a value list: the row it would take with it holds the axis's
+    // discovery rule, and populateList() is handed that rule rather than re-deriving
+    // it.
+    static void clearValueRows(QListWidget *list);
     // Make sure `name` is in the axis's list — refreshing from the intern table
     // first, and only carrying it as a manual entry if the file has genuinely not
     // emitted it. Without this a menu edit could silently do nothing while the
@@ -278,11 +299,14 @@ private:
     QSet<QString> m_loggerManualNames; // manually-added subsystems (may be absent)
     QSet<QString> m_loggerSeen;        // every subsystem name ever listed
     // "Tick subsystems that turn up later" — the discovery rule as a control the user
-    // can see and set, sitting under All/None/Invert because those three set it too.
-    // Unticked is MatchCriteria::loggerRestrictive: the list is a restriction, not a
-    // snapshot. showOnlyValue() unticks it; nothing else moves it behind the user's
-    // back, which is the difference between a flag and a control.
-    QCheckBox    *m_loggerNewValues = nullptr;
+    // can see and set, and it is the FIRST ROW OF THE LIST, ticked like any other,
+    // because that is the question the rest of the list leaves open: these values, and
+    // the others. Unticked is MatchCriteria::loggerRestrictive — the list is a
+    // restriction, not a snapshot. It outlives every repopulation (clearValueRows),
+    // so the row is the state exactly as a checkbox was. showOnlyValue() unticks it;
+    // nothing else moves it behind the user's back, which is the difference between a
+    // flag and a control.
+    QListWidgetItem *m_loggerOthers = nullptr;
 
     // Thread
     QGroupBox    *m_threadGroup = nullptr;
@@ -291,7 +315,7 @@ private:
     QAbstractButton *m_threadListButtons[3] = {};
     QSet<QString> m_threadManualNames;
     QSet<QString> m_threadSeen;
-    QCheckBox    *m_threadNewValues = nullptr;
+    QListWidgetItem *m_threadOthers = nullptr;
 
     // Message text
     QGroupBox   *m_textGroup = nullptr;
@@ -311,7 +335,7 @@ private:
     QDateTimeEdit *m_timeEnd = nullptr;
     // Whether a bound came from the user rather than from the observed span. The seed
     // has to keep tracking a growing file, but it must never overwrite a deliberate
-    // bound — the same distinction the "New" checkbox draws between a value the user
+    // bound — the same distinction the "Others" row draws between a value the user
     // chose and one the scan turned up. Set by the editors' own signals (outside
     // m_populating) and by the record-menu setters; cleared on a rebind and on loading
     // criteria with the axis off.

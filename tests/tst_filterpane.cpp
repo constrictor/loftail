@@ -8,12 +8,15 @@
 #include <QGroupBox>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QListWidgetItem>
 #include <QStyle>
 #include <QStyleOptionGroupBox>
 #include <QSpinBox>
 #include <QFile>
+#include <QJsonArray>
 #include <QTemporaryFile>
 
+#include "AxisEditor.h"
 #include "Document.h"
 #include "FilterPane.h"
 #include "Filter.h"
@@ -76,12 +79,28 @@ private:
         return axis(pane, "priorityGroup");
     }
 
-    // "New" — the discovery rule as a control, under each value axis's
-    // All / None / Invert column. Ticked, a value the scan turns up later arrives
-    // ticked; unticked, the list is a restriction (MatchCriteria::loggerRestrictive).
-    static QCheckBox *newValuesBox(FilterPane &pane, const char *name)
+    // "Others" — the discovery rule as the FIRST ROW of each value list. Ticked, a
+    // value the scan turns up later arrives ticked; unticked, the list is a
+    // restriction (MatchCriteria::loggerRestrictive). Found by the role AxisEditor
+    // marks it with, never by its label: it says translated prose, and nothing in
+    // tests/ identifies a widget by the text it shows (ARCHITECTURE.md §9.1).
+    static QListWidgetItem *othersRow(QListWidget *list)
     {
-        return pane.findChild<QCheckBox *>(QString::fromLatin1(name));
+        QListWidgetItem *item = list ? list->item(0) : nullptr;
+        return AxisEditor::isOthersRow(item) ? item : nullptr;
+    }
+
+    static bool discovers(QListWidget *list)
+    {
+        QListWidgetItem *item = othersRow(list);
+        return item && item->checkState() == Qt::Checked;
+    }
+
+    // Everything below row 0 is a value, so a test that counts subsystems counts from
+    // there. The row itself is covered on its own, by the cases naming it.
+    static int valueCount(const QListWidget *list)
+    {
+        return list->count() - AxisEditor::kFirstValueRow;
     }
 
     // The subsystem list is the one holding the logger names.
@@ -149,6 +168,7 @@ private slots:
     void showOnlyDoesNotWidenWhenTheScanFindsMore();
     void aHandEditLeavesTheDiscoveryRuleAlone();
     void theListButtonsCarryTheDiscoveryRule();
+    void theOthersRowIsNotASubsystem();
     void hideLeavesTheRestAloneAndKeepsDiscovering();
     void priorityFloorComesFromTheRecord();
     void timeBoundKeepsTheRangeNonEmpty();
@@ -199,7 +219,7 @@ void TestFilterPane::allInclusiveAxesStayInactive()
     // Both boxes are ticked and every subsystem is listed and checked...
     QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
     QVERIFY(list);
-    QCOMPARE(list->count(), 2);
+    QCOMPARE(valueCount(list), 2);
     for (int i = 0; i < list->count(); ++i)
         QCOMPARE(list->item(i)->checkState(), Qt::Checked);
 
@@ -254,7 +274,7 @@ void TestFilterPane::subsystemDiscoveredLaterArrivesChecked()
     pane.setDocument(&doc);
     QListWidget *list = loggerList(pane, QStringLiteral("net.socket"));
     QVERIFY(list);
-    QCOMPARE(list->count(), 2);
+    QCOMPARE(valueCount(list), 2);
 
     // The user rules one subsystem out.
     for (int i = 0; i < list->count(); ++i)
@@ -273,7 +293,7 @@ void TestFilterPane::subsystemDiscoveredLaterArrivesChecked()
 
     list = loggerList(pane, QStringLiteral("ui.window"));
     QVERIFY(list);
-    QCOMPARE(list->count(), 3);
+    QCOMPARE(valueCount(list), 3);
     for (int i = 0; i < list->count(); ++i) {
         const QString name = list->item(i)->text();
         const Qt::CheckState want =
@@ -309,7 +329,7 @@ void TestFilterPane::rebindingForgetsSeenNames()
 
     QListWidget *list = loggerList(pane, QStringLiteral("ui.window"));
     QVERIFY(list);
-    QCOMPARE(list->count(), 2);
+    QCOMPARE(valueCount(list), 2);
     for (int i = 0; i < list->count(); ++i)
         QVERIFY2(list->item(i)->checkState() == Qt::Checked,
                  qPrintable(list->item(i)->text()));
@@ -366,7 +386,7 @@ void TestFilterPane::showOnlyDoesNotWidenWhenTheScanFindsMore()
 
     QListWidget *list = loggerList(pane, QStringLiteral("ui.window"));
     QVERIFY(list);
-    QCOMPARE(list->count(), 3);
+    QCOMPARE(valueCount(list), 3);
     QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Unchecked);
     QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
 
@@ -380,9 +400,10 @@ void TestFilterPane::showOnlyDoesNotWidenWhenTheScanFindsMore()
 // A hand tick used to clear the restriction, on the reasoning that whatever the user
 // is building now is a statement about the file. That was defensible while the
 // discovery rule was invisible and showOnlyValue() was the only way into it. It is not
-// now that the rule is a checkbox in the pane: a box that unticks itself when the user
-// ticks something ELSE is worse than no box, and the whole point of showing the rule is
-// that the user can see which one is in force and say otherwise.
+// now that the rule is the "Others" row at the top of the very list being ticked: a row
+// that unticks itself when the user ticks another one is worse than no row, and the
+// whole point of showing the rule is that the user can see which one is in force and
+// say otherwise.
 void TestFilterPane::aHandEditLeavesTheDiscoveryRuleAlone()
 {
     QTemporaryFile file;
@@ -392,14 +413,14 @@ void TestFilterPane::aHandEditLeavesTheDiscoveryRuleAlone()
     FilterPane pane;
     pane.setDocument(&doc);
     pane.showOnlyValue(ValueAxis::Subsystem, QStringLiteral("db.pool"));
-    QCheckBox *newValues = newValuesBox(pane, "subsystemNewValues");
-    QVERIFY(newValues);
-    QVERIFY(!newValues->isChecked()); // the restriction, stated where it can be seen
 
     QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
     QVERIFY(list);
+    QVERIFY(othersRow(list));
+    QVERIFY(!discovers(list)); // the restriction, stated where it can be seen
+
     setStateOf(list, QStringLiteral("net.socket"), Qt::Checked);
-    QVERIFY(!newValues->isChecked()); // ...and one more tick is not a retraction of it
+    QVERIFY(!discovers(list)); // ...and one more tick is not a retraction of it
 
     QVERIFY2(appendAndReindex(doc, file, "2026-07-21 12:00:02,000 [main] INFO  ui.window - c\n"),
              qPrintable(doc.lastError()));
@@ -408,10 +429,10 @@ void TestFilterPane::aHandEditLeavesTheDiscoveryRuleAlone()
     QVERIFY(list);
     QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Unchecked);
 
-    // Ticking the box IS the retraction, and it applies to the next value to appear —
+    // Ticking the row IS the retraction, and it applies to the next value to appear —
     // not retroactively to the one already listed and already unticked, which the user
     // can see and tick for themselves.
-    newValues->setChecked(true);
+    othersRow(list)->setCheckState(Qt::Checked);
     QVERIFY2(appendAndReindex(doc, file, "2026-07-21 12:00:03,000 [main] INFO  fs.cache - d\n"),
              qPrintable(doc.lastError()));
     pane.refreshDiscoveredLists();
@@ -422,8 +443,12 @@ void TestFilterPane::aHandEditLeavesTheDiscoveryRuleAlone()
 
 // All / None / Invert carry the same answer to the values that have NOT turned up yet.
 // "Everything" and "nothing" are claims about the axis, not about the handful of names
-// that happen to be listed a third of the way through a scan — and the checkbox under
-// the three buttons is where that claim shows.
+// that happen to be listed a third of the way through a scan — and the top row of the
+// list is where that claim shows.
+//
+// Invert is the one with a way to go wrong now that the rule lives IN the list: it
+// flips the values and then reads the rule back to flip that too, so a sweep that took
+// row 0 with it would flip the rule twice and leave it exactly where it started.
 void TestFilterPane::theListButtonsCarryTheDiscoveryRule()
 {
     QTemporaryFile file;
@@ -432,32 +457,66 @@ void TestFilterPane::theListButtonsCarryTheDiscoveryRule()
 
     FilterPane pane;
     pane.setDocument(&doc);
-    QCheckBox *newValues = newValuesBox(pane, "subsystemNewValues");
+    QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
     auto *none = pane.findChild<QAbstractButton *>(QStringLiteral("subsystemNone"));
     auto *all = pane.findChild<QAbstractButton *>(QStringLiteral("subsystemAll"));
     auto *invert = pane.findChild<QAbstractButton *>(QStringLiteral("subsystemInvert"));
-    QVERIFY(newValues && none && all && invert);
+    QVERIFY(list && othersRow(list) && none && all && invert);
 
-    QVERIFY(newValues->isChecked()); // discovery is the default (SPEC.md §6)
+    QVERIFY(discovers(list)); // discovery is the default (SPEC.md §6)
     none->click();
-    QVERIFY(!newValues->isChecked());
+    QVERIFY(!discovers(list));
     invert->click();
-    QVERIFY(newValues->isChecked());
+    QVERIFY(discovers(list));
     invert->click();
-    QVERIFY(!newValues->isChecked());
+    QVERIFY(!discovers(list));
     all->click();
-    QVERIFY(newValues->isChecked());
+    QVERIFY(discovers(list));
 
     // And "None" really does mean nothing, including what turns up next.
     none->click();
     QVERIFY2(appendAndReindex(doc, file, "2026-07-21 12:00:02,000 [main] INFO  ui.window - c\n"),
              qPrintable(doc.lastError()));
     pane.refreshDiscoveredLists();
-    QListWidget *list = loggerList(pane, QStringLiteral("ui.window"));
-    QVERIFY(list);
     QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Unchecked);
     doc.applyFilters();
     QCOMPARE(doc.filtered().recordCount(), 0);
+}
+
+// The row is a rule, not a value, so its label must never reach the selection —
+// otherwise every preset and every saved session would carry a subsystem nothing is
+// ever logged under, and "All" would resolve to one more name than the list shows.
+void TestFilterPane::theOthersRowIsNotASubsystem()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
+    QVERIFY(list && othersRow(list));
+
+    auto *all = pane.findChild<QAbstractButton *>(QStringLiteral("subsystemAll"));
+    QVERIFY(all);
+    all->click(); // everything ticked, "Others" included
+
+    const QJsonArray checked =
+        pane.saveState().value(QStringLiteral("loggerChecked")).toArray();
+    QCOMPARE(checked.size(), 2);
+    QVERIFY(checked.contains(QStringLiteral("db.pool")));
+    QVERIFY(checked.contains(QStringLiteral("net.socket")));
+
+    // And narrowing never takes it off screen: it is not one of the names being
+    // searched, and it matters most while a selection is being built.
+    auto *narrow = pane.findChild<QLineEdit *>(QStringLiteral("subsystemNarrow"));
+    QVERIFY(narrow);
+    narrow->setText(QStringLiteral("db."));
+    QVERIFY(!othersRow(list)->isHidden());
+    const QList<QListWidgetItem *> narrowedOut =
+        list->findItems(QStringLiteral("net.socket"), Qt::MatchExactly);
+    QCOMPARE(narrowedOut.size(), 1);
+    QVERIFY(narrowedOut.first()->isHidden()); // a value the narrowing does hide
 }
 
 // Hiding one value says nothing about the next value to appear, so it must NOT

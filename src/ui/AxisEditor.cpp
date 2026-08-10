@@ -10,11 +10,11 @@
 #include "RecordIndex.h"
 #include "SectionBox.h"
 #include <QApplication>
-#include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDateTimeEdit>
+#include <QFont>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -92,16 +92,15 @@ AxisBox makeAxisBox(QWidget *parent, const QString &title, const QString &object
 // these are things to press. Auto-raise earns its keep on a TOGGLE, where the checked
 // state supplies the missing affordance; it does not on a plain command.
 //
-// The column ends in the "New" checkbox, which is the same question asked about the
-// values the list does not hold YET: All, None and Invert say what happens to what is
-// listed, and it says what happens to what turns up next. It goes here rather than in
-// a row of its own because it is one word wide and this column is exactly one word
-// wide — and because the three buttons set it, which is far more obvious when it is
-// the next thing under them.
+// The column used to end in a "New" checkbox carrying the discovery rule — what
+// happens to a value the list does not hold YET. It is the first ROW of the list now
+// (see buildValueAxis): the rule is a tick against "everything else", which is what
+// the rest of the list is a set of ticks against, and asking it in the same column as
+// All / None / Invert made it read as a fourth button rather than as an entry the
+// three of them set.
 QVBoxLayout *makeListButtons(QWidget *parent, const QString &namePrefix,
                              QAbstractButton *&all, QAbstractButton *&none,
-                             QAbstractButton *&invert, QCheckBox *&newValues,
-                             const QString &newValuesHint)
+                             QAbstractButton *&invert)
 {
     // Not a member, so there is no tr() in scope — the context is named explicitly, and
     // named for the class these buttons belong to.
@@ -120,15 +119,6 @@ QVBoxLayout *makeListButtons(QWidget *parent, const QString &namePrefix,
     btns->addWidget(all);
     btns->addWidget(none);
     btns->addWidget(invert);
-
-    newValues = new QCheckBox(QCoreApplication::translate("loftail::AxisEditor", "New"),
-                              parent);
-    newValues->setObjectName(namePrefix + QStringLiteral("NewValues"));
-    newValues->setChecked(true); // discovery is the default (populateList)
-    newValues->setToolTip(newValuesHint);
-    newValues->setAccessibleName(newValuesHint);
-    btns->addWidget(newValues);
-
     btns->addStretch(1);
     return btns;
 }
@@ -393,37 +383,63 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
     list->setMinimumHeight(listMinHeight);
     (subsystem ? m_loggerList : m_threadList) = list;
 
+    // Row 0 is the discovery rule, and it is a row rather than a checkbox beside the
+    // list because that is the shape of the question. The list is a set of ticks
+    // against the values the scan has found; "what happens to the ones it has not
+    // found yet" is one more tick against the rest of them, and a list of five
+    // subsystems and *the others* is a complete answer where five subsystems on their
+    // own is not. On top rather than at the bottom because the bottom of this list is
+    // wherever the scan has got to — a row appended after the names would move on
+    // every repopulation and be scrolled past on a log with forty loggers.
+    //
+    // Created before the connects below, so its arrival cannot reach changed().
+    auto *others = new QListWidgetItem(list);
+    others->setText(tr("Others"));
+    others->setFlags(others->flags() | Qt::ItemIsUserCheckable);
+    others->setCheckState(Qt::Checked); // discovery is the default (populateList)
+    others->setData(kOthersRole, true); // what every value loop skips it by
+    // Italic, because a value list is a list of names and this is not one of them —
+    // and because a log may genuinely have a subsystem called "Others".
+    QFont othersFont = list->font();
+    othersFont.setItalic(true);
+    others->setFont(othersFont);
+    others->setToolTip(
+        subsystem ? tr("Subsystems the scan has not turned up yet. Ticked, a new "
+                       "subsystem arrives ticked; unticked, the list is a restriction "
+                       "and only what is ticked here is ever shown.")
+                  : tr("Threads the scan has not turned up yet. Ticked, a new thread "
+                       "arrives ticked; unticked, the list is a restriction and only "
+                       "what is ticked here is ever shown."));
+    (subsystem ? m_loggerOthers : m_threadOthers) = others;
+
     QAbstractButton *all = nullptr, *none = nullptr, *invert = nullptr;
-    QCheckBox *newValues = nullptr;
     auto *listRow = new QHBoxLayout;
     listRow->addWidget(list, 1);
-    listRow->addLayout(makeListButtons(
-        a.body, prefix, all, none, invert, newValues,
-        subsystem ? tr("Tick a subsystem the scan turns up later. Untick and the list "
-                       "is a restriction: only what is ticked here is ever shown.")
-                  : tr("Tick a thread the scan turns up later. Untick and the list is a "
-                       "restriction: only what is ticked here is ever shown.")));
+    listRow->addLayout(makeListButtons(a.body, prefix, all, none, invert));
     a.bodyLayout->addLayout(listRow);
     QAbstractButton **slot = subsystem ? m_loggerListButtons : m_threadListButtons;
     slot[0] = all;
     slot[1] = none;
     slot[2] = invert;
-    (subsystem ? m_loggerNewValues : m_threadNewValues) = newValues;
 
     root->addWidget(a.box);
 
     connect(a.box, &QGroupBox::toggled, this, [this] { emitChanged(); });
-    // A tick is a statement about ONE value and nothing else. It used to also return
-    // the axis to the discovery default, on the reasoning that whatever the user is
-    // building now is a statement about the file — which was defensible while the
-    // discovery rule was invisible and showOnlyValue() was the only way into it, and
-    // is not now that "New" is a control sitting right there. A checkbox that unticks
-    // itself when the user ticks something else is worse than no checkbox.
+    // One handler for the whole list, "Others" included: a tick is a tick whichever
+    // row it lands on, and the two kinds of row differ only in what criteria() reads
+    // them as. A tick is also a statement about ONE row and nothing else — it used to
+    // return the axis to the discovery default as well, on the reasoning that whatever
+    // the user is building now is a statement about the file, which was defensible
+    // while the rule was invisible and showOnlyValue() was the only way into it. It is
+    // not now that the rule is the row directly above: a row that unticks itself when
+    // the user ticks another one is worse than no row at all.
     connect(list, &QListWidget::itemChanged, this,
             [this](QListWidgetItem *) { emitChanged(); });
     // All / None / Invert carry the same answer to the values that have not turned up
     // yet: "everything" and "nothing" are claims about the axis, not about the six
-    // names that happen to be listed a third of the way through a scan.
+    // names that happen to be listed a third of the way through a scan. They set the
+    // "Others" row EXPLICITLY rather than by sweeping the whole list, because Invert
+    // reads the rule back after flipping the names — a sweep would flip it twice.
     connect(all, &QAbstractButton::clicked, this, [this, axis] {
         setAllChecked(listFor(axis), true);
         setRestrictiveFor(axis, false);
@@ -436,7 +452,6 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
         invertChecked(listFor(axis));
         setRestrictiveFor(axis, !restrictiveFor(axis));
     });
-    connect(newValues, &QCheckBox::toggled, this, [this] { emitChanged(); });
 
     // Adding is only offered for a name the list does not already hold — otherwise the
     // "+" would promise a second copy of a value that is right there under it.
@@ -444,7 +459,7 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
         const QString name = narrow->text().trimmed();
         if (!canAddTyped(axis, name))
             return;
-        // The name goes in ticked whatever "New" says — populateList treats a manual
+        // The name goes in ticked whatever "Others" says — populateList treats a manual
         // entry as the user asking to see it, which is exactly what typing it in is —
         // so the discovery rule is left alone here. Adding one name says nothing about
         // the ones the scan has not reached.
@@ -476,8 +491,9 @@ bool AxisEditor::canAddTyped(ValueAxis axis, const QString &name) const
     if (!list)
         return false;
     // Exact, case-sensitive: a logger name is an identifier, and "Net.Http" alongside
-    // "net.http" is two subsystems, not a typo to be swallowed.
-    for (int i = 0; i < list->count(); ++i)
+    // "net.http" is two subsystems, not a typo to be swallowed. From kFirstValueRow,
+    // so a log whose loggers really are called "Others" can still add one.
+    for (int i = kFirstValueRow; i < list->count(); ++i)
         if (list->item(i)->text() == name)
             return false;
     return true;
@@ -498,7 +514,7 @@ void AxisEditor::updateListButtonHints(ValueAxis axis)
     // while the list on screen reads as fully cleared. Nothing said so; now the
     // buttons do, and only when there is something to say.
     int hidden = 0;
-    for (int i = 0; i < list->count(); ++i)
+    for (int i = kFirstValueRow; i < list->count(); ++i)
         if (list->item(i)->isHidden())
             ++hidden;
     QString note;
@@ -834,10 +850,10 @@ void AxisEditor::refreshDiscoveredLists()
 {
     if (!m_document) {
         m_populating = true;
-        if (m_loggerList)
-            m_loggerList->clear();
-        if (m_threadList)
-            m_threadList->clear();
+        // The values go; the "Others" row stays, as it does through every other
+        // repopulation — unbinding is not the user retracting the discovery rule.
+        clearValueRows(m_loggerList);
+        clearValueRows(m_threadList);
         m_populating = false;
         return;
     }
@@ -977,21 +993,29 @@ QSet<QString> &AxisEditor::manualFor(ValueAxis axis)
     return axis == ValueAxis::Subsystem ? m_loggerManualNames : m_threadManualNames;
 }
 
-QCheckBox *AxisEditor::newValuesBoxFor(ValueAxis axis) const
+QListWidgetItem *AxisEditor::othersItemFor(ValueAxis axis) const
 {
-    return axis == ValueAxis::Subsystem ? m_loggerNewValues : m_threadNewValues;
+    return axis == ValueAxis::Subsystem ? m_loggerOthers : m_threadOthers;
+}
+
+bool AxisEditor::isOthersRow(const QListWidgetItem *item)
+{
+    return item && item->data(kOthersRole).toBool();
 }
 
 bool AxisEditor::restrictiveFor(ValueAxis axis) const
 {
-    const QCheckBox *box = newValuesBoxFor(axis);
-    return box && !box->isChecked();
+    const QListWidgetItem *item = othersItemFor(axis);
+    return item && item->checkState() != Qt::Checked;
 }
 
 void AxisEditor::setRestrictiveFor(ValueAxis axis, bool restrictive)
 {
-    if (QCheckBox *box = newValuesBoxFor(axis))
-        box->setChecked(!restrictive); // toggled() -> emitChanged(), unless populating
+    // setCheckState() emits itemChanged() only when the state actually moves, and the
+    // list's handler turns that into emitChanged() — so this behaves exactly as the
+    // checkbox's setChecked() did, m_populating guard included.
+    if (QListWidgetItem *item = othersItemFor(axis))
+        item->setCheckState(restrictive ? Qt::Unchecked : Qt::Checked);
 }
 
 void AxisEditor::ensureListed(ValueAxis axis, const QString &name)
@@ -1000,7 +1024,7 @@ void AxisEditor::ensureListed(ValueAxis axis, const QString &name)
     if (!list)
         return;
     auto listed = [list, &name] {
-        for (int i = 0; i < list->count(); ++i)
+        for (int i = kFirstValueRow; i < list->count(); ++i)
             if (list->item(i)->text() == name)
                 return true;
         return false;
@@ -1029,8 +1053,9 @@ void AxisEditor::showOnlyValue(ValueAxis axis, const QString &name)
     // Every item, including the ones the narrow box is currently hiding. All / None
     // deliberately act on the narrowed view only, because there the user can see what
     // they are acting on; a menu item that read "show only net.http" and quietly left
-    // hidden values ticked would restrict to more than it says.
-    for (int i = 0; i < list->count(); ++i) {
+    // hidden values ticked would restrict to more than it says. Not the "Others" row,
+    // which setRestrictiveFor() below is the statement about.
+    for (int i = kFirstValueRow; i < list->count(); ++i) {
         QListWidgetItem *item = list->item(i);
         item->setCheckState(item->text() == name ? Qt::Checked : Qt::Unchecked);
     }
@@ -1050,7 +1075,7 @@ void AxisEditor::hideValue(ValueAxis axis, const QString &name)
     ensureListed(axis, name);
 
     m_populating = true;
-    for (int i = 0; i < list->count(); ++i) {
+    for (int i = kFirstValueRow; i < list->count(); ++i) {
         QListWidgetItem *item = list->item(i);
         if (item->text() == name)
             item->setCheckState(Qt::Unchecked);
@@ -1138,7 +1163,10 @@ void AxisEditor::populateList(QListWidget *list, const QStringList &names,
     if (!list)
         return;
     m_populating = true;
-    list->clear();
+    // NOT clear(): row 0 is the "Others" row and carries the discovery rule this
+    // function is being handed as `restrictive`. Clearing it would delete the state
+    // and leave restrictiveFor() reading a dangling row.
+    clearValueRows(list);
     // De-duplicate and drop the empty-string id (id 0, the "field absent" sentinel).
     QStringList sorted;
     QSet<QString> dedup;
@@ -1181,11 +1209,24 @@ void AxisEditor::populateList(QListWidget *list, const QStringList &names,
     m_populating = false;
 }
 
+void AxisEditor::clearValueRows(QListWidget *list)
+{
+    if (!list)
+        return;
+    while (list->count() > kFirstValueRow)
+        delete list->takeItem(kFirstValueRow);
+}
+
 bool AxisEditor::allChecked(const QListWidget *list)
 {
     if (!list)
         return true;
-    for (int i = 0; i < list->count(); ++i)
+    // Values only. This answers MatchCriteria::loggerCoversAll — "does the selection
+    // cover everything the user was OFFERED" — which is read only to collapse a
+    // narrows-nothing axis, and is a different question from what "Others" answers:
+    // an unticked "Others" over a fully ticked list excludes nothing YET, and stops
+    // being all-checked of its own accord the moment a new value arrives unticked.
+    for (int i = kFirstValueRow; i < list->count(); ++i)
         if (list->item(i)->checkState() != Qt::Checked)
             return false;
     return true; // an empty list excludes nothing
@@ -1196,7 +1237,10 @@ QSet<QString> AxisEditor::checkedNames(const QListWidget *list) const
     QSet<QString> out;
     if (!list)
         return out;
-    for (int i = 0; i < list->count(); ++i) {
+    // From kFirstValueRow: "Others" is a rule, not a name, and letting its label
+    // through here would put a subsystem nothing is logged under into criteria(),
+    // into every saved preset, and into the session file.
+    for (int i = kFirstValueRow; i < list->count(); ++i) {
         const QListWidgetItem *item = list->item(i);
         if (item->checkState() == Qt::Checked)
             out.insert(item->text());
@@ -1208,7 +1252,7 @@ void AxisEditor::setAllChecked(QListWidget *list, bool checked)
 {
     if (!list)
         return;
-    for (int i = 0; i < list->count(); ++i) {
+    for (int i = kFirstValueRow; i < list->count(); ++i) {
         QListWidgetItem *item = list->item(i);
         if (item->isHidden())
             continue; // operate on the currently-narrowed view only
@@ -1220,7 +1264,7 @@ void AxisEditor::invertChecked(QListWidget *list)
 {
     if (!list)
         return;
-    for (int i = 0; i < list->count(); ++i) {
+    for (int i = kFirstValueRow; i < list->count(); ++i) {
         QListWidgetItem *item = list->item(i);
         if (item->isHidden())
             continue;
@@ -1232,7 +1276,10 @@ void AxisEditor::narrowList(QListWidget *list, const QString &needle)
 {
     if (!list)
         return;
-    for (int i = 0; i < list->count(); ++i) {
+    // "Others" is never narrowed away. It is not one of the names being searched, and
+    // hiding it would take the discovery rule off screen exactly when the user is
+    // building a selection — which is when it matters most.
+    for (int i = kFirstValueRow; i < list->count(); ++i) {
         QListWidgetItem *item = list->item(i);
         item->setHidden(!needle.isEmpty()
                         && !item->text().contains(needle, Qt::CaseInsensitive));
