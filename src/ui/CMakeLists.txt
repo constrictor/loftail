@@ -52,6 +52,11 @@ add_library(loftail_ui STATIC
     # Run selection side pane (a run-start regexp splits the file into runs)
     RunPane.cpp
     RunPane.h
+    # A checkable group box that can draw a hairline along its own title row instead of a
+    # frame round its body — used by the axes and actions of the Highlighters pane's rule
+    # editor, which sit inside a framed section already
+    SectionBox.cpp
+    SectionBox.h
     # Chrome colours that must work on a light AND a dark theme: error red, caution
     # amber, muted secondary text, and the placeholder grey Qt's own role often lacks
     UiColors.cpp

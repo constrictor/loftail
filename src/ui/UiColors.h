@@ -2,8 +2,9 @@
 
 #include <QColor>
 
+#include <QPalette>
+
 QT_BEGIN_NAMESPACE
-class QPalette;
 class QWidget;
 QT_END_NAMESPACE
 
@@ -65,6 +66,20 @@ QColor mutedColor(const QPalette &palette);
 // The colour placeholder text SHOULD have: partway from the field's text colour toward
 // its background, so it reads as a hint rather than as content.
 QColor placeholderColor(const QPalette &palette);
+
+// A hairline dividing one section of a pane from the next — SectionBox paints it along
+// its title row. Most of the way from the text colour toward the surface it sits on, so
+// it reads as the rule after a heading and not as a border round something.
+//
+// Derived rather than read out of QPalette::Mid, which is the role that ought to say this
+// and on a stock Fusion palette says almost nothing: a Mid line against Window is why a
+// QFrame::Sunken HLine is invisible there, measured on a render rather than guessed.
+//
+// `group` is which set of colours to derive from, and it is a parameter because the
+// answer differs while the section is switched OFF: a divider drawn from Active over a
+// body Qt has greyed from Disabled is the one part of the section that ignores its own
+// state.
+QColor dividerColor(const QPalette &palette, QPalette::ColorGroup group = QPalette::Current);
 
 // --- Filter context rows (M15, SPEC.md §6) ---------------------------------------
 //

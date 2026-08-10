@@ -1,8 +1,10 @@
 #include <QtTest>
 
 #include <QApplication>
+#include <QFrame>
 #include <QLineEdit>
 #include <QPalette>
+#include <QWidget>
 
 #include "HostBookmarkStore.h"
 #include "OpenRemoteDialog.h"
@@ -76,6 +78,7 @@ private slots:
     void chromeColoursCarryOnBothThemes();
     void theRemoteDialogsPlaceholdersAreReadable();
     void contextRowsRecedeWithoutBecomingUnreadable();
+    void aSectionDividerIsVisibleWithoutBeingText();
 };
 
 void TestUiColors::darkThemeIsRecognised()
@@ -209,6 +212,45 @@ void TestUiColors::contextRowsRecedeWithoutBecomingUnreadable()
         QVERIFY2(contrast(soft, base) < contrast(rule, base),
                  "the softened fill must sit between the rule colour and the base");
     }
+}
+
+void TestUiColors::aSectionDividerIsVisibleWithoutBeingText()
+{
+    // The hairline the Highlighters pane's rule editor separates its sections with, in
+    // place of a frame per section. It has to clear two bounds from opposite directions,
+    // and the reason it is measured at all is that the idiomatic answer — a
+    // QFrame::Sunken HLine, drawn by Fusion in Light/Mid — clears NEITHER on the stock
+    // light palette: it is not visible against the pane it divides.
+    for (const QPalette &palette : {plainLight(), brokenDark()}) {
+        const QColor window = palette.color(QPalette::Window);
+        const QColor text = palette.color(QPalette::WindowText);
+        const QColor line = dividerColor(palette);
+
+        QVERIFY(line.isValid());
+        QVERIFY2(contrast(line, window) > 1.15, "a divider nobody can see divides nothing");
+        QVERIFY2(contrast(line, window) < contrast(text, window),
+                 "a divider heavier than the words beside it reads as a rule, not a seam");
+    }
+
+    // And it is a real difference from the roles it could have been read out of, on both
+    // themes — the point of deriving it.
+    QCOMPARE_NE(dividerColor(plainLight()), dividerColor(brokenDark()));
+
+    // A SWITCHED-OFF section is drawn from QPalette::Disabled, and its divider has to dim
+    // with it: a hairline at full strength over a body Qt has greyed is the one part of
+    // the section still claiming to be in force. So the colour group is a parameter, and
+    // dropping it — the signature this had first — is a silent regression on every
+    // unticked axis.
+    QPalette twoGroups = plainLight();
+    twoGroups.setColor(QPalette::Disabled, QPalette::WindowText, QColor(0x9a, 0x9a, 0x9a));
+    twoGroups.setColor(QPalette::Disabled, QPalette::Window, QColor(0xef, 0xef, 0xef));
+    QCOMPARE_NE(dividerColor(twoGroups, QPalette::Disabled),
+                dividerColor(twoGroups, QPalette::Active));
+    QVERIFY2(contrast(dividerColor(twoGroups, QPalette::Disabled),
+                      twoGroups.color(QPalette::Disabled, QPalette::Window))
+                 < contrast(dividerColor(twoGroups, QPalette::Active),
+                            twoGroups.color(QPalette::Active, QPalette::Window)),
+             "a switched-off section's divider must be the quieter of the two");
 }
 
 int main(int argc, char *argv[])

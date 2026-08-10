@@ -21,6 +21,12 @@ constexpr qreal kPlaceholderMix = 0.45;
 constexpr qreal kContextTextMix = 0.35;
 constexpr qreal kContextFillMix = 0.55;
 
+// How far a section divider sits from the text colour toward the surface behind it.
+// Further than anything else here, because this is not text: it is a line whose whole
+// job is to be noticed without being read, and the full text colour draws a rule across
+// the pane heavier than the frames it replaced.
+constexpr qreal kDividerMix = 0.72;
+
 // The contrast a placeholder must already have against its field before this leaves the
 // theme alone. Expressed as a WCAG contrast ratio; 4.5 is the bound for body text and
 // 3.0 for large text, so a hint is allowed to sit below both — but Qt's unset default
@@ -107,6 +113,12 @@ QColor mutedColor(const QPalette &palette)
 QColor placeholderColor(const QPalette &palette)
 {
     return mix(palette.color(QPalette::Text), palette.color(QPalette::Base), kPlaceholderMix);
+}
+
+QColor dividerColor(const QPalette &palette, QPalette::ColorGroup group)
+{
+    return mix(palette.color(group, QPalette::WindowText),
+               palette.color(group, QPalette::Window), kDividerMix);
 }
 
 QColor contextTextColor(const QColor &fg, const QColor &bg)

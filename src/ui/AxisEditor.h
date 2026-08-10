@@ -104,6 +104,18 @@ public:
     // says "not in force" without moving anything.
     void setHidesUnsupportedAxes(bool hide);
 
+    // Draw each axis as a title row over a dividing line instead of as a framed panel
+    // — Qt's flat group box, so the axis is still a checkable QGroupBox and still greys
+    // its own body when it is off. Nothing about an axis changes but its border.
+    //
+    // The second place the two panes want opposite things, and again both are right. In
+    // the Filters pane the axes ARE the pane's content, and a frame is the only thing
+    // saying where one axis stops and the next starts. In the Highlighters pane they sit
+    // inside a Condition box, which already says that — so a framed axis is a frame
+    // inside a frame, three borders deep by the subsystem list, and by then a border has
+    // stopped meaning "these belong together". A line says it at one border less.
+    void setFlatAxes(bool flat);
+
     // Rebind to a document (or nullptr to clear). Repopulates the auto-discovered
     // subsystem/thread lists from its intern tables, gates the thread and time axes on
     // whether the format carries those fields, and seeds the time editors to the
