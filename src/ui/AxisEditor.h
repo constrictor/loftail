@@ -65,9 +65,17 @@ public:
 
     explicit AxisEditor(Defaults defaults, QWidget *parent = nullptr);
 
+    // The inset this widget leaves round its own group boxes, so a rounded frame does
+    // not run into the edge of the frameless scroll area both users put it in. Public
+    // because it is the number anything STACKED with the axes has to use to line up
+    // with them — the Highlighters pane's action blocks sit directly under the last
+    // axis, and six pixels of disagreement between two framed columns reads as a
+    // rendering fault rather than as two sections.
+    static constexpr int kSideMargin = 6;
+
     // Append a widget to the bottom of the MESSAGE TEXT axis's body, where it lives
-    // and dies with that axis: shown and hidden by setCollapsible(), and greyed out
-    // with the rest of the body while the axis is off.
+    // and dies with that axis: greyed out with the rest of the body while the axis
+    // is off.
     //
     // It exists for exactly one caller. Filter context (SPEC.md §6) widens the
     // message search and nothing else, so its two spinners belong beside that search
@@ -77,16 +85,24 @@ public:
     // at all, and gets an editor with no context row.
     void addTextExtra(QWidget *w);
 
-    // Collapse each axis to its title row — which is also its enable control, bar
-    // priority's, whose row keeps the checkbox and drops the combo — while it is off.
+    // Leave out the axes this log's format cannot fill — the thread axis with no %t,
+    // the time axis with no %d — instead of showing them greyed with the reason in
+    // their title.
     //
-    // The Highlighters pane needs it: five axes plus a rule list plus a colour row do
-    // not fit a dock otherwise. The Filters pane deliberately does NOT use it, because
-    // an axis that reveals its controls only once it is ticked hides what the axis even
-    // offers — the user has to switch a filter on to find out whether it is the one
-    // they wanted. Off, its controls stay on screen and Qt greys them, which says the
-    // same thing without moving anything.
-    void setCollapsible(bool collapsible);
+    // The two panes want opposite things here, and both are right. The Filters pane
+    // describes the whole log, so a missing axis is worth SAYING: a restored session or
+    // a preset can leave it ticked-but-dropped, and that needs somewhere to show. The
+    // Highlighters pane shows the axes of ONE rule, under a rule list and above four
+    // actions, and repeats that block for every rule the user clicks — an axis that can
+    // never match anything is dead weight in the tightest pane there is, and the answer
+    // to "why can I not match on thread" is the one the Filters pane already gives.
+    //
+    // NOT a collapse: every axis the format DOES carry stays expanded whether it is
+    // ticked or not, in both panes. An axis that reveals its controls only once it is
+    // ticked cannot be read, only explored — the user has to switch it on to find out
+    // whether it was the one they wanted. Qt greys an unticked group box's body, which
+    // says "not in force" without moving anything.
+    void setHidesUnsupportedAxes(bool hide);
 
     // Rebind to a document (or nullptr to clear). Repopulates the auto-discovered
     // subsystem/thread lists from its intern tables, gates the thread and time axes on
@@ -194,7 +210,10 @@ private:
     // the current narrowing is hiding from them.
     void updateListButtonHints(ValueAxis axis);
     void emitChanged();
-    void updateCollapse();
+    // Everything an axis's own state decides about its controls: whether the priority
+    // combo is live (it has no group box to grey it), and whether an axis the format
+    // cannot fill is on screen at all.
+    void updateAxisState();
     void updateTextValidity();
 
     // Repopulate one checkable list. `exact` picks the check-state rule: false is
@@ -239,7 +258,7 @@ private:
     Document *m_document = nullptr;
     Defaults  m_defaults;           // what clearAll() returns the axes to
     bool      m_populating = false; // guards itemChanged storms during (re)population
-    bool      m_collapsible = false;
+    bool      m_hideUnsupported = false;
 
     // The zone the time editors were last rendered in. refreshTimeBounds() needs it to
     // recover the instant the shown wall clock currently denotes before re-rendering
@@ -249,13 +268,11 @@ private:
     // Priority
     QCheckBox *m_priorityEnable = nullptr;
     QComboBox *m_priorityCombo = nullptr;
-    QWidget   *m_priorityBody = nullptr;
 
     // Subsystem
     QGroupBox    *m_loggerGroup = nullptr;
     QLineEdit    *m_loggerNarrow = nullptr; // narrows the list, and adds to it
     QListWidget  *m_loggerList = nullptr;
-    QWidget      *m_loggerBody = nullptr;
     QAbstractButton *m_loggerListButtons[3] = {}; // All, None, Invert
     QSet<QString> m_loggerManualNames; // manually-added subsystems (may be absent)
     QSet<QString> m_loggerSeen;        // every subsystem name ever listed
@@ -270,7 +287,6 @@ private:
     QGroupBox    *m_threadGroup = nullptr;
     QLineEdit    *m_threadNarrow = nullptr;
     QListWidget  *m_threadList = nullptr;
-    QWidget      *m_threadBody = nullptr;
     QAbstractButton *m_threadListButtons[3] = {};
     QSet<QString> m_threadManualNames;
     QSet<QString> m_threadSeen;
@@ -287,13 +303,11 @@ private:
     QAbstractButton *m_textCase = nullptr;
     QAbstractButton *m_textNegate = nullptr;
     QLabel    *m_textError = nullptr; // "not a valid regular expression", when it is not
-    QWidget   *m_textBody = nullptr;
 
     // Time range
     QGroupBox     *m_timeGroup = nullptr;
     QDateTimeEdit *m_timeStart = nullptr;
     QDateTimeEdit *m_timeEnd = nullptr;
-    QWidget       *m_timeBody = nullptr;
     // Whether a bound came from the user rather than from the observed span. The seed
     // has to keep tracking a growing file, but it must never overwrite a deliberate
     // bound — the same distinction the "New" checkbox draws between a value the user

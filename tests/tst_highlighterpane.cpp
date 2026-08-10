@@ -141,6 +141,12 @@ private slots:
     void theOneClickRuleColoursOnly();
     void reloadingTheListKeepsActions();
     void notifySaysWhyWhenTheDesktopOffersNoNotifications();
+
+    // The editor's shape: conditions apart from actions, conditions always readable,
+    // and an axis the format cannot fill left out.
+    void switchedOffAxesStayVisibleAndGreyed();
+    void anAxisTheFormatLacksIsNotShownAtAll();
+    void theTwoColourCombosLineUp();
 };
 
 void TestHighlighterPane::everyAxisIsOfferedAndOptIn()
@@ -710,6 +716,121 @@ void TestHighlighterPane::notifySaysWhyWhenTheDesktopOffersNoNotifications()
     QVERIFY(!notify->toolTip().isEmpty());
     if (!available)
         QVERIFY(notify->toolTip().contains(QStringLiteral("tab")));
+}
+
+// A switched-off axis keeps its controls on screen, greyed — the pane used to collapse
+// each one to its title row to save height, and height was the wrong thing to buy here
+// for the same reason it was wrong in the Filters pane: an axis whose controls appear
+// only once it is ticked cannot be read, only explored.
+void TestHighlighterPane::switchedOffAxesStayVisibleAndGreyed()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click(); // the editor is live only with a rule
+
+    QGroupBox *message = axis(pane, "messageGroup");
+    QVERIFY(message && !message->isChecked());
+    // The body is everything under the title row; the title row is the check control.
+    const auto *field = patternEdit(pane);
+    QVERIFY(field);
+    QVERIFY(field->isVisibleTo(message));
+    // Qt greys a checkable group box's contents while it is unchecked, which is what
+    // carries "not in force" now that nothing is hidden.
+    QVERIFY(!field->isEnabled());
+
+    message->setChecked(true);
+    QVERIFY(field->isVisibleTo(message));
+    QVERIFY(field->isEnabled());
+
+    // And the subsystem list, whose axis is off too and whose body is the tallest of
+    // the five — the one collapsing was really buying.
+    const auto *list = pane.findChild<QListWidget *>(QStringLiteral("subsystemList"));
+    QVERIFY(list);
+    QVERIFY(!axis(pane, "subsystemGroup")->isChecked());
+    QVERIFY(list->isVisibleTo(axis(pane, "subsystemGroup")));
+}
+
+// A format with no %t leaves the thread axis out of the rule editor entirely, rather
+// than showing it greyed with the reason in its title as the Filters pane does. The
+// asymmetry is deliberate (AxisEditor::setHidesUnsupportedAxes): the Filters pane
+// describes the whole log and a missing axis is worth saying, while this pane repeats
+// the axis block for every rule the user clicks.
+void TestHighlighterPane::anAxisTheFormatLacksIsNotShownAtAll()
+{
+    Document withThread;
+    QTemporaryFile threaded;
+    QVERIFY(openLog(withThread, threaded));
+
+    Document noThread;
+    QTemporaryFile plain;
+    QVERIFY(plain.open());
+    plain.write("2026-07-21 12:00:00,000 INFO  net.socket - a\n");
+    plain.flush();
+    QVERIFY2(noThread.open(plain.fileName(),
+                           QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} %-5p %c - %m%n"),
+                           Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(noThread.lastError()));
+
+    HighlighterPane pane;
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+
+    pane.setDocument(&withThread);
+    QGroupBox *thread = axis(pane, "threadGroup");
+    QVERIFY(thread);
+    QVERIFY(thread->isVisible());
+    // The axes the format DOES carry are untouched by this.
+    QVERIFY(axis(pane, "subsystemGroup")->isVisible());
+    QVERIFY(axis(pane, "timeGroup")->isVisible());
+
+    // Rebinding to a log whose pattern has no %t takes the axis off screen — and puts
+    // it back when a log that has one is selected again.
+    pane.setDocument(&noThread);
+    QVERIFY(!thread->isVisible());
+    QVERIFY(axis(pane, "subsystemGroup")->isVisible());
+
+    pane.setDocument(&withThread);
+    QVERIFY(thread->isVisible());
+}
+
+// The two swatch pickers set one thing, so they read as one control: labels aligned,
+// combos starting at the same x and the same width. A row-per-colour layout gave each
+// its own label column, and "Background:" is wider than "Text:".
+void TestHighlighterPane::theTwoColourCombosLineUp()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.resize(320, 700);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
+
+    auto *bg = pane.findChild<QComboBox *>(QStringLiteral("backgroundColor"));
+    auto *fg = pane.findChild<QComboBox *>(QStringLiteral("textColor"));
+    QVERIFY(bg && fg);
+    QVERIFY(QTest::qWaitFor([bg] { return bg->width() > 0; }));
+
+    QCOMPARE(bg->x(), fg->x());
+    QCOMPARE(bg->width(), fg->width());
+
+    // And the block they sit in lines up with the axes above it. AxisEditor insets its
+    // own group boxes so a rounded frame does not run into the scroll area's edge, so
+    // anything stacked with them has to use the same inset (AxisEditor::kSideMargin) —
+    // otherwise the Colour frame sits six pixels proud of the Subsystem frame directly
+    // above it, which reads as a rendering fault rather than as two sections.
+    auto *colour = axis(pane, "actionColor");
+    auto *message = axis(pane, "messageGroup");
+    QVERIFY(colour && message);
+    QCOMPARE(colour->mapTo(&pane, QPoint(0, 0)).x(), message->mapTo(&pane, QPoint(0, 0)).x());
+    QCOMPARE(colour->width(), message->width());
 }
 
 QTEST_MAIN(TestHighlighterPane)
