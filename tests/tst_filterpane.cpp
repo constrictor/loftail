@@ -8,6 +8,8 @@
 #include <QGroupBox>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QStyle>
+#include <QStyleOptionGroupBox>
 #include <QSpinBox>
 #include <QFile>
 #include <QTemporaryFile>
@@ -17,6 +19,7 @@
 #include "Filter.h"
 #include "LogFormat.h"
 #include "Priority.h"
+#include "SectionBox.h"
 #include "RecordIndex.h"
 
 using namespace loftail;
@@ -169,6 +172,8 @@ private slots:
     void listButtonsOwnUpToWhatTheNarrowingHides();
     void clearAllReturnsToAnUnfilteredView();
     void activityTracksTheResolvedSetNotTheTicks();
+    void theAxesKeepTheirFrames();
+    void theAxisEnableControlsSitAtTheLeftEdge();
 };
 
 void TestFilterPane::metadataAxesAreOnByDefault()
@@ -930,6 +935,79 @@ void TestFilterPane::activityTracksTheResolvedSetNotTheTicks()
     pane.findChild<QLineEdit *>(QStringLiteral("messageText"))->setText(QStringLiteral("a"));
     contextSpin(pane, "contextBefore")->setValue(2);
     QVERIFY(pane.hasActiveFilters());
+}
+
+// AxisEditor can draw an axis either way — framed, or flat with a dividing line under
+// its title — and this pane must keep the frames. Here the axes ARE the pane's content,
+// so a frame is the only thing saying where one axis stops and the next starts; in the
+// Highlighters pane they sit inside a Condition box that says it already, and a framed
+// axis there is a frame inside a frame. The flat mode is opt-in for exactly that reason,
+// and a default that flipped would flatten this pane silently — nothing else here would
+// notice.
+void TestFilterPane::theAxesKeepTheirFrames()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+
+    for (const char *name : {"priorityGroup", "messageGroup", "subsystemGroup",
+                             "threadGroup", "timeGroup"}) {
+        auto *box = pane.findChild<SectionBox *>(QString::fromLatin1(name));
+        QVERIFY2(box, name);
+        QVERIFY2(!box->isFlat(), name);
+        // Every axis is the kind of box that CAN draw a title-row hairline — one class,
+        // both panes — so what has to hold here is that this one has not been asked to.
+        QVERIFY2(!box->hasTitleDivider(), name);
+    }
+}
+
+// An axis's title row IS its enable control, so it belongs at the left edge where every
+// control it governs starts — on every style, not only on the ones that already do it.
+// Breeze centres a group box title and ignores QGroupBox::alignment() while doing it, so
+// on a KDE desktop all five enable controls sat in the middle of the pane; SectionBox
+// carries the style sheet rule that is the only lever which moves them.
+void TestFilterPane::theAxisEnableControlsSitAtTheLeftEdge()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.resize(320, 700);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+
+    for (const char *name : {"priorityGroup", "messageGroup", "subsystemGroup",
+                             "threadGroup", "timeGroup"}) {
+        auto *box = pane.findChild<SectionBox *>(QString::fromLatin1(name));
+        QVERIFY2(box, name);
+
+        // Asked of the style, which is what actually decides this — the option is built
+        // the way QGroupBox builds its own, minus the parts a rect query ignores.
+        QStyleOptionGroupBox option;
+        option.initFrom(box);
+        option.text = box->title();
+        option.textAlignment = box->alignment();
+        option.subControls = QStyle::SC_GroupBoxFrame | QStyle::SC_GroupBoxLabel
+                             | QStyle::SC_GroupBoxCheckBox;
+        option.lineWidth = 1;
+        const QRect indicator = box->style()->subControlRect(
+            QStyle::CC_GroupBox, &option, QStyle::SC_GroupBoxCheckBox, box);
+        QVERIFY2(indicator.isValid(), name);
+        QVERIFY2(indicator.x() < box->width() / 4,
+                 qPrintable(QStringLiteral("%1 enable control is at x=%2 of %3")
+                                .arg(QString::fromLatin1(name))
+                                .arg(indicator.x())
+                                .arg(box->width())));
+
+        // And the mechanism, because the check above cannot notice its loss under a style
+        // that left-aligns anyway — which is every style the suite is likely to run on.
+        QVERIFY2(box->styleSheet().contains(QStringLiteral("subcontrol-position")), name);
+    }
 }
 
 QTEST_MAIN(TestFilterPane)
