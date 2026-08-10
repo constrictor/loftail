@@ -477,7 +477,20 @@ bool Document::publishDigest(bool force)
     // which is what keeps a quiet tick from jolting the strip, is exactly what would
     // then freeze that row's height for the rest of the session. The live path passes
     // force when the provisional record changed under an ordinal the digest holds.
-    if (!force && ordinals == m_digest.visible())
+    // Sizes first, and the element compare only when there ARE elements. Qt 6.4's
+    // QList::operator== bottoms out in QPodArrayOps::compare -> memcmp(a, b, 0) when
+    // both lists are empty, and an empty QList's data pointer is null — which is UB by
+    // the letter of the standard even at zero length, and which UBSan duly reports as
+    // "null pointer passed as argument 2, which is declared to never be null".
+    // Later Qt guards the zero case, so this fires on the 6.4 floor and not on 6.10:
+    // no local run catches it, only the sanitizers job.
+    //
+    // Comparing two EMPTY digests is the ordinary case, not a corner — it is every
+    // quiet tick on a document where no rule asks for a digest.
+    const QVector<qint32> &current = m_digest.visible();
+    const bool unchanged = ordinals.size() == current.size()
+                           && (ordinals.isEmpty() || ordinals == current);
+    if (!force && unchanged)
         return false;
     // ALWAYS setVisible, never clear(), even for an empty result — see clearDigest().
     m_digest.setVisible(std::move(ordinals));
