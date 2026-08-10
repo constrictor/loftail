@@ -5,10 +5,12 @@
 #include <QComboBox>
 #include <QAbstractButton>
 #include <QAbstractItemView>
+#include <QFrame>
 #include <QGroupBox>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSystemTrayIcon>
 #include <QTemporaryFile>
 
@@ -18,6 +20,7 @@
 #include "MatchCriteria.h"
 #include "Palette.h"
 #include "Priority.h"
+#include "SectionBox.h"
 
 using namespace loftail;
 
@@ -146,6 +149,8 @@ private slots:
     void switchedOffAxesStayVisibleAndGreyed();
     void anAxisTheFormatLacksIsNotShownAtAll();
     void theTwoColourCombosLineUp();
+    void theSectionsAreDividedByLinesNotFrames();
+    void noSectionClipsItsOwnTitle();
 };
 
 void TestHighlighterPane::everyAxisIsOfferedAndOptIn()
@@ -552,9 +557,9 @@ void TestHighlighterPane::everyActionIsOfferedAndOnlyColourStartsOn()
     QVERIFY(pane.findChild<QComboBox *>(QStringLiteral("backgroundColor")));
     QVERIFY(pane.findChild<QComboBox *>(QStringLiteral("textColor")));
 
-    auto *digest = pane.findChild<QCheckBox *>(QStringLiteral("actionDigest"));
-    auto *tab = pane.findChild<QCheckBox *>(QStringLiteral("actionTab"));
-    auto *notify = pane.findChild<QCheckBox *>(QStringLiteral("actionNotify"));
+    auto *digest = pane.findChild<SectionBox *>(QStringLiteral("actionDigest"));
+    auto *tab = pane.findChild<SectionBox *>(QStringLiteral("actionTab"));
+    auto *notify = pane.findChild<SectionBox *>(QStringLiteral("actionNotify"));
     QVERIFY(digest);
     QVERIFY(tab);
     QVERIFY(notify);
@@ -582,13 +587,13 @@ void TestHighlighterPane::togglingAnActionReachesTheDocument()
     pane.setDocument(&doc);
     button(pane, QStringLiteral("ruleNew"))->click();
 
-    pane.findChild<QCheckBox *>(QStringLiteral("actionDigest"))->setChecked(true);
+    pane.findChild<SectionBox *>(QStringLiteral("actionDigest"))->setChecked(true);
     QVERIFY(doc.highlighters().rules.first().actions.testFlag(HighlightAction::Digest));
 
-    pane.findChild<QCheckBox *>(QStringLiteral("actionTab"))->setChecked(true);
+    pane.findChild<SectionBox *>(QStringLiteral("actionTab"))->setChecked(true);
     QVERIFY(doc.highlighters().rules.first().actions.testFlag(HighlightAction::Tab));
 
-    pane.findChild<QCheckBox *>(QStringLiteral("actionDigest"))->setChecked(false);
+    pane.findChild<SectionBox *>(QStringLiteral("actionDigest"))->setChecked(false);
     QVERIFY(!doc.highlighters().rules.first().actions.testFlag(HighlightAction::Digest));
     QVERIFY(doc.highlighters().rules.first().actions.testFlag(HighlightAction::Tab));
 }
@@ -626,7 +631,7 @@ void TestHighlighterPane::newCopiesTheSelectedRulesActions()
     HighlighterPane pane;
     pane.setDocument(&doc);
     button(pane, QStringLiteral("ruleNew"))->click();
-    pane.findChild<QCheckBox *>(QStringLiteral("actionDigest"))->setChecked(true);
+    pane.findChild<SectionBox *>(QStringLiteral("actionDigest"))->setChecked(true);
     axis(pane, "actionColor")->setChecked(false);
 
     // New starts from the SELECTED rule (SPEC.md §7), and its actions are part of what
@@ -678,9 +683,9 @@ void TestHighlighterPane::reloadingTheListKeepsActions()
         button(pane, QStringLiteral("ruleNew"))->click();
     QCOMPARE(doc.highlighters().rules.size(), 4);
 
-    pane.findChild<QCheckBox *>(QStringLiteral("actionDigest"))->setChecked(true);
+    pane.findChild<SectionBox *>(QStringLiteral("actionDigest"))->setChecked(true);
     ruleList(pane)->setCurrentRow(1);
-    pane.findChild<QCheckBox *>(QStringLiteral("actionTab"))->setChecked(true);
+    pane.findChild<SectionBox *>(QStringLiteral("actionTab"))->setChecked(true);
     axis(pane, "actionColor")->setChecked(false);
 
     const QVector<HighlightRule> before = doc.highlighters().rules;
@@ -701,7 +706,7 @@ void TestHighlighterPane::reloadingTheListKeepsActions()
 void TestHighlighterPane::notifySaysWhyWhenTheDesktopOffersNoNotifications()
 {
     HighlighterPane pane;
-    auto *notify = pane.findChild<QCheckBox *>(QStringLiteral("actionNotify"));
+    auto *notify = pane.findChild<SectionBox *>(QStringLiteral("actionNotify"));
     QVERIFY(notify);
 
     // Offscreen — and on a stock GNOME/Wayland session, which is the reference desktop
@@ -830,6 +835,116 @@ void TestHighlighterPane::theTwoColourCombosLineUp()
     QVERIFY(colour && message);
     QCOMPARE(colour->mapTo(&pane, QPoint(0, 0)).x(), message->mapTo(&pane, QPoint(0, 0)).x());
     QCOMPARE(colour->width(), message->width());
+}
+
+void TestHighlighterPane::theSectionsAreDividedByLinesNotFrames()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.resize(320, 900);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
+
+    // The editor's two halves are the only frames in it: Condition round the five axes,
+    // Action round the four actions.
+    auto *condition = pane.findChild<SectionBox *>(QStringLiteral("conditionSection"));
+    auto *action = pane.findChild<SectionBox *>(QStringLiteral("actionSection"));
+    QVERIFY(condition && action);
+    QVERIFY(!condition->isFlat());
+    QVERIFY(!action->isFlat());
+    // They are CAPTIONS, so they are headings — centred and bold. An axis's title row is
+    // a control and is pinned left instead (tst_filterpane), and the two answers come from
+    // the same class so the difference cannot be a per-pane accident.
+    QVERIFY(condition->isHeading());
+    QVERIFY(action->isHeading());
+
+    // The editor as a whole carries no caption: the rule list above it already says
+    // which rule is being edited. So the widget the scroll area hangs off must be a
+    // plain one — an empty-titled QGroupBox would still spend a frame and a title row.
+    auto *scroll = pane.findChild<QScrollArea *>();
+    QVERIFY(scroll);
+    QVERIFY2(!qobject_cast<QGroupBox *>(scroll->parentWidget()),
+             "the rule editor has grown a caption back");
+
+    // Inside them nothing is framed. Every axis, and the one action with a body, is a
+    // flat SectionBox drawing a hairline along its own title row instead — three frames
+    // deep at the subsystem list is where a frame stops meaning "these belong together".
+    //
+    // The line is PAINTED, not a QFrame in the layout, because a group box's title row is
+    // drawn by the style and has no cell beside the title to put one in — a QFrame lands
+    // under the title instead of alongside it. So what a test can hold is that each
+    // section is the kind of box that draws it and has been asked to.
+    // All five axes AND all four actions: one grammar, so an action is not a different
+    // kind of thing from an axis and Highlight is not a different kind of thing from the
+    // three actions that carry no settings.
+    QList<SectionBox *> rows;
+    for (const char *name : {"priorityGroup", "messageGroup", "subsystemGroup",
+                             "threadGroup", "timeGroup", "actionColor", "actionDigest",
+                             "actionTab", "actionNotify"}) {
+        auto *box = pane.findChild<SectionBox *>(QString::fromLatin1(name));
+        QVERIFY2(box, name);
+        QVERIFY2(box->isFlat(), name);
+        QVERIFY2(box->hasTitleDivider(), name);
+        QVERIFY2(!box->isHeading(), name); // a control, not a caption
+        // Still a checkable group box, which is the reason it is a subclass and not a
+        // hand-built header: the title row is the enable control and Qt greys the body.
+        QVERIFY2(box->isCheckable(), name);
+        rows << box;
+    }
+
+    // And the four actions are ONE COLUMN: same left edge, same width, so the three
+    // body-less ones read as continuations of the one above them rather than as a
+    // separate block of checkboxes. They were a two-column grid of bare checkboxes, which
+    // is what this replaces.
+    QVERIFY(QTest::qWaitFor([&rows] { return rows.first()->width() > 0; }));
+    for (const char *name : {"actionColor", "actionDigest", "actionTab", "actionNotify"}) {
+        auto *box = pane.findChild<SectionBox *>(QString::fromLatin1(name));
+        QCOMPARE(box->mapTo(&pane, QPoint(0, 0)).x(),
+                 pane.findChild<SectionBox *>(QStringLiteral("actionColor"))
+                     ->mapTo(&pane, QPoint(0, 0))
+                     .x());
+        QCOMPARE(box->width(),
+                 pane.findChild<SectionBox *>(QStringLiteral("actionColor"))->width());
+    }
+}
+
+// A section must be at least as tall as the title row it draws. Sounds free; it is not.
+// The three body-less actions have no layout, and a QGroupBox with no layout has an
+// INVALID sizeHint(), so a layout falls back to minimumSizeHint() — which under Breeze,
+// with the title style sheet in play, came back at 20 px for a title running to y=24. The
+// three rows silently cut their own descenders, and only on that style: Fusion answered
+// 37 px and looked perfect, which is why it took a photograph of a KDE desktop to see.
+void TestHighlighterPane::noSectionClipsItsOwnTitle()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.resize(320, 900);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
+
+    const QList<SectionBox *> sections = pane.findChildren<SectionBox *>();
+    QVERIFY(!sections.isEmpty());
+    QVERIFY(QTest::qWaitFor([&sections] { return sections.first()->height() > 0; }));
+    for (SectionBox *box : sections) {
+        if (!box->isVisible())
+            continue; // an axis this format cannot fill is left out (setHidesUnsupportedAxes)
+        const QSize title = box->titleRowHint();
+        QVERIFY2(box->height() >= title.height(),
+                 qPrintable(QStringLiteral("%1 is %2 px tall for a %3 px title row")
+                                .arg(box->objectName())
+                                .arg(box->height())
+                                .arg(title.height())));
+    }
 }
 
 QTEST_MAIN(TestHighlighterPane)
