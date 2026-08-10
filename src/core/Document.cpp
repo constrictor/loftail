@@ -486,7 +486,9 @@ bool Document::publishDigest(bool force)
 
 void Document::rebuildDigest()
 {
-    m_digestLast.assign(m_highlighters.rules.size(), -1);
+    // fill(), not assign(): QList::assign is Qt 6.6 and the floor is 6.4 (Ubuntu
+    // 24.04's stock Qt, §1). fill(value, size) resizes and fills, and predates both.
+    m_digestLast.fill(-1, m_highlighters.rules.size());
 
     // No enabled rule asks for a digest: nothing to scan. Published as an ACTIVE empty
     // subset rather than cleared — see publishDigest() for why an inactive one would
@@ -542,7 +544,7 @@ bool Document::updateDigestAfterAppend(int firstNewRow, bool provisionalChanged,
     if (!m_highlighters.anyEnabled(kDigestAction)) {
         // A rule may have been switched off since the last rebuild; make sure the
         // strip goes with it rather than freezing on its last content.
-        m_digestLast.assign(m_highlighters.rules.size(), -1);
+        m_digestLast.fill(-1, m_highlighters.rules.size()); // Qt 6.4 floor; see above
         return publishDigest();
     }
     // The rule list changed shape since the last rebuild (a rule added or removed):
