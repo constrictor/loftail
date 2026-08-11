@@ -14,6 +14,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDateTimeEdit>
+#include <QDoubleSpinBox>
 #include <QFont>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -302,22 +303,66 @@ void AxisEditor::buildUi(Defaults defaults)
         // usable width back. Each editor still takes half of whatever the dock has.
         constexpr int kTimeEditMinWidth = 96;
         auto *row = new QHBoxLayout;
-        row->addWidget(new QLabel(tr("Start:"), a.body));
-        m_timeStart = new QDateTimeEdit(a.body);
-        m_timeStart->setObjectName(QStringLiteral("timeStart"));
-        m_timeStart->setDisplayFormat(fmt);
-        m_timeStart->setCalendarPopup(true);
-        m_timeStart->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-        m_timeStart->setMinimumWidth(kTimeEditMinWidth);
-        row->addWidget(m_timeStart, 1);
-        row->addWidget(new QLabel(tr("End:"), a.body));
-        m_timeEnd = new QDateTimeEdit(a.body);
-        m_timeEnd->setObjectName(QStringLiteral("timeEnd"));
-        m_timeEnd->setDisplayFormat(fmt);
-        m_timeEnd->setCalendarPopup(true);
-        m_timeEnd->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-        m_timeEnd->setMinimumWidth(kTimeEditMinWidth);
-        row->addWidget(m_timeEnd, 1);
+        // A bound is entered in the SAME terms the timestamp column is showing
+        // (SPEC.md §6): a date for the three wall-clock display modes, a number of
+        // seconds for the two that render the column as seconds. Reading "12.480" off
+        // a row and then being asked for a calendar date is the pane asking a question
+        // about a quantity the log never showed — and answering it means converting by
+        // hand, from a baseline the pane knows and the user has to guess.
+        //
+        // Both spellings are built here and one pair hidden, rather than a widget
+        // being replaced when the mode changes: the display mode is a menu item away,
+        // and rebuilding a row under the pointer loses focus, tab order and whatever
+        // was half-typed. syncTimeEditorKind() decides which pair is up.
+        const auto addBound = [&](TimeBound which) {
+            const bool start = which == TimeBound::Start;
+            row->addWidget(new QLabel(start ? tr("Start:") : tr("End:"), a.body));
+            auto *edit = new QDateTimeEdit(a.body);
+            edit->setObjectName(start ? QStringLiteral("timeStart") : QStringLiteral("timeEnd"));
+            edit->setDisplayFormat(fmt);
+            edit->setCalendarPopup(true);
+            edit->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+            edit->setMinimumWidth(kTimeEditMinWidth);
+            row->addWidget(edit, 1);
+
+            auto *spin = new QDoubleSpinBox(a.body);
+            spin->setObjectName(start ? QStringLiteral("timeStartSeconds")
+                                      : QStringLiteral("timeEndSeconds"));
+            // Wide enough for epoch seconds (~1.8e9 now, 2.5e11 at year 9999) and
+            // signed, because seconds-from-run-start goes negative for a record
+            // back-dated before its own run's first line — exactly as the column's own
+            // formatSeconds() allows. Keyboard tracking off: a partly-typed number is
+            // not a bound, and re-filtering the whole file on every digit turns typing
+            // "1500" into four applies, three of them over a range nobody asked for.
+            spin->setRange(-1e12, 1e12);
+            spin->setDecimals(0);
+            spin->setKeyboardTracking(false);
+            // The C locale, so the editor writes the number the COLUMN writes: the
+            // column formats seconds by hand (LogModel::formatSeconds) and is not
+            // localized, so a spin box showing "1784635200,000" beside a row reading
+            // "1784635200.000" would be the same value spelled two ways in one window.
+            spin->setLocale(QLocale::c());
+            // No up/down buttons. Epoch seconds run to ten digits before the point and
+            // the row holds two of these plus their labels, so ~16 px of arrows per
+            // editor is what decides whether the last digit is on screen — and stepping
+            // a ten-digit second one at a time is not how anyone uses this. The keyboard
+            // arrows still step; only the painted buttons are gone.
+            spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+            spin->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+            spin->setMinimumWidth(kTimeEditMinWidth);
+            row->addWidget(spin, 1);
+
+            if (start) {
+                m_timeStart = edit;
+                m_secStart = spin;
+            } else {
+                m_timeEnd = edit;
+                m_secEnd = spin;
+            }
+        };
+        addBound(TimeBound::Start);
+        addBound(TimeBound::End);
+        syncTimeEditorKind(); // no document yet: starts on the wall-clock pair
         a.bodyLayout->addLayout(row);
         root->addWidget(a.box);
 
@@ -341,6 +386,27 @@ void AxisEditor::buildUi(Defaults defaults)
         };
         connect(m_timeStart, &QDateTimeEdit::dateTimeChanged, this, timeEdited);
         connect(m_timeEnd, &QDateTimeEdit::dateTimeChanged, this, timeEdited);
+        // A number typed into the seconds pair is the same edit to the same bound, and
+        // it has to reach the DATE pair: those are what criteria() reads, because a
+        // count of seconds is not portable enough to store (see criteria()). The two
+        // editors are two spellings of one bound and only the visible one is ever
+        // edited by hand, so the hand edit writes the other spelling itself — under
+        // m_populating, or the mirrored write would come back as a second edit.
+        const auto secondsEdited = [this, emitChange](TimeBound which) {
+            if (m_populating)
+                return; // setBoundInstant() wrote both spellings; nothing to mirror
+            const QDoubleSpinBox *spin = which == TimeBound::Start ? m_secStart : m_secEnd;
+            QDateTimeEdit *edit = which == TimeBound::Start ? m_timeStart : m_timeEnd;
+            m_populating = true;
+            edit->setDateTime(wallClockOf(instantOfSeconds(spin->value())));
+            m_populating = false;
+            m_timeUserEdited = true;
+            emitChange();
+        };
+        connect(m_secStart, &QDoubleSpinBox::valueChanged, this,
+                [secondsEdited](double) { secondsEdited(TimeBound::Start); });
+        connect(m_secEnd, &QDoubleSpinBox::valueChanged, this,
+                [secondsEdited](double) { secondsEdited(TimeBound::End); });
     }
 
     root->addStretch(1);
@@ -727,11 +793,18 @@ void AxisEditor::setDocument(Document *document)
 
     refreshDiscoveredLists();
 
-    // The zone the editors' digits are written in, tracked for every bound document
-    // and not only for one carrying timestamps: setTimeBound() renders a record's UTC
-    // ms through it, and refreshTimeBounds() reads it to recover the instant.
-    if (hasDoc)
+    // What the editors' digits are written in, tracked for every bound document and not
+    // only for one carrying timestamps: setTimeBound() renders a record's UTC ms through
+    // it, and refreshTimeBounds() reads it back to recover the instant. Rebinding is a
+    // fresh start, so the terms come from the new document rather than being carried
+    // over from the old one — otherwise a seconds log rebound onto a wall-clock one
+    // reads its own date digits as a count of seconds.
+    if (hasDoc) {
         m_renderZone = document->displayZone();
+        m_renderMode = document->timeDisplay();
+        m_renderBase = secondsBaseMs();
+    }
+    syncTimeEditorKind();
 
     // Seed the time editors to the file's observed span so the pickers open near
     // useful values rather than the epoch. Almost always a no-op HERE: this runs from
@@ -769,13 +842,19 @@ void AxisEditor::refreshObservedSpan()
     // INVALID, fromMSecsSinceEpoch() through it yields an invalid QDateTime, and
     // QDateTimeEdit::setDateTime() ignores that and stays at its year-2000 minimum —
     // silently reinstating the very bug this function exists to fix.
+    // Same for the mode and its baseline, and for the same reason: the seed writes both
+    // spellings of both bounds, so it is the point at which "what the digits are
+    // written in" becomes whatever the document currently says.
     m_renderZone = m_document->displayZone();
+    m_renderMode = m_document->timeDisplay();
+    m_renderBase = secondsBaseMs();
 
     // m_populating, so the editors' own dateTimeChanged does not read this back as a
     // hand edit and latch m_timeUserEdited against every later seed.
     m_populating = true;
-    m_timeStart->setDateTime(wallClockOf(lo));
-    m_timeEnd->setDateTime(wallClockOf(hi));
+    syncTimeEditorKind();
+    setBoundInstant(TimeBound::Start, lo);
+    setBoundInstant(TimeBound::End, hi);
     m_populating = false;
 }
 
@@ -799,6 +878,112 @@ QDateTime AxisEditor::wallClockOf(qint64 utcMs) const
     at.setTimeSpec(Qt::LocalTime);
 #endif
     return at;
+}
+
+namespace {
+bool rendersSeconds(TimeDisplay mode)
+{
+    return mode == TimeDisplay::EpochSeconds || mode == TimeDisplay::RunSeconds;
+}
+} // namespace
+
+bool AxisEditor::secondsMode() const
+{
+    return m_document && rendersSeconds(m_document->timeDisplay());
+}
+
+qint64 AxisEditor::secondsBaseMs() const
+{
+    if (!m_document || m_document->timeDisplay() != TimeDisplay::RunSeconds)
+        return 0; // epoch seconds, and the wall-clock modes, which never ask
+    // "Seconds from run start" is per-RECORD in the column — each record counts from
+    // its own run — and a filter bound cannot be: FilterSet compares UTC ms, so a
+    // bound has to name one instant. The selected run's baseline is the one that makes
+    // the pane agree with what is on screen, because a run selection is already what
+    // restricts the view (SPEC.md §3a). With "All runs" showing, that is the first
+    // run's baseline, which is what the topmost row counts from.
+    const QVector<Document::Run> &runs = m_document->runs();
+    const int sel = m_document->selectedRun();
+    const int firstRecord = (sel >= 0 && sel < runs.size()) ? runs.at(sel).startRecord : 0;
+    const qint64 base = m_document->runBaseTimestamp(firstRecord);
+    return base == Record::kNoTimestamp ? 0 : base;
+}
+
+double AxisEditor::secondsOf(qint64 utcMs) const
+{
+    return double(utcMs - m_renderBase) / 1000.0;
+}
+
+qint64 AxisEditor::instantOfSeconds(double seconds) const
+{
+    return m_renderBase + qint64(qRound64(seconds * 1000.0));
+}
+
+qint64 AxisEditor::boundInstant(TimeBound which) const
+{
+    // m_renderMode, NOT the document's mode: this asks what the digits on screen mean,
+    // and refreshTimeBounds() runs precisely when the two disagree. Reading the new
+    // mode here would interpret seconds as a date the moment the column changed, which
+    // is the one instant a bound must survive intact.
+    if (rendersSeconds(m_renderMode)) {
+        const QDoubleSpinBox *spin = which == TimeBound::Start ? m_secStart : m_secEnd;
+        return instantOfSeconds(spin->value());
+    }
+    return instantOfWallClock((which == TimeBound::Start ? m_timeStart : m_timeEnd)
+                                  ->dateTime());
+}
+
+qint64 AxisEditor::instantOfWallClock(const QDateTime &wallClock) const
+{
+    // The inverse of wallClockOf(): the digits carry no zone, and criteria() hands them
+    // to resolve() to be read in the display zone, so that is the zone that says which
+    // instant they name.
+    QDateTime at = wallClock;
+    at.setTimeZone(m_renderZone);
+    return at.toMSecsSinceEpoch();
+}
+
+void AxisEditor::setBoundInstant(TimeBound which, qint64 utcMs)
+{
+    // BOTH spellings, always — the hidden pair is what the next display-mode change
+    // will show, and a stale value there is a bound that silently changes when the
+    // user switches how the column reads.
+    if (which == TimeBound::Start) {
+        m_timeStart->setDateTime(wallClockOf(utcMs));
+        m_secStart->setValue(secondsOf(utcMs));
+    } else {
+        m_timeEnd->setDateTime(wallClockOf(utcMs));
+        m_secEnd->setValue(secondsOf(utcMs));
+    }
+}
+
+void AxisEditor::syncTimeEditorKind()
+{
+    if (!m_timeStart || !m_secStart)
+        return;
+    const bool seconds = secondsMode();
+    // Milliseconds only where the file's own %d carries them, which is the rule the
+    // column renders by (LogModel::formatSeconds, DateFormat::hasMillis): ".000" under
+    // a format with no ms invents precision the log does not have, and a bound the user
+    // cannot see the effect of.
+    const bool millis = m_document && m_document->format().impliedDateFormat.hasMillis;
+    // Which zero the number is counted from, said where the number is typed. The column
+    // itself never has to say it — a reader compares one row against another — but a
+    // bound is a single figure with nothing beside it to be relative to.
+    const QString hint = m_document && m_document->timeDisplay() == TimeDisplay::RunSeconds
+        ? tr("Seconds from the start of the selected run, as the timestamp column shows.")
+        : tr("Seconds since the epoch, as the timestamp column shows.");
+    for (QDoubleSpinBox *spin : {m_secStart, m_secEnd}) {
+        // setDecimals() re-rounds the held value, so it must not run on every sync or
+        // an integer-seconds column would quietly truncate a bound set from a record.
+        if (spin->decimals() != (millis ? 3 : 0))
+            spin->setDecimals(millis ? 3 : 0);
+        spin->setSingleStep(1.0);
+        spin->setToolTip(hint);
+        spin->setVisible(seconds);
+    }
+    m_timeStart->setVisible(!seconds);
+    m_timeEnd->setVisible(!seconds);
 }
 
 bool AxisEditor::observedSpan(qint64 &lo, qint64 &hi) const
@@ -830,23 +1015,30 @@ void AxisEditor::refreshTimeBounds()
 {
     if (!m_document || !m_timeStart || !m_timeEnd)
         return;
-    const QTimeZone now = m_document->displayZone();
-    if (now == m_renderZone)
+    const QTimeZone nowZone = m_document->displayZone();
+    const TimeDisplay nowMode = m_document->timeDisplay();
+    const qint64 nowBase = secondsBaseMs();
+    if (nowZone == m_renderZone && nowMode == m_renderMode && nowBase == m_renderBase)
         return;
 
-    // The editors show display-zone wall clock, and criteria() reinterprets whatever
-    // they hold in the CURRENT display zone. So when the zone moves under them the
-    // shown text must be re-rendered, or the same digits would come to name a
-    // different instant. Recover the instant using the zone the digits were written
-    // in, then render it in the new one.
+    // The editors hold what the timestamp column holds, and criteria() reads them back
+    // through whatever those terms CURRENTLY are. So when any of the three move under
+    // them the digits have to be re-rendered, or they would come to name a different
+    // instant: a zone shift moves the wall clock, a mode change swaps seconds for a
+    // date, and a run selection moves what "0 seconds" is counted from.
+    //
+    // Recover the instant in the OLD terms first, then write it in the new ones — the
+    // instant is the bound, the digits are only how it is being asked for.
+    const qint64 startAt = boundInstant(TimeBound::Start);
+    const qint64 endAt = boundInstant(TimeBound::End);
+
     m_populating = true;
-    QDateTime s = m_timeStart->dateTime();
-    QDateTime e = m_timeEnd->dateTime();
-    s.setTimeZone(m_renderZone);
-    e.setTimeZone(m_renderZone);
-    m_timeStart->setDateTime(s.toTimeZone(now));
-    m_timeEnd->setDateTime(e.toTimeZone(now));
-    m_renderZone = now;
+    m_renderZone = nowZone;
+    m_renderMode = nowMode;
+    m_renderBase = nowBase;
+    syncTimeEditorKind();
+    setBoundInstant(TimeBound::Start, startAt);
+    setBoundInstant(TimeBound::End, endAt);
     m_populating = false;
 }
 
@@ -921,6 +1113,13 @@ MatchCriteria AxisEditor::criteria() const
                        m_textCase->isChecked() ? Qt::CaseSensitive : Qt::CaseInsensitive);
 
     c.timeEnabled = m_timeGroup->isChecked();
+    // Wall clock either way, whichever pair the user typed into: MatchCriteria is the
+    // PORTABLE form (invariant #10) and a count of seconds is not portable — it is
+    // relative to a baseline that belongs to this file, this run partition and this
+    // display mode, none of which a preset carries or a session can promise to
+    // restore. The date editors are therefore the bound; every write to the seconds
+    // pair — programmatic (setBoundInstant) or typed (the valueChanged handler) —
+    // mirrors into them, so reading them here reads what the seconds pair is showing.
     c.start = m_timeStart->dateTime();
     c.end = m_timeEnd->dateTime();
 
@@ -944,10 +1143,19 @@ void AxisEditor::setCriteria(const MatchCriteria &c)
     m_textNegate->setChecked(c.text.negate);
 
     m_timeGroup->setChecked(c.timeEnabled);
-    if (c.start.isValid())
+    // The stored wall clock goes into the date editors verbatim — it is what criteria()
+    // reads back, and pushing it through an instant and out again would move a bound
+    // that lands in a DST gap. The seconds pair is derived from it, because a rule
+    // loaded while the column shows seconds must show ITS bounds rather than keep
+    // whatever the previously selected rule left in a hidden editor.
+    if (c.start.isValid()) {
         m_timeStart->setDateTime(c.start);
-    if (c.end.isValid())
+        m_secStart->setValue(secondsOf(instantOfWallClock(c.start)));
+    }
+    if (c.end.isValid()) {
         m_timeEnd->setDateTime(c.end);
+        m_secEnd->setValue(secondsOf(instantOfWallClock(c.end)));
+    }
     // A stored range with the axis ON is a bound somebody chose, and the seed must not
     // take it back the moment the scan reports a wider span. With the axis off the
     // bounds are whatever the editors happened to hold, so leave them seedable.
@@ -1108,29 +1316,30 @@ void AxisEditor::setTimeBound(TimeBound which, qint64 utcMs)
 {
     if (!m_timeGroup || !m_timeStart || !m_timeEnd || !supportsTime())
         return;
-    const QDateTime at = wallClockOf(utcMs);
-
     // What the opposite bound should be when it has to move. The file's observed span
     // is the honest "open end": the editors cannot hold "no bound", and leaving an
     // unseeded end at the year 2000 — which is what a file that had no timestamps
     // when the pane bound to it leaves behind — would hide everything.
     qint64 lo = 0, hi = 0;
     const bool span = observedSpan(lo, hi);
-    const QDateTime openEnd = wallClockOf(span ? qMax(hi, utcMs) : utcMs);
-    const QDateTime openStart = wallClockOf(span ? qMin(lo, utcMs) : utcMs);
+    const qint64 openEnd = span ? qMax(hi, utcMs) : utcMs;
+    const qint64 openStart = span ? qMin(lo, utcMs) : utcMs;
 
+    // In instants, not in digits: the comparison against the far bound has to mean the
+    // same thing whichever pair of editors is on screen, and a seconds value compared
+    // as a QDateTime would compare the year 2000 against itself.
     const bool wasEnabled = m_timeGroup->isChecked();
     m_populating = true;
     if (which == TimeBound::Start) {
-        m_timeStart->setDateTime(at);
+        setBoundInstant(TimeBound::Start, utcMs);
         // Widen the far end only when it would otherwise exclude the record just
         // pointed at — an end the user set deliberately is left where it is.
-        if (!wasEnabled || m_timeEnd->dateTime() < at)
-            m_timeEnd->setDateTime(openEnd);
+        if (!wasEnabled || boundInstant(TimeBound::End) < utcMs)
+            setBoundInstant(TimeBound::End, openEnd);
     } else {
-        m_timeEnd->setDateTime(at);
-        if (!wasEnabled || m_timeStart->dateTime() > at)
-            m_timeStart->setDateTime(openStart);
+        setBoundInstant(TimeBound::End, utcMs);
+        if (!wasEnabled || boundInstant(TimeBound::Start) > utcMs)
+            setBoundInstant(TimeBound::Start, openStart);
     }
     // Before setChecked(), not after: ticking the group emits toggled(), which seeds
     // the span unless a bound is already spoken for.
@@ -1148,8 +1357,8 @@ void AxisEditor::setTimeRange(qint64 fromUtcMs, qint64 toUtcMs)
     if (fromUtcMs > toUtcMs)
         std::swap(fromUtcMs, toUtcMs);
     m_populating = true;
-    m_timeStart->setDateTime(wallClockOf(fromUtcMs));
-    m_timeEnd->setDateTime(wallClockOf(toUtcMs));
+    setBoundInstant(TimeBound::Start, fromUtcMs);
+    setBoundInstant(TimeBound::End, toUtcMs);
     m_timeUserEdited = true; // before setChecked(), as in setTimeBound()
     m_timeGroup->setChecked(true);
     m_populating = false;

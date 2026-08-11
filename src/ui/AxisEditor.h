@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MatchCriteria.h"
+#include "TimeDisplay.h"
 
 #include <QSet>
 #include <QString>
@@ -11,6 +12,7 @@ QT_BEGIN_NAMESPACE
 class QAbstractButton;
 class QComboBox;
 class QDateTimeEdit;
+class QDoubleSpinBox;
 class QGroupBox;
 class QLineEdit;
 class QHBoxLayout;
@@ -127,10 +129,13 @@ public:
     // by hand — theirs is the answer, however far outside the span it lands.
     void refreshObservedSpan();
 
-    // Re-render the time editors after the display zone moves (a timestamp
-    // display-mode change, SPEC.md §4). The editors hold wall clock and criteria()
-    // reinterprets it in the CURRENT zone, so leaving the digits alone would silently
-    // re-point the bounds at a different instant. Preserves the instant, not the text.
+    // Re-render the time editors after anything the timestamp column's rendering
+    // depends on moves: the display MODE, the zone it derives, or — in "seconds from
+    // run start" — the selected run, whose baseline the digits are counted from
+    // (SPEC.md §4, §6). Preserves the instant, not the text: a bound means an instant,
+    // and every one of those changes would otherwise leave the same digits naming a
+    // different one. Also swaps which pair of editors is on screen, since the two
+    // seconds modes ask for a number and the three wall-clock modes for a date.
     void refreshTimeBounds();
 
     // The axes as the user has them, in portable form.
@@ -254,17 +259,40 @@ private:
     void ensureListed(ValueAxis axis, const QString &name);
     // The file's observed timestamp span, or false when it has no parsed timestamps.
     bool observedSpan(qint64 &lo, qint64 &hi) const;
-    // A UTC instant as the zone-less display-zone wall clock the editors hold.
+    // A UTC instant as the zone-less display-zone wall clock the editors hold, and back.
     QDateTime wallClockOf(qint64 utcMs) const;
+    qint64    instantOfWallClock(const QDateTime &wallClock) const;
+
+    // --- The time bounds, in whichever terms the timestamp column is using --------
+    //
+    // A bound IS an instant; the editors are two ways of asking for one, and which is
+    // on screen follows Document::timeDisplay() so the pane asks for what the log
+    // shows (SPEC.md §6). Everything outside these five functions works in UTC ms and
+    // does not care which pair is visible.
+    bool    secondsMode() const;
+    // What "0" means in the two seconds modes: the epoch, or the selected run's
+    // baseline. Zero for the wall-clock modes, where it goes unused.
+    qint64  secondsBaseMs() const;
+    double  secondsOf(qint64 utcMs) const;
+    qint64  instantOfSeconds(double seconds) const;
+    qint64  boundInstant(TimeBound which) const;
+    // Callers hold m_populating around this: it writes a widget whose signal is a
+    // user edit everywhere else.
+    void    setBoundInstant(TimeBound which, qint64 utcMs);
+    // Show the pair the display mode calls for, at the column's own precision.
+    void    syncTimeEditorKind();
 
     Document *m_document = nullptr;
     Defaults  m_defaults;           // what clearAll() returns the axes to
     bool      m_populating = false; // guards itemChanged storms during (re)population
 
-    // The zone the time editors were last rendered in. refreshTimeBounds() needs it to
-    // recover the instant the shown wall clock currently denotes before re-rendering
-    // it in the new zone.
-    QTimeZone m_renderZone = QTimeZone::utc();
+    // What the digits in the time editors are currently written in, so
+    // refreshTimeBounds() can recover the instant they denote before re-rendering it:
+    // the zone for the wall-clock modes, the mode itself and its baseline for the two
+    // seconds modes. All three move independently of each other.
+    QTimeZone   m_renderZone = QTimeZone::utc();
+    TimeDisplay m_renderMode = TimeDisplay::AsWritten;
+    qint64      m_renderBase = 0;
 
     // Priority. A checkable group box like the other four axes: every enable control
     // in this editor is a QGroupBox *, with no exception left to remember.
@@ -309,10 +337,16 @@ private:
     QAbstractButton *m_textNegate = nullptr;
     QLabel    *m_textError = nullptr; // "not a valid regular expression", when it is not
 
-    // Time range
-    QGroupBox     *m_timeGroup = nullptr;
-    QDateTimeEdit *m_timeStart = nullptr;
-    QDateTimeEdit *m_timeEnd = nullptr;
+    // Time range. Two editors per bound, one visible at a time (syncTimeEditorKind):
+    // a date for the three wall-clock display modes, a number of seconds for the two
+    // that render the column as seconds. Both spellings are built up front and kept
+    // rather than swapped in and out, so the row's geometry does not jump when the
+    // display mode changes and nothing has to be re-wired mid-session.
+    QGroupBox      *m_timeGroup = nullptr;
+    QDateTimeEdit  *m_timeStart = nullptr;
+    QDateTimeEdit  *m_timeEnd = nullptr;
+    QDoubleSpinBox *m_secStart = nullptr;
+    QDoubleSpinBox *m_secEnd = nullptr;
     // Whether a bound came from the user rather than from the observed span. The seed
     // has to keep tracking a growing file, but it must never overwrite a deliberate
     // bound — the same distinction the "Others" row draws between a value the user

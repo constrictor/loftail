@@ -3,6 +3,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTimeEdit>
+#include <QDoubleSpinBox>
 #include <QAbstractButton>
 #include <QAbstractItemView>
 #include <QFrame>
@@ -124,6 +126,7 @@ private:
 
 private slots:
     void everyAxisIsOfferedAndOptIn();
+    void aTimeBoundIsTypedInTheColumnsOwnUnits();
     void typingARegexReachesTheDocument();
     void switchingRulesShowsThatRulesSelection();
     void invalidRegexIsFlagged();
@@ -167,6 +170,42 @@ void TestHighlighterPane::everyAxisIsOfferedAndOptIn()
     // rule must be inert until the user configures an axis.
     QVERIFY(!priorityEnable(pane)->isChecked());
     QVERIFY(!axis(pane, "subsystemGroup")->isChecked());
+}
+
+// The time axis asks for a bound in the units the timestamp column is showing, and a
+// highlight rule's axis is the SAME widget as a filter's, so it does it here too — with
+// the rule still storing wall clock, because a rule is portable and a count of seconds
+// is relative to this file's baseline (tst_filterpane holds the units cases themselves).
+void TestHighlighterPane::aTimeBoundIsTypedInTheColumnsOwnUnits()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
+
+    auto *date = pane.findChild<QDateTimeEdit *>(QStringLiteral("timeStart"));
+    auto *secs = pane.findChild<QDoubleSpinBox *>(QStringLiteral("timeStartSeconds"));
+    QVERIFY(date && secs);
+    QVERIFY(secs->isHidden());
+
+    doc.setTimeDisplay(TimeDisplay::EpochSeconds);
+    pane.refreshTimeBounds();
+    QVERIFY(date->isHidden());
+    QVERIFY(!secs->isHidden());
+
+    const qint64 chosen = doc.index().records.last().timestamp;
+    secs->setValue(double(chosen) / 1000.0);
+    axis(pane, "timeGroup")->setChecked(true);
+
+    // Stored as the wall clock of that instant in the file's zone (UTC here, both as
+    // written and as displayed) — the number the user typed reaches the rule as a date.
+    const HighlightRule &r = doc.highlighters().rules.first();
+    QVERIFY(r.match.timeEnabled);
+    QCOMPARE(r.match.start.date(), QDate(2026, 7, 21));
+    QCOMPARE(r.match.start.time(), QTime(12, 0, 1));
 }
 
 void TestHighlighterPane::typingARegexReachesTheDocument()
