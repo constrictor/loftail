@@ -1,6 +1,7 @@
 #include <QtTest>
 
 #include <QApplication>
+#include <QBrush>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTimeEdit>
@@ -9,11 +10,16 @@
 #include <QAbstractItemView>
 #include <QFrame>
 #include <QGroupBox>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLineEdit>
+#include <QHeaderView>
 #include <QListWidget>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QStyleOptionViewItem>
 #include <QSystemTrayIcon>
+#include <QTableWidget>
 #include <QTemporaryFile>
 
 #include "Document.h"
@@ -90,13 +96,45 @@ private:
         return w.findChild<QLineEdit *>(QStringLiteral("messageText"));
     }
 
-    // The rule list is the pane's own direct child; the subsystem and thread lists
-    // live one level down, inside the shared AxisEditor.
-    static QListWidget *ruleList(QWidget &w)
+    // The rules are a TABLE — a tick, what the rule matches, its two colours and its
+    // three remaining actions, one rule per row. Found by object name, and its columns
+    // by the enum, never by the header they show: four of the seven headers are drawn
+    // glyphs and the fifth is translated prose.
+    static QTableWidget *ruleTable(QWidget &w)
     {
-        const QList<QListWidget *> direct =
-            w.findChildren<QListWidget *>(Qt::FindDirectChildrenOnly);
-        return direct.isEmpty() ? nullptr : direct.first();
+        return w.findChild<QTableWidget *>(QStringLiteral("ruleTable"));
+    }
+
+    static void selectRule(QWidget &w, int row)
+    {
+        ruleTable(w)->setCurrentCell(row, HighlighterPane::kColRule);
+    }
+
+    // One row's swatch picker. There is one per rule, so this is a cell lookup and not
+    // a findChild: the pane-wide name reaches the first row only.
+    static QComboBox *swatch(QWidget &w, int row, HighlighterPane::Column column)
+    {
+        QTableWidget *t = ruleTable(w);
+        return t ? qobject_cast<QComboBox *>(t->cellWidget(row, column)) : nullptr;
+    }
+
+    static void setCell(QWidget &w, int row, HighlighterPane::Column column, bool on)
+    {
+        ruleTable(w)->item(row, column)->setCheckState(on ? Qt::Checked : Qt::Unchecked);
+    }
+
+    static bool cellIsChecked(QWidget &w, int row, HighlighterPane::Column column)
+    {
+        return ruleTable(w)->item(row, column)->checkState() == Qt::Checked;
+    }
+
+    // *Default* on both roles is what unticking Highlight used to be: the swatches ARE
+    // the colour control now, so a rule that names no palette entry does not colour.
+    static void clearColours(QWidget &w, int row)
+    {
+        for (HighlighterPane::Column c :
+             {HighlighterPane::kColForeground, HighlighterPane::kColBackground})
+            swatch(w, row, c)->setCurrentIndex(0);
     }
 
     static QListWidget *listContaining(QWidget &w, const QString &name)
@@ -132,27 +170,30 @@ private slots:
     void invalidRegexIsFlagged();
     void addedRuleIsInertUntilConfigured();
     void newCopiesTheSelectedRule();
-    void listRowsWearTheirRuleColours();
+    void tableRowsWearTheirRuleColours();
     void clearRemovesEveryRuleAndMarksThePane();
     void swatchMenuIsBandedAndFitsAShortScreen();
     void oneClickRuleSetsBothColours();
     void reloadingTheListKeepsRulesEnabled();
 
-    // M19 — a rule's effect is a set of actions, and colour is one of them.
-    void everyActionIsOfferedAndOnlyColourStartsOn();
+    // M19 — a rule's effect is a set of actions, and colour is one of them. All four
+    // are now set in the rule's own table row: three ticks and a pair of swatch columns.
+    void everyActionIsAColumnAndOnlyColourStartsOn();
     void togglingAnActionReachesTheDocument();
-    void untickingColourLeavesTheRuleMatching();
+    void clickingAnywhereInACheckCellTogglesIt();
+    void aRuleWithNoColourDoesNotColour();
+    void pickingAColourMakesTheRuleColourAgain();
     void newCopiesTheSelectedRulesActions();
     void theOneClickRuleColoursOnly();
     void reloadingTheListKeepsActions();
     void notifySaysWhyWhenTheDesktopOffersNoNotifications();
 
-    // The editor's shape: conditions apart from actions, conditions always readable,
-    // and an axis the format cannot fill left out.
+    // The pane's shape: actions in the table, the condition alone below it, and an
+    // axis the format cannot fill left out.
     void switchedOffAxesStayVisibleAndGreyed();
     void anAxisTheFormatLacksIsNotShownAtAll();
-    void theTwoColourCombosLineUp();
-    void theSectionsAreDividedByLinesNotFrames();
+    void theTwoColourPickersAreCellsOfTheirOwnRow();
+    void theEditorIsTheConditionAlone();
     void noSectionClipsItsOwnTitle();
 };
 
@@ -267,10 +308,10 @@ void TestHighlighterPane::switchingRulesShowsThatRulesSelection()
     // Go back to rule 0, which never had the subsystem axis on. It must show its own
     // (empty) selection rather than inheriting rule 1's, and must not acquire one
     // just by being looked at.
-    QListWidget *rules = ruleList(pane);
+    QTableWidget *rules = ruleTable(pane);
     QVERIFY(rules);
-    QCOMPARE(rules->count(), 2);
-    rules->setCurrentRow(0);
+    QCOMPARE(rules->rowCount(), 2);
+    selectRule(pane, 0);
 
     QVERIFY(!axis(pane, "subsystemGroup")->isChecked());
     QVERIFY(!isChecked(loggers, QStringLiteral("db.pool")));
@@ -366,19 +407,19 @@ void TestHighlighterPane::newCopiesTheSelectedRule()
     QCOMPARE(copy.background, source.background);
     QCOMPARE(copy.foreground, source.foreground);
     // The copy is the one being edited, so the editor is already showing it.
-    QCOMPARE(ruleList(pane)->currentRow(), 1);
+    QCOMPARE(ruleTable(pane)->currentRow(), 1);
 
     // A copy of a rule the user switched OFF still arrives on: a rule that appeared
     // dead on the click that asked for it would read as the button having failed.
-    ruleList(pane)->item(1)->setCheckState(Qt::Unchecked);
+    setCell(pane, 1, HighlighterPane::kColEnabled, false);
     QVERIFY(!doc.highlighters().rules.at(1).enabled);
-    ruleList(pane)->setCurrentRow(1);
+    selectRule(pane, 1);
     newBtn->click();
     QCOMPARE(doc.highlighters().rules.size(), 3);
     QVERIFY(doc.highlighters().rules.at(2).enabled);
 }
 
-void TestHighlighterPane::listRowsWearTheirRuleColours()
+void TestHighlighterPane::tableRowsWearTheirRuleColours()
 {
     Document doc;
     QTemporaryFile file;
@@ -392,24 +433,29 @@ void TestHighlighterPane::listRowsWearTheirRuleColours()
     c.minPriority = Priority::Error;
     pane.addRule(c);
 
-    // The row is a preview of the rule, not a description of it: it is painted in the
-    // rule's own two palette slots, resolved for the theme the pane is showing.
-    QListWidget *list = ruleList(pane);
-    QVERIFY(list);
-    QCOMPARE(list->count(), 1);
+    // The row is a preview of the rule, not a description of it: its summary cell is
+    // painted in the rule's own two palette slots, resolved for the theme the pane is
+    // showing. Only that cell — a tick painted on a Deep fill stops being legible, and
+    // a swatch picker sitting on the colour it offers says nothing at all.
+    QTableWidget *table = ruleTable(pane);
+    QVERIFY(table);
+    QCOMPARE(table->rowCount(), 1);
     const HighlightRule &r = doc.highlighters().rules.first();
     const bool dark = pane.palette().base().color().lightness()
                       < pane.palette().text().color().lightness();
-    QCOMPARE(list->item(0)->background().color(), HighlightPalette::color(r.background, dark));
-    QCOMPARE(list->item(0)->foreground().color(), HighlightPalette::color(r.foreground, dark));
+    QTableWidgetItem *summary = table->item(0, HighlighterPane::kColRule);
+    QVERIFY(summary);
+    QCOMPARE(summary->background().color(), HighlightPalette::color(r.background, dark));
+    QCOMPARE(summary->foreground().color(), HighlightPalette::color(r.foreground, dark));
+    QCOMPARE(table->item(0, HighlighterPane::kColEnabled)->background(), QBrush());
 
-    // ...and it follows the colour combos, which are edits like any other.
-    auto *bg = pane.findChild<QComboBox *>(QStringLiteral("backgroundColor"));
+    // ...and it follows that row's own colour picker, which is an edit like any other.
+    QComboBox *bg = swatch(pane, 0, HighlighterPane::kColBackground);
     QVERIFY(bg);
     const int other = (r.background + 3) % HighlightPalette::count();
     bg->setCurrentIndex(bg->findData(other));
     QCOMPARE(doc.highlighters().rules.first().background, other);
-    QCOMPARE(list->item(0)->background().color(), HighlightPalette::color(other, dark));
+    QCOMPARE(summary->background().color(), HighlightPalette::color(other, dark));
 }
 
 void TestHighlighterPane::clearRemovesEveryRuleAndMarksThePane()
@@ -462,10 +508,12 @@ void TestHighlighterPane::swatchMenuIsBandedAndFitsAShortScreen()
 
     HighlighterPane pane;
     pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click(); // a picker belongs to a rule's row
 
-    for (const char *name : {"backgroundColor", "textColor"}) {
-        auto *combo = pane.findChild<QComboBox *>(QString::fromLatin1(name));
-        QVERIFY2(combo, name);
+    for (HighlighterPane::Column column :
+         {HighlighterPane::kColBackground, HighlighterPane::kColForeground}) {
+        QComboBox *combo = swatch(pane, 0, column);
+        QVERIFY(combo);
         // Default, twenty-seven slots, and a separator between each pair of tone
         // bands. The separators are what make a list this long readable, and they
         // must stay unselectable data-less rows so currentData() is either a slot
@@ -546,13 +594,13 @@ void TestHighlighterPane::reloadingTheListKeepsRulesEnabled()
     HighlighterPane pane;
     pane.setDocument(&doc);
 
-    // Adding a SECOND rule used to switch every rule off, silently: reloadRuleList()
-    // clears the list, which emits currentRowChanged(-1), which ran loadEditorFor()
-    // — and that used to end by forcing m_updating to false, unguarding the rest of
-    // the rebuild. The loop's setFlags then fired itemChanged before setCheckState
-    // had run, so the handler read an unset check state as Unchecked and wrote
-    // enabled=false back through the reference the next line reads. One rule was
-    // fine (clear() on an empty list emits nothing), which is what hid it.
+    // Adding a SECOND rule used to switch every rule off, silently: the rebuild drops
+    // the rows, which drops the current one, which ran loadEditorFor() — and that used
+    // to end by forcing m_updating to false, unguarding the rest of the rebuild. The
+    // builder's own setCheckState was then read back as a user edit and wrote
+    // enabled=false through the reference the next line reads. One rule was fine
+    // (clearing an empty list emits nothing), which is what hid it. The rules are a
+    // table now and the builder has exactly the same shape, so the case still holds.
     MatchCriteria c;
     c.priorityEnabled = true;
     c.minPriority = Priority::Error;
@@ -566,9 +614,7 @@ void TestHighlighterPane::reloadingTheListKeepsRulesEnabled()
 
     // A rule the user turned OFF still survives a rebuild as off — the guard must
     // suppress the rebuild's own signals, not freeze the flag.
-    QListWidget *list = ruleList(pane);
-    QVERIFY(list);
-    list->item(1)->setCheckState(Qt::Unchecked);
+    setCell(pane, 1, HighlighterPane::kColEnabled, false);
     QVERIFY(!doc.highlighters().rules.at(1).enabled);
     pane.addRule(c);
     QVERIFY(doc.highlighters().rules.at(0).enabled);
@@ -576,9 +622,9 @@ void TestHighlighterPane::reloadingTheListKeepsRulesEnabled()
     QVERIFY(doc.highlighters().rules.at(3).enabled);
 }
 
-// --- M19: the four action controls -------------------------------------------
+// --- A rule's four actions, edited in the rule table --------------------------
 
-void TestHighlighterPane::everyActionIsOfferedAndOnlyColourStartsOn()
+void TestHighlighterPane::everyActionIsAColumnAndOnlyColourStartsOn()
 {
     Document doc;
     QTemporaryFile file;
@@ -587,21 +633,19 @@ void TestHighlighterPane::everyActionIsOfferedAndOnlyColourStartsOn()
     HighlighterPane pane;
     pane.setDocument(&doc);
 
-    // Colour is not a peer of the other three — it is the only action with
-    // configuration attached — so it is the checkable group box holding the two colour
-    // combos, exactly the shape the Filters pane's axes take.
-    QGroupBox *colour = axis(pane, "actionColor");
-    QVERIFY(colour);
-    QVERIFY(colour->isCheckable());
-    QVERIFY(pane.findChild<QComboBox *>(QStringLiteral("backgroundColor")));
-    QVERIFY(pane.findChild<QComboBox *>(QStringLiteral("textColor")));
-
-    auto *digest = pane.findChild<SectionBox *>(QStringLiteral("actionDigest"));
-    auto *tab = pane.findChild<SectionBox *>(QStringLiteral("actionTab"));
-    auto *notify = pane.findChild<SectionBox *>(QStringLiteral("actionNotify"));
-    QVERIFY(digest);
-    QVERIFY(tab);
-    QVERIFY(notify);
+    // Seven columns, in the order a rule is read: is it on, what does it match, and
+    // then what it does about it — the two colour roles first, since colouring is what
+    // a highlight rule is for, then the three ticks.
+    QTableWidget *table = ruleTable(pane);
+    QVERIFY(table);
+    QCOMPARE(table->columnCount(), int(HighlighterPane::kColumnCount));
+    // Only the rule's own summary takes the spare width. Everything else is as wide as
+    // what it holds, which is what lets seven columns fit a dock.
+    QHeaderView *head = table->horizontalHeader();
+    QCOMPARE(head->sectionResizeMode(HighlighterPane::kColRule), QHeaderView::Stretch);
+    for (int column : {int(HighlighterPane::kColEnabled), int(HighlighterPane::kColDigest),
+                       int(HighlighterPane::kColNotify), int(HighlighterPane::kColTab)})
+        QVERIFY(head->sectionResizeMode(column) != QHeaderView::Stretch);
 
     button(pane, QStringLiteral("ruleNew"))->click();
 
@@ -610,10 +654,20 @@ void TestHighlighterPane::everyActionIsOfferedAndOnlyColourStartsOn()
     QCOMPARE(doc.highlighters().rules.size(), 1);
     QCOMPARE(doc.highlighters().rules.first().actions,
              HighlightActions(HighlightAction::Color));
-    QVERIFY(colour->isChecked());
-    QVERIFY(!digest->isChecked());
-    QVERIFY(!tab->isChecked());
-    QVERIFY(!notify->isChecked());
+
+    // Colour is not a tick: the two swatch cells ARE the control, so the row shows the
+    // colours it paints with and the other three columns start unticked.
+    QVERIFY(swatch(pane, 0, HighlighterPane::kColForeground));
+    QVERIFY(swatch(pane, 0, HighlighterPane::kColBackground));
+    QVERIFY(cellIsChecked(pane, 0, HighlighterPane::kColEnabled));
+    QVERIFY(!cellIsChecked(pane, 0, HighlighterPane::kColDigest));
+    QVERIFY(!cellIsChecked(pane, 0, HighlighterPane::kColTab));
+    QVERIFY(!cellIsChecked(pane, 0, HighlighterPane::kColNotify));
+    // Every action column is a tick the user can set from the row itself, without
+    // selecting the rule first — which is the whole reason they are columns.
+    for (HighlighterPane::Column column :
+         {HighlighterPane::kColEnabled, HighlighterPane::kColDigest, HighlighterPane::kColTab})
+        QVERIFY(table->item(0, column)->flags().testFlag(Qt::ItemIsUserCheckable));
 }
 
 void TestHighlighterPane::togglingAnActionReachesTheDocument()
@@ -626,18 +680,79 @@ void TestHighlighterPane::togglingAnActionReachesTheDocument()
     pane.setDocument(&doc);
     button(pane, QStringLiteral("ruleNew"))->click();
 
-    pane.findChild<SectionBox *>(QStringLiteral("actionDigest"))->setChecked(true);
+    setCell(pane, 0, HighlighterPane::kColDigest, true);
     QVERIFY(doc.highlighters().rules.first().actions.testFlag(HighlightAction::Digest));
 
-    pane.findChild<SectionBox *>(QStringLiteral("actionTab"))->setChecked(true);
+    setCell(pane, 0, HighlighterPane::kColTab, true);
     QVERIFY(doc.highlighters().rules.first().actions.testFlag(HighlightAction::Tab));
 
-    pane.findChild<SectionBox *>(QStringLiteral("actionDigest"))->setChecked(false);
+    setCell(pane, 0, HighlighterPane::kColDigest, false);
     QVERIFY(!doc.highlighters().rules.first().actions.testFlag(HighlightAction::Digest));
     QVERIFY(doc.highlighters().rules.first().actions.testFlag(HighlightAction::Tab));
+
+    // A second rule's ticks are its own: the handler must act on the row the item is
+    // in, not on whichever rule the editor below happens to be showing.
+    button(pane, QStringLiteral("ruleNew"))->click();
+    QCOMPARE(ruleTable(pane)->currentRow(), 1);
+    setCell(pane, 0, HighlighterPane::kColDigest, true);
+    QVERIFY(doc.highlighters().rules.at(0).actions.testFlag(HighlightAction::Digest));
+    QVERIFY(!doc.highlighters().rules.at(1).actions.testFlag(HighlightAction::Digest));
 }
 
-void TestHighlighterPane::untickingColourLeavesTheRuleMatching()
+// A check column is a delegate, and both halves of it are invisible to a test that sets
+// the check state on the item: the indicator is CENTRED in its cell rather than pinned to
+// the cell's left edge, and the whole cell is the hit area rather than the 13 px
+// indicator. In a dock column that width, a tick that has to be hit rather than aimed at
+// is one the user misses — so the click, not the item, is what this drives.
+void TestHighlighterPane::clickingAnywhereInACheckCellTogglesIt()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.resize(360, 700);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
+
+    QTableWidget *table = ruleTable(pane);
+    QVERIFY(QTest::qWaitFor([table] { return table->width() > 0; }));
+
+    const auto clickCell = [table](HighlighterPane::Column column, int dx) {
+        const QRect cell = table->visualItemRect(table->item(0, column));
+        QVERIFY(cell.width() > 0);
+        QTest::mouseClick(table->viewport(), Qt::LeftButton, {},
+                          QPoint(cell.center().x() + dx, cell.center().y()));
+    };
+
+    // Dead centre, then hard against each edge of the cell: all three are the same click.
+    clickCell(HighlighterPane::kColDigest, 0);
+    QVERIFY(doc.highlighters().rules.first().actions.testFlag(HighlightAction::Digest));
+    clickCell(HighlighterPane::kColDigest,
+              -table->visualItemRect(table->item(0, HighlighterPane::kColDigest)).width() / 2 + 1);
+    QVERIFY(!doc.highlighters().rules.first().actions.testFlag(HighlightAction::Digest));
+
+    // And the rule's own tick, which is the same delegate in the leftmost column.
+    clickCell(HighlighterPane::kColEnabled, 0);
+    QVERIFY(!doc.highlighters().rules.first().enabled);
+
+    // The indicator is drawn centred, not against the cell's left border where Qt lays a
+    // view item out — a tick under a header glyph centred over the column otherwise reads
+    // as belonging to the column to its left.
+    const QRect cell = table->visualItemRect(table->item(0, HighlighterPane::kColTab));
+    QStyleOptionViewItem opt;
+    opt.initFrom(table);
+    opt.rect = cell;
+    const int side = table->style()->pixelMetric(QStyle::PM_IndicatorWidth, &opt, table);
+    QVERIFY2(cell.width() >= side + 4,
+             qPrintable(QStringLiteral("a %1 px column for a %2 px indicator")
+                            .arg(cell.width())
+                            .arg(side)));
+}
+
+void TestHighlighterPane::aRuleWithNoColourDoesNotColour()
 {
     Document doc;
     QTemporaryFile file;
@@ -650,7 +765,11 @@ void TestHighlighterPane::untickingColourLeavesTheRuleMatching()
 
     QVERIFY(doc.highlighters().rules.first().match.anyActive());
 
-    axis(pane, "actionColor")->setChecked(false);
+    // *Default* on both roles is what unticking Highlight used to be. With the Action
+    // box gone, the swatches are the colour control, so a rule naming no palette entry
+    // does not carry HighlightAction::Color — which also stops it shadowing the rule
+    // below it for an action it does not perform.
+    clearColours(pane, 0);
     const HighlightRule &r = doc.highlighters().rules.first();
 
     // The rule still MATCHES; it just does nothing about it. That is a legitimate,
@@ -659,6 +778,44 @@ void TestHighlighterPane::untickingColourLeavesTheRuleMatching()
     QVERIFY(r.match.anyActive());
     QVERIFY(!r.actions.testFlag(HighlightAction::Color));
     QCOMPARE(HighlightRule::fromJson(r.toJson()).actions, HighlightActions());
+}
+
+void TestHighlighterPane::pickingAColourMakesTheRuleColourAgain()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+
+    // A rule that arrives claiming to colour while naming no colour is normalised on
+    // the way in — otherwise the table shows two empty swatches on a rule that is
+    // silently winning the Colour action for every record it matches.
+    HighlightRule parked;
+    parked.match.priorityEnabled = true;
+    parked.match.minPriority = Priority::Error;
+    parked.actions = HighlightAction::Color;
+    QJsonObject state;
+    QJsonArray rules;
+    rules.append(parked.toJson());
+    state.insert(QStringLiteral("rules"), rules);
+    pane.restoreState(state);
+    QCOMPARE(doc.highlighters().rules.size(), 1);
+    QVERIFY(!doc.highlighters().rules.first().actions.testFlag(HighlightAction::Color));
+
+    // And picking either role puts the action back, with no separate tick to remember.
+    QComboBox *bg = swatch(pane, 0, HighlighterPane::kColBackground);
+    QVERIFY(bg);
+    bg->setCurrentIndex(bg->findData(3));
+    QCOMPARE(doc.highlighters().rules.first().background, 3);
+    QVERIFY(doc.highlighters().rules.first().actions.testFlag(HighlightAction::Color));
+
+    // Its other actions are untouched by any of this.
+    setCell(pane, 0, HighlighterPane::kColDigest, true);
+    clearColours(pane, 0);
+    QCOMPARE(doc.highlighters().rules.first().actions,
+             HighlightActions(HighlightAction::Digest));
 }
 
 void TestHighlighterPane::newCopiesTheSelectedRulesActions()
@@ -670,11 +827,12 @@ void TestHighlighterPane::newCopiesTheSelectedRulesActions()
     HighlighterPane pane;
     pane.setDocument(&doc);
     button(pane, QStringLiteral("ruleNew"))->click();
-    pane.findChild<SectionBox *>(QStringLiteral("actionDigest"))->setChecked(true);
-    axis(pane, "actionColor")->setChecked(false);
+    setCell(pane, 0, HighlighterPane::kColDigest, true);
+    clearColours(pane, 0);
 
     // New starts from the SELECTED rule (SPEC.md §7), and its actions are part of what
-    // "a variant of the one in front of you" means.
+    // "a variant of the one in front of you" means — including the colours, which are
+    // now what says whether it carries the Colour action at all.
     button(pane, QStringLiteral("ruleNew"))->click();
     QCOMPARE(doc.highlighters().rules.size(), 2);
     QCOMPARE(doc.highlighters().rules.at(1).actions,
@@ -713,19 +871,19 @@ void TestHighlighterPane::reloadingTheListKeepsActions()
     HighlighterPane pane;
     pane.setDocument(&doc);
 
-    // Four rules with distinct action sets, then a rebuild of the list — the companion
+    // Four rules with distinct action sets, then a rebuild of the table — the companion
     // to reloadingTheListKeepsRulesEnabled(). loadEditorFor() is re-entered by
-    // reloadRuleList() without either saying so, and the four action controls are new
-    // surface on exactly that path: they are set only there, and they write back only
-    // through the shared editorChanged lambda.
+    // reloadRuleTable() without either saying so, and every action is now set through
+    // that rebuild: three check states per row and two swatch pickers, all written by
+    // the builder and all firing the same signals a user edit does.
     for (int i = 0; i < 4; ++i)
         button(pane, QStringLiteral("ruleNew"))->click();
     QCOMPARE(doc.highlighters().rules.size(), 4);
 
-    pane.findChild<SectionBox *>(QStringLiteral("actionDigest"))->setChecked(true);
-    ruleList(pane)->setCurrentRow(1);
-    pane.findChild<SectionBox *>(QStringLiteral("actionTab"))->setChecked(true);
-    axis(pane, "actionColor")->setChecked(false);
+    setCell(pane, 0, HighlighterPane::kColDigest, true);
+    selectRule(pane, 1);
+    setCell(pane, 1, HighlighterPane::kColTab, true);
+    clearColours(pane, 1);
 
     const QVector<HighlightRule> before = doc.highlighters().rules;
 
@@ -744,21 +902,46 @@ void TestHighlighterPane::reloadingTheListKeepsActions()
 
 void TestHighlighterPane::notifySaysWhyWhenTheDesktopOffersNoNotifications()
 {
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
     HighlighterPane pane;
-    auto *notify = pane.findChild<SectionBox *>(QStringLiteral("actionNotify"));
-    QVERIFY(notify);
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
 
     // Offscreen — and on a stock GNOME/Wayland session, which is the reference desktop
-    // — there is no notification service, so the control is disabled and SAYS SO rather
-    // than accepting a tick that would silently do nothing. Said before the box can be
-    // ticked, the same habit as naming hosts.json before offering to remember a
-    // password. Where a service does exist the control is simply live.
+    // — there is no notification service, so the column is not user-checkable and SAYS
+    // SO rather than accepting a tick that would silently do nothing. Said before the
+    // box can be ticked, the same habit as naming hosts.json before offering to
+    // remember a password. Where a service does exist the column is simply live.
     const bool available = QSystemTrayIcon::isSystemTrayAvailable()
                            && QSystemTrayIcon::supportsMessages();
-    QCOMPARE(notify->isEnabled(), available);
-    QVERIFY(!notify->toolTip().isEmpty());
-    if (!available)
-        QVERIFY(notify->toolTip().contains(QStringLiteral("tab")));
+    QTableWidget *table = ruleTable(pane);
+    QTableWidgetItem *cell = table->item(0, HighlighterPane::kColNotify);
+    QVERIFY(cell);
+    QCOMPARE(cell->flags().testFlag(Qt::ItemIsUserCheckable), available);
+    QVERIFY(!cell->toolTip().isEmpty());
+    // ...and on the header too, which is the only thing on screen when no rule has been
+    // made yet — the column's glyph has no words of its own.
+    QTableWidgetItem *header = table->horizontalHeaderItem(HighlighterPane::kColNotify);
+    QVERIFY(header);
+    QVERIFY(!header->toolTip().isEmpty());
+    if (!available) {
+        QVERIFY(cell->toolTip().contains(QStringLiteral("tab")));
+        QVERIFY(header->toolTip().contains(QStringLiteral("tab")));
+    }
+
+    // A rule that arrived from a preset or another machine carrying Notify still SHOWS
+    // it here rather than being quietly rewritten by a desktop that cannot deliver it.
+    HighlightRule loud;
+    loud.match.priorityEnabled = true;
+    loud.actions = HighlightAction::Notify;
+    doc.highlighters().rules = {loud};
+    pane.setDocument(&doc);
+    QVERIFY(cellIsChecked(pane, 0, HighlighterPane::kColNotify));
+    QCOMPARE(doc.highlighters().rules.first().actions,
+             HighlightActions(HighlightAction::Notify));
 }
 
 // A switched-off axis keeps its controls on screen, greyed — the pane used to collapse
@@ -839,99 +1022,97 @@ void TestHighlighterPane::anAxisTheFormatLacksIsNotShownAtAll()
     QVERIFY(thread->isVisible());
 }
 
-// The two swatch pickers set one thing — how a matching record is drawn — so they sit on
-// ONE row, sharing a baseline and splitting the width evenly. That is also what "BG:"
-// buys: two full-width labels would not fit beside two combos. The pane is short of
-// height, and neither picker is worth a row of its own.
-void TestHighlighterPane::theTwoColourCombosLineUp()
+// The two colour pickers belong to the ROW they colour, one column each: the colours are
+// a per-rule answer like every other, and read down the list they say what the log will
+// look like without selecting a rule at a time. Each is icon-only, which is what makes
+// two of them affordable in a dock — a picker showing "Vivid Amber" twice over would take
+// the width the rule's own summary needs.
+void TestHighlighterPane::theTwoColourPickersAreCellsOfTheirOwnRow()
 {
     Document doc;
     QTemporaryFile file;
     QVERIFY(openLog(doc, file));
 
     HighlighterPane pane;
-    pane.resize(320, 700);
+    pane.resize(360, 700);
     pane.show();
     QVERIFY(QTest::qWaitForWindowExposed(&pane));
     pane.setDocument(&doc);
     button(pane, QStringLiteral("ruleNew"))->click();
+    button(pane, QStringLiteral("ruleNew"))->click();
 
-    auto *bg = pane.findChild<QComboBox *>(QStringLiteral("backgroundColor"));
-    auto *fg = pane.findChild<QComboBox *>(QStringLiteral("textColor"));
-    QVERIFY(bg && fg);
-    QVERIFY(QTest::qWaitFor([bg] { return bg->width() > 0; }));
+    QTableWidget *table = ruleTable(pane);
+    QVERIFY(QTest::qWaitFor([table] { return table->width() > 0; }));
 
-    QCOMPARE(bg->y(), fg->y());
-    // Even split, to the odd leftover pixel a layout has to give to one of them: what
-    // would be a bug is one combo sized from its content and the other from what is
-    // left, which is what happens the moment either loses the Ignored size policy.
-    QVERIFY(qAbs(bg->width() - fg->width()) <= 1);
-    // Text first, then background, and the pair genuinely on one line rather than
-    // overlapping rows that happen to share a y.
-    QVERIFY(fg->x() < bg->x());
-    QCOMPARE(bg->height(), fg->height());
+    for (int row = 0; row < 2; ++row) {
+        QComboBox *fg = swatch(pane, row, HighlighterPane::kColForeground);
+        QComboBox *bg = swatch(pane, row, HighlighterPane::kColBackground);
+        QVERIFY(fg && bg);
+        // On the row they belong to, and in their own columns — text before background,
+        // because a record is read as text on a background.
+        QCOMPARE(fg->geometry().center().y(), bg->geometry().center().y());
+        QVERIFY(fg->x() < bg->x());
+        QCOMPARE(bg->width(), fg->width());
+        // Icon-only: no room is spent on a palette name that the popup and the tooltip
+        // both give. The bound is generous; a combo sized from "Vivid Amber" clears it.
+        QVERIFY2(fg->width() < 60, qPrintable(QStringLiteral("picker is %1 px").arg(fg->width())));
+        // Which is not to say it is unlabelled — it says what it is where it is asked.
+        QVERIFY(!fg->accessibleName().isEmpty());
+        QVERIFY(!bg->toolTip().isEmpty());
+    }
 
-    // And the block they sit in lines up with the axes above it. AxisEditor insets its
-    // own group boxes so a rounded frame does not run into the scroll area's edge, so
-    // anything stacked with them has to use the same inset (AxisEditor::kSideMargin) —
-    // otherwise the Colour frame sits six pixels proud of the Subsystem frame directly
-    // above it, which reads as a rendering fault rather than as two sections.
-    auto *colour = axis(pane, "actionColor");
-    auto *message = axis(pane, "messageGroup");
-    QVERIFY(colour && message);
-    QCOMPARE(colour->mapTo(&pane, QPoint(0, 0)).x(), message->mapTo(&pane, QPoint(0, 0)).x());
-    QCOMPARE(colour->width(), message->width());
+    // Two rules, four pickers: each row carries its own pair rather than the pane
+    // holding one pair that follows the selection.
+    QVERIFY(swatch(pane, 0, HighlighterPane::kColForeground)
+            != swatch(pane, 1, HighlighterPane::kColForeground));
+    // The summary column is what absorbs the pane's width, so the pickers stay put as
+    // the dock is resized.
+    QVERIFY(table->columnWidth(HighlighterPane::kColRule)
+            > table->columnWidth(HighlighterPane::kColBackground));
 }
 
-void TestHighlighterPane::theSectionsAreDividedByLinesNotFrames()
+// What is left below the table is the CONDITION, and nothing captions it. The editor used
+// to be two labelled halves — Condition round the five axes, Action round the four
+// actions — and with the actions in the table there is no second half to tell the first
+// one apart from, so both captions are gone rather than one left naming everything there
+// is.
+void TestHighlighterPane::theEditorIsTheConditionAlone()
 {
     Document doc;
     QTemporaryFile file;
     QVERIFY(openLog(doc, file));
 
     HighlighterPane pane;
-    pane.resize(320, 900);
+    pane.resize(360, 900);
     pane.show();
     QVERIFY(QTest::qWaitForWindowExposed(&pane));
     pane.setDocument(&doc);
     button(pane, QStringLiteral("ruleNew"))->click();
 
-    // The editor's two halves are the only frames in it: Condition round the five axes,
-    // Action round the four actions.
-    auto *condition = pane.findChild<SectionBox *>(QStringLiteral("conditionSection"));
-    auto *action = pane.findChild<SectionBox *>(QStringLiteral("actionSection"));
-    QVERIFY(condition && action);
-    QVERIFY(!condition->isFlat());
-    QVERIFY(!action->isFlat());
-    // They are CAPTIONS, so they are headings — centred and bold. An axis's title row is
-    // a control and is pinned left instead (tst_filterpane), and the two answers come from
-    // the same class so the difference cannot be a per-pane accident.
-    QVERIFY(condition->isHeading());
-    QVERIFY(action->isHeading());
-
-    // The editor as a whole carries no caption: the rule list above it already says
-    // which rule is being edited. So the widget the scroll area hangs off must be a
+    QVERIFY2(!pane.findChild<SectionBox *>(QStringLiteral("conditionSection")),
+             "the editor has grown a caption back");
+    QVERIFY2(!pane.findChild<SectionBox *>(QStringLiteral("actionSection")),
+             "the actions are in the rule table now");
+    // And the editor as a whole carries no caption either: the table above it already
+    // says which rule is being edited. So the widget the scroll area hangs off must be a
     // plain one — an empty-titled QGroupBox would still spend a frame and a title row.
     auto *scroll = pane.findChild<QScrollArea *>();
     QVERIFY(scroll);
     QVERIFY2(!qobject_cast<QGroupBox *>(scroll->parentWidget()),
              "the rule editor has grown a caption back");
 
-    // Inside them nothing is framed. Every axis, and the one action with a body, is a
-    // flat SectionBox drawing a hairline along its own title row instead — three frames
-    // deep at the subsystem list is where a frame stops meaning "these belong together".
+    // Nothing in it is framed. Every axis is a flat SectionBox drawing a hairline along
+    // its own title row instead — a frame round each of five stacked sections inside a
+    // dock that is a frame already is where a border stops meaning "these belong
+    // together".
     //
     // The line is PAINTED, not a QFrame in the layout, because a group box's title row is
     // drawn by the style and has no cell beside the title to put one in — a QFrame lands
     // under the title instead of alongside it. So what a test can hold is that each
     // section is the kind of box that draws it and has been asked to.
-    // All five axes AND all four actions: one grammar, so an action is not a different
-    // kind of thing from an axis and Highlight is not a different kind of thing from the
-    // three actions that carry no settings.
     QList<SectionBox *> rows;
     for (const char *name : {"priorityGroup", "messageGroup", "subsystemGroup",
-                             "threadGroup", "timeGroup", "actionColor", "actionDigest",
-                             "actionTab", "actionNotify"}) {
+                             "threadGroup", "timeGroup"}) {
         auto *box = pane.findChild<SectionBox *>(QString::fromLatin1(name));
         QVERIFY2(box, name);
         QVERIFY2(box->isFlat(), name);
@@ -943,19 +1124,12 @@ void TestHighlighterPane::theSectionsAreDividedByLinesNotFrames()
         rows << box;
     }
 
-    // And the four actions are ONE COLUMN: same left edge, same width, so the three
-    // body-less ones read as continuations of the one above them rather than as a
-    // separate block of checkboxes. They were a two-column grid of bare checkboxes, which
-    // is what this replaces.
+    // One column: same left edge, same width, so five axes read as one stack.
     QVERIFY(QTest::qWaitFor([&rows] { return rows.first()->width() > 0; }));
-    for (const char *name : {"actionColor", "actionDigest", "actionTab", "actionNotify"}) {
-        auto *box = pane.findChild<SectionBox *>(QString::fromLatin1(name));
+    for (SectionBox *box : rows) {
         QCOMPARE(box->mapTo(&pane, QPoint(0, 0)).x(),
-                 pane.findChild<SectionBox *>(QStringLiteral("actionColor"))
-                     ->mapTo(&pane, QPoint(0, 0))
-                     .x());
-        QCOMPARE(box->width(),
-                 pane.findChild<SectionBox *>(QStringLiteral("actionColor"))->width());
+                 rows.first()->mapTo(&pane, QPoint(0, 0)).x());
+        QCOMPARE(box->width(), rows.first()->width());
     }
 }
 
