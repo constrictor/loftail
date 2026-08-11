@@ -10,7 +10,6 @@
 
 #include <QBrush>
 #include <QComboBox>
-#include <QGridLayout>
 #include <QCoreApplication>
 #include <QFrame>
 #include <QGroupBox>
@@ -285,27 +284,46 @@ void HighlighterPane::buildUi()
     m_colorGroup->setFlat(true);
     colorSection->setTitleDivider(true);
     m_colorGroup->setToolTip(tr("Recolour matching records in the log."));
-    // A grid, not two rows of an HBox each: the two labels differ in width, so laying
-    // each row out on its own started the two combos at different x and made a pair of
-    // controls that set one thing look like two unrelated ones. One grid gives column 0
-    // the wider label's width — so the labels align and the combos begin together — and
-    // column 1 the same stretch for both, so the swatch lists are the same size as well.
-    // The same margins makeAxisBox() gives an axis body, so the two combos indent under
-    // the Highlight title by exactly as much as the priority combo does under its own.
-    auto *colorBody = new QGridLayout(m_colorGroup);
+    // Both pickers on ONE row, and "BG:" is short because that is what buys the row: the
+    // pair sets a single thing — how a matching record is drawn — so stacking them spent
+    // a whole row of a pane already short of height on saying twice what one row says
+    // once. Text first, because a record is read as text on a background and the choice
+    // that decides legibility should not be the afterthought beside the box that made it
+    // necessary. The abbreviation is only in the label; the tooltip below spells it out.
+    //
+    // Same size trick the Filters pane's time editors use, for the same reason and it is
+    // needed harder here: a swatch combo's hint is set by its widest item plus an icon,
+    // and two of those side by side would make this the widest row in the pane and put a
+    // horizontal scrollbar under an ordinary dock. A plain setMinimumWidth() below the
+    // hint does nothing — qSmartMinSize() only ever expands minimumSizeHint() up to
+    // minimumSize — so the Ignored policy drops the hint out of the sum and the floor
+    // puts a usable width back. Each combo then takes half of whatever the dock has.
+    constexpr int kSwatchComboMinWidth = 84;
+    auto *colorBody = new QHBoxLayout(m_colorGroup);
+    // The same margins makeAxisBox() gives an axis body, so the combos indent under the
+    // Highlight title by exactly as much as the priority combo does under its own.
     colorBody->setContentsMargins(8, 4, 8, 6);
-    m_bgCombo = makeSwatchCombo(m_colorGroup);
-    m_bgCombo->setObjectName(QStringLiteral("backgroundColor"));
     m_fgCombo = makeSwatchCombo(m_colorGroup);
     m_fgCombo->setObjectName(QStringLiteral("textColor"));
-    // Text above background: a record is read as text on a background, so the pair reads
-    // top-down in the order the eye takes them, and the one that decides legibility comes
-    // first rather than being the afterthought under the box that made it necessary.
-    colorBody->addWidget(new QLabel(tr("Text:"), m_colorGroup), 0, 0);
-    colorBody->addWidget(m_fgCombo, 0, 1);
-    colorBody->addWidget(new QLabel(tr("Background:"), m_colorGroup), 1, 0);
-    colorBody->addWidget(m_bgCombo, 1, 1);
-    colorBody->setColumnStretch(1, 1);
+    m_fgCombo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    m_fgCombo->setMinimumWidth(kSwatchComboMinWidth);
+    m_fgCombo->setAccessibleName(tr("Text colour"));
+    m_bgCombo = makeSwatchCombo(m_colorGroup);
+    m_bgCombo->setObjectName(QStringLiteral("backgroundColor"));
+    m_bgCombo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    m_bgCombo->setMinimumWidth(kSwatchComboMinWidth);
+    // Spelled out where it is read rather than seen: "BG:" is an abbreviation, and a
+    // screen reader announcing it letter by letter is not the label the eye gets.
+    m_bgCombo->setAccessibleName(tr("Background colour"));
+    auto *fgLabel = new QLabel(tr("Text:"), m_colorGroup);
+    fgLabel->setBuddy(m_fgCombo);
+    colorBody->addWidget(fgLabel);
+    colorBody->addWidget(m_fgCombo, 1);
+    auto *bgLabel = new QLabel(tr("BG:"), m_colorGroup);
+    bgLabel->setBuddy(m_bgCombo);
+    bgLabel->setToolTip(tr("Background colour."));
+    colorBody->addWidget(bgLabel);
+    colorBody->addWidget(m_bgCombo, 1);
 
     // Both action blocks inset by the same 6 px AxisEditor puts round its own group
     // boxes, so the Highlight frame's left edge lines up with the Subsystem frame's in
