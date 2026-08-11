@@ -101,25 +101,6 @@ public:
     // at all, and gets an editor with no context row.
     void addTextExtra(QWidget *w);
 
-    // Leave out the axes this log's format cannot fill — the thread axis with no %t,
-    // the time axis with no %d — instead of showing them greyed with the reason in
-    // their title.
-    //
-    // The two panes want opposite things here, and both are right. The Filters pane
-    // describes the whole log, so a missing axis is worth SAYING: a restored session or
-    // a preset can leave it ticked-but-dropped, and that needs somewhere to show. The
-    // Highlighters pane shows the axes of ONE rule, under a rule list and above four
-    // actions, and repeats that block for every rule the user clicks — an axis that can
-    // never match anything is dead weight in the tightest pane there is, and the answer
-    // to "why can I not match on thread" is the one the Filters pane already gives.
-    //
-    // NOT a collapse: every axis the format DOES carry stays expanded whether it is
-    // ticked or not, in both panes. An axis that reveals its controls only once it is
-    // ticked cannot be read, only explored — the user has to switch it on to find out
-    // whether it was the one they wanted. Qt greys an unticked group box's body, which
-    // says "not in force" without moving anything.
-    void setHidesUnsupportedAxes(bool hide);
-
     // Rebind to a document (or nullptr to clear). Repopulates the auto-discovered
     // subsystem/thread lists from its intern tables, gates the thread and time axes on
     // whether the format carries those fields, and seeds the time editors to the
@@ -279,7 +260,6 @@ private:
     Document *m_document = nullptr;
     Defaults  m_defaults;           // what clearAll() returns the axes to
     bool      m_populating = false; // guards itemChanged storms during (re)population
-    bool      m_hideUnsupported = false;
 
     // The zone the time editors were last rendered in. refreshTimeBounds() needs it to
     // recover the instant the shown wall clock currently denotes before re-rendering

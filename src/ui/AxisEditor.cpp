@@ -603,27 +603,29 @@ void AxisEditor::addTextExtra(QWidget *w)
     m_textOptionsRow->addWidget(w);
 }
 
-void AxisEditor::setHidesUnsupportedAxes(bool hide)
-{
-    m_hideUnsupported = hide;
-    updateAxisState();
-}
-
 void AxisEditor::updateAxisState()
 {
-    // An axis the format cannot fill is left out entirely for a caller that asked
-    // (setHidesUnsupportedAxes) and greyed-with-the-reason for one that did not; a
-    // supported axis is always on screen, ticked or not. Hiding the whole group box
-    // rather than its body, because a title row saying "Thread — not in this log's
-    // format" is the thing being removed, not the thing being kept.
+    // An axis this log's format cannot fill — thread with no %t, time range with no %d —
+    // is left out entirely, in BOTH panes. There used to be a per-pane flag
+    // (setHidesUnsupportedAxes) so the Filters pane could instead show it greyed with the
+    // reason in its title, on the argument that the Filters pane describes the whole log
+    // and a missing axis is worth saying. It is not worth a section: the sentence is read
+    // once, the space is spent for the session, and five axes already compete for the
+    // height of one dock. The flag is gone rather than defaulted, so the two panes cannot
+    // drift on a question about which they were never really of two minds.
     //
-    // Nothing else changes: setDocument() has already disabled the axis, so a rule or
-    // preset that arrives with it ticked is still dropped by MatchCriteria::resolve()
-    // and still cannot be edited into force from here.
+    // The whole group box goes, not its body: what is being removed IS the title row
+    // offering an axis that can never match. And a supported axis is always on screen,
+    // ticked or not — an axis that reveals its controls only once it is ticked cannot be
+    // read, only explored (the setCollapsible() both panes reversed).
+    //
+    // Nothing else changes: setDocument() has already disabled the axis whether or not it
+    // is visible, so a rule or preset that arrives with it ticked is still dropped by
+    // MatchCriteria::resolve() and still cannot be edited into force from here.
     if (m_threadGroup)
-        m_threadGroup->setVisible(!m_hideUnsupported || supportsThread());
+        m_threadGroup->setVisible(supportsThread());
     if (m_timeGroup)
-        m_timeGroup->setVisible(!m_hideUnsupported || supportsTime());
+        m_timeGroup->setVisible(supportsTime());
 
     // Greying a switched-off axis's body is Qt's, not ours: a checkable QGroupBox
     // disables its contents while it is unchecked. Priority used to be the exception
@@ -709,28 +711,19 @@ void AxisEditor::setDocument(Document *document)
     const bool hasDate = hasDoc && document->format().dateGroup > 0;
 
     setEnabled(hasDoc);
-    // Thread and time axes exist only when the format carries those fields
-    // (SPEC.md §6). Disabled here, and say WHY in the title, because a greyed axis
-    // otherwise explains nothing and a preset or a restored session can leave one
-    // greyed AND TICKED, at which point resolve() drops it and the pane shows a
-    // selection that is not in force. A caller that would rather not see the axis at
-    // all asks for that separately (setHidesUnsupportedAxes), and updateAxisState()
-    // below applies it — the disabling stands either way, so what a hidden axis
-    // carries can never come back into force unseen.
+    // Thread and time axes exist only when the format carries those fields (SPEC.md §6).
+    // Disabled here and hidden by updateAxisState() below — two separate things, and the
+    // disabling is the one that matters: it stands whether or not the axis is on screen,
+    // so a preset or a restored session that arrives with a ticked axis this format
+    // cannot fill has it dropped by resolve() and cannot edit it back into force.
     //
-    // In the title and not in a tooltip: Qt delivers no mouse events to a disabled
-    // widget, so a tooltip on one is never seen. Whatever is said here has to be said
-    // where it is already visible.
-    if (m_threadGroup) {
+    // The titles used to carry the reason ("Thread — not in this log's format") for the
+    // pane that showed the axis greyed instead of hiding it. Neither pane does now, so
+    // the axis is either usable or absent and there is no greyed row left to explain.
+    if (m_threadGroup)
         m_threadGroup->setEnabled(hasThread);
-        m_threadGroup->setTitle(hasThread ? tr("Thread")
-                                          : tr("Thread — not in this log's format"));
-    }
-    if (m_timeGroup) {
+    if (m_timeGroup)
         m_timeGroup->setEnabled(hasDate);
-        m_timeGroup->setTitle(hasDate ? tr("Time range")
-                                      : tr("Time range — no timestamps in this log"));
-    }
 
     refreshDiscoveredLists();
 

@@ -245,10 +245,10 @@ void HighlighterPane::buildUi()
     // axes, which exist so their controls act on the first click.
     m_axes = new AxisEditor(AxisEditor::Defaults{/*priorityOn=*/false, /*loggerOn=*/false},
                             conditionBox);
-    // An axis this log's format cannot fill is left out rather than shown greyed. The
-    // Filters pane keeps it and explains it, and that asymmetry is deliberate — see
-    // AxisEditor::setHidesUnsupportedAxes.
-    m_axes->setHidesUnsupportedAxes(true);
+    // An axis this log's format cannot fill is left out rather than shown greyed. That is
+    // the AxisEditor's own behaviour now and no longer something this pane asks for: the
+    // Filters pane used to keep such an axis and explain it in its title, and that
+    // asymmetry is gone (AxisEditor::updateAxisState).
     conditionBody->addWidget(m_axes);
 
     QGroupBox *actionBox = makeSection(tr("Action"),
