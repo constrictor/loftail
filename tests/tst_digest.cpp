@@ -4,6 +4,8 @@
 #include <QFile>
 #include <QTemporaryDir>
 
+#include <algorithm>
+
 #include "Document.h"
 #include "FilteredIndex.h"
 #include "Highlight.h"
@@ -124,7 +126,9 @@ private:
 private slots:
     void lastMatchPerRuleOnly();
     void twoRulesSharingARecordYieldOneRow();
-    void ordinalsAreAscendingEvenWhenRuleOrderIsNot();
+    void publishedOrderOwesNothingToRuleOrder();
+    void rowsAreInTimestampOrderNotFileOrder();
+    void aRecordWithNoTimestampKeepsItsSlot();
     void aRuleWithNoMatchHasNoRow();
     void noRuleOptsInMeansAnEmptyDigest();
     void aColourOnlyRuleIsNotInTheDigest();
@@ -178,7 +182,7 @@ void TestDigest::twoRulesSharingARecordYieldOneRow()
     QCOMPARE(ordinals(doc), QVector<int>({1}));
 }
 
-void TestDigest::ordinalsAreAscendingEvenWhenRuleOrderIsNot()
+void TestDigest::publishedOrderOwesNothingToRuleOrder()
 {
     QTemporaryDir dir;
     const QString path = dir.filePath(QStringLiteral("a.log"));
@@ -188,12 +192,72 @@ void TestDigest::ordinalsAreAscendingEvenWhenRuleOrderIsNot()
     Document doc;
     QVERIFY(openDoc(doc, path));
 
-    // Rule order puts the newest match first; FilteredIndex::setVisible() requires
-    // ascending source ordinals, and record order is also the right reading order.
+    // Rule order puts the newest match first; the digest is published in the order it
+    // is to be READ, which owes nothing to the order the rules were written in. Here
+    // the file's timestamps ascend with its records, so reading order is record order —
+    // the two come apart in rowsAreInTimestampOrderNotFileOrder() below.
     doc.highlighters().rules = {textRule("gamma"), textRule("beta"), textRule("alpha")};
     doc.refreshHighlighting();
 
     QCOMPARE(ordinals(doc), QVector<int>({0, 1, 2}));
+}
+
+// The digest is a handful of rows from different points in the file read as "what
+// happened, and when" — the one place in loftail where records that are nowhere near
+// each other are stacked. log4cplus appends in the order threads reach the appender,
+// not in the order they stamped their records, so file order is very nearly timestamp
+// order and, on a busy log, not quite.
+void TestDigest::rowsAreInTimestampOrderNotFileOrder()
+{
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("a.log"));
+    // Written 1, 5, 3 — the third record was stamped before the second reached the file.
+    QVERIFY(writeWhole(path, rec(1, "INFO ", "alpha")
+                                 + rec(5, "INFO ", "beta")
+                                 + rec(3, "INFO ", "gamma")));
+    Document doc;
+    QVERIFY(openDoc(doc, path));
+
+    doc.highlighters().rules = {textRule("alpha"), textRule("beta"), textRule("gamma")};
+    doc.refreshHighlighting();
+
+    // Ordinal 2 (00:00:03) before ordinal 1 (00:00:05): the published list is NOT
+    // ascending, which nothing below it requires — FilteredIndex copies the records in
+    // the order given, and the digest never uses the incremental append path.
+    QCOMPARE(ordinals(doc), QVector<int>({0, 2, 1}));
+
+    const FilteredIndex &d = doc.digest();
+    QVector<qint64> stamps;
+    for (int row = 0; row < d.recordCount(); ++row)
+        stamps.append(doc.index().records.at(d.sourceRow(row)).timestamp);
+    QVERIFY(std::is_sorted(stamps.begin(), stamps.end()));
+}
+
+// A record with no timestamp cannot be placed in time, so it keeps the slot it has and
+// the timestamped rows are ordered around it. Sorting it by Record::kNoTimestamp would
+// pin it above everything (that value is qint64's minimum), and handing the comparator
+// an "unorderable, false either way" case would not be a strict weak ordering at all —
+// which is undefined behaviour in std::stable_sort rather than merely an odd order.
+void TestDigest::aRecordWithNoTimestampKeepsItsSlot()
+{
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("a.log"));
+    // A leading line that does not match recordStartRe is its own record with no
+    // timestamp (SPEC.md §4 — plain text stays visible), and the two after it are out
+    // of timestamp order as above.
+    QVERIFY(writeWhole(path, QByteArray("plain preamble, no timestamp here\n")
+                                 + rec(5, "INFO ", "beta")
+                                 + rec(3, "INFO ", "gamma")));
+    Document doc;
+    QVERIFY(openDoc(doc, path));
+    QCOMPARE(doc.index().records.at(0).timestamp, Record::kNoTimestamp);
+
+    doc.highlighters().rules = {textRule("preamble"), textRule("beta"), textRule("gamma")};
+    doc.refreshHighlighting();
+
+    // Slot 0 is still the unplaceable record; slots 1 and 2 hold the other two in
+    // timestamp order.
+    QCOMPARE(ordinals(doc), QVector<int>({0, 2, 1}));
 }
 
 void TestDigest::aRuleWithNoMatchHasNoRow()

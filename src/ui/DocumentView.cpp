@@ -20,8 +20,27 @@ DocumentView::DocumentView(DocumentContext *context, QWidget *parent)
     m_logView->setObjectName(QStringLiteral("logView")); // test contract, never translated
     m_layout->addWidget(m_logView, 1);
 
+    // The strip is NAMED (SPEC.md §7). A second table under the first explains nothing
+    // on its own, and its rows are copies of rows in the log above it, so without a
+    // caption the honest reading is a rendering fault. A body-less SectionBox: the same
+    // title-row-and-hairline the five filter axes wear, minus the checkbox, so the one
+    // caption in the document area is drawn by the same class as every caption in a pane
+    // rather than by a hand-styled label that would drift from them.
+    m_digestTitle = new SectionBox(tr("Digest"), this);
+    m_digestTitle->setObjectName(QStringLiteral("digestTitle")); // test contract
+    m_digestTitle->setFlat(true);
+    m_digestTitle->setTitleDivider(true);
+    m_digestTitle->hide(); // with the strip it names
+    m_layout->addWidget(m_digestTitle, 0);
+
     // The digest strip (M19, SPEC.md §7): under the table, above the Find bar, at
     // stretch 0 so it takes exactly the height it asks for and the table keeps the rest.
+    //
+    // A sibling of its caption, NOT a child of it, however much a titled box wants to
+    // hold the thing it titles: LogView::digestContentLines() caps the strip at a third
+    // of parentWidget()'s height, so parenting it to a box whose own height comes from
+    // the strip's size hint would make the cap a third of the strip itself and feed the
+    // layout its own output.
     m_digestView = new LogView(context->doc.get(), context->digestModel, this,
                                LogView::Role::Digest);
     m_digestView->setObjectName(QStringLiteral("digestView"));
@@ -86,6 +105,11 @@ void DocumentView::activateFind()
 void DocumentView::refreshDigestVisibility()
 {
     const bool show = m_context->digestModel && m_context->digestModel->rowCount() > 0;
+    // Both, explicitly. The caption is a sibling rather than a parent (see the
+    // constructor), so hiding one does not hide the other — and a "Digest" heading over
+    // nothing is worse than no heading. Setting the view's own visibility is also what
+    // keeps digestView()->isHidden() meaning "the strip is not there".
+    m_digestTitle->setVisible(show);
     m_digestView->setVisible(show);
     if (show)
         m_digestView->refreshDigestCap();

@@ -86,11 +86,14 @@ AxisBox makeAxisBox(QWidget *parent, const QString &title, const QString &object
 // the LIST wants, since a subsystem name is a dotted path and the ones that matter
 // differ at the END.
 //
-// NOT auto-raised, though, unlike the message-text toggles: a flat frameless button
-// with a one-word label and no icon reads as a caption, and "All / None / Invert" in
-// a column beside a list reads as a caption particularly well. The frame is what says
-// these are things to press. Auto-raise earns its keep on a TOGGLE, where the checked
-// state supplies the missing affordance; it does not on a plain command.
+// NOT auto-raised: a flat frameless button with a one-word label and no icon reads as
+// a caption, and "All / None / Invert" in a column beside a list reads as a caption
+// particularly well. The frame is what says these are things to press.
+//
+// That used to be stated as a distinction from the message-text toggles, where the
+// checked state was held to supply the affordance a frame otherwise gives. It does not
+// — it says which of them are ON to someone who has already worked out that they are
+// buttons — so nothing in this editor is auto-raised now.
 //
 // The column used to end in a "New" checkbox carrying the discovery rule — what
 // happens to a value the list does not hold YET. It is the first ROW of the list now
@@ -228,13 +231,21 @@ void AxisEditor::buildUi(Defaults defaults)
         // height for two bits and a sign. The glyphs are NOT translated (they are not
         // prose, ARCHITECTURE.md §9.1); the words move to the tooltip, and to the
         // accessible name so a screen reader still hears them.
+        //
+        // FRAMED, like every other button in this editor. They were auto-raised, on the
+        // reasoning that a toggle's checked state supplies the affordance a frame
+        // otherwise gives — which is true only once you know there is something there to
+        // press. Three glyphs floating under a text field read as a legend for the field,
+        // and the two bits and a sign they carry are the difference between a filter that
+        // works and one that silently matches nothing. So the rule the list buttons state
+        // now holds for the whole editor: the frame is what says "this is a thing to
+        // press", and the sunken checked state is what says which ones are pressed.
         auto makeToggle = [&a](const QString &glyph, const QString &name,
                                const QString &prose) {
             auto *b = new QToolButton(a.body);
             b->setText(glyph);
             b->setObjectName(name);
             b->setCheckable(true);
-            b->setAutoRaise(true);
             b->setToolTip(prose);
             b->setAccessibleName(prose);
             return b;
