@@ -161,9 +161,15 @@ void AxisEditor::buildUi(Defaults defaults)
     auto emitChange = [this] { emitChanged(); };
 
     // The order is how often an axis is reached for, not how the FilterSet declares
-    // them: a level floor and a message search are the everyday narrowing, and the
-    // message axis carries the context row the Filters pane injects (addTextExtra()),
+    // them. Priority, Subsystem, Message text, Thread, Time range: the level floor and
+    // the subsystem list are what a log is narrowed with before anything is searched
+    // for in it — you pick the stream, then you search it — so the two that answer
+    // "which records am I reading" come first and the free-text search sits under them.
+    // Message text keeps the context row the Filters pane injects (addTextExtra()),
     // which belongs next to the search it widens rather than at the foot of the pane.
+    //
+    // Subsystem and Thread are the two that GROW (see buildValueAxis's stretch): they
+    // are lists of unknown length, and everything else here is a fixed number of rows.
 
     // --- Priority -----------------------------------------------------------
     {
@@ -181,17 +187,30 @@ void AxisEditor::buildUi(Defaults defaults)
         // because "changing the minimum level did nothing" is exactly what the
         // enabled-by-default choice below exists to avoid.
         //
-        // Enabled by default for filtering (SPEC.md §6) so the combo acts on the first
-        // click. At the default TRACE the axis narrows nothing, and the caller
-        // collapses that no-op state so it costs nothing either. A highlight rule opts
-        // in instead.
+        // Opt-in in both panes now — see Defaults for why it stopped shipping on here.
         AxisBox a = makeAxisBox(this, tr("Minimum priority"),
                                 QStringLiteral("priorityGroup"), defaults.priorityOn);
         m_priorityEnable = a.box;
         m_priorityCombo = new QComboBox(a.body);
         m_priorityCombo->setObjectName(QStringLiteral("priorityCombo"));
-        for (int i = 0; i < PriorityChoice::count(); ++i)
-            m_priorityCombo->addItem(priorityName(PriorityChoice::at(i)));
+        // TRACE is left out. It is the lowest level the enum has, so "minimum priority
+        // is TRACE" excludes nothing — the one row in this combo that could not answer
+        // the question the axis asks, sitting where a list is read from first. The
+        // no-op it named is still reachable, and by the control that means it: unticking
+        // the axis. Every OTHER level is offered, so nothing a user could express before
+        // has become inexpressible.
+        //
+        // Each item carries its Priority as data, and the item ORDER is not the
+        // PriorityChoice order any more (see comboPriority() in the header — that table
+        // is the on-disk format and cannot lose a row). Nothing may index this combo by
+        // a PriorityChoice index, and nothing does.
+        for (int i = 0; i < PriorityChoice::count(); ++i) {
+            const Priority p = PriorityChoice::at(i);
+            if (p == Priority::Trace)
+                continue;
+            m_priorityCombo->addItem(priorityName(p), int(p));
+        }
+        setComboPriority(kDefaultFloor);
         a.bodyLayout->addWidget(m_priorityCombo);
         root->addWidget(a.box);
 
@@ -199,6 +218,19 @@ void AxisEditor::buildUi(Defaults defaults)
         connect(m_priorityCombo, &QComboBox::currentIndexChanged, this,
                 [emitChange](int) { emitChange(); });
     }
+
+    // --- Subsystem ----------------------------------------------------------
+    //
+    // buildValueAxis(), which the Thread axis below calls too. The two differ in a
+    // title, an object-name prefix, a list height and whether they ship on; everything
+    // else — the discovery rule, the narrowing, the manual add, the three list buttons
+    // — was written out twice and had to be kept in step by hand.
+    //
+    // The two are no longer adjacent: the message search sits between them (see the
+    // ordering note above). They still expand together, which is a property of the
+    // stretch each is given in `root` and not of their being neighbours.
+    buildValueAxis(root, ValueAxis::Subsystem, tr("Subsystem"), QStringLiteral("subsystem"),
+                   /*listMinHeight=*/90, defaults.loggerOn);
 
     // --- Message text -------------------------------------------------------
     {
@@ -276,14 +308,7 @@ void AxisEditor::buildUi(Defaults defaults)
         connect(m_textNegate, &QAbstractButton::toggled, this, emitChange);
     }
 
-    // --- Subsystem, then Thread ---------------------------------------------
-    //
-    // One function, twice. These two axes differ in a title, an object-name prefix, a
-    // list height and whether they ship on; everything else — the discovery rule, the
-    // narrowing, the manual add, the three list buttons — was written out twice and
-    // had to be kept in step by hand.
-    buildValueAxis(root, ValueAxis::Subsystem, tr("Subsystem"), QStringLiteral("subsystem"),
-                   /*listMinHeight=*/90, defaults.loggerOn);
+    // --- Thread -------------------------------------------------------------
     buildValueAxis(root, ValueAxis::Thread, tr("Thread"), QStringLiteral("thread"),
                    /*listMinHeight=*/70, false);
 
@@ -409,7 +434,12 @@ void AxisEditor::buildUi(Defaults defaults)
                 [secondsEdited](double) { secondsEdited(TimeBound::End); });
     }
 
-    root->addStretch(1);
+    // No trailing addStretch(). There used to be one, and it is exactly what kept the
+    // value lists at their minimum height: a stretch at the foot of the layout claims
+    // every spare pixel the pane has, so the lists could only ever be as tall as their
+    // floors while an empty gap grew under Time range. The spare height belongs to the
+    // two lists now (the stretch given to each value axis above), and a stretch left
+    // here would compete with them for it.
     updateTextValidity();
 }
 
@@ -493,13 +523,32 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
     auto *listRow = new QHBoxLayout;
     listRow->addWidget(list, 1);
     listRow->addLayout(makeListButtons(a.body, prefix, all, none, invert));
-    a.bodyLayout->addLayout(listRow);
+    // The list row is the one part of a value axis that GROWS. setMinimumHeight above is
+    // a floor and not a size: a value list is as long as the log has subsystems, which is
+    // unknown when the pane is built and changes while it scans, so the height that fits
+    // it cannot be a constant. Everything else in this axis — the title row, the
+    // narrowing field — is a fixed number of rows, so the stretch here is what carries
+    // the pane's spare height all the way down to the list. It is inert on its own; it
+    // only does anything because the box itself is given a stretch in `root` below.
+    a.bodyLayout->addLayout(listRow, 1);
     QAbstractButton **slot = subsystem ? m_loggerListButtons : m_threadListButtons;
     slot[0] = all;
     slot[1] = none;
     slot[2] = invert;
 
-    root->addWidget(a.box);
+    // Stretch 1, which the other three axes do not get: this is what makes the two
+    // value lists take the pane's spare height instead of leaving it at the bottom.
+    // Both value axes get the SAME factor, so spare height splits evenly between them
+    // rather than by how many values each happens to have found — a split that would
+    // otherwise shift under the reader mid-scan, every time a new subsystem turned up.
+    // Their differing setMinimumHeight floors (90 and 70) still hold underneath, so a
+    // pane too short to satisfy both scrolls rather than starving either.
+    //
+    // A switched-off axis keeps its share. That follows from bodies staying visible
+    // while an axis is off, which is deliberate and documented above; an axis that gave
+    // up its height when unticked would move every other axis on the pane each time one
+    // was toggled, which is a worse thing to do to a reader than showing a greyed list.
+    root->addWidget(a.box, 1);
 
     connect(a.box, &QGroupBox::toggled, this, [this] { emitChanged(); });
     // One handler for the whole list, "Others" included: a tick is a tick whichever
@@ -609,14 +658,16 @@ void AxisEditor::updateListButtonHints(ValueAxis axis)
 void AxisEditor::clearAll()
 {
     // Back to the state a freshly-bound editor is in — the DEFAULTS it was built with,
-    // not "everything off": for the Filters pane that means priority and subsystem
-    // still ticked but excluding nothing, which is what the pane has always meant by
-    // unfiltered and what applyToDocument()'s NoOpAxes::Collapse then writes as
-    // inactive. Turning them off instead would make "clear" leave the pane in a state
-    // no fresh document ever starts in.
+    // not "everything off": for the Filters pane that means subsystem still ticked but
+    // excluding nothing, which is what the pane has always meant by unfiltered and what
+    // applyToDocument()'s NoOpAxes::Collapse then writes as inactive. Turning it off
+    // instead would make "clear" leave the pane in a state no fresh document ever
+    // starts in. The combo goes back to kDefaultFloor under an axis that is off, so
+    // clear still returns the view to every record — that outcome now comes from the
+    // tick rather than from the level, which is the whole of the change (see Defaults).
     m_populating = true;
     m_priorityEnable->setChecked(m_defaults.priorityOn);
-    m_priorityCombo->setCurrentIndex(0); // the widest level; PriorityChoice is ordered
+    setComboPriority(kDefaultFloor); // never index 0 — the combo's order is its own now
 
     m_loggerGroup->setChecked(m_defaults.loggerOn);
     m_threadGroup->setChecked(false);
@@ -1087,12 +1138,29 @@ void AxisEditor::repopulate(const QSet<QString> &loggerChecked,
 // Criteria in and out
 // ---------------------------------------------------------------------------
 
+Priority AxisEditor::comboPriority() const
+{
+    if (!m_priorityCombo)
+        return kDefaultFloor;
+    const QVariant data = m_priorityCombo->currentData();
+    return data.isValid() ? Priority(data.toInt()) : kDefaultFloor;
+}
+
+bool AxisEditor::setComboPriority(Priority p)
+{
+    if (!m_priorityCombo)
+        return false;
+    const int row = m_priorityCombo->findData(int(p));
+    m_priorityCombo->setCurrentIndex(row >= 0 ? row : m_priorityCombo->findData(int(kDefaultFloor)));
+    return row >= 0;
+}
+
 MatchCriteria AxisEditor::criteria() const
 {
     MatchCriteria c;
 
     c.priorityEnabled = m_priorityEnable->isChecked();
-    c.minPriority = PriorityChoice::at(m_priorityCombo->currentIndex());
+    c.minPriority = comboPriority();
 
     c.loggerEnabled = m_loggerGroup->isChecked();
     c.loggerNames = toSortedList(checkedNames(m_loggerList));
@@ -1130,8 +1198,15 @@ void AxisEditor::setCriteria(const MatchCriteria &c)
 {
     m_populating = true;
 
-    m_priorityEnable->setChecked(c.priorityEnabled);
-    m_priorityCombo->setCurrentIndex(PriorityChoice::indexOf(c.minPriority));
+    // A TRACE floor can still arrive — from a preset or session written before TRACE
+    // stopped being offered, or from a highlight rule whose criteria were never edited
+    // here. It is not promoted to the lowest level still on offer: that would turn a
+    // filter that showed everything into one that hides every TRACE record, silently,
+    // on restore. It is taken for what it always meant instead — no narrowing by level
+    // — and expressed the way the pane expresses that now, by leaving the axis off. The
+    // view is identical either way, which is the test of a migration that costs nothing.
+    const bool offerable = setComboPriority(c.minPriority);
+    m_priorityEnable->setChecked(c.priorityEnabled && offerable);
 
     m_loggerGroup->setChecked(c.loggerEnabled);
     m_threadGroup->setChecked(c.threadEnabled);
@@ -1306,8 +1381,12 @@ void AxisEditor::setMinimumPriority(Priority p)
     if (!m_priorityEnable || !m_priorityCombo || p == Priority::Unknown)
         return;
     m_populating = true;
-    m_priorityCombo->setCurrentIndex(PriorityChoice::indexOf(p));
-    m_priorityEnable->setChecked(true);
+    // "Show this level and above" on a TRACE record asks for every record there is, and
+    // the combo no longer has a row for it. Ticking the axis at the lowest level it DOES
+    // offer would hide the very record the menu was opened on, so the axis goes off —
+    // which is that request, exactly, and leaves nothing narrowed by level.
+    const bool offerable = setComboPriority(p);
+    m_priorityEnable->setChecked(offerable);
     m_populating = false;
     emitChanged();
 }

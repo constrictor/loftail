@@ -125,20 +125,19 @@ private:
     // huge one starts coalescing after the first pass has proved it needs to.
     void scheduleApply();
     void applyNow();
-    // Keep the header's word and its Clear button in step with hasActiveFilters(),
-    // and tell MainWindow. Called from applyToDocument(), which every route that
-    // touches the FilterSet goes through.
-    void updateSummary();
+    // Tell MainWindow whether anything is being filtered out, so it can mark this
+    // pane's TAB — the only place the answer is now shown, and the only place it was
+    // ever needed, since the pane is tabbed behind three others. Called from
+    // applyToDocument(), which every route that touches the FilterSet goes through.
+    void updateActivity();
 
     Document   *m_document = nullptr;
     AxisEditor *m_axes = nullptr;
-    QLabel     *m_summary = nullptr;
-    QToolButton *m_clearButton = nullptr;
     QTimer     *m_applyTimer = nullptr;
     qint64      m_lastApplyMs = 0; // how long the previous pass took, per above
-    // What the header and the dock marker were last told. Unset until the first
-    // update, so the initial state is published once rather than assumed.
-    std::optional<bool> m_summaryActive;
+    // What the dock marker was last told. Unset until the first update, so the initial
+    // state is published once rather than assumed.
+    std::optional<bool> m_activeState;
     // Filter context (M15, SPEC.md §6), grep's -B/-A. Here and not in the AxisEditor:
     // that widget is shared with a highlight rule's editor, where "show the two
     // records either side" means nothing — highlighting removes nothing to begin with.

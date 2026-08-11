@@ -574,7 +574,7 @@ void HighlighterPane::reloadRuleList()
 
 void HighlighterPane::updateActivity()
 {
-    // Only on a CHANGE, for the reason FilterPane::updateSummary() spells out: the
+    // Only on a CHANGE, for the reason FilterPane::updateActivity() spells out: the
     // marker rides the dock's window title, which is a QTabBar entry while the panes
     // are tabbed, and re-setting it relays out the whole bar.
     const bool active = hasRules();

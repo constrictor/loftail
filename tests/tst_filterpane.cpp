@@ -9,6 +9,8 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QStyle>
 #include <QStyleOptionGroupBox>
 #include <QDoubleSpinBox>
@@ -28,10 +30,12 @@
 
 using namespace loftail;
 
-// The subsystem and priority axes are ENABLED by default (SPEC.md §6) so their
-// controls act on the first click instead of silently doing nothing until a master
-// checkbox is also ticked. That default is only safe if three things hold, and each
-// of them is a way the change could have gone wrong:
+// The subsystem axis is ENABLED by default (SPEC.md §6) so its controls act on the
+// first click instead of silently doing nothing until a master checkbox is also ticked.
+// Priority was the second such axis and is no longer: its lowest offered level is DEBUG
+// now that TRACE is gone, so it has no setting that is both ticked and harmless, and it
+// ships off. That default is only safe if three things hold, and each of them is a way
+// the change could have gone wrong:
 //
 //   1. An enabled-but-all-inclusive axis narrows nothing AND costs nothing — it must
 //      leave FilteredIndex on its allocation-free identity path (ARCHITECTURE §7.2).
@@ -190,6 +194,8 @@ private slots:
     void switchingTheDisplayModeKeepsTheBoundsInstant();
     void runSecondsBoundsCountFromTheSelectedRun();
     void priorityComboFollowsItsCheckbox();
+    void theLevelsOfferedStartAtDebugAndDefaultToInfo();
+    void aRestoredTraceFloorBecomesAnUntickedAxis();
     void switchedOffAxesStayVisibleAndGreyed();
     void anAxisTheFormatLacksIsNotShownAtAll();
     void typingAnUnlistedNameOffersToAddIt();
@@ -198,13 +204,19 @@ private slots:
     void activityTracksTheResolvedSetNotTheTicks();
     void theAxesAreLinesNotFrames();
     void theAxisEnableControlsSitAtTheLeftEdge();
+    void theContextRowLaysOutWithoutOverlapOrClipping();
+    void theAxesAreInReadingOrder();
+    void theValueListsTakeTheSpareHeight();
 };
 
 void TestFilterPane::metadataAxesAreOnByDefault()
 {
     FilterPane pane;
-    QVERIFY(priorityEnable(pane)->isChecked());
+    // Subsystem alone. Priority ships off now: its lowest offered level is DEBUG, so
+    // there is no longer a level at which "ticked" and "hides nothing" are both true,
+    // and shipping it ticked would hide every DEBUG record in every log on open.
     QVERIFY(axis(pane, "subsystemGroup")->isChecked());
+    QVERIFY(!priorityEnable(pane)->isChecked());
     // The axes the user did not ask for keep their old default.
     QVERIFY(!axis(pane, "threadGroup")->isChecked());
     QVERIFY(!axis(pane, "messageGroup")->isChecked());
@@ -924,14 +936,84 @@ void TestFilterPane::priorityComboFollowsItsCheckbox()
 
     auto *combo = pane.findChild<QComboBox *>(QStringLiteral("priorityCombo"));
     QVERIFY(combo);
-    QVERIFY(priorityEnable(pane)->isChecked());
-    QVERIFY(combo->isEnabled());
-
-    priorityEnable(pane)->setChecked(false);
+    // The axis ships OFF, so the combo ships greyed — and that greying is now the whole
+    // reason the axis is allowed to ship off. It used to ship on so the combo would act
+    // on the first click; what makes that unnecessary is that an untickable axis has an
+    // unusable combo, so "I changed the level and nothing happened" cannot occur.
+    QVERIFY(!priorityEnable(pane)->isChecked());
     QVERIFY(!combo->isEnabled());
 
     priorityEnable(pane)->setChecked(true);
     QVERIFY(combo->isEnabled());
+
+    priorityEnable(pane)->setChecked(false);
+    QVERIFY(!combo->isEnabled());
+}
+
+// TRACE is not offered: it is the lowest level the enum has, so it excludes nothing, and
+// the no-op it named is reachable by unticking the axis instead. INFO is what a fresh
+// pane holds.
+void TestFilterPane::theLevelsOfferedStartAtDebugAndDefaultToInfo()
+{
+    FilterPane pane;
+    auto *combo = pane.findChild<QComboBox *>(QStringLiteral("priorityCombo"));
+    QVERIFY(combo);
+
+    QCOMPARE(combo->count(), 5); // DEBUG, INFO, WARN, ERROR, FATAL — six levels less TRACE
+    QCOMPARE(combo->findData(int(Priority::Trace)), -1);
+    for (Priority p : {Priority::Debug, Priority::Info, Priority::Warn, Priority::Error,
+                       Priority::Fatal})
+        QVERIFY2(combo->findData(int(p)) >= 0, priorityName(p).toUtf8().constData());
+
+    QCOMPARE(combo->currentData().toInt(), int(Priority::Info));
+
+    // Every row's data agrees with its label, which is what stops the combo's own order
+    // from being read as a PriorityChoice index — the two are no longer the same order,
+    // and PriorityChoice is the on-disk format (MatchCriteria's minPriorityIndex).
+    for (int i = 0; i < combo->count(); ++i)
+        QCOMPARE(combo->itemText(i), priorityName(Priority(combo->itemData(i).toInt())));
+
+    // And a saved INFO floor still reads back as INFO rather than one level over, which
+    // is what dropping TRACE from PriorityChoice instead of from the combo would have
+    // cost every preset and session ever written.
+    MatchCriteria c;
+    c.priorityEnabled = true;
+    c.minPriority = Priority::Info;
+    MatchCriteria back = MatchCriteria::fromJson(c.toJson());
+    QCOMPARE(int(back.minPriority), int(Priority::Info));
+}
+
+// A TRACE floor can still arrive from a session or preset written while TRACE was on
+// offer. It must not be promoted to DEBUG — that would turn a filter which showed
+// everything into one that hides every TRACE record, silently, on restore. It means
+// "do not narrow by level", so the axis comes back off.
+void TestFilterPane::aRestoredTraceFloorBecomesAnUntickedAxis()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+    FilterPane pane;
+    pane.setDocument(&doc);
+
+    // Through the real restore path, with the JSON a pre-change session actually holds:
+    // minPriorityIndex 0 is TRACE in PriorityChoice, which is why that table could not
+    // simply lose its first row.
+    MatchCriteria old;
+    old.priorityEnabled = true;
+    old.minPriority = Priority::Trace;
+    const QJsonObject saved = old.toJson();
+    QCOMPARE(saved.value(QStringLiteral("minPriorityIndex")).toInt(), 0);
+    pane.restoreState(saved);
+
+    QVERIFY(!priorityEnable(pane)->isChecked());
+    QVERIFY(!doc.filters().priorityEnabled);
+    // Not silently promoted to the lowest level still offered.
+    auto *combo = pane.findChild<QComboBox *>(QStringLiteral("priorityCombo"));
+    QCOMPARE(combo->currentData().toInt(), int(Priority::Info));
+
+    // The view is what it was before the level stopped being offered: everything.
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 2);
 }
 
 // A switched-off axis keeps its controls on screen, greyed. The pane briefly borrowed
@@ -1094,7 +1176,7 @@ void TestFilterPane::clearAllReturnsToAnUnfilteredView()
     QCOMPARE(stateOf(loggers, QStringLiteral("db.pool")), Qt::Checked);
     QVERIFY(!axis(pane, "messageGroup")->isChecked());
     QVERIFY(!axis(pane, "timeGroup")->isChecked());
-    QVERIFY(priorityEnable(pane)->isChecked());
+    QVERIFY(!priorityEnable(pane)->isChecked());
     QVERIFY(axis(pane, "subsystemGroup")->isChecked());
 
     doc.applyFilters();
@@ -1113,8 +1195,8 @@ void TestFilterPane::activityTracksTheResolvedSetNotTheTicks()
     QSignalSpy activity(&pane, &FilterPane::activityChanged);
     pane.setDocument(&doc);
 
-    QVERIFY(priorityEnable(pane)->isChecked()); // on, and excluding nothing
-    QVERIFY(axis(pane, "subsystemGroup")->isChecked());
+    QVERIFY(!priorityEnable(pane)->isChecked()); // off, so excluding nothing
+    QVERIFY(axis(pane, "subsystemGroup")->isChecked()); // on, and excluding nothing
     QVERIFY(!pane.hasActiveFilters());
 
     QListWidget *loggers = loggerList(pane, QStringLiteral("net.socket"));
@@ -1203,6 +1285,173 @@ void TestFilterPane::theAxisEnableControlsSitAtTheLeftEdge()
         // that left-aligns anyway — which is every style the suite is likely to run on.
         QVERIFY2(box->styleSheet().contains(QStringLiteral("subcontrol-position")), name);
     }
+}
+
+// The context row shares the message axis's toggle row, so it is the one row in the
+// pane whose contents are squeezed from both ends. It once laid itself out on top of
+// itself: the spin boxes carried QSizePolicy::Ignored (borrowed from the time editors,
+// where it exists to shrink a box BELOW its size hint) on top of a setMaximumWidth.
+// The two pull opposite ways — Ignored tells the layout to hand over every spare pixel,
+// the cap stops the widget using them, and QLayout centres the short widget in the long
+// cell. Each spin box drifted right, out from under the glyph naming it and into the
+// NEXT glyph, and the last box was pushed past the row's own right edge and clipped.
+//
+// Neither the eye nor any other test caught it, because every widget still existed,
+// still had the right value and still answered isVisible(). Only the rectangles were
+// wrong. So this asserts on the rectangles, at several dock widths — the widest is where
+// the drift was largest, and the narrowest is where the row has no slack at all.
+void TestFilterPane::theContextRowLaysOutWithoutOverlapOrClipping()
+{
+    FilterPane pane;
+    for (int width : {289, 300, 340, 424, 700}) {
+        pane.resize(width, 900);
+        pane.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&pane));
+        QApplication::processEvents();
+
+        QWidget *row = pane.findChild<QWidget *>(QStringLiteral("contextRow"));
+        QVERIFY2(row, "the context row is gone from the message axis");
+
+        // Children in visual order, so a gap is a positive number and an overlap a
+        // negative one no matter which order the layout added them in.
+        QList<QWidget *> kids;
+        for (QObject *o : row->children())
+            if (auto *w = qobject_cast<QWidget *>(o))
+                kids.append(w);
+        QVERIFY(kids.size() >= 5); // caption, two glyphs, two spin boxes
+        std::sort(kids.begin(), kids.end(), [](QWidget *a, QWidget *b) {
+            return a->geometry().left() < b->geometry().left();
+        });
+
+        const QByteArray at = QByteArrayLiteral("at dock width ") + QByteArray::number(width);
+        for (int i = 1; i < kids.size(); ++i) {
+            const QRect prev = kids.at(i - 1)->geometry();
+            const QRect here = kids.at(i)->geometry();
+            QVERIFY2(here.left() > prev.right(),
+                     (QByteArrayLiteral("context row children overlap ") + at).constData());
+        }
+        // And nothing hangs off either end of the row, which is what clipped the second
+        // spin box: the row does not clip its children, the group box above it does.
+        for (QWidget *w : kids) {
+            QVERIFY2(w->geometry().left() >= 0,
+                     (QByteArrayLiteral("a context control starts left of the row ") + at)
+                         .constData());
+            QVERIFY2(w->geometry().right() <= row->width(),
+                     (QByteArrayLiteral("a context control runs past the row ") + at)
+                         .constData());
+        }
+
+        // Both spin boxes are whole — a clipped one still reports a width, so the check
+        // that matters is that it got at least the floor it asked for.
+        for (const QString &name : {QStringLiteral("contextBefore"), QStringLiteral("contextAfter")}) {
+            auto *spin = pane.findChild<QSpinBox *>(name);
+            QVERIFY(spin);
+            QVERIFY2(spin->width() >= spin->minimumWidth(),
+                     (name.toUtf8() + " was squeezed below its floor " + at).constData());
+            QVERIFY2(spin->width() <= spin->maximumWidth(),
+                     (name.toUtf8() + " grew past its cap " + at).constData());
+        }
+    }
+}
+
+// The five axes top to bottom. Priority and Subsystem say which records are being read;
+// the free-text search comes under them, because you pick the stream and then search it.
+// Message text used to sit second, above both value lists.
+//
+// A document is bound because the thread and time axes are HIDDEN without one — the
+// format-lacks-an-axis rule — and a hidden widget is skipped by the layout entirely,
+// which makes an unbound pane the wrong place to ask any question about order or height.
+void TestFilterPane::theAxesAreInReadingOrder()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.resize(424, 900);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    QApplication::processEvents();
+
+    const QStringList expected{QStringLiteral("priorityGroup"), QStringLiteral("subsystemGroup"),
+                               QStringLiteral("messageGroup"), QStringLiteral("threadGroup"),
+                               QStringLiteral("timeGroup")};
+    QList<QGroupBox *> boxes;
+    for (const QString &name : expected) {
+        QGroupBox *g = pane.findChild<QGroupBox *>(name);
+        QVERIFY2(g, name.toUtf8().constData());
+        QVERIFY2(g->isVisible(), name.toUtf8().constData());
+        boxes.append(g);
+    }
+    std::sort(boxes.begin(), boxes.end(), [&pane](QGroupBox *a, QGroupBox *b) {
+        return a->mapTo(&pane, QPoint(0, 0)).y() < b->mapTo(&pane, QPoint(0, 0)).y();
+    });
+    QStringList actual;
+    for (QGroupBox *g : boxes)
+        actual << g->objectName();
+    QCOMPARE(actual, expected);
+}
+
+// The two value lists are the only things in the pane that grow. A subsystem list is as
+// long as the log has subsystems — unknown when the pane is built, and still growing
+// while it scans — where every other axis is a fixed number of rows, so spare height
+// belongs to them. It used to go to a trailing addStretch(), which left both lists at
+// their floor with an empty gap under Time range however tall the dock was.
+void TestFilterPane::theValueListsTakeTheSpareHeight()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+
+    auto settle = [&pane](int h) {
+        pane.resize(424, h);
+        for (int i = 0; i < 8; ++i)
+            QApplication::processEvents();
+    };
+    auto listHeight = [&pane](const char *name) {
+        auto *l = pane.findChild<QListWidget *>(QString::fromLatin1(name));
+        return l ? l->height() : -1;
+    };
+    auto boxHeight = [&pane](const char *name) {
+        auto *g = pane.findChild<QGroupBox *>(QString::fromLatin1(name));
+        return g ? g->height() : -1;
+    };
+
+    settle(700);
+    const int sub0 = listHeight("subsystemList"), thr0 = listHeight("threadList");
+    const int msg0 = boxHeight("messageGroup"), pri0 = boxHeight("priorityGroup");
+    QVERIFY(sub0 > 0 && thr0 > 0);
+
+    settle(1300);
+    const int sub1 = listHeight("subsystemList"), thr1 = listHeight("threadList");
+
+    // 600 px more pane means 600 px more list, split between the two.
+    QVERIFY2(sub1 > sub0 + 200, qPrintable(QString("subsystem %1 -> %2").arg(sub0).arg(sub1)));
+    QVERIFY2(thr1 > thr0 + 200, qPrintable(QString("thread %1 -> %2").arg(thr0).arg(thr1)));
+
+    // Evenly, and by the SAME factor rather than in proportion to how many values each
+    // list happens to hold — a split that would otherwise shift under the reader every
+    // time the scan turned up another subsystem.
+    QVERIFY2(qAbs((sub1 - sub0) - (thr1 - thr0)) <= 4,
+             qPrintable(QString("uneven: subsystem +%1, thread +%2")
+                            .arg(sub1 - sub0).arg(thr1 - thr0)));
+
+    // And nothing else grew: the three fixed axes are the same height in a pane twice
+    // as tall, which is what makes the growth the LISTS' rather than everyone's.
+    QCOMPARE(boxHeight("messageGroup"), msg0);
+    QCOMPARE(boxHeight("priorityGroup"), pri0);
+
+    // A pane too short for both floors scrolls rather than starving either list.
+    settle(250);
+    auto *scroll = pane.findChild<QScrollArea *>(QStringLiteral("filterScroll"));
+    QVERIFY(scroll);
+    QVERIFY(scroll->verticalScrollBar()->isVisible());
+    QVERIFY(listHeight("subsystemList") >= 70);
+    QVERIFY(listHeight("threadList") >= 70);
 }
 
 QTEST_MAIN(TestFilterPane)

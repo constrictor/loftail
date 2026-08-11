@@ -5,7 +5,6 @@
 #include "Filter.h"
 #include "MatchCriteria.h"
 
-#include <QApplication>
 #include <QElapsedTimer>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -14,7 +13,6 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTimer>
-#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace loftail {
@@ -33,34 +31,27 @@ FilterPane::FilterPane(QWidget *parent) : QWidget(parent)
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
 
-    // A header row for the one thing the pane could not say and the one thing it could
-    // not do: whether anything is being filtered out, and "stop". Both matter because
-    // the pane is TABBED behind three others — switch to Runs and every axis is out of
-    // sight while still in force — and because clearing meant visiting five axes by
-    // hand, with no other way back to an unfiltered view.
-    auto *header = new QHBoxLayout;
-    header->setContentsMargins(6, 4, 6, 0);
-    m_summary = new QLabel(this);
-    m_summary->setObjectName(QStringLiteral("filterSummary"));
-    header->addWidget(m_summary, 1);
-    m_clearButton = new QToolButton(this);
-    m_clearButton->setObjectName(QStringLiteral("clearFilters"));
-    m_clearButton->setText(tr("Clear"));
-    m_clearButton->setToolTip(tr("Switch every axis off and tick every value again, "
-                                 "leaving the whole log visible."));
-    header->addWidget(m_clearButton);
-    outer->addLayout(header);
-    connect(m_clearButton, &QAbstractButton::clicked, this, &FilterPane::clearAll);
-
+    // No header row. There was one, carrying a "Filtering"/"No filters" word and a
+    // Clear button, for the one thing the pane could not say and the one thing it could
+    // not do. Both answers survive it and neither needed a row of the pane's height:
+    // the pane is tabbed behind three others, so the place that has to report filtering
+    // in force is the TAB, which activityChanged() marks whether or not the pane is the
+    // one on screen — a word visible only once you had already switched to the pane was
+    // answering the question for the case where it was not being asked. And clearing is
+    // View ▸ Clear Filters, which reaches the same clearAll() from where the rest of the
+    // view's commands live and does not spend a row of a crowded dock standing by.
     auto *scroll = new QScrollArea(this);
     scroll->setObjectName(QStringLiteral("filterScroll"));
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     outer->addWidget(scroll);
 
-    // The two metadata axes ship enabled so their controls act on the first click
-    // (SPEC.md §6); applyToDocument() collapses the resulting no-op state.
-    m_axes = new AxisEditor(AxisEditor::Defaults{/*priorityOn=*/true, /*loggerOn=*/true}, scroll);
+    // Subsystem ships enabled so its list acts on the first click (SPEC.md §6);
+    // applyToDocument() collapses the resulting no-op state, so a log still opens with
+    // every record shown. Priority does NOT — it once did, back when its lowest offered
+    // level narrowed nothing; see AxisEditor::Defaults for why that stopped being true
+    // and why "ticked by default" could not survive it.
+    m_axes = new AxisEditor(AxisEditor::Defaults{/*priorityOn=*/false, /*loggerOn=*/true}, scroll);
     // Every axis shows its controls whether it is switched on or not — deliberately NOT
     // setCollapsible(true), which is what the Highlighters pane needs and this pane
     // briefly borrowed to save height. Height is the wrong thing to buy here: a pane
@@ -91,23 +82,40 @@ FilterPane::FilterPane(QWidget *parent) : QWidget(parent)
     auto *contextLayout = new QHBoxLayout(contextRow);
     contextLayout->setContentsMargins(0, 0, 0, 0);
     // It shares the message axis's toggle row now, so it has to earn its width: the
-    // two words this used to spend on "Before:" and "After:" are a minus and a plus,
-    // with the words themselves on the spin boxes' own tooltips.
+    // two words this used to spend on "Before:" and "After:" are one glyph each, with
+    // the words themselves on the spin boxes' tooltips and accessible names — the same
+    // trade the .*/Aa/≠ toggles beside them already make.
+    //
+    // The glyphs are ARROWS, and were a minus and a plus. Both were wrong twice over.
+    // A minus abutting a numeric stepper reads as "decrement" and a plus as
+    // "increment", which is the one meaning a spin box's neighbour must not have; and
+    // "+" is ALREADY a button in this pane, the one that adds a typed name to the
+    // subsystem and thread lists, so the same glyph meant "add" ten pixels away.
+    // Before and after a match are, in a table scrolled top to bottom, literally above
+    // and below it — so the arrow says which rows are meant without borrowing a
+    // meaning from arithmetic.
     auto makeSpin = [contextRow](const QString &prose) {
         auto *spin = new QSpinBox(contextRow);
         spin->setRange(0, Document::kMaxContext);
         spin->setAccelerated(true);
         spin->setToolTip(prose);
         spin->setAccessibleName(prose);
-        // Sized for the value people type, not for kMaxContext. The same
-        // Ignored-plus-floor trick the time editors use, and needed for the same
-        // reason: a four-digit spin box asks for ~70 px, two of them plus the toggles
-        // made the message axis the widest thing in the pane, and the pane pays that
-        // in a horizontal scrollbar whose first casualty is the All/None/Invert
-        // column. A maximum as well as a floor, because unlike a time bound there is
-        // nothing to see in a wider box — Ignored expands, and without the cap these
-        // two would eat every spare pixel of a wide dock.
-        spin->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        // Sized for the value people type, not for kMaxContext: a four-digit spin box
+        // asks for ~70 px, and two of them plus the toggles made the message axis the
+        // widest thing in the pane, which the pane pays for in a horizontal scrollbar
+        // whose first casualty is the All/None/Invert column.
+        //
+        // A maximum is the whole mechanism, and the Ignored policy the time editors
+        // use must NOT be added to it — the two do opposite things and the
+        // combination is what put a label on top of a spin box here. QWidgetItem
+        // bounds its size hint by maximumSize, so a cap alone already holds the box
+        // to 62 px and the layout allocates it exactly that; Ignored instead tells
+        // the layout the hint means nothing and to hand over every spare pixel, and
+        // the capped widget is then CENTRED in a cell far wider than itself. It
+        // drifts right, away from the label naming it, and the last item in the row
+        // is pushed past the row's own right edge and clipped. A floor still makes
+        // sense (Ignored is not needed for one: minimumSize wins over the hint in
+        // qSmartMinSize either way), so the box cannot collapse in a narrow dock.
         spin->setMinimumWidth(46);
         spin->setMaximumWidth(62);
         return spin;
@@ -116,12 +124,18 @@ FilterPane::FilterPane(QWidget *parent) : QWidget(parent)
     m_contextAfter = makeSpin(tr("Records to show after each match"));
     m_contextBefore->setObjectName(QStringLiteral("contextBefore"));
     m_contextAfter->setObjectName(QStringLiteral("contextAfter"));
+    // Spacing carries the grouping, so it is set per gap rather than left uniform: a
+    // glyph equidistant between the word "Context" and the box it labels binds to
+    // neither. Each arrow hugs its own spin box, and the wider gaps fall between the
+    // caption and the first pair, and between the two pairs.
+    contextLayout->setSpacing(2);
     contextLayout->addWidget(new QLabel(tr("Context"), contextRow));
-    // Glyphs, never translated (ARCHITECTURE.md §9.1) — U+2212, the minus that
-    // matches the plus in width, not a hyphen.
-    contextLayout->addWidget(new QLabel(QString::fromUtf8("−"), contextRow));
+    contextLayout->addSpacing(8);
+    // Glyphs, never translated (ARCHITECTURE.md §9.1).
+    contextLayout->addWidget(new QLabel(QString::fromUtf8("↑"), contextRow));
     contextLayout->addWidget(m_contextBefore);
-    contextLayout->addWidget(new QLabel(QStringLiteral("+"), contextRow));
+    contextLayout->addSpacing(10);
+    contextLayout->addWidget(new QLabel(QString::fromUtf8("↓"), contextRow));
     contextLayout->addWidget(m_contextAfter);
     m_axes->addTextExtra(contextRow);
 
@@ -198,7 +212,7 @@ bool FilterPane::hasActiveFilters() const
            || m_document->contextAfter() > 0;
 }
 
-void FilterPane::updateSummary()
+void FilterPane::updateActivity()
 {
     const bool active = hasActiveFilters();
     // Only on a CHANGE. applyToDocument() runs on every index-progress tick — the
@@ -209,19 +223,13 @@ void FilterPane::updateSummary()
     // resulting storm starved the GUI thread badly enough that indexing sat at 0%.
     // (Offscreen and Xvfb both absorb it, which is why only the real desktop showed
     // it — worth remembering next time a pane looks fine under test and not in use.)
-    if (m_summaryActive.has_value() && *m_summaryActive == active)
+    //
+    // The guard therefore matters MORE now, not less: the label it also protected is
+    // gone, so the tab-bar write is the only thing left on this path and the only
+    // reason the function is rate-limited at all.
+    if (m_activeState.has_value() && *m_activeState == active)
         return;
-    m_summaryActive = active;
-
-    m_clearButton->setEnabled(active);
-    m_summary->setText(active ? tr("Filtering") : tr("No filters"));
-    // Greyed while inactive, so the word carries the state as well as saying it.
-    QPalette pal = m_summary->palette();
-    pal.setColor(QPalette::WindowText,
-                 qApp->palette(m_summary).color(active ? QPalette::Active
-                                                       : QPalette::Disabled,
-                                                QPalette::WindowText));
-    m_summary->setPalette(pal);
+    m_activeState = active;
     emit activityChanged(active);
 }
 
@@ -335,7 +343,7 @@ void FilterPane::setTimeRange(qint64 fromUtcMs, qint64 toUtcMs)
 void FilterPane::applyToDocument()
 {
     if (!m_document) {
-        updateSummary();
+        updateActivity();
         return;
     }
 
@@ -360,7 +368,7 @@ void FilterPane::applyToDocument()
 
     // Every route that changes the FilterSet passes through here, so this is the one
     // place the header and the dock marker have to be kept in step from.
-    updateSummary();
+    updateActivity();
 }
 
 } // namespace loftail
