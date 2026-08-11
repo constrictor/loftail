@@ -1920,6 +1920,17 @@ void MainWindow::onRunSelected(int runIndex)
     if (m_runPane)
         m_runPane->refresh();
 
+    // In "seconds from run start" the two panes' time bounds are counted from the
+    // SELECTED run's baseline (AxisEditor::secondsBaseMs), because a bound has to name
+    // one instant and that is the run whose records are on screen. So moving the
+    // selection moves what those digits mean, exactly as a display-mode change does —
+    // and this re-renders them to keep naming the instant they named before. A no-op in
+    // every other display mode, where the baseline is not consulted at all.
+    if (m_filterPane)
+        m_filterPane->refreshTimeBounds();
+    if (m_highlighterPane)
+        m_highlighterPane->refreshTimeBounds();
+
     // Follow only makes sense for the live tail: the newest run (or "all runs") jumps
     // to the end and keeps following; an earlier, finished run scrolls to its start,
     // which detaches follow so the history stays put while the file grows (§3a).

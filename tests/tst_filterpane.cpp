@@ -11,6 +11,7 @@
 #include <QListWidgetItem>
 #include <QStyle>
 #include <QStyleOptionGroupBox>
+#include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QFile>
 #include <QJsonArray>
@@ -185,6 +186,9 @@ private slots:
     // for something that was silently wrong rather than a preference about layout.
     void timeRangeOpensOnTheFilesOwnSpan();
     void aTimeBoundSetByHandSurvivesTheScan();
+    void timeBoundsAreAskedForInTheColumnsOwnUnits();
+    void switchingTheDisplayModeKeepsTheBoundsInstant();
+    void runSecondsBoundsCountFromTheSelectedRun();
     void priorityComboFollowsItsCheckbox();
     void switchedOffAxesStayVisibleAndGreyed();
     void anAxisTheFormatLacksIsNotShownAtAll();
@@ -780,6 +784,127 @@ void TestFilterPane::aTimeBoundSetByHandSurvivesTheScan()
     pane.refreshDiscoveredLists();
 
     QCOMPARE(start->dateTime(), chosen);
+}
+
+// A bound is asked for in the units the timestamp column is showing (SPEC.md §6). With
+// the column rendering seconds, being handed a calendar is a question about a quantity
+// the log never displayed — and answering it means converting by hand from a baseline
+// only the pane knows.
+void TestFilterPane::timeBoundsAreAskedForInTheColumnsOwnUnits()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    pane.setDocument(&doc);
+    pane.refreshDiscoveredLists();
+
+    auto *date = pane.findChild<QDateTimeEdit *>(QStringLiteral("timeStart"));
+    auto *secs = pane.findChild<QDoubleSpinBox *>(QStringLiteral("timeStartSeconds"));
+    QVERIFY(date && secs);
+
+    // The default display mode renders the file's own date, so the pane asks for one.
+    QVERIFY(date->isVisible());
+    QVERIFY(!secs->isVisible());
+
+    doc.setTimeDisplay(TimeDisplay::EpochSeconds);
+    pane.refreshTimeBounds(); // what MainWindow calls on a display-mode change
+    QVERIFY(!date->isVisible());
+    QVERIFY(secs->isVisible());
+
+    // And it is seeded in those units: the file's first record, in epoch seconds.
+    const qint64 firstMs = doc.index().records.first().timestamp;
+    QCOMPARE(secs->value(), double(firstMs) / 1000.0);
+
+    // Millisecond precision exactly where the file's own %d has it — ".000" under a
+    // format without %q would invent precision the log does not carry.
+    QCOMPARE(secs->decimals(), 3);
+}
+
+// Switching how the column reads must not move a bound. The digits change; the instant
+// they name does not — in both directions, and through a bound the user typed.
+void TestFilterPane::switchingTheDisplayModeKeepsTheBoundsInstant()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.refreshDiscoveredLists();
+    axis(pane, "timeGroup")->setChecked(true);
+
+    // A bound that admits the second record and not the first.
+    auto *date = pane.findChild<QDateTimeEdit *>(QStringLiteral("timeStart"));
+    auto *secs = pane.findChild<QDoubleSpinBox *>(QStringLiteral("timeStartSeconds"));
+    QVERIFY(date && secs);
+    date->setDateTime(QDateTime(QDate(2026, 7, 21), QTime(12, 0, 1)));
+    const qint64 chosen = doc.filters().startMs;
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 1);
+
+    doc.setTimeDisplay(TimeDisplay::EpochSeconds);
+    pane.refreshTimeBounds();
+    QCOMPARE(secs->value(), double(chosen) / 1000.0);
+    QCOMPARE(doc.filters().startMs, chosen);
+
+    // Typed in seconds now, and read back as the same kind of bound.
+    secs->setValue(secs->value() + 1.0);
+    QCOMPARE(doc.filters().startMs, chosen + 1000);
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 0);
+
+    // And back: the date editor holds what the seconds editor was saying. isHidden(),
+    // not isVisible() — this pane is never shown, so nothing on it is visible.
+    doc.setTimeDisplay(TimeDisplay::AsWritten);
+    pane.refreshTimeBounds();
+    QVERIFY(!date->isHidden());
+    QVERIFY(secs->isHidden());
+    QCOMPARE(doc.filters().startMs, chosen + 1000);
+}
+
+// "Seconds from run start" is per-record in the column — each record counts from its
+// own run — and a bound has to name ONE instant. The selected run's baseline is the one
+// that agrees with what is on screen, since the run selection is already what restricts
+// the view, so moving the selection re-renders the digits rather than moving the bound.
+void TestFilterPane::runSecondsBoundsCountFromTheSelectedRun()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file,
+                     "2026-07-21 12:00:00,000 [main] INFO  boot - starting\n"
+                     "2026-07-21 12:00:01,000 [main] INFO  net.socket - a\n"
+                     "2026-07-21 12:00:10,000 [main] INFO  boot - starting\n"
+                     "2026-07-21 12:00:12,000 [main] INFO  net.socket - b\n"),
+             qPrintable(doc.lastError()));
+    doc.setRunStart(QStringLiteral("starting"), /*regex=*/false, Qt::CaseSensitive);
+    QCOMPARE(doc.runs().size(), 2);
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.refreshDiscoveredLists();
+    doc.setTimeDisplay(TimeDisplay::RunSeconds);
+    pane.refreshTimeBounds();
+
+    auto *secs = pane.findChild<QDoubleSpinBox *>(QStringLiteral("timeStartSeconds"));
+    QVERIFY(secs);
+
+    doc.selectRun(0);
+    pane.refreshTimeBounds();
+    const qint64 chosen = doc.index().records.at(1).timestamp; // 12:00:01
+    secs->setValue(1.0);                                       // 1 s into run 0
+    axis(pane, "timeGroup")->setChecked(true);
+    QCOMPARE(doc.filters().startMs, chosen);
+
+    // Run 1 starts at 12:00:10, so the same instant is now "-9" seconds. The bound is
+    // where it was; only the way it is written down moved.
+    doc.selectRun(1);
+    pane.refreshTimeBounds();
+    QCOMPARE(secs->value(), -9.0);
+    QCOMPARE(doc.filters().startMs, chosen);
 }
 
 // Priority used to be the one axis with no QGroupBox, so Qt was not greying its body
