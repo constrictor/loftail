@@ -10,17 +10,14 @@
 
 QT_BEGIN_NAMESPACE
 class QComboBox;
-class QGroupBox;
-class QListWidget;
-class QListWidgetItem;
 class QPushButton;
+class QTableWidget;
 QT_END_NAMESPACE
 
 namespace loftail {
 
 class AxisEditor;
 class Document;
-class SectionBox;
 
 // M5 — the Highlighters side pane (SPEC.md §7, §8). A dockable widget bound to the
 // ACTIVE document by signal (invariant #7): setDocument() rebinds it, never a
@@ -30,10 +27,19 @@ class SectionBox;
 // and foreground color picked from the 27-slot palette (or *default*).
 //
 // The axis controls are the shared `AxisEditor`, the very widget the Filters pane
-// uses, sitting in a scroll area with each axis collapsed until it is enabled — five
-// axes and a rule list do not otherwise fit a dock. Rules store criteria (names,
-// levels, wall clock) and palette INDICES, never RGB or interned ids, so they stay
-// portable across the theme, a re-index and a zone change (ARCHITECTURE.md §8).
+// uses, sitting in a scroll area — five axes do not otherwise fit a dock under a rule
+// list. Rules store criteria (names, levels, wall clock) and palette INDICES, never
+// RGB or interned ids, so they stay portable across the theme, a re-index and a zone
+// change (ARCHITECTURE.md §8).
+//
+// **What a rule DOES is edited in the rule list itself**, one column per action, and
+// what is left below the list is the CONDITION alone (ARCHITECTURE.md §7.5). The four
+// actions used to be a stack of checkable sections under an `Action` caption, which
+// cost the pane's scarcest resource — height — to show one rule's settings while the
+// list above already had a row per rule with nothing in it but a summary. A row is
+// what an action belongs to: the answer is per rule, it is a tick, and the list is
+// where every rule is on screen at once. That also deletes the `Condition` caption:
+// with nothing to tell it apart from, the surviving half needs no name.
 //
 // The authoritative rule list lives in the Document's HighlighterSet (invariant #7);
 // the pane keeps a synced working copy and, on every edit, writes it back and calls
@@ -44,6 +50,21 @@ class HighlighterPane : public QWidget
 
 public:
     explicit HighlighterPane(QWidget *parent = nullptr);
+
+    // The rule table's columns, in order. Public because they are the test contract —
+    // the same role object names play for the widgets in `AxisEditor`, and for the same
+    // reason: a column is identified by what it is, never by the header it shows, which
+    // is an icon or a translated word (ARCHITECTURE.md §9.1).
+    enum Column {
+        kColEnabled = 0,    // the rule's own on/off tick
+        kColRule,           // what it matches, as one line of prose
+        kColForeground,     // text colour   — an icon-only swatch picker
+        kColBackground,     // background    — the same
+        kColDigest,         // HighlightAction::Digest
+        kColNotify,         // HighlightAction::Notify
+        kColTab,            // HighlightAction::Tab
+        kColumnCount
+    };
 
     void setDocument(Document *document);
 
@@ -86,32 +107,55 @@ signals:
     // pane's is: the title rides a QTabBar entry, and re-setting it relays out the bar.
     void activityChanged(bool active);
 
+protected:
+    // A theme switch changes every swatch icon in the table and every glyph in its
+    // header, all of which are pixmaps painted once. Rebuilding the table is the
+    // cheapest correct answer, and it keeps the selected rule.
+    void changeEvent(QEvent *event) override;
+
 private:
     void buildUi();
-    void reloadRuleList();       // rebuild the rule list widget from m_rules
-    void loadEditorFor(int row); // fill the editor from m_rules[row]
+    void reloadRuleTable();      // rebuild the rule table from m_rules
+    void buildRow(int row);      // fill one table row from m_rules[row]
+    void loadEditorFor(int row); // fill the axis editor from m_rules[row]
     void commit();               // push m_rules into the document + emit change
     void syncToDocument();
     void updateActivity();       // emit activityChanged() when hasRules() flips
 
     int currentRow() const;
+    void setCurrentRow(int row);
     QString ruleSummary(const HighlightRule &r) const;
-    // Paint a list row in its own rule's colours, so the list shows what the rule
-    // does rather than only naming it.
-    void paintItem(QListWidgetItem *item, const HighlightRule &r) const;
+    // Paint a rule's row in its own colours, so the table previews the rule rather
+    // than only naming it.
+    void paintRow(int row, const HighlightRule &r) const;
+    // Re-read one row's summary and colours after an edit, leaving the selection and
+    // every check state where they are.
+    void refreshRow(int row);
     // The first palette slot no existing rule paints with, cycling once every slot is
     // spoken for. Shared by the New button and the record menu's one-click rule.
     int nextFreeBackground() const;
-    QComboBox *makeSwatchCombo(QWidget *parent);
+    // One row's swatch picker: icon-only, so the pair costs two table columns rather
+    // than a row of the editor.
+    QComboBox *makeSwatchCombo(int row, Column column);
+    QComboBox *swatchCombo(int row, Column column) const;
     void setSwatchCombo(QComboBox *combo, int paletteIndex);
     int swatchValue(const QComboBox *combo) const;
     bool isDark() const;
 
-    // The four action controls, read as one set (M19, SPEC.md §7).
-    HighlightActions readActions() const;
+    // HighlightAction::Color follows the two swatches and is not a control of its own
+    // (ARCHITECTURE.md §7.5): a rule colours exactly when one of its two roles names a
+    // palette entry. Applied on every ingest as well as on every edit, so the flag and
+    // the swatches can never say different things.
+    static void applyColourAction(HighlightRule &rule);
+    // Take m_rules in from a document or a preset: normalise the colour action, and
+    // report whether anything actually moved.
+    bool normaliseRules();
+
+    // The action a check column carries, for the itemChanged handler.
+    static std::optional<HighlightAction> actionForColumn(int column);
     // Whether this desktop offers a notification service at all. False on a stock
-    // GNOME/Wayland session, so the Notify control is disabled and says why rather
-    // than accepting a tick that would do nothing.
+    // GNOME/Wayland session, so the Notify column is not user-checkable and says why
+    // rather than accepting a tick that would do nothing.
     static bool notificationsSupported();
 
     Document *m_document = nullptr;
@@ -119,30 +163,24 @@ private:
     bool m_updating = false; // guards signal storms during (re)load
     std::optional<bool> m_activeState; // last hasRules() reported by activityChanged()
 
-    QListWidget *m_ruleList = nullptr;
+    // The rule list, which is now a TABLE: a tick, what the rule matches, its two
+    // colours and its three remaining actions, one rule per row.
+    QTableWidget *m_ruleTable = nullptr;
+    int m_swatchColumnWidth = 0; // a swatch picker's width; the colour columns are fixed
+
     QPushButton *m_newBtn = nullptr;
     QPushButton *m_removeBtn = nullptr;
     QPushButton *m_clearBtn = nullptr;
     QPushButton *m_upBtn = nullptr;
     QPushButton *m_downBtn = nullptr;
 
-    // Editor for the selected rule. A bare container, not a captioned group box: the two
-    // sections inside it carry the frames, and setEnabled() on it is what greys the whole
-    // editor while no rule is selected.
+    // The CONDITION editor for the selected rule, and the whole of what is left below
+    // the table. A bare container, not a captioned group box: setEnabled() on it is what
+    // greys the axes while no rule is selected, and it carries no caption because the
+    // table above says which rule is being edited and there is no second half left to
+    // tell it apart from.
     QWidget    *m_editor = nullptr;
     AxisEditor *m_axes = nullptr;
-    // Highlight is an ACTION, so its enable control is the group box's own title row and
-    // the two combos are its body — hence QGroupBox* rather than a separate checkbox,
-    // the same shape AxisEditor's axis enables take and for the same reason.
-    QGroupBox  *m_colorGroup = nullptr;
-    QComboBox  *m_bgCombo = nullptr;
-    QComboBox  *m_fgCombo = nullptr;
-    // The other three actions. SectionBoxes rather than plain checkboxes, so that all
-    // four actions are one shape — a checkable title row with a hairline — and only
-    // Highlight, the one with settings, has a body under its line.
-    SectionBox *m_digestAction = nullptr;
-    SectionBox *m_tabAction = nullptr;
-    SectionBox *m_notifyAction = nullptr;
 };
 
 } // namespace loftail
