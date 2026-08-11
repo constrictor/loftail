@@ -55,15 +55,32 @@ class AxisEditor : public QWidget
     Q_OBJECT
 
 public:
-    // Which axes start enabled. The Filters pane ships priority and subsystem on so
-    // their controls act on the first click (SPEC.md §6, and applyToDocument collapses
-    // the resulting no-op state). A highlight rule starts with nothing on: every axis
-    // is opt-in, and an unconfigured rule must stay inert (SPEC.md §7).
+    // Which axes start enabled. The Filters pane ships subsystem on so its controls act
+    // on the first click (SPEC.md §6, and applyToDocument collapses the resulting no-op
+    // state). A highlight rule starts with nothing on: every axis is opt-in, and an
+    // unconfigured rule must stay inert (SPEC.md §7).
+    //
+    // Priority ships OFF in both, and used to ship on in the Filters pane. The reason it
+    // shipped on was that its lowest offered level was TRACE, which narrows nothing, so
+    // the axis could be ticked without hiding a record and the combo would then act on
+    // the first click instead of needing the box ticked first. TRACE is no longer
+    // offered (kDefaultFloor), so "ticked" and "narrows nothing" can no longer both be
+    // true, and shipping it on would hide every DEBUG record in every log on open. The
+    // first-click argument goes with it rather than being lost: Qt greys a checkable
+    // box's body, so the combo cannot be changed at all while the axis is off, and the
+    // "I moved the level and nothing happened" confusion it existed to prevent is now
+    // unreachable by construction rather than by choosing a no-op default.
     struct Defaults
     {
         bool priorityOn = false;
         bool loggerOn = false;
     };
+
+    // The minimum level a fresh editor offers, and what clearAll() returns the combo
+    // to. INFO because it is the level the axis is nearly always reached for and the
+    // one log4cplus configurations most often emit at; the two below it are the ones a
+    // user turns the axis ON to be rid of.
+    static constexpr Priority kDefaultFloor = Priority::Info;
 
     explicit AxisEditor(Defaults defaults, QWidget *parent = nullptr);
 
@@ -206,6 +223,24 @@ private:
     // body of code rather than two that have to be kept in step by hand.
     void buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString &title,
                         const QString &prefix, int listMinHeight, bool enabledByDefault);
+
+    // The priority combo's current level, and how to select one. These exist because
+    // the combo's row order is NO LONGER PriorityChoice's index order and must never be
+    // assumed to be again: PriorityChoice is the PERSISTENCE table — MatchCriteria
+    // writes `minPriorityIndex` as an index into it and reads it straight back — so
+    // dropping TRACE from that table to drop it from this combo would silently reinterpret
+    // every preset and session ever written, one level too severe (a saved INFO floor
+    // reading back as WARN), with no version bump able to catch it: PresetStore gates on
+    // exact equality and discards on any bump. So the table keeps all six levels, the
+    // combo carries the Priority it means in each item's data, and the two are related
+    // only through these two functions.
+    Priority comboPriority() const;
+    // Selects the item for `p`. Returns false when the combo does not offer it, which
+    // is the case for TRACE alone and only from data written before it was dropped;
+    // the combo is left on its default and it is the CALLER's job to decide what an
+    // unofferable floor means, because the answer differs (see setCriteria and
+    // setMinimumPriority — both mean "do not narrow", but reach it differently).
+    bool setComboPriority(Priority p);
     // Whether `name` is worth offering to add: non-empty and not already listed.
     bool canAddTyped(ValueAxis axis, const QString &name) const;
     // Keep the All / None / Invert tooltips telling the truth about how many entries

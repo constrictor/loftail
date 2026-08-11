@@ -2,10 +2,15 @@
 
 #include <QApplication>
 #include <QDockWidget>
+#include <QLineEdit>
+#include <QGroupBox>
+#include <QFile>
 #include <QLabel>
 #include <QMainWindow>
 #include <QTabBar>
+#include <QTemporaryDir>
 
+#include "FilterPane.h"
 #include "MainWindow.h"
 #include "PaneTitleStyle.h"
 
@@ -37,6 +42,7 @@ private slots:
     void tabbedPanesSuppressTheirTitleText();
     void aPaneAloneKeepsItsTitleText();
     void titleBarCannotSimplyBeHidden();
+    void theFiltersTabIsMarkedWhileFiltersAreInForce();
 };
 
 void TestPaneChrome::tabbedPanesSuppressTheirTitleText()
@@ -181,6 +187,53 @@ void TestPaneChrome::titleBarCannotSimplyBeHidden()
     QTest::qWait(50);
     QVERIFY2(dragFrom(a, QPoint(a->width() / 2, 8)),
              "the default title bar did not undock — this harness proves nothing");
+}
+
+// The Filters pane no longer says "Filtering" inside itself — that word and the Clear
+// button beside it are gone. The dock TITLE is what reports it now, and since the panes
+// ship tabified that title is a tab label, which is the case the word could never cover:
+// filters are usually in force while the pane is behind Highlighters, Presets or Runs.
+// So this marker is the whole of the feature now rather than a second copy of it.
+void TestPaneChrome::theFiltersTabIsMarkedWhileFiltersAreInForce()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("marked.log"));
+    {
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        // The app's default log4cplus pattern, so opening needs no dialog.
+        for (int i = 0; i < 8; ++i)
+            f.write(QStringLiteral("2026-07-21 10:00:0%1,000 [main] INFO  sub.%2 - line\n")
+                        .arg(i).arg(i % 2).toUtf8());
+    }
+
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    w.openFile(path);
+    QTest::qWait(50);
+
+    QDockWidget *filters = paneDock(w, "filtersDock");
+    QVERIFY(filters);
+    auto *pane = w.findChild<FilterPane *>();
+    QVERIFY(pane);
+
+    // Unfiltered on open — every axis default excludes nothing, so no marker.
+    const QString plain = filters->windowTitle();
+    QVERIFY2(!plain.contains(QChar(0x2022)), qPrintable(plain));
+
+    // Something that actually narrows: a message search no record answers.
+    auto *messageGroup = pane->findChild<QGroupBox *>(QStringLiteral("messageGroup"));
+    auto *messageText = pane->findChild<QLineEdit *>(QStringLiteral("messageText"));
+    QVERIFY(messageGroup && messageText);
+    messageGroup->setChecked(true);
+    messageText->setText(QStringLiteral("line"));
+    QTRY_VERIFY(filters->windowTitle().contains(QChar(0x2022)));
+
+    // And back, so the marker tracks the state rather than latching on the first filter.
+    pane->clearAll();
+    QTRY_COMPARE(filters->windowTitle(), plain);
 }
 
 int main(int argc, char *argv[])
