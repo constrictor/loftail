@@ -961,9 +961,14 @@ void TestFilterPane::theLevelsOfferedStartAtDebugAndDefaultToInfo()
 
     QCOMPARE(combo->count(), 5); // DEBUG, INFO, WARN, ERROR, FATAL — six levels less TRACE
     QCOMPARE(combo->findData(int(Priority::Trace)), -1);
+    // QString(priorityName(p)), not priorityName(p) directly: it returns a
+    // QLatin1StringView, which has no toUtf8() on the Qt 6.4 the reference build uses
+    // (ARCHITECTURE.md §1) however well it compiles against a newer one. The explicit
+    // QString is what every other caller of priorityName() in src/ already writes.
     for (Priority p : {Priority::Debug, Priority::Info, Priority::Warn, Priority::Error,
                        Priority::Fatal})
-        QVERIFY2(combo->findData(int(p)) >= 0, priorityName(p).toUtf8().constData());
+        QVERIFY2(combo->findData(int(p)) >= 0,
+                 QString(priorityName(p)).toUtf8().constData());
 
     QCOMPARE(combo->currentData().toInt(), int(Priority::Info));
 
