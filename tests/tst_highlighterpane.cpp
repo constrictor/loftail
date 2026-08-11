@@ -801,9 +801,10 @@ void TestHighlighterPane::anAxisTheFormatLacksIsNotShownAtAll()
     QVERIFY(thread->isVisible());
 }
 
-// The two swatch pickers set one thing, so they read as one control: labels aligned,
-// combos starting at the same x and the same width. A row-per-colour layout gave each
-// its own label column, and "Background:" is wider than "Text:".
+// The two swatch pickers set one thing — how a matching record is drawn — so they sit on
+// ONE row, sharing a baseline and splitting the width evenly. That is also what "BG:"
+// buys: two full-width labels would not fit beside two combos. The pane is short of
+// height, and neither picker is worth a row of its own.
 void TestHighlighterPane::theTwoColourCombosLineUp()
 {
     Document doc;
@@ -822,8 +823,15 @@ void TestHighlighterPane::theTwoColourCombosLineUp()
     QVERIFY(bg && fg);
     QVERIFY(QTest::qWaitFor([bg] { return bg->width() > 0; }));
 
-    QCOMPARE(bg->x(), fg->x());
-    QCOMPARE(bg->width(), fg->width());
+    QCOMPARE(bg->y(), fg->y());
+    // Even split, to the odd leftover pixel a layout has to give to one of them: what
+    // would be a bug is one combo sized from its content and the other from what is
+    // left, which is what happens the moment either loses the Ignored size policy.
+    QVERIFY(qAbs(bg->width() - fg->width()) <= 1);
+    // Text first, then background, and the pair genuinely on one line rather than
+    // overlapping rows that happen to share a y.
+    QVERIFY(fg->x() < bg->x());
+    QCOMPARE(bg->height(), fg->height());
 
     // And the block they sit in lines up with the axes above it. AxisEditor insets its
     // own group boxes so a rounded frame does not run into the scroll area's edge, so
