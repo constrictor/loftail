@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QFile>
+#include <QGroupBox>
 #include <QHeaderView>
 #include <QScrollBar>
 #include <QTemporaryDir>
@@ -98,6 +99,7 @@ private slots:
     void noDigestRuleMeansNoStrip();
     void theStripAppearsWithItsFirstMatch();
     void clearingTheRuleRemovesTheStrip();
+    void theStripIsNamed();
     void theStripIsExactlyAsTallAsItsRowsAndDoesNotScroll();
     void aTallRecordDoesNotEatTheView();
     void theStripFollowsTheMainViewsColumns();
@@ -167,6 +169,42 @@ void TestDigestView::clearingTheRuleRemovesTheStrip()
     ctx.doc->highlighters().rules.clear();
     refresh(ctx);
     QVERIFY(view.digestView()->isHidden());
+}
+
+// The strip is a second table under the first, holding copies of rows that are also in
+// the log above it. Unnamed, the honest reading of that is a rendering fault — so the
+// caption appears and disappears with the strip, and the two are SIBLINGS: the strip's
+// height cap is a third of its parent's height, so a caption that owned it would cap it
+// against its own size hint.
+void TestDigestView::theStripIsNamed()
+{
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("a.log"));
+    QVERIFY(writeWhole(path, rec(1, "ERROR", "disk full")));
+
+    DocumentContext ctx;
+    buildContext(ctx, path);
+    DocumentView view(&ctx);
+    view.resize(800, 600);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    QVERIFY(view.digestTitle() != nullptr);
+    QCOMPARE(view.digestTitle(), view.findChild<QGroupBox *>(QStringLiteral("digestTitle")));
+    QCOMPARE(view.digestView()->parentWidget(), &view);
+    QCOMPARE(view.digestTitle()->parentWidget(), &view);
+    QVERIFY(view.digestTitle()->isHidden()); // no strip, no caption over it
+
+    ctx.doc->highlighters().rules = {textRule("disk", HighlightAction::Digest)};
+    refresh(ctx);
+    QVERIFY(!view.digestView()->isHidden());
+    QVERIFY(!view.digestTitle()->isHidden());
+    // Above the strip, not below it: a caption under what it names reads as a footer.
+    QVERIFY(view.digestTitle()->y() < view.digestView()->y());
+
+    ctx.doc->highlighters().rules.clear();
+    refresh(ctx);
+    QVERIFY(view.digestTitle()->isHidden());
 }
 
 void TestDigestView::theStripIsExactlyAsTallAsItsRowsAndDoesNotScroll()

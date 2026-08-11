@@ -457,10 +457,10 @@ constexpr HighlightActions kDigestAction = HighlightAction::Digest;
 
 } // namespace
 
-// Publish m_digestLast as a FilteredIndex: the sorted, deduped set of ordinals it
-// names. Returns true when the published subset actually changed — the caller uses
-// that to decide whether a model reset is owed, because resetting on every quiet tick
-// jolts the strip for nothing.
+// Publish m_digestLast as a FilteredIndex: the deduped set of ordinals it names, in
+// TIMESTAMP order. Returns true when the published subset actually changed — the caller
+// uses that to decide whether a model reset is owed, because resetting on every quiet
+// tick jolts the strip for nothing.
 bool Document::publishDigest(bool force)
 {
     QVector<qint32> ordinals;
@@ -468,8 +468,54 @@ bool Document::publishDigest(bool force)
     for (const qint32 row : m_digestLast)
         if (row >= 0)
             ordinals.append(row);
+    // Ordinal order first, because that is what std::unique needs and two rules whose
+    // last match is the SAME record must contribute one row, not two.
     std::sort(ordinals.begin(), ordinals.end());
     ordinals.erase(std::unique(ordinals.begin(), ordinals.end()), ordinals.end());
+
+    // Then chronologically. File order is very nearly timestamp order and on a
+    // single-threaded writer is exactly it — but log4cplus appends in the order threads
+    // reach the appender, not in the order they stamped their records, so a busy log
+    // interleaves by a few milliseconds either way. The digest is a handful of rows read
+    // as "what happened, and when": one of them sitting above a row stamped earlier is
+    // read as a bug in the log rather than as a scheduling detail, and nothing else on
+    // screen puts records from different points in the file next to each other.
+    //
+    // Stable, so records sharing a millisecond keep the order the file wrote them in —
+    // the only other evidence there is.
+    //
+    // A record with NO timestamp (an unparsed line a message-text rule matched,
+    // SPEC.md §4) cannot be placed in time at all. It is left in the SLOT it occupies
+    // and only the timestamped rows are reordered around it, rather than being handed to
+    // the comparator as a special case: "unorderable, so return false either way" is not
+    // a strict weak ordering — A unplaced is incomparable with both a 12:00 and a 12:05
+    // record while those two are ordered — and a comparator that is not a strict weak
+    // ordering is undefined behaviour in std::stable_sort, not merely an odd result.
+    // Sorting it by kNoTimestamp's numeric value is no better: that is qint64's minimum,
+    // so every unparsed line would be pinned above the whole digest.
+    //
+    // FilteredIndex takes any ordinal list and copies the records in the order given, so
+    // this is a reordering of the published subset and nothing below it changes. The
+    // digest never uses the incremental append path (appendVisible/trailingCountFrom),
+    // which is the one place an ascending list is assumed — every digest update
+    // republishes wholesale through setVisible().
+    const auto placeable = [this](qint32 o) {
+        return m_index.records.at(o).timestamp != Record::kNoTimestamp;
+    };
+    QVector<qint32> chronological;
+    chronological.reserve(ordinals.size());
+    for (const qint32 o : ordinals)
+        if (placeable(o))
+            chronological.append(o);
+    std::stable_sort(chronological.begin(), chronological.end(),
+                     [this](qint32 a, qint32 b) {
+                         return m_index.records.at(a).timestamp
+                              < m_index.records.at(b).timestamp;
+                     });
+    int next = 0;
+    for (qint32 &o : ordinals)
+        if (placeable(o))
+            o = chronological.at(next++);
 
     // `force` is not belt and braces. setVisible() COPIES each 32-byte Record into the
     // compact index, so a digest row whose record grew a continuation line has the same

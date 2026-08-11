@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LogView.h"
+#include "SectionBox.h"
 
 #include <QString>
 #include <QWidget>
@@ -52,6 +53,12 @@ public:
     // area free of them.
     LogView *digestView() const { return m_digestView; }
 
+    // The caption over that strip, appearing and disappearing with it. A second table
+    // under the first is not self-explanatory — nothing on screen said why those rows
+    // were repeated there, and a row that also appears in the log above looks like a
+    // rendering fault until it is named.
+    SectionBox *digestTitle() const { return m_digestTitle; }
+
     // Show the Find bar and focus its text field (Ctrl+F).
     void activateFind();
 
@@ -70,6 +77,7 @@ protected:
 private:
     DocumentContext *m_context = nullptr;
     LogView         *m_logView = nullptr;
+    SectionBox      *m_digestTitle = nullptr;
     LogView         *m_digestView = nullptr;
     FindBar         *m_findBar = nullptr;
     QVBoxLayout     *m_layout = nullptr;
