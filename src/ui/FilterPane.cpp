@@ -68,6 +68,14 @@ FilterPane::FilterPane(QWidget *parent) : QWidget(parent)
     // explored, and the user has to switch a filter ON to find out whether it was the
     // one they wanted. Off, Qt greys the body, which says "not in force" without the
     // pane relaying out under the pointer. The scroll area above absorbs the height.
+    //
+    // An axis this log's FORMAT cannot fill is a different question and goes the other
+    // way: it is left out of the pane entirely (AxisEditor::updateAxisState). It used to
+    // be shown greyed with the reason in its title — "Thread — not in this log's format"
+    // — on the argument that this pane describes the whole log, so a missing axis is
+    // worth saying. It is not worth a section: the sentence is read once and the space is
+    // spent for the rest of the session. Switched off is a state the user can undo;
+    // missing from the format is not, so there is nothing here to read and decide about.
     scroll->setWidget(m_axes);
 
     // Filter context (SPEC.md §6), injected into the message-text axis rather than

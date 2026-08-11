@@ -758,11 +758,10 @@ void TestHighlighterPane::switchedOffAxesStayVisibleAndGreyed()
     QVERIFY(list->isVisibleTo(axis(pane, "subsystemGroup")));
 }
 
-// A format with no %t leaves the thread axis out of the rule editor entirely, rather
-// than showing it greyed with the reason in its title as the Filters pane does. The
-// asymmetry is deliberate (AxisEditor::setHidesUnsupportedAxes): the Filters pane
-// describes the whole log and a missing axis is worth saying, while this pane repeats
-// the axis block for every rule the user clicks.
+// A format with no %t leaves the thread axis out of the rule editor entirely. It is the
+// AxisEditor's own behaviour and not a per-pane flag any more — the Filters pane showed
+// such an axis greyed with the reason in its title until it stopped, so the two panes can
+// no longer drift on it (AxisEditor::updateAxisState, tst_filterpane has the twin).
 void TestHighlighterPane::anAxisTheFormatLacksIsNotShownAtAll()
 {
     Document withThread;
@@ -945,7 +944,7 @@ void TestHighlighterPane::noSectionClipsItsOwnTitle()
     QVERIFY(QTest::qWaitFor([&sections] { return sections.first()->height() > 0; }));
     for (SectionBox *box : sections) {
         if (!box->isVisible())
-            continue; // an axis this format cannot fill is left out (setHidesUnsupportedAxes)
+            continue; // an axis this format cannot fill is left out (updateAxisState)
         const QSize title = box->titleRowHint();
         QVERIFY2(box->height() >= title.height(),
                  qPrintable(QStringLiteral("%1 is %2 px tall for a %3 px title row")

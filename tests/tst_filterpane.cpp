@@ -187,7 +187,7 @@ private slots:
     void aTimeBoundSetByHandSurvivesTheScan();
     void priorityComboFollowsItsCheckbox();
     void switchedOffAxesStayVisibleAndGreyed();
-    void anAxisTheFormatLacksSaysSo();
+    void anAxisTheFormatLacksIsNotShownAtAll();
     void typingAnUnlistedNameOffersToAddIt();
     void listButtonsOwnUpToWhatTheNarrowingHides();
     void clearAllReturnsToAnUnfilteredView();
@@ -839,11 +839,12 @@ void TestFilterPane::switchedOffAxesStayVisibleAndGreyed()
     QVERIFY(field->isEnabled());
 }
 
-// A format with no %t greys the thread axis — but a preset or a restored session can
-// leave it greyed AND TICKED, at which point resolve() drops it and the pane shows a
-// selection that is not in force. The title carries the reason, because Qt delivers no
-// mouse events to a disabled widget and so never shows its tooltip.
-void TestFilterPane::anAxisTheFormatLacksSaysSo()
+// A format with no %t leaves the thread axis out of this pane entirely — it used to show
+// it greyed with the reason in its title, which is a sentence read once in exchange for a
+// section that stays for the session. It stays DISABLED as well as hidden, and that is
+// the half that matters: a preset or a restored session can arrive with the axis ticked,
+// at which point resolve() drops it, and nothing on screen may be able to tick it back.
+void TestFilterPane::anAxisTheFormatLacksIsNotShownAtAll()
 {
     Document doc;
     QTemporaryFile file;
@@ -854,17 +855,28 @@ void TestFilterPane::anAxisTheFormatLacksSaysSo()
              qPrintable(doc.lastError()));
 
     FilterPane pane;
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
     pane.setDocument(&doc);
+
     QGroupBox *thread = axis(pane, "threadGroup");
     QVERIFY(thread);
+    QVERIFY(!thread->isVisible());
     QVERIFY(!thread->isEnabled());
-    // Not asserting the wording — only that it stopped being the bare axis name, so
-    // the greyed box is no longer silent about why.
-    QVERIFY(thread->title() != QStringLiteral("Thread"));
-    QVERIFY(thread->title().contains(QStringLiteral("Thread")));
 
-    // The axis that IS in the format keeps its plain name.
+    // The axes this format DOES carry are untouched by it, name included.
+    QVERIFY(axis(pane, "subsystemGroup")->isVisible());
+    QVERIFY(axis(pane, "timeGroup")->isVisible());
     QCOMPARE(axis(pane, "subsystemGroup")->title(), QStringLiteral("Subsystem"));
+
+    // And rebinding to a log that has %t brings it back — the axis is hidden per
+    // document, not switched off once for the pane.
+    Document threaded;
+    QTemporaryFile withThread;
+    QVERIFY2(openLog(threaded, withThread, kTwoLoggers), qPrintable(threaded.lastError()));
+    pane.setDocument(&threaded);
+    QVERIFY(thread->isVisible());
+    QVERIFY(thread->isEnabled());
 }
 
 // The "Add ... manually" row and its button are gone; the narrow field does both, and
