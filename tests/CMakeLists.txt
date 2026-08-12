@@ -368,6 +368,14 @@ target_link_libraries(tst_filterpane PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_filterpane COMMAND tst_filterpane)
 set_tests_properties(tst_filterpane PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# The Runs pane: the detected runs are a LIST, it takes the pane's spare height, the
+# selection travels on the current row (so the arrow keys work), and a repopulation
+# during live tail is not a user choice. Links the UI layer, runs offscreen.
+qt_add_executable(tst_runpane tst_runpane.cpp)
+target_link_libraries(tst_runpane PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_runpane COMMAND tst_runpane)
+set_tests_properties(tst_runpane PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # The Highlighters pane, where the same axis editor drives one rule among several
 # rather than the whole file: a typed regex must reach the rule, selecting another
 # rule must show THAT rule's subsystems (the Filters pane's "newly discovered arrives

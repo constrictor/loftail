@@ -5,9 +5,9 @@
 
 QT_BEGIN_NAMESPACE
 class QCheckBox;
-class QComboBox;
 class QLabel;
 class QLineEdit;
+class QListWidget;
 class QPushButton;
 QT_END_NAMESPACE
 
@@ -63,7 +63,10 @@ private:
     QCheckBox  *m_case = nullptr;
     QPushButton *m_apply = nullptr;
     QLabel     *m_info = nullptr;   // "N runs" / invalid-regex notice
-    QComboBox  *m_runCombo = nullptr;
+    // The run list is the one thing in this pane that GROWS: it is as long as the log
+    // has runs, which is unknown when the pane is built and changes while it scans.
+    // Row 0 is "All runs"; row i+1 is runs().at(i).
+    QListWidget *m_runList = nullptr;
 };
 
 } // namespace loftail
