@@ -31,6 +31,7 @@
 #include <QStyledItemDelegate>
 #include <QSystemTrayIcon>
 #include <QTableWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QVector>
 
@@ -39,43 +40,72 @@ namespace loftail {
 namespace {
 
 constexpr int kGlyphPx = 14;
+// Inside a cell that holds a widget: enough that a framed button does not touch the row
+// above and below, and no more — the table is in a dock.
+constexpr int kCellMargin = 2;
+// Between the two swatch pickers, which share one cell. Small, because they are one
+// answer in two halves.
+constexpr int kColourGap = 2;
 
-QIcon swatchIcon(const QColor &c, const QColor &ink)
+// The letter a text-colour swatch is drawn as, in three strokes. Not a character from a
+// font: the offscreen QPA plugin on Windows resolves no font at all (CLAUDE.md), so a
+// glyph taken from one is a guaranteed blank there.
+void drawLetterA(QPainter &p, const QColor &c, qreal weight)
+{
+    p.setPen(QPen(c, weight, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.drawLine(QPointF(3.0, 11.0), QPointF(7.0, 3.2));
+    p.drawLine(QPointF(7.0, 3.2), QPointF(11.0, 11.0));
+    p.drawLine(QPointF(4.8, 8.3), QPointF(9.2, 8.3));
+}
+
+// One picker's swatch, and the two roles are drawn DIFFERENTLY on purpose. They share a
+// column now, so nothing above them says which is which: a background is the colour
+// filling a whole cell, and a text colour is a letterform in that colour — which is also
+// what each one does to a record.
+QIcon swatchIcon(const QColor &c, HighlighterPane::ColourRole role, const QColor &ink)
 {
     QPixmap pm(kGlyphPx, kGlyphPx);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
     QColor line = ink;
-    if (c.isValid()) {
-        p.fillRect(pm.rect(), c);
-        // ...inside an outline, which is not decoration: Paper is a near-white and Ink a
-        // near-black, so on the theme that matches one of them a swatch with no edge is
-        // an empty cell — and the *default* swatch below is exactly what an empty cell
-        // is supposed to mean here.
-        line.setAlpha(90);
-        p.setPen(QPen(line, 1.0));
-        p.drawRect(QRectF(0.5, 0.5, kGlyphPx - 1.5, kGlyphPx - 1.5));
-    } else {
-        // *default* is a choice like any other and has to be visible as one. A blank
-        // 14 px square reads as a missing icon, and in an icon-only picker there is no
-        // word beside it to say otherwise — so the empty slot is drawn as an empty
-        // slot: an outline with a stroke through it.
+    const QRectF tile(0.5, 0.5, kGlyphPx - 1.5, kGlyphPx - 1.5);
+
+    if (!c.isValid()) {
+        // *default* is a choice like any other and has to be visible as one, in either
+        // role. A blank 14 px square reads as a missing icon, and in an icon-only picker
+        // there is no word beside it to say otherwise — so the empty slot is drawn as an
+        // empty slot: an outline with a stroke through it.
         line.setAlpha(140);
         p.setPen(QPen(line, 1.0));
-        p.drawRect(QRectF(0.5, 0.5, kGlyphPx - 1.5, kGlyphPx - 1.5));
+        p.drawRect(tile);
         p.drawLine(QPointF(2.5, kGlyphPx - 2.5), QPointF(kGlyphPx - 2.5, 2.5));
+        return QIcon(pm);
     }
+
+    if (role == HighlighterPane::ColourRole::Foreground) {
+        // The letter in the chosen colour, on the neutral that shows it. Which neutral is
+        // decided by the colour itself rather than by the theme: Paper on a white ground
+        // and Ink on a black one are both invisible, and the palette offers both in both
+        // themes, so the tile is the opposite of whatever is being previewed.
+        p.fillRect(pm.rect(), c.lightness() > 140 ? QColor(70, 70, 70) : QColor(238, 238, 238));
+        drawLetterA(p, c, 1.6);
+    } else {
+        p.fillRect(pm.rect(), c);
+    }
+    // ...inside an outline, which is not decoration: Paper is a near-white and Ink a
+    // near-black, so on the theme that matches one of them a swatch with no edge is an
+    // empty cell — and the *default* swatch above is exactly what an empty cell means.
+    line.setAlpha(90);
+    p.setPen(QPen(line, 1.0));
+    p.drawRect(tile);
     return QIcon(pm);
 }
 
-// The header glyphs. DRAWN, never a character: the offscreen QPA plugin on Windows
-// resolves no font at all (CLAUDE.md), so a glyph taken from a font is a guaranteed
-// blank there — and these five columns have nothing else to name them, since a word per
-// column is exactly the width the table does not have.
-enum class Glyph { TextColour, Background, Digest, Notify, Tab };
+// The three action glyphs, drawn for the same reason the letter above is.
+enum class Glyph { Digest, Notify, Tab };
 
-QIcon headerGlyph(Glyph g, const QColor &ink)
+QIcon actionGlyph(Glyph g, const QColor &ink)
 {
     QPixmap pm(kGlyphPx, kGlyphPx);
     pm.fill(Qt::transparent);
@@ -85,22 +115,6 @@ QIcon headerGlyph(Glyph g, const QColor &ink)
     p.setBrush(Qt::NoBrush);
 
     switch (g) {
-    case Glyph::TextColour: {
-        // An "A", as three strokes rather than as the letter: what a text colour is set
-        // on is a letterform, and a letterform is legible at 14 px where a word is not.
-        p.drawLine(QPointF(2.5, 11.5), QPointF(7.0, 2.5));
-        p.drawLine(QPointF(7.0, 2.5), QPointF(11.5, 11.5));
-        p.drawLine(QPointF(4.6, 8.2), QPointF(9.4, 8.2));
-        break;
-    }
-    case Glyph::Background: {
-        // The filled counterpart: a whole cell of colour, which is what a background is.
-        QColor fill = ink;
-        fill.setAlpha(90);
-        p.setBrush(fill);
-        p.drawRoundedRect(QRectF(2.0, 2.0, 10.0, 10.0), 2.0, 2.0);
-        break;
-    }
     case Glyph::Digest: {
         // Three lines of a strip, the last one short — a list, which is what the digest
         // under the log is.
@@ -139,15 +153,15 @@ QIcon headerGlyph(Glyph g, const QColor &ink)
     return QIcon(pm);
 }
 
-// A check column: the indicator CENTRED in its cell, and the whole cell toggling it.
+// The enable column: the indicator CENTRED in its cell, and the whole cell toggling it.
 //
 // Both halves are the delegate's because neither is available otherwise. Qt lays a view
 // item out check-then-icon-then-text from the left edge and ignores the item's alignment
 // doing it, so a column holding nothing but a tick draws that tick hard against its left
-// border, under a header glyph centred over the column — which reads as the tick
-// belonging to the column to its left. And the default hit area is the indicator itself,
-// perhaps 13 px wide in a column that is barely wider: in a dock, a tick that has to be
-// hit rather than merely aimed at is one the user misses.
+// border, a column's width away from the middle of the space it is answering for. And the
+// default hit area is the indicator itself, perhaps 13 px wide in a column that is barely
+// wider: in a dock, a tick that has to be hit rather than merely aimed at is one the user
+// misses.
 class CheckCellDelegate : public QStyledItemDelegate
 {
 public:
@@ -335,16 +349,6 @@ bool HighlighterPane::isDark() const
     return palette().base().color().lightness() < palette().text().color().lightness();
 }
 
-std::optional<HighlightAction> HighlighterPane::actionForColumn(int column)
-{
-    switch (column) {
-    case kColDigest: return HighlightAction::Digest;
-    case kColNotify: return HighlightAction::Notify;
-    case kColTab:    return HighlightAction::Tab;
-    default:         return std::nullopt;
-    }
-}
-
 void HighlighterPane::applyColourAction(HighlightRule &rule)
 {
     // The Colour action has no control of its own any more: the two swatches are it. A
@@ -373,18 +377,19 @@ bool HighlighterPane::normaliseRules()
     return moved;
 }
 
-QComboBox *HighlighterPane::makeSwatchCombo(int row, Column column)
+QComboBox *HighlighterPane::makeSwatchCombo(int row, ColourRole role, QWidget *parent)
 {
-    auto *combo = new SwatchCombo(m_ruleTable);
-    // Kept even though every row has one: findChild() is how a test reaches the first
-    // rule's pickers, and an object name is the contract in this codebase (§9.1).
-    combo->setObjectName(column == kColForeground ? QStringLiteral("textColor")
-                                                  : QStringLiteral("backgroundColor"));
+    const bool foreground = (role == ColourRole::Foreground);
+    auto *combo = new SwatchCombo(parent);
+    // Kept even though every row has a pair: it is how a test reaches a picker inside a
+    // cell, and an object name is the contract in this codebase (§9.1).
+    combo->setObjectName(foreground ? QStringLiteral("textColor")
+                                    : QStringLiteral("backgroundColor"));
     combo->setProperty("ruleRow", row);
     const bool dark = isDark();
     const QColor ink = palette().text().color();
     // Item 0 is the *default* sentinel: leave this role at the theme's normal color.
-    combo->addItem(swatchIcon(QColor(), ink), tr("Default"), HighlightPalette::kDefault);
+    combo->addItem(swatchIcon(QColor(), role, ink), tr("Default"), HighlightPalette::kDefault);
     for (int i = 0; i < HighlightPalette::count(); ++i) {
         // A rule separating the three tone bands, so a list this long reads as
         // "pick a loudness, then a hue" rather than as one run of swatches. A
@@ -393,40 +398,105 @@ QComboBox *HighlighterPane::makeSwatchCombo(int row, Column column)
         if (i > 0 && i % HighlightPalette::kSlotsPerBand == 0)
             combo->insertSeparator(combo->count());
         const PaletteSlot &s = HighlightPalette::slot(i);
-        combo->addItem(swatchIcon(HighlightPalette::color(i, dark), ink), QString(s.name), i);
+        combo->addItem(swatchIcon(HighlightPalette::color(i, dark), role, ink),
+                       QString(s.name), i);
     }
     // Twenty-seven slots plus the default and two separators is a taller popup than
     // a style will always fit on a short screen, so cap it and let Qt scroll rather
     // than let the list run off the top or bottom.
     combo->setMaxVisibleItems(HighlightPalette::kSlotsPerBand * 2 + 1);
 
-    const QString role = (column == kColForeground) ? tr("Text colour") : tr("Background colour");
-    combo->setAccessibleName(role);
-    const auto describe = [combo, role] {
-        // The name the closed picker does not show, said where it is asked for.
-        combo->setToolTip(QStringLiteral("%1: %2").arg(role, combo->currentText()));
+    const QString name = foreground ? tr("Text colour") : tr("Background colour");
+    combo->setAccessibleName(name);
+    const auto describe = [combo, name] {
+        // The name the closed picker does not show, said where it is asked for. With no
+        // header row, this and the swatch's own shape are the whole of what says which
+        // role a picker sets.
+        combo->setToolTip(QStringLiteral("%1: %2").arg(name, combo->currentText()));
     };
     describe();
 
-    connect(combo, &QComboBox::currentIndexChanged, this, [this, combo, column, describe](int) {
-        describe();
-        if (m_updating)
-            return;
-        const int r = combo->property("ruleRow").toInt();
-        if (r < 0 || r >= m_rules.size())
-            return;
-        HighlightRule &rule = m_rules[r];
-        (column == kColForeground ? rule.foreground : rule.background) = swatchValue(combo);
-        applyColourAction(rule);
-        commit();
-        refreshRow(r);
-    });
+    connect(combo, &QComboBox::currentIndexChanged, this,
+            [this, combo, foreground, describe](int) {
+                describe();
+                if (m_updating)
+                    return;
+                const int r = combo->property("ruleRow").toInt();
+                if (r < 0 || r >= m_rules.size())
+                    return;
+                HighlightRule &rule = m_rules[r];
+                (foreground ? rule.foreground : rule.background) = swatchValue(combo);
+                applyColourAction(rule);
+                commit();
+                refreshRow(r);
+            });
     return combo;
 }
 
-QComboBox *HighlighterPane::swatchCombo(int row, Column column) const
+QToolButton *HighlighterPane::makeActionButton(int row, HighlightAction action, QWidget *parent)
 {
-    return qobject_cast<QComboBox *>(m_ruleTable->cellWidget(row, column));
+    // A pressed-in icon button, not a tick. Three ticks in a row say only "three things
+    // are set"; a glyph says WHICH three without a header to name the columns, and a
+    // button that stays down is how a toggle says it is on. Framed, never auto-raised —
+    // the frame is what says "press this" (the rule AxisEditor's buttons follow).
+    auto *button = new QToolButton(parent);
+    button->setCheckable(true);
+    button->setAutoRaise(false);
+    button->setFocusPolicy(Qt::TabFocus);
+    button->setIconSize(QSize(kGlyphPx, kGlyphPx));
+    button->setProperty("ruleRow", row);
+
+    const QColor ink = palette().buttonText().color();
+    switch (action) {
+    case HighlightAction::Digest:
+        button->setObjectName(QStringLiteral("actionDigest")); // test contract, never translated
+        button->setIcon(actionGlyph(Glyph::Digest, ink));
+        button->setAccessibleName(tr("Digest"));
+        button->setToolTip(tr("Show this rule's newest match in the strip under the log."));
+        break;
+    case HighlightAction::Notify:
+        button->setObjectName(QStringLiteral("actionNotify"));
+        button->setIcon(actionGlyph(Glyph::Notify, ink));
+        button->setAccessibleName(tr("Notify"));
+        // Said before the button can be pressed, not after — the same habit as naming
+        // hosts.json before the "remember this password" checkbox is offered.
+        if (notificationsSupported()) {
+            button->setToolTip(tr("Raise a desktop notification on the same trigger, at "
+                                  "most one every ten seconds."));
+        } else {
+            // Disabled, not hidden, and it still SHOWS a rule that carries Notify: a rule
+            // from a preset or another machine keeps the action rather than being quietly
+            // rewritten by a desktop that cannot deliver it — it behaves as if it carried
+            // Tab there (MainWindow::handleAlerts) and colours normally.
+            button->setEnabled(false);
+            button->setToolTip(tr("This desktop offers no notification service, so this "
+                                  "rule marks the tab instead."));
+        }
+        break;
+    case HighlightAction::Tab:
+        button->setObjectName(QStringLiteral("actionTab"));
+        button->setIcon(actionGlyph(Glyph::Tab, ink));
+        button->setAccessibleName(tr("Mark tab"));
+        button->setToolTip(tr("Mark this log's tab when a match arrives while it is not "
+                              "the log on screen."));
+        break;
+    case HighlightAction::Color:
+        break; // not a button: the two swatches are the colour control
+    }
+
+    connect(button, &QToolButton::toggled, this, [this, button, action](bool on) {
+        if (m_updating)
+            return;
+        const int r = button->property("ruleRow").toInt();
+        if (r < 0 || r >= m_rules.size())
+            return;
+        if (on)
+            m_rules[r].actions |= action;
+        else
+            m_rules[r].actions &= ~HighlightActions(action);
+        commit();
+    });
+    return button;
 }
 
 void HighlighterPane::setSwatchCombo(QComboBox *combo, int paletteIndex)
@@ -467,66 +537,46 @@ void HighlighterPane::buildUi()
     // painted in their own colours.
     m_ruleTable->setShowGrid(false);
     m_ruleTable->verticalHeader()->setVisible(false);
-    m_ruleTable->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     m_ruleTable->setIconSize(QSize(kGlyphPx, kGlyphPx));
+    m_ruleTable->setItemDelegateForColumn(kColEnabled, new CheckCellDelegate(m_ruleTable));
 
-    auto *checks = new CheckCellDelegate(m_ruleTable);
-    for (int column : {kColEnabled, kColDigest, kColNotify, kColTab})
-        m_ruleTable->setItemDelegateForColumn(column, checks);
-
+    // NO HEADER ROW. It named five columns with glyphs, which is a row of the pane's
+    // scarcest resource spent on a legend for icons that are now in the cells themselves:
+    // an action is an icon button wearing its own glyph, and the two swatches say which
+    // role they set by their shape. What is left to name is one column of prose, and a
+    // column of prose in a table of six needs no caption to be found.
     QHeaderView *head = m_ruleTable->horizontalHeader();
-    head->setIconSize(QSize(kGlyphPx, kGlyphPx));
+    head->setVisible(false);
     head->setStretchLastSection(false);
-    head->setHighlightSections(false);
-    head->setSectionsClickable(false);
 
-    const QColor ink = palette().windowText().color();
-    const auto headerCell = [this](int column, const QIcon &icon, const QString &text,
-                                   const QString &tip) {
-        auto *item = new QTableWidgetItem;
-        if (icon.isNull())
-            item->setText(text);
-        else
-            item->setIcon(icon);
-        item->setToolTip(tip);
-        m_ruleTable->setHorizontalHeaderItem(column, item);
-    };
-    // The enable column's header is deliberately blank: the tick under it is the rule's
-    // own on/off, which needs no naming, and any glyph there would compete with the four
-    // that do.
-    headerCell(kColEnabled, QIcon(), QString(), tr("Whether this rule is in force."));
-    headerCell(kColRule, QIcon(), tr("Rule"), tr("What this rule matches."));
-    headerCell(kColForeground, headerGlyph(Glyph::TextColour, ink), QString(),
-               tr("Text colour of matching records."));
-    headerCell(kColBackground, headerGlyph(Glyph::Background, ink), QString(),
-               tr("Background colour of matching records."));
-    headerCell(kColDigest, headerGlyph(Glyph::Digest, ink), QString(),
-               tr("Show this rule's newest match in the strip under the log."));
-    headerCell(kColNotify, headerGlyph(Glyph::Notify, ink), QString(),
-               notificationsSupported()
-                   ? tr("Raise a desktop notification on the same trigger, at most one "
-                        "every ten seconds.")
-                   : tr("This desktop offers no notification service, so such a rule "
-                        "marks the tab instead."));
-    headerCell(kColTab, headerGlyph(Glyph::Tab, ink), QString(),
-               tr("Mark this log's tab when a match arrives while it is not the log on "
-                  "screen."));
-
-    // The rule's summary takes what is left; every other column is as wide as what it
-    // holds. The two colour columns are FIXED, because a cell widget contributes nothing
-    // to ResizeToContents — the header glyph would be the only thing measured, and the
-    // pickers would be cropped to it.
+    // The rule's summary takes what is left; every other column is as wide as the widget
+    // it holds, measured ONCE from a prototype. Fixed rather than ResizeToContents,
+    // because a cell *widget* contributes nothing to that mode — with no header item
+    // either, there would be nothing left to measure and the columns would collapse.
     {
-        SwatchCombo probe;
-        m_swatchColumnWidth = probe.sizeHint().width() + 4;
+        SwatchCombo swatchProbe;
+        QToolButton buttonProbe;
+        buttonProbe.setCheckable(true);
+        buttonProbe.setIconSize(QSize(kGlyphPx, kGlyphPx));
+        buttonProbe.setIcon(actionGlyph(Glyph::Digest, palette().buttonText().color()));
+        m_colourColumnWidth = 2 * swatchProbe.sizeHint().width() + kColourGap + 2 * kCellMargin;
+        m_actionColumnWidth = buttonProbe.sizeHint().width() + 2 * kCellMargin;
+        // And the row is as tall as the tallest of them: a cell widget is resized to its
+        // cell, so a row sized from the text in the summary column would squash both.
+        m_rowHeight = qMax(swatchProbe.sizeHint().height(), buttonProbe.sizeHint().height())
+                      + 2 * kCellMargin;
     }
     head->setSectionResizeMode(kColRule, QHeaderView::Stretch);
-    for (int column : {kColEnabled, kColDigest, kColNotify, kColTab})
-        head->setSectionResizeMode(column, QHeaderView::ResizeToContents);
-    for (int column : {kColForeground, kColBackground}) {
+    head->setSectionResizeMode(kColEnabled, QHeaderView::Fixed);
+    m_ruleTable->setColumnWidth(kColEnabled, m_actionColumnWidth);
+    head->setSectionResizeMode(kColColours, QHeaderView::Fixed);
+    m_ruleTable->setColumnWidth(kColColours, m_colourColumnWidth);
+    for (int column : {kColDigest, kColNotify, kColTab}) {
         head->setSectionResizeMode(column, QHeaderView::Fixed);
-        m_ruleTable->setColumnWidth(column, m_swatchColumnWidth);
+        m_ruleTable->setColumnWidth(column, m_actionColumnWidth);
     }
+    m_ruleTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_ruleTable->verticalHeader()->setDefaultSectionSize(m_rowHeight);
     root->addWidget(m_ruleTable);
 
     auto *btnRow = new QHBoxLayout;
@@ -599,26 +649,17 @@ void HighlighterPane::buildUi()
     // --- Wiring -------------------------------------------------------------
     connect(m_ruleTable, &QTableWidget::currentCellChanged, this,
             [this](int row, int, int, int) { loadEditorFor(row); });
-    // One handler for all four check columns: the rule's own tick and its three
-    // remaining actions are the same kind of edit, made in the same place.
+    // The rule's own tick is the one thing in the table that is an ITEM rather than a
+    // widget, because it is not an action: it says whether the rule runs at all, and a
+    // press-and-stay button beside three of them would read as a fourth action.
     connect(m_ruleTable, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) {
-        if (m_updating)
+        if (m_updating || item->column() != kColEnabled)
             return;
         const int row = item->row();
         if (row < 0 || row >= m_rules.size())
             return;
-        const bool on = item->checkState() == Qt::Checked;
-        if (item->column() == kColEnabled) {
-            // A rule's checkbox toggles enable/disable in one click (SPEC.md §8).
-            m_rules[row].enabled = on;
-        } else if (const std::optional<HighlightAction> action = actionForColumn(item->column())) {
-            if (on)
-                m_rules[row].actions |= *action;
-            else
-                m_rules[row].actions &= ~HighlightActions(*action);
-        } else {
-            return;
-        }
+        // A rule's checkbox toggles enable/disable in one click (SPEC.md §8).
+        m_rules[row].enabled = (item->checkState() == Qt::Checked);
         commit();
     });
 
@@ -731,9 +772,10 @@ void HighlighterPane::paintRow(int row, const HighlightRule &r) const
     // Qt's ordinary behaviour, kept deliberately. Which row is selected is now an input
     // to a command ("New" copies it), so selection has to stay unmistakable.
     //
-    // Only the summary cell is painted. The check columns must keep the theme's own
-    // background or the tick in them stops being legible on a Deep fill, and the two
-    // swatch cells carry a widget that would sit on the colour it is offering.
+    // Only the summary cell is painted. The enable column must keep the theme's own
+    // background or the tick in it stops being legible on a Deep fill, and every other
+    // cell carries a widget — an icon button, or a picker that would sit on the very
+    // colour it is offering.
     QTableWidgetItem *item = m_ruleTable->item(row, kColRule);
     if (!item)
         return;
@@ -758,40 +800,34 @@ void HighlighterPane::buildRow(int row)
     summary->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     m_ruleTable->setItem(row, kColRule, summary);
 
-    for (Column column : {kColForeground, kColBackground}) {
-        QComboBox *combo = makeSwatchCombo(row, column);
-        setSwatchCombo(combo, column == kColForeground ? r.foreground : r.background);
-        m_ruleTable->setCellWidget(row, column, combo);
+    // Both pickers in ONE cell, text before background: they are one answer — how a
+    // matching record is drawn — and a column each spent that answer's width twice over
+    // in a table that also has to hold a line of prose.
+    auto *colours = new QWidget(m_ruleTable);
+    auto *colourRow = new QHBoxLayout(colours);
+    colourRow->setContentsMargins(kCellMargin, kCellMargin, kCellMargin, kCellMargin);
+    colourRow->setSpacing(kColourGap);
+    for (ColourRole role : {ColourRole::Foreground, ColourRole::Background}) {
+        QComboBox *combo = makeSwatchCombo(row, role, colours);
+        setSwatchCombo(combo, role == ColourRole::Foreground ? r.foreground : r.background);
+        colourRow->addWidget(combo);
     }
+    m_ruleTable->setCellWidget(row, kColColours, colours);
 
-    const bool notifications = notificationsSupported();
-    const auto actionCell = [&](Column column, HighlightAction action, const QString &tip) {
-        auto *item = new QTableWidgetItem;
-        Qt::ItemFlags flags = Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable;
-        if (action == HighlightAction::Notify && !notifications) {
-            // Not user-checkable, and it says why. A rule that arrived from a preset or
-            // another machine carrying Notify still SHOWS it, rather than being quietly
-            // rewritten by a desktop that happens not to offer notifications: it behaves
-            // as if it carried Tab there (MainWindow::handleAlerts) and colours normally.
-            flags &= ~Qt::ItemIsUserCheckable;
-        }
-        item->setFlags(flags);
-        item->setCheckState(r.actions.testFlag(action) ? Qt::Checked : Qt::Unchecked);
-        item->setToolTip(tip);
-        m_ruleTable->setItem(row, column, item);
+    // One icon button per action, centred in its cell rather than filling it: stretched
+    // to a cell a button stops looking like a button and starts looking like a panel.
+    const auto actionCell = [&](Column column, HighlightAction action) {
+        auto *holder = new QWidget(m_ruleTable);
+        auto *box = new QHBoxLayout(holder);
+        box->setContentsMargins(kCellMargin, kCellMargin, kCellMargin, kCellMargin);
+        QToolButton *button = makeActionButton(row, action, holder);
+        button->setChecked(r.actions.testFlag(action));
+        box->addWidget(button, 0, Qt::AlignCenter);
+        m_ruleTable->setCellWidget(row, column, holder);
     };
-    actionCell(kColDigest, HighlightAction::Digest,
-               tr("Show this rule's newest match in the strip under the log."));
-    // Said before the box can be ticked, not after — the same habit as naming
-    // hosts.json before the "remember this password" checkbox is offered.
-    actionCell(kColNotify, HighlightAction::Notify,
-               notifications ? tr("Raise a desktop notification on the same trigger, at "
-                                  "most one every ten seconds.")
-                             : tr("This desktop offers no notification service, so this "
-                                  "rule marks the tab instead."));
-    actionCell(kColTab, HighlightAction::Tab,
-               tr("Mark this log's tab when a match arrives while it is not the log on "
-                  "screen."));
+    actionCell(kColDigest, HighlightAction::Digest);
+    actionCell(kColNotify, HighlightAction::Notify);
+    actionCell(kColTab, HighlightAction::Tab);
 
     refreshRow(row);
 }

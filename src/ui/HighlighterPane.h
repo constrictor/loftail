@@ -12,6 +12,7 @@ QT_BEGIN_NAMESPACE
 class QComboBox;
 class QPushButton;
 class QTableWidget;
+class QToolButton;
 QT_END_NAMESPACE
 
 namespace loftail {
@@ -53,18 +54,21 @@ public:
 
     // The rule table's columns, in order. Public because they are the test contract —
     // the same role object names play for the widgets in `AxisEditor`, and for the same
-    // reason: a column is identified by what it is, never by the header it shows, which
-    // is an icon or a translated word (ARCHITECTURE.md §9.1).
+    // reason: a column is identified by what it is and not by a label, there being no
+    // header row to carry one (ARCHITECTURE.md §7.5).
     enum Column {
         kColEnabled = 0,    // the rule's own on/off tick
         kColRule,           // what it matches, as one line of prose
-        kColForeground,     // text colour   — an icon-only swatch picker
-        kColBackground,     // background    — the same
+        kColColours,        // BOTH swatch pickers, text before background
         kColDigest,         // HighlightAction::Digest
         kColNotify,         // HighlightAction::Notify
         kColTab,            // HighlightAction::Tab
         kColumnCount
     };
+
+    // Which of a rule's two colour roles a swatch picker sets. There is one column for
+    // the pair, so the column no longer names the role and this does.
+    enum class ColourRole { Foreground, Background };
 
     void setDocument(Document *document);
 
@@ -108,9 +112,9 @@ signals:
     void activityChanged(bool active);
 
 protected:
-    // A theme switch changes every swatch icon in the table and every glyph in its
-    // header, all of which are pixmaps painted once. Rebuilding the table is the
-    // cheapest correct answer, and it keeps the selected rule.
+    // A theme switch changes every swatch and every action glyph in the table, all of
+    // which are pixmaps painted once. Rebuilding the table is the cheapest correct
+    // answer, and it keeps the selected rule.
     void changeEvent(QEvent *event) override;
 
 private:
@@ -134,12 +138,13 @@ private:
     // The first palette slot no existing rule paints with, cycling once every slot is
     // spoken for. Shared by the New button and the record menu's one-click rule.
     int nextFreeBackground() const;
-    // One row's swatch picker: icon-only, so the pair costs two table columns rather
-    // than a row of the editor.
-    QComboBox *makeSwatchCombo(int row, Column column);
-    QComboBox *swatchCombo(int row, Column column) const;
+    // One row's swatch picker: icon-only, so the pair fits ONE table column beside
+    // everything else a rule row carries.
+    QComboBox *makeSwatchCombo(int row, ColourRole role, QWidget *parent);
     void setSwatchCombo(QComboBox *combo, int paletteIndex);
     int swatchValue(const QComboBox *combo) const;
+    // One row's action toggle: an icon button, checked while the rule carries it.
+    QToolButton *makeActionButton(int row, HighlightAction action, QWidget *parent);
     bool isDark() const;
 
     // HighlightAction::Color follows the two swatches and is not a control of its own
@@ -151,11 +156,9 @@ private:
     // report whether anything actually moved.
     bool normaliseRules();
 
-    // The action a check column carries, for the itemChanged handler.
-    static std::optional<HighlightAction> actionForColumn(int column);
     // Whether this desktop offers a notification service at all. False on a stock
-    // GNOME/Wayland session, so the Notify column is not user-checkable and says why
-    // rather than accepting a tick that would do nothing.
+    // GNOME/Wayland session, so the Notify button is disabled and says why rather
+    // than accepting a press that would do nothing.
     static bool notificationsSupported();
 
     Document *m_document = nullptr;
@@ -166,7 +169,12 @@ private:
     // The rule list, which is now a TABLE: a tick, what the rule matches, its two
     // colours and its three remaining actions, one rule per row.
     QTableWidget *m_ruleTable = nullptr;
-    int m_swatchColumnWidth = 0; // a swatch picker's width; the colour columns are fixed
+    // Every column but the summary holds a WIDGET or a bare tick, and a cell widget
+    // contributes nothing to ResizeToContents, so their widths are measured once from a
+    // prototype and fixed.
+    int m_colourColumnWidth = 0;
+    int m_actionColumnWidth = 0;
+    int m_rowHeight = 0;
 
     QPushButton *m_newBtn = nullptr;
     QPushButton *m_removeBtn = nullptr;
