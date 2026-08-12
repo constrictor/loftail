@@ -624,26 +624,29 @@ void HighlighterPane::buildUi()
     ev->setContentsMargins(0, 0, 0, 0);
 
     auto *scroll = new QScrollArea(m_editor);
+    scroll->setObjectName(QStringLiteral("highlighterScroll")); // test contract
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     ev->addWidget(scroll);
-
-    auto *content = new QWidget(scroll);
-    scroll->setWidget(content);
-    auto *cv = new QVBoxLayout(content);
-    cv->setContentsMargins(0, 2, 0, 0);
 
     // Every axis is opt-in for a highlight rule: an unconfigured rule must stay inert
     // (SPEC.md §7), the opposite of the Filters pane's enabled-by-default metadata
     // axes, which exist so their controls act on the first click.
     m_axes = new AxisEditor(AxisEditor::Defaults{/*priorityOn=*/false, /*loggerOn=*/false},
-                            content);
+                            scroll);
     // An axis this log's format cannot fill is left out rather than shown greyed. That is
     // the AxisEditor's own behaviour now and no longer something this pane asks for: the
     // Filters pane used to keep such an axis and explain it in its title, and that
     // asymmetry is gone (AxisEditor::updateAxisState).
-    cv->addWidget(m_axes);
-    cv->addStretch(1);
+    //
+    // The editor is the scroll area's OWN WIDGET, exactly as it is in the Filters pane,
+    // and NOT a widget in a container's layout with a stretch under it. That container
+    // was the trailing addStretch() `AxisEditor` deleted from its own root layout and
+    // says so at length: a stretch below the axes claims every spare pixel, so the
+    // subsystem and thread lists could only ever be as tall as their floors while an
+    // empty gap grew under Time range. With `widgetResizable`, the spare height reaches
+    // the editor and its two value axes — which carry a stretch each — divide it.
+    scroll->setWidget(m_axes);
     root->addWidget(m_editor, 1);
 
     // --- Wiring -------------------------------------------------------------

@@ -17,6 +17,7 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QStyleOptionViewItem>
 #include <QSystemTrayIcon>
 #include <QTableWidget>
@@ -221,6 +222,7 @@ private slots:
     void anAxisTheFormatLacksIsNotShownAtAll();
     void theTwoColourPickersAreCellsOfTheirOwnRow();
     void theEditorIsTheConditionAlone();
+    void theValueListsTakeTheSpareHeight();
     void noSectionClipsItsOwnTitle();
 };
 
@@ -1206,6 +1208,76 @@ void TestHighlighterPane::theEditorIsTheConditionAlone()
 // with the title style sheet in play, came back at 20 px for a title running to y=24. The
 // three rows silently cut their own descenders, and only on that style: Fusion answered
 // 37 px and looked perfect, which is why it took a photograph of a KDE desktop to see.
+// The subsystem and thread lists take the pane's spare height, exactly as they do in the
+// Filters pane — it is one widget with the stretch already in it (AxisEditor), so what
+// this really pins is that nothing here takes that height away from it. The editor sat in
+// a container with a trailing addStretch() under it, which is the very thing AxisEditor
+// deleted from its own layout: a stretch below the axes claims every spare pixel, and the
+// two lists stay at their floors while an empty gap grows under Time range.
+void TestHighlighterPane::theValueListsTakeTheSpareHeight()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    // A rule, because the editor is disabled without one — and a disabled widget is
+    // still laid out, but the pane it lives in is not worth measuring in a state the
+    // user never edits in.
+    button(pane, QStringLiteral("ruleNew"))->click();
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+
+    auto settle = [&pane](int h) {
+        pane.resize(424, h);
+        for (int i = 0; i < 8; ++i)
+            QApplication::processEvents();
+    };
+    auto listHeight = [&pane](const char *name) {
+        auto *l = pane.findChild<QListWidget *>(QString::fromLatin1(name));
+        return l ? l->height() : -1;
+    };
+    auto boxHeight = [&pane](const char *name) {
+        auto *g = pane.findChild<QGroupBox *>(QString::fromLatin1(name));
+        return g ? g->height() : -1;
+    };
+
+    settle(760);
+    const int sub0 = listHeight("subsystemList"), thr0 = listHeight("threadList");
+    const int msg0 = boxHeight("messageGroup"), pri0 = boxHeight("priorityGroup");
+    QVERIFY(sub0 > 0 && thr0 > 0);
+
+    settle(1360);
+    const int sub1 = listHeight("subsystemList"), thr1 = listHeight("threadList");
+
+    // 600 px more pane means 600 px more list, split between the two.
+    QVERIFY2(sub1 > sub0 + 200, qPrintable(QString("subsystem %1 -> %2").arg(sub0).arg(sub1)));
+    QVERIFY2(thr1 > thr0 + 200, qPrintable(QString("thread %1 -> %2").arg(thr0).arg(thr1)));
+
+    // Evenly, and by the SAME factor rather than in proportion to how many values each
+    // list happens to hold — a split that would otherwise shift under the reader every
+    // time the scan turned up another subsystem. Asserted on where the two END UP rather
+    // than on how far each moved: the short pane above has both of them on their FLOORS,
+    // and a floor is a row taller for the list holding one more name, so the two
+    // distances differ by that row while the split itself is exact.
+    QVERIFY2(qAbs(sub1 - thr1) <= 4,
+             qPrintable(QString("uneven: subsystem %1, thread %2").arg(sub1).arg(thr1)));
+
+    // And nothing else grew: the three fixed axes are the same height in a pane twice as
+    // tall, which is what makes the growth the LISTS' rather than everyone's.
+    QCOMPARE(boxHeight("messageGroup"), msg0);
+    QCOMPARE(boxHeight("priorityGroup"), pri0);
+
+    // A pane too short for both floors scrolls rather than starving either list.
+    settle(300);
+    auto *scroll = pane.findChild<QScrollArea *>(QStringLiteral("highlighterScroll"));
+    QVERIFY(scroll);
+    QVERIFY(scroll->verticalScrollBar()->isVisible());
+    QVERIFY(listHeight("subsystemList") >= 70);
+    QVERIFY(listHeight("threadList") >= 70);
+}
+
 void TestHighlighterPane::noSectionClipsItsOwnTitle()
 {
     Document doc;
