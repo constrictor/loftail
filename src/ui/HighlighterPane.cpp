@@ -514,6 +514,18 @@ int HighlighterPane::swatchValue(const QComboBox *combo) const
 void HighlighterPane::buildUi()
 {
     auto *root = new QVBoxLayout(this);
+    // FLUSH, exactly as FilterPane's outer layout is, because the two panes must inset
+    // the same axes by the same amount: `AxisEditor` supplies its own kSideMargin and a
+    // layout margin here is added to it, which put a rule's Subsystem box 17 px from the
+    // dock edge against a filter's 6 — visible the moment the two are compared, and the
+    // sort of difference that reads as one of them being wrong. Everything above the
+    // editor is then inset by hand, to the same 6.
+    root->setContentsMargins(0, 0, 0, 0);
+
+    // The table and the buttons under it, indented to where the axes below them start.
+    auto *top = new QVBoxLayout;
+    top->setContentsMargins(AxisEditor::kSideMargin, AxisEditor::kSideMargin,
+                            AxisEditor::kSideMargin, 0);
 
     // --- The rules, one per row (SPEC.md §7) --------------------------------
     //
@@ -577,7 +589,7 @@ void HighlighterPane::buildUi()
     }
     m_ruleTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     m_ruleTable->verticalHeader()->setDefaultSectionSize(m_rowHeight);
-    root->addWidget(m_ruleTable);
+    top->addWidget(m_ruleTable);
 
     auto *btnRow = new QHBoxLayout;
     // "New", not "Add": it now starts from the selected rule rather than from nothing,
@@ -604,7 +616,8 @@ void HighlighterPane::buildUi()
     btnRow->addWidget(m_clearBtn);
     btnRow->addWidget(m_upBtn);
     btnRow->addWidget(m_downBtn);
-    root->addLayout(btnRow);
+    top->addLayout(btnRow);
+    root->addLayout(top);
 
     // --- What the selected rule MATCHES -------------------------------------
     //

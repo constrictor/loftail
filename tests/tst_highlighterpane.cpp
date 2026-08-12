@@ -26,6 +26,7 @@
 
 #include "Document.h"
 #include "Highlight.h"
+#include "FilterPane.h"
 #include "HighlighterPane.h"
 #include "MatchCriteria.h"
 #include "Palette.h"
@@ -224,6 +225,7 @@ private slots:
     void theEditorIsTheConditionAlone();
     void theValueListsTakeTheSpareHeight();
     void noSectionClipsItsOwnTitle();
+    void theAxesSitWhereTheFiltersPanesDo();
 };
 
 void TestHighlighterPane::everyAxisIsOfferedAndOptIn()
@@ -1304,6 +1306,58 @@ void TestHighlighterPane::noSectionClipsItsOwnTitle()
                                 .arg(box->height())
                                 .arg(title.height())));
     }
+}
+
+// The two panes show the SAME five axes, so they must not inset them differently. This
+// costs nothing to get wrong and is invisible until someone puts the two docks side by
+// side: `AxisEditor` supplies its own kSideMargin, a layout margin in the pane is ADDED
+// to it, and this pane's root layout carried the style's default — which put a rule's
+// Subsystem box 17 px from the dock edge against a filter's 6.
+//
+// Asserted against the Filters pane itself rather than against the number, because the
+// claim is that they agree, not that either is 6.
+void TestHighlighterPane::theAxesSitWhereTheFiltersPanesDo()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane highlighters;
+    highlighters.resize(460, 820);
+    highlighters.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&highlighters));
+    highlighters.setDocument(&doc);
+    button(highlighters, QStringLiteral("ruleNew"))->click();
+
+    FilterPane filters;
+    filters.resize(460, 820);
+    filters.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&filters));
+    filters.setDocument(&doc);
+
+    const auto inset = [](QWidget &pane, const char *name) {
+        auto *w = pane.findChild<QWidget *>(QString::fromLatin1(name));
+        if (!w)
+            return QPair<int, int>(-1, -1);
+        const int left = w->mapTo(&pane, QPoint(0, 0)).x();
+        return QPair<int, int>(left, pane.width() - (left + w->width()));
+    };
+
+    for (const char *name : {"subsystemGroup", "messageGroup", "timeGroup"}) {
+        const QPair<int, int> here = inset(highlighters, name);
+        const QPair<int, int> there = inset(filters, name);
+        QVERIFY2(here.first > 0, name); // and not flush against the dock edge either
+        QVERIFY2(here == there,
+                 qPrintable(QStringLiteral("%1: highlighters %2/%3, filters %4/%5")
+                                .arg(QLatin1String(name))
+                                .arg(here.first).arg(here.second)
+                                .arg(there.first).arg(there.second)));
+    }
+
+    // And the table above the axes shares their left edge, so the pane reads as one
+    // column rather than as a table with a differently indented editor under it.
+    QCOMPARE(ruleTable(highlighters)->mapTo(&highlighters, QPoint(0, 0)).x(),
+             inset(highlighters, "subsystemGroup").first);
 }
 
 QTEST_MAIN(TestHighlighterPane)
