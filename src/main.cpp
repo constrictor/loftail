@@ -47,8 +47,12 @@ int main(int argc, char *argv[])
     // hardcoded paths; QSettings derives its path from these).
     QApplication::setOrganizationName(QString::fromLatin1(loftail::organizationName));
     QApplication::setApplicationName(QString::fromLatin1(loftail::applicationName));
-    QApplication::setApplicationDisplayName(QStringLiteral("loftail")); // the name, not a word
     QApplication::setApplicationVersion(loftail::applicationVersion());
+    // No setApplicationDisplayName(): QPlatformWindow::formatWindowTitle() appends it to
+    // every window title that does not already END with it, so "loftail — app.log" reached
+    // the window manager as "loftail — app.log - loftail". MainWindow writes the whole
+    // title itself, leading name included. An empty title still reads "loftail", because
+    // the same function falls back to applicationName() for one.
 
     // Which language the interface speaks, and Qt's own strings put into the same one
     // (UiLanguage.h). Before the parser below, whose help text is user-visible, and
