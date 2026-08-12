@@ -171,6 +171,17 @@ private:
         SlowFetcher *last = nullptr;
     };
 
+    // What "did not block" is measured against, for the two cases that measure it.
+    //
+    // The claim is that the call did not RUN THE CONNECT — the transports below take 2 s
+    // and 5 s — so any budget well under those proves it, and a tight one buys precision
+    // nobody asked for at the price of a red build. It was 250 ms, and a loaded CI runner
+    // under ASan overshot it at 543 ms with the code correct: a wall-clock assertion on a
+    // shared machine is competing with every other job on that box. A second keeps a 2x
+    // margin against the shortest connect here and 5x against the one closing waits on,
+    // and a regression to the blocking code fails it by the whole connect.
+    static constexpr qint64 kNonBlockingMs = 1000;
+
 private slots:
     void openingReturnsBeforeTheConnectDoes();
     void theTabExistsAndWaitsWhileItConnects();
@@ -194,7 +205,8 @@ void TestAsyncConnect::openingReturnsBeforeTheConnectDoes()
     const qint64 took = clock.elapsed();
 
     QVERIFY(opened);
-    QVERIFY2(took < 250, qPrintable(QStringLiteral("prepare() blocked for %1 ms").arg(took)));
+    QVERIFY2(took < kNonBlockingMs,
+             qPrintable(QStringLiteral("prepare() blocked for %1 ms").arg(took)));
 }
 
 void TestAsyncConnect::theTabExistsAndWaitsWhileItConnects()
@@ -237,7 +249,7 @@ void TestAsyncConnect::closingATabMidConnectDoesNotWait()
     doc.reset(); // the last handle: ~SpooledLogSource → ~SourceSpool → retire()
     const qint64 took = clock.elapsed();
 
-    QVERIFY2(took < 250,
+    QVERIFY2(took < kNonBlockingMs,
              qPrintable(QStringLiteral("closing mid-connect took %1 ms").arg(took)));
     // Asked to stop, and it actually gives up rather than running the connect out.
     QVERIFY(farm.last);
