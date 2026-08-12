@@ -6,13 +6,14 @@
 #include "Record.h"
 
 #include <QCheckBox>
-#include <QComboBox>
 #include <QDateTime>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QVBoxLayout>
 
 namespace loftail {
@@ -59,22 +60,34 @@ void RunPane::buildUi()
 
     auto *runBox = new QGroupBox(tr("Run"), this);
     auto *rv = new QVBoxLayout(runBox);
-    m_runCombo = new QComboBox(runBox);
-    rv->addWidget(m_runCombo);
-    root->addWidget(runBox);
-
-    root->addStretch(1);
+    m_runList = new QListWidget(runBox);
+    m_runList->setObjectName(QStringLiteral("runList"));
+    // A run label is a start time, a first line and a record count; at a dock's width
+    // it will not fit. Eliding is the right answer rather than a horizontal scrollbar
+    // — the head of the label is the part that identifies the run, and the whole of it
+    // is one hover away — and switching the scrollbar off is what makes the view elide
+    // instead of widening past the pane (the same width trap the Filters pane records).
+    m_runList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_runList->setTextElideMode(Qt::ElideRight);
+    m_runList->setUniformItemSizes(true);
+    rv->addWidget(m_runList, 1);
+    // The run box is the one thing here that takes the spare height, and there is
+    // deliberately NO trailing addStretch: a stretch below would compete for the same
+    // pixels and pin the list to its floor with an empty gap under it.
+    root->addWidget(runBox, 1);
 
     connect(m_apply, &QPushButton::clicked, this, &RunPane::emitPattern);
     connect(m_patternEdit, &QLineEdit::returnPressed, this, &RunPane::emitPattern);
     connect(m_regex, &QCheckBox::toggled, this, &RunPane::emitPattern);
     connect(m_case, &QCheckBox::toggled, this, &RunPane::emitPattern);
-    // activated (not currentIndexChanged) fires only on user choice, so setting the
-    // index programmatically in rebuildRunList() never re-emits a selection.
-    connect(m_runCombo, &QComboBox::activated, this, [this](int comboIndex) {
-        if (m_populating)
+    // currentRowChanged, not itemClicked: a list is walked with the arrow keys as well
+    // as clicked, and only the current-row signal covers both. It fires on programmatic
+    // changes too — including the clear() in rebuildRunList(), which emits row -1 — so
+    // the m_populating guard is what keeps a repopulation from looking like a choice.
+    connect(m_runList, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (m_populating || row < 0)
             return;
-        emit runSelected(comboIndex - 1); // combo 0 == "All runs" == run index -1
+        emit runSelected(row - 1); // row 0 == "All runs" == run index -1
     });
 }
 
@@ -100,7 +113,7 @@ void RunPane::setDocument(Document *document)
     m_regex->setEnabled(enabled);
     m_case->setEnabled(enabled);
     m_apply->setEnabled(enabled);
-    m_runCombo->setEnabled(enabled);
+    m_runList->setEnabled(enabled);
 
     rebuildRunList();
 }
@@ -120,8 +133,20 @@ void RunPane::emitPattern()
 void RunPane::rebuildRunList()
 {
     m_populating = true;
-    m_runCombo->clear();
-    m_runCombo->addItem(tr("All runs"));
+    // refresh() runs on every live append, so the whole list is rebuilt while the user
+    // is looking at it; keeping the scroll offset is what stops it jumping back to the
+    // top each time a run's record count ticks over.
+    const int scroll = m_runList->verticalScrollBar()->value();
+    m_runList->clear();
+
+    // Row 0 is not a run, so it is italic for the same reason AxisEditor's "Others" is:
+    // it is the entry that lifts the restriction, and a log may well start a run with a
+    // line that reads like this one.
+    auto *allRuns = new QListWidgetItem(tr("All runs"), m_runList);
+    QFont allFont = m_runList->font();
+    allFont.setItalic(true);
+    allRuns->setFont(allFont);
+    allRuns->setToolTip(tr("Show the whole file, with no run restriction."));
 
     if (m_document) {
         const QVector<Document::Run> &runs = m_document->runs();
@@ -142,11 +167,14 @@ void RunPane::rebuildRunList()
                       .arg(i).arg(m_document->runRecordCount(i))
                 : tr("#%1  %2  ·  %3  ·  %4 rec")
                       .arg(i).arg(when, snippet).arg(m_document->runRecordCount(i));
-            m_runCombo->addItem(label);
+            auto *item = new QListWidgetItem(label, m_runList);
+            // The label is elided at the pane's width, so the full one is the tooltip.
+            item->setToolTip(label);
         }
 
         const int sel = m_document->selectedRun();
-        m_runCombo->setCurrentIndex(sel >= 0 ? sel + 1 : 0);
+        m_runList->setCurrentRow(sel >= 0 ? sel + 1 : 0);
+        m_runList->verticalScrollBar()->setValue(scroll);
 
         // Status line under the pattern field.
         const TextMatcher &m = m_document->runStartMatcher();
@@ -159,7 +187,7 @@ void RunPane::rebuildRunList()
         else
             m_info->setText(tr("%1 run(s) detected.").arg(runs.size()));
     } else {
-        m_runCombo->setCurrentIndex(0);
+        m_runList->setCurrentRow(0);
         m_info->clear();
     }
     m_populating = false;

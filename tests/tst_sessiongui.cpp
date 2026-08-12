@@ -7,7 +7,7 @@
 #include <QAction>
 #include <QTemporaryDir>
 
-#include <QComboBox>
+#include <QListWidget>
 #include <QLineEdit>
 #include <QPushButton>
 
@@ -204,15 +204,15 @@ void TestSessionGui::runSelectionThroughUiAndPersists()
         QVERIFY(rp);
         auto *edit = rp->findChild<QLineEdit *>();
         auto *apply = rp->findChild<QPushButton *>();
-        auto *combo = rp->findChild<QComboBox *>();
-        QVERIFY(edit && apply && combo);
+        auto *runs = rp->findChild<QListWidget *>(QStringLiteral("runList"));
+        QVERIFY(edit && apply && runs);
 
         edit->setText(QStringLiteral("RUN START"));
         apply->click();
         QTest::qWait(50);
 
-        QCOMPARE(combo->count(), 4);        // "All runs" + 3 detected runs
-        QCOMPARE(combo->currentIndex(), 3); // newest selected by default
+        QCOMPARE(runs->count(), 4);       // "All runs" + 3 detected runs
+        QCOMPARE(runs->currentRow(), 3);  // newest selected by default
 
         w.close(); // saves the session incl. the run-start pattern + selection
     }
@@ -227,10 +227,10 @@ void TestSessionGui::runSelectionThroughUiAndPersists()
         auto *rp = w.findChild<RunPane *>();
         QVERIFY(rp);
         auto *edit = rp->findChild<QLineEdit *>();
-        auto *combo = rp->findChild<QComboBox *>();
-        QVERIFY(edit && combo);
+        auto *runs = rp->findChild<QListWidget *>(QStringLiteral("runList"));
+        QVERIFY(edit && runs);
         QCOMPARE(edit->text(), QStringLiteral("RUN START")); // restored
-        QCOMPARE(combo->count(), 4);                         // runs re-detected
+        QCOMPARE(runs->count(), 4);                          // runs re-detected
         w.close();
     }
 }
