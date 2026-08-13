@@ -6,6 +6,7 @@
 #include <QVector>
 #include <QtGlobal>
 
+#include <algorithm>
 #include <utility>
 
 namespace loftail {
@@ -67,6 +68,13 @@ public:
                 m_compact.records.append(m_source->records.at(s));
         }
         m_compact.rebuildBlockSums();
+        m_ascending = true;
+        for (int i = 1; i < m_visible.size(); ++i) {
+            if (m_visible.at(i) <= m_visible.at(i - 1)) {
+                m_ascending = false;
+                break;
+            }
+        }
         m_active = true;
     }
 
@@ -79,6 +87,7 @@ public:
         m_context.clear();
         m_context.squeeze();
         m_contextCount = 0;
+        m_ascending = true;
         m_compact = RecordIndex();
     }
 
@@ -103,9 +112,51 @@ public:
         return (viewRow >= 0 && viewRow < m_visible.size()) ? int(m_visible.at(viewRow)) : -1;
     }
 
-    // The visible source ordinals, ascending (empty when inactive). Exposed for
-    // tests and diagnostics.
+    // The view row showing source record `sourceRow`, or -1 when it is not visible.
+    // The inverse of sourceRow(), which a filter change needs because a source ordinal
+    // is the ONE coordinate a refilter does not move (SPEC.md §6, ARCHITECTURE.md §7.1.2).
+    int viewRowOf(int sourceRow) const
+    {
+        const int n = recordCount();
+        if (!m_active)
+            return (sourceRow >= 0 && sourceRow < n) ? sourceRow : -1;
+        if (m_ascending) {
+            const int r = lowerBound(sourceRow);
+            return (r < n && m_visible.at(r) == sourceRow) ? r : -1;
+        }
+        // Out of order (the digest, see below): a scan is the only correct answer.
+        for (int i = 0; i < m_visible.size(); ++i)
+            if (m_visible.at(i) == sourceRow)
+                return i;
+        return -1;
+    }
+
+    // The view row of the first VISIBLE record at or after `sourceRow`; recordCount()
+    // when every visible record is before it. Only meaningful over an ASCENDING subset
+    // — which every FILTER subset is (Document::applyFilters emits in one forward pass)
+    // and the DIGEST is not: publishDigest() reorders its ordinals by timestamp, so
+    // "at or after" has no meaning in its row space and a binary search over it would
+    // answer confidently and wrongly.
+    int viewRowAtOrAfter(int sourceRow) const
+    {
+        const int n = recordCount();
+        if (!m_active)
+            return qBound(0, sourceRow, n);
+        Q_ASSERT(m_ascending);
+        if (!m_ascending) {
+            const int exact = viewRowOf(sourceRow);
+            return exact >= 0 ? exact : n;
+        }
+        return lowerBound(sourceRow);
+    }
+
+    // The visible source ordinals (empty when inactive), ascending for every subset
+    // but the digest's — see isAscending(). Exposed for tests and diagnostics.
     const QVector<qint32> &visible() const { return m_visible; }
+
+    // Whether the visible ordinals are strictly ascending. False only for a subset
+    // published out of order — today exactly one, the digest.
+    bool isAscending() const { return m_ascending; }
 
     // --- M15 filter context (SPEC.md §6) --------------------------------------
 
@@ -156,7 +207,9 @@ public:
 
     // Drop the trailing visible record (its source row must be the provisional one
     // being reconsidered). Does NOT touch the compact block sums — the caller
-    // extends them once after all edits.
+    // extends them once after all edits. m_ascending is deliberately left alone:
+    // dropping the tail can only preserve ascendingness, and staying conservatively
+    // false costs a scan, never a wrong answer.
     void popLastVisible()
     {
         if (!m_visible.isEmpty()) {
@@ -173,6 +226,7 @@ public:
     // neighbour of a match rather than a match itself (M15).
     void appendVisible(int sourceRow, const Record &rec, bool context = false)
     {
+        m_ascending = m_ascending && (m_visible.isEmpty() || m_visible.last() < sourceRow);
         m_visible.append(sourceRow);
         m_context.append(context ? 1 : 0);
         m_contextCount += context ? 1 : 0;
@@ -185,8 +239,16 @@ public:
     void extendCompactSums(int validCount) { m_compact.extendBlockSums(validCount); }
 
 private:
+    // First index into m_visible whose ordinal is >= sourceRow. Ascending subsets only.
+    int lowerBound(int sourceRow) const
+    {
+        const auto it = std::lower_bound(m_visible.cbegin(), m_visible.cend(), qint32(sourceRow));
+        return int(it - m_visible.cbegin());
+    }
+
     const RecordIndex *m_source = nullptr;
     bool               m_active = false;
+    bool               m_ascending = true; // m_visible is strictly ascending (not the digest)
     QVector<qint32>    m_visible;      // view row -> source ordinal (active only)
     QVector<quint8>    m_context;      // parallel to m_visible: 1 = context, 0 = match
     int                m_contextCount = 0;

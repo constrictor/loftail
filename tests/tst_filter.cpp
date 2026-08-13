@@ -51,6 +51,10 @@ private slots:
     void integersEvaluatedBeforeText();
     void filteredIndexGeometry();
     void filteredIndexIdentityWhenInactive();
+    void viewRowOfInvertsSourceRow();
+    void viewRowAtOrAfterFindsTheNearestSurvivor();
+    void theReverseMapIsTheIdentityWhenNothingIsFiltered();
+    void aSubsetPublishedOutOfOrderStillAnswersExactly();
     void documentApplyFiltersEndToEnd();
     void findWalksAndWraps();
     void findChangesNoFilterState();
@@ -276,6 +280,107 @@ void TestFilter::filteredIndexIdentityWhenInactive()
     fi.clear();
     QVERIFY(!fi.active());
     QCOMPARE(fi.recordCount(), 10);            // back to identity
+}
+
+// --- the reverse map (the filter anchor, SPEC.md §6) -------------------------
+//
+// A source ordinal is the one coordinate a filter change does not move, so a view
+// anchors its selection and its scroll position to one across a re-apply. That needs
+// sourceRow()'s inverse, which is what these four pin.
+
+namespace {
+
+RecordIndex plainIndex(int n)
+{
+    RecordIndex src;
+    for (int i = 0; i < n; ++i) {
+        Record r{};
+        r.lineCount = quint16((i % 3) + 1);
+        src.records.append(r);
+    }
+    src.rebuildBlockSums();
+    return src;
+}
+
+} // namespace
+
+void TestFilter::viewRowOfInvertsSourceRow()
+{
+    const RecordIndex src = plainIndex(RecordIndex::kBlockSize + 50); // spans two blocks
+    QVector<qint32> visible;
+    for (int i = 0; i < src.records.size(); ++i)
+        if (i % 3 == 0)
+            visible.append(i);
+
+    FilteredIndex fi;
+    fi.setSource(&src);
+    fi.setVisible(visible);
+    QVERIFY(fi.isAscending());
+
+    for (int v = 0; v < fi.recordCount(); ++v)
+        QCOMPARE(fi.viewRowOf(fi.sourceRow(v)), v);
+
+    // Every hidden ordinal answers "not visible" rather than a neighbour's row.
+    for (int s = 0; s < src.records.size(); ++s)
+        if (s % 3 != 0)
+            QCOMPARE(fi.viewRowOf(s), -1);
+
+    QCOMPARE(fi.viewRowOf(-1), -1);
+    QCOMPARE(fi.viewRowOf(src.records.size() + 100), -1);
+}
+
+void TestFilter::viewRowAtOrAfterFindsTheNearestSurvivor()
+{
+    const RecordIndex src = plainIndex(20);
+    FilteredIndex fi;
+    fi.setSource(&src);
+    fi.setVisible({3, 8, 9, 14});
+
+    QCOMPARE(fi.viewRowAtOrAfter(3), 0);   // exactly on a survivor
+    QCOMPARE(fi.viewRowAtOrAfter(0), 0);   // before every survivor
+    QCOMPARE(fi.viewRowAtOrAfter(4), 1);   // hidden -> the next one down the file
+    QCOMPARE(fi.viewRowAtOrAfter(9), 2);
+    QCOMPARE(fi.viewRowAtOrAfter(10), 3);
+    // Past the last survivor: recordCount(), which the caller reads as "the whole
+    // visible set is above where you were" and answers with the end of the file.
+    QCOMPARE(fi.viewRowAtOrAfter(15), fi.recordCount());
+}
+
+void TestFilter::theReverseMapIsTheIdentityWhenNothingIsFiltered()
+{
+    const RecordIndex src = plainIndex(10);
+    FilteredIndex fi;
+    fi.setSource(&src);
+    QVERIFY(!fi.active());
+
+    QCOMPARE(fi.viewRowOf(4), 4);
+    QCOMPARE(fi.viewRowOf(-1), -1);
+    QCOMPARE(fi.viewRowOf(10), -1);
+    QCOMPARE(fi.viewRowAtOrAfter(4), 4);
+    QCOMPARE(fi.viewRowAtOrAfter(-3), 0);
+    QCOMPARE(fi.viewRowAtOrAfter(99), 10); // clamped to recordCount()
+}
+
+void TestFilter::aSubsetPublishedOutOfOrderStillAnswersExactly()
+{
+    // The digest's shape: Document::publishDigest() reorders its ordinals by timestamp,
+    // so this subset is NOT ascending — and a bare binary search over it would answer
+    // confidently and wrongly. viewRowOf() must still be exact.
+    const RecordIndex src = plainIndex(12);
+    FilteredIndex fi;
+    fi.setSource(&src);
+    fi.setVisible({5, 2, 9});
+
+    QVERIFY(!fi.isAscending());
+    QCOMPARE(fi.viewRowOf(5), 0);
+    QCOMPARE(fi.viewRowOf(2), 1);
+    QCOMPARE(fi.viewRowOf(9), 2);
+    QCOMPARE(fi.viewRowOf(7), -1);
+
+    // And it goes back to ascending when an ordinary filter subset is published over it.
+    fi.setVisible({1, 4, 6});
+    QVERIFY(fi.isAscending());
+    QCOMPARE(fi.viewRowAtOrAfter(5), 2);
 }
 
 // --- Document end-to-end ----------------------------------------------------

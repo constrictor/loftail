@@ -477,6 +477,19 @@ target_link_libraries(tst_recordmenu PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_recordmenu COMMAND tst_recordmenu)
 set_tests_properties(tst_recordmenu PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# Changing a filter must not move the reader (SPEC.md §6): the selected record keeps its
+# place on screen if it survives, the viewport still shows the same part of the file if it
+# does not, and follow is neither attached nor detached by the change. The mechanism is
+# pinned view-side in tst_logview; this drives the REAL routes into a re-apply — the
+# Filters pane's own controls and View ▸ Clear Filters — plus the two things only a window
+# can show: that each of two views of one file keeps its own place (invariant #7), and
+# that the one caller which opts out of the anchor still lands where it means to.
+# Offscreen, isolated config.
+qt_add_executable(tst_filteranchor tst_filteranchor.cpp)
+target_link_libraries(tst_filteranchor PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_filteranchor COMMAND tst_filteranchor)
+set_tests_properties(tst_filteranchor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # M9 — the tab arrangement itself round-trips: the same tabs come back in the same
 # order, each view keeping its own column layout and wrap mode.
 # Two MainWindow instances over one isolated settings store, offscreen.

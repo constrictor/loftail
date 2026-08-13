@@ -815,18 +815,31 @@ QVector<int> LogView::selectedRecordsSorted() const
     return rows;
 }
 
-void LogView::setCurrentRecord(int record, bool extendSelection)
+void LogView::selectRecordSilently(int record)
 {
     const int n = recordCount();
     if (n == 0)
         return;
     record = qBound(0, record, n - 1);
     m_current = record;
-    if (extendSelection && m_anchor >= 0)
+    m_anchor = record;
+    selectRange(record, record);
+}
+
+void LogView::setCurrentRecord(int record, bool extendSelection)
+{
+    const int n = recordCount();
+    if (n == 0)
+        return;
+    record = qBound(0, record, n - 1);
+    // An explicit pick forgets a selection a filter had hidden: the user has chosen a
+    // different record, so re-selecting the old one on the next widening would fight them.
+    m_stickySource = -1;
+    if (extendSelection && m_anchor >= 0) {
+        m_current = record;
         selectRange(m_anchor, record);
-    else {
-        m_anchor = record;
-        selectRange(record, record);
+    } else {
+        selectRecordSilently(record);
     }
     recomputeGeometry();     // selection can change the wrapped-record geometry
     ensureRecordVisible(record);
@@ -1064,6 +1077,14 @@ void LogView::updateFollowFromScrollPosition()
 {
     if (m_inFollowScroll)
         return; // our own scroll-to-end, not a user action
+    if (m_filterAnchor.active) {
+        // Inside a filter re-apply. endResetModel() narrows the scroll range and Qt
+        // CLAMPS the old line value into it, which arrives here as an ordinary scroll —
+        // and a clamp that lands at the bottom is exactly how a view the user had
+        // detached used to start following again, in silence. endFilterUpdate() carries
+        // the follow state over verbatim instead.
+        return;
+    }
     const bool atBottom = verticalScrollBar()->value() >= verticalScrollBar()->maximum();
     // Scrolling to the bottom re-attaches; scrolling away detaches (SPEC.md §3).
     setFollowingState(atBottom);
@@ -1119,8 +1140,96 @@ void LogView::handleTailChanged()
     viewport()->update();
 }
 
+void LogView::beginFilterUpdate()
+{
+    m_filterAnchor = FilterAnchor{};
+    if (m_role != Role::Main)
+        return; // the digest strip does not scroll and holds no selection
+    m_filterAnchor.active = true;
+    m_filterAnchor.following = m_following;
+
+    const int n = recordCount();
+    if (n == 0)
+        return;
+
+    const qint64 top = verticalScrollBar()->value();
+    const int topRow = mapRecordAtLine(top);
+    if (topRow >= 0 && topRow < n) {
+        m_filterAnchor.topSource = m_model->sourceRow(topRow);
+        // Lines scrolled INTO that record — which is why it carries over only where the
+        // record itself survives; a different record has its own first line.
+        m_filterAnchor.topOffset = qMax<qint64>(0, top - mapLineOfRecord(topRow));
+    }
+    if (m_current >= 0 && m_current < n) {
+        m_filterAnchor.currentSource = m_model->sourceRow(m_current);
+        const qint64 curTop = mapLineOfRecord(m_current);
+        m_filterAnchor.currentOffset = curTop - top; // may be negative: partly above
+        // Intersects the viewport, not "starts inside it": a tall record scrolled to
+        // its second line is still what the reader is looking at.
+        m_filterAnchor.currentOnScreen = curTop + mapRecordHeightLines(m_current) > top
+                                      && curTop < top + visibleLines();
+    }
+}
+
+void LogView::endFilterUpdate()
+{
+    if (!m_filterAnchor.active)
+        return; // unpaired, or a digest strip. Must be a no-op, or the follow guard latches.
+    const FilterAnchor a = m_filterAnchor;
+
+    // (a) SELECTION FIRST. In WrapMode::SelectedRecordOnly the selection IS part of the
+    //     line space (selRecordForGeometry -> the geometry statics), so a target line
+    //     computed before the selection is restored is computed against a different
+    //     mapping than the one it is then applied to.
+    const int wanted = a.currentSource >= 0 ? a.currentSource : m_stickySource;
+    const int currentRow = wanted >= 0 ? m_model->viewRowOf(wanted) : -1;
+    if (currentRow >= 0) {
+        selectRecordSilently(currentRow);
+        m_stickySource = -1;
+    } else {
+        // Hidden by the new filter: nothing is selected, but the ordinal is kept so a
+        // widening brings the selection back (SPEC.md §6). It is never moved to a
+        // neighbour — that would silently select a record the user did not pick.
+        m_stickySource = wanted;
+    }
+
+    // (b) geometry over the new subset, with that selection's wrapped height in it
+    recomputeGeometry();
+
+    // (c) the target top line
+    const int n = recordCount();
+    qint64 target = 0;
+    if (n > 0) {
+        if (currentRow >= 0 && a.currentOnScreen) {
+            target = mapLineOfRecord(currentRow) - a.currentOffset;
+        } else if (a.topSource >= 0) {
+            const int topRow = m_model->viewRowAtOrAfter(a.topSource);
+            target = topRow >= n
+                   ? verticalScrollBar()->maximum() // every survivor is above the old top
+                   : mapLineOfRecord(topRow)
+                     + (m_model->sourceRow(topRow) == a.topSource ? a.topOffset : 0);
+        }
+    }
+
+    // (d) apply, still inside the bracket so the move is not read as the user scrolling
+    if (a.following) {
+        scrollToEnd(); // following the tail outranks the anchor (SPEC.md §3)
+    } else {
+        const qint64 maxLine = verticalScrollBar()->maximum();
+        verticalScrollBar()->setValue(int(qBound<qint64>(0, target, maxLine)));
+    }
+
+    m_filterAnchor = FilterAnchor{};
+    setFollowingState(a.following); // carried over VERBATIM, never re-derived
+    viewport()->update();
+}
+
 void LogView::handleModelReset()
 {
+    // Any reset that is NOT a filter re-apply replaces the record space itself, so a
+    // remembered source ordinal means something different there, or nothing.
+    if (!m_filterAnchor.active)
+        m_stickySource = -1;
     m_current = -1;
     m_anchor = -1;
     m_selWrapCache = -1;

@@ -71,6 +71,16 @@ int LogModel::sourceRow(int viewRow) const
     return m_document ? view().sourceRow(viewRow) : -1;
 }
 
+int LogModel::viewRowOf(int sourceRow) const
+{
+    return m_document ? view().viewRowOf(sourceRow) : -1;
+}
+
+int LogModel::viewRowAtOrAfter(int sourceRow) const
+{
+    return m_document ? view().viewRowAtOrAfter(sourceRow) : 0;
+}
+
 int LogModel::rowCount(const QModelIndex &parent) const
 {
     if (parent.isValid() || !m_document)
