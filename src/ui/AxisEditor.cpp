@@ -21,6 +21,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMouseEvent>
 #include <QSignalBlocker>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -488,6 +489,15 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
     auto *list = new QListWidget(a.body);
     list->setObjectName(prefix + QStringLiteral("List"));
     list->setMinimumHeight(listMinHeight);
+    // "Only this one" as a chord, because it is what a list of ticks is most often
+    // wanted for and the alternatives are None-then-tick or a trip to the record menu.
+    // On the VIEWPORT, which is where a view's mouse events arrive; on the list itself
+    // the filter would see nothing but the scroll bars. The hint is the list's own
+    // tooltip: the value rows carry none of their own, so it is what shows over them.
+    list->setToolTip(subsystem
+                         ? tr("Ctrl+click a subsystem to show only that one.")
+                         : tr("Ctrl+click a thread to show only that one."));
+    list->viewport()->installEventFilter(this);
     (subsystem ? m_loggerList : m_threadList) = list;
 
     // Row 0 is the discovery rule, and it is a row rather than a checkbox beside the
@@ -1280,6 +1290,43 @@ QSet<QString> &AxisEditor::manualFor(ValueAxis axis)
     return axis == ValueAxis::Subsystem ? m_loggerManualNames : m_threadManualNames;
 }
 
+bool AxisEditor::axisOfViewport(const QObject *viewport, ValueAxis &axis) const
+{
+    if (m_loggerList && viewport == m_loggerList->viewport()) {
+        axis = ValueAxis::Subsystem;
+        return true;
+    }
+    if (m_threadList && viewport == m_threadList->viewport()) {
+        axis = ValueAxis::Thread;
+        return true;
+    }
+    return false;
+}
+
+bool AxisEditor::eventFilter(QObject *watched, QEvent *event)
+{
+    const bool press = event->type() == QEvent::MouseButtonPress
+                       || event->type() == QEvent::MouseButtonDblClick;
+    ValueAxis axis = ValueAxis::Subsystem;
+    if (press && axisOfViewport(watched, axis)) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        // Exactly Ctrl, so Ctrl+Shift and friends are left to the view: this claims one
+        // chord, not every chord that happens to include Ctrl. The double-click type is
+        // taken as well because a second Ctrl+click arrives as one, and the alternative
+        // is that holding Ctrl and clicking twice reverts half the edit.
+        if (me->button() == Qt::LeftButton && me->modifiers() == Qt::ControlModifier) {
+            if (QListWidgetItem *item = listFor(axis)->itemAt(me->position().toPoint())) {
+                // The row still becomes current, because the click was on it and the
+                // keyboard has to carry on from where the mouse left off.
+                listFor(axis)->setCurrentItem(item);
+                checkOnly(axis, item);
+                return true; // taken: no tick toggled underneath it, no selection swept
+            }
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 QListWidgetItem *AxisEditor::othersItemFor(ValueAxis axis) const
 {
     return axis == ValueAxis::Subsystem ? m_loggerOthers : m_threadOthers;
@@ -1329,6 +1376,31 @@ void AxisEditor::ensureListed(ValueAxis axis, const QString &name)
     refreshDiscoveredLists();
 }
 
+void AxisEditor::checkOnly(ValueAxis axis, QListWidgetItem *target)
+{
+    QListWidget *list = listFor(axis);
+    if (!list || !target)
+        return;
+
+    m_populating = true;
+    // Every item, including the ones the narrow box is currently hiding. All / None
+    // deliberately act on the narrowed view only, because there the user can see what
+    // they are acting on; "only db.pool" that quietly left hidden values ticked would
+    // restrict to more than it says, whether it was reached from the record menu or by
+    // Ctrl+clicking the row. Not the "Others" row, which setRestrictiveFor() is the
+    // statement about — and which is the one row that can be the target here.
+    for (int i = kFirstValueRow; i < list->count(); ++i) {
+        QListWidgetItem *item = list->item(i);
+        item->setCheckState(item == target ? Qt::Checked : Qt::Unchecked);
+    }
+    if (QGroupBox *enable = enableFor(axis))
+        enable->setChecked(true);
+    setRestrictiveFor(axis, !isOthersRow(target));
+    m_populating = false;
+
+    emitChanged();
+}
+
 void AxisEditor::showOnlyValue(ValueAxis axis, const QString &name)
 {
     QListWidget *list = listFor(axis);
@@ -1336,22 +1408,13 @@ void AxisEditor::showOnlyValue(ValueAxis axis, const QString &name)
         return;
     ensureListed(axis, name);
 
-    m_populating = true;
-    // Every item, including the ones the narrow box is currently hiding. All / None
-    // deliberately act on the narrowed view only, because there the user can see what
-    // they are acting on; a menu item that read "show only net.http" and quietly left
-    // hidden values ticked would restrict to more than it says. Not the "Others" row,
-    // which setRestrictiveFor() below is the statement about.
+    // By name rather than by row, because ensureListed() may have rebuilt the list.
     for (int i = kFirstValueRow; i < list->count(); ++i) {
-        QListWidgetItem *item = list->item(i);
-        item->setCheckState(item->text() == name ? Qt::Checked : Qt::Unchecked);
+        if (list->item(i)->text() == name) {
+            checkOnly(axis, list->item(i));
+            return;
+        }
     }
-    if (QGroupBox *enable = enableFor(axis))
-        enable->setChecked(true);
-    setRestrictiveFor(axis, true);
-    m_populating = false;
-
-    emitChanged();
 }
 
 void AxisEditor::hideValue(ValueAxis axis, const QString &name)

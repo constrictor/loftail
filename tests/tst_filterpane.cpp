@@ -173,6 +173,7 @@ private slots:
     void showOnlyDoesNotWidenWhenTheScanFindsMore();
     void aHandEditLeavesTheDiscoveryRuleAlone();
     void theListButtonsCarryTheDiscoveryRule();
+    void ctrlClickingAValueShowsOnlyIt();
     void theOthersRowIsNotASubsystem();
     void hideLeavesTheRestAloneAndKeepsDiscovering();
     void priorityFloorComesFromTheRecord();
@@ -497,6 +498,72 @@ void TestFilterPane::theListButtonsCarryTheDiscoveryRule()
     QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Unchecked);
     doc.applyFilters();
     QCOMPARE(doc.filtered().recordCount(), 0);
+}
+
+// Ctrl+click on a row is the record menu's "show only this" reached from the list
+// itself — the edit a list of ticks is most often wanted for, and otherwise two clicks
+// (None, then the value) or a trip to a record that happens to carry the name.
+//
+// It has to be a real click through the viewport, because the whole mechanism is that
+// the press is TAKEN: left to the view, the same press would toggle the tick under the
+// cursor (on the indicator) or sweep the selection (anywhere else), and either lands on
+// top of the exclusive edit rather than beside it. Calling checkOnly() directly would
+// prove nothing about that.
+void TestFilterPane::ctrlClickingAValueShowsOnlyIt()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.resize(320, 700);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    QApplication::processEvents();
+
+    QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
+    QVERIFY(list && othersRow(list));
+    QVERIFY(discovers(list));
+
+    const QList<QListWidgetItem *> hits =
+        list->findItems(QStringLiteral("db.pool"), Qt::MatchExactly);
+    QCOMPARE(hits.size(), 1);
+    const QRect rect = list->visualItemRect(hits.first());
+    QVERIFY(rect.isValid());
+    // Deliberately NOT on the check indicator: the chord acts on the row, wherever in
+    // it the click lands, and the far side of the label is where a plain click would
+    // only have moved the selection.
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::ControlModifier,
+                      QPoint(rect.right() - 2, rect.center().y()));
+
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
+    QCOMPARE(stateOf(list, QStringLiteral("net.socket")), Qt::Unchecked);
+    // ...and the same statement about what has not been found yet that the record menu
+    // makes: "only this one" is a restriction, or the next subsystem to appear joins it.
+    QVERIFY(!discovers(list));
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 1);
+
+    // A plain click is untouched — it toggles the row it lands on and nothing else.
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      QPoint(rect.right() - 2, rect.center().y()));
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
+
+    // Ctrl+clicking "Others" is the same rule with the other row as its target: only
+    // what the scan has not turned up yet, which is every listed value unticked and the
+    // discovery rule back on.
+    const QRect othersRect = list->visualItemRect(othersRow(list));
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::ControlModifier,
+                      QPoint(othersRect.right() - 2, othersRect.center().y()));
+    QVERIFY(discovers(list));
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Unchecked);
+    QCOMPARE(stateOf(list, QStringLiteral("net.socket")), Qt::Unchecked);
+    QVERIFY2(appendAndReindex(doc, file,
+                              "2026-07-21 12:00:02,000 [main] INFO  ui.window - c\n"),
+             qPrintable(doc.lastError()));
+    pane.refreshDiscoveredLists();
+    QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Checked);
 }
 
 // The row is a rule, not a value, so its label must never reach the selection —

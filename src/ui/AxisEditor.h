@@ -191,6 +191,17 @@ public:
     void showOnlyValue(ValueAxis axis, const QString &name);
     void hideValue(ValueAxis axis, const QString &name);
 
+protected:
+    // Ctrl+click on a row of either value list is "only this one" — the same edit the
+    // record menu's Show Only makes, reached from the list itself (SPEC.md §6). It is
+    // an event filter on the lists' viewports rather than a connection, because the
+    // click has to be TAKEN: left alone, the same press would toggle one tick (on the
+    // indicator) or move the selection (anywhere else), and either would land on top of
+    // the exclusive edit.
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
+public:
+
     // Set the minimum-level axis and enable it. Priority::Unknown has no selector
     // entry (an unparsed record carries no level) and is ignored.
     void setMinimumPriority(Priority p);
@@ -292,6 +303,16 @@ private:
     // emitted it. Without this a menu edit could silently do nothing while the
     // pane's list lagged the scan behind it.
     void ensureListed(ValueAxis axis, const QString &name);
+    // Tick `target` and untick every other VALUE row, and set the discovery rule to
+    // whichever of the two the click was on: a value row means "only this one", so
+    // "Others" goes off; the "Others" row itself means "only what the scan has not
+    // found yet", so it goes on and every listed value goes off. Acts on hidden rows
+    // too — see showOnlyValue(), which is this function plus a lookup by name.
+    // Emits changed() exactly once.
+    void checkOnly(ValueAxis axis, QListWidgetItem *target);
+    // The axis a viewport belongs to, for eventFilter(). False when it is neither.
+    bool axisOfViewport(const QObject *viewport, ValueAxis &axis) const;
+
     // The file's observed timestamp span, or false when it has no parsed timestamps.
     bool observedSpan(qint64 &lo, qint64 &hi) const;
     // A UTC instant as the zone-less display-zone wall clock the editors hold, and back.
