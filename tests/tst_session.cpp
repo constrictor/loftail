@@ -31,7 +31,6 @@ private slots:
     void viewsShrinkWithoutStaleTail();
     void v1SessionMigrates();
     void v2SessionMigratesWithoutItsWindowState();
-    void legacyDisplayZoneKeyMigrates();
 
     // M19 — highlight actions ride inside the same opaque `highlighters` blob, so the
     // session schema did not have to move for them.
@@ -50,10 +49,6 @@ void TestSession::documentsArrayRoundTrip()
 
     SessionDocument d;
     d.path = QStringLiteral("/logs/app.log");
-    d.format.pattern = QStringLiteral("%d [%t] %-5p %c - %m%n");
-    d.format.encoding = Encoding::Utf16LE;
-    d.format.sourceZone.kind = ZoneChoice::Kind::Utc;
-    d.format.timeDisplay = TimeDisplay::RunSeconds;
     QJsonObject filters;
     filters.insert(QStringLiteral("priorityEnabled"), true);
     d.filters = filters;
@@ -86,10 +81,6 @@ void TestSession::documentsArrayRoundTrip()
     QCOMPARE(out.documents.size(), 1);
     const SessionDocument &od = out.documents.first();
     QCOMPARE(od.path, d.path);
-    QCOMPARE(od.format.pattern, d.format.pattern);
-    QCOMPARE(int(od.format.encoding), int(Encoding::Utf16LE));
-    QCOMPARE(int(od.format.sourceZone.kind), int(ZoneChoice::Kind::Utc));
-    QCOMPARE(int(od.format.timeDisplay), int(TimeDisplay::RunSeconds));
     QCOMPARE(od.filters.value(QStringLiteral("priorityEnabled")).toBool(), true);
 
     // The view's own state: which file it shows, its columns and its wrap mode (§5).
@@ -171,10 +162,10 @@ void TestSession::perFileScopingSurvivesMultipleDocuments()
     in.activeView = 1;
     SessionDocument a;
     a.path = QStringLiteral("/a.log");
-    a.format.pattern = QStringLiteral("A%n");
+    a.filters.insert(QStringLiteral("priorityEnabled"), true);
     SessionDocument b;
     b.path = QStringLiteral("/b.log");
-    b.format.pattern = QStringLiteral("B%n");
+    b.filters.insert(QStringLiteral("priorityEnabled"), false);
     in.documents = {a, b};
     SessionView va;
     va.documentIndex = 0;
@@ -189,8 +180,10 @@ void TestSession::perFileScopingSurvivesMultipleDocuments()
     QSettings s(ini, QSettings::IniFormat);
     const Session out = SessionStore::load(s);
     QCOMPARE(out.documents.size(), 2);
-    QCOMPARE(out.documents.at(0).format.pattern, QStringLiteral("A%n"));
-    QCOMPARE(out.documents.at(1).format.pattern, QStringLiteral("B%n"));
+    QCOMPARE(out.documents.at(0).filters.value(QStringLiteral("priorityEnabled")).toBool(),
+             true);
+    QCOMPARE(out.documents.at(1).filters.value(QStringLiteral("priorityEnabled")).toBool(),
+             false);
     // activeView indexes the views array, and that view names its own file.
     QCOMPARE(out.documentFor(out.views.at(out.activeView))->path, QStringLiteral("/b.log"));
 }
@@ -351,54 +344,6 @@ void TestSession::v2SessionMigratesWithoutItsWindowState()
     QCOMPARE(out.activeView, 1);
 }
 
-void TestSession::legacyDisplayZoneKeyMigrates()
-{
-    // The display axis was a ZoneChoice under the key "displayZone" until the
-    // timestamp header menu subsumed it (SPEC.md §4). A session written back then
-    // must keep the user's UTC choice rather than silently reverting to "as written".
-    QTemporaryDir dir;
-    const QString ini = dir.filePath(QStringLiteral("s.ini"));
-    {
-        QSettings s(ini, QSettings::IniFormat);
-        s.beginGroup(QStringLiteral("session"));
-        s.setValue(QStringLiteral("schemaVersion"), SessionStore::kSchemaVersion);
-        s.beginWriteArray(QStringLiteral("documents"), 1);
-        s.setArrayIndex(0);
-        s.setValue(QStringLiteral("path"), QStringLiteral("/logs/old.log"));
-        s.setValue(QStringLiteral("displayZone"), QStringLiteral("utc")); // and no timeDisplay
-        s.endArray();
-        s.endGroup();
-        s.sync();
-    }
-
-    QSettings s(ini, QSettings::IniFormat);
-    const Session out = SessionStore::load(s);
-    QCOMPARE(out.documents.size(), 1);
-    QCOMPARE(int(out.documents.first().format.timeDisplay), int(TimeDisplay::Utc));
-
-    // Adding `timeDisplay` did NOT bump the schema — it is additive and readable both
-    // ways — so the legacy key is still honoured at the CURRENT version, not only at
-    // the one it was written under. (v3 was earned by the move from dock widgets to
-    // tabs; see v2SessionMigratesWithoutItsWindowState.)
-
-    // The legacy spellings that meant "as written" for display land on AsWritten.
-    for (const QString &legacy : {QStringLiteral("default"), QStringLiteral("offset:7200")}) {
-        {
-            QSettings w(ini, QSettings::IniFormat);
-            w.beginGroup(QStringLiteral("session"));
-            w.beginWriteArray(QStringLiteral("documents"), 1);
-            w.setArrayIndex(0);
-            w.setValue(QStringLiteral("displayZone"), legacy);
-            w.endArray();
-            w.endGroup();
-            w.sync();
-        }
-        QSettings r(ini, QSettings::IniFormat);
-        QCOMPARE(int(SessionStore::load(r).documents.first().format.timeDisplay),
-                 int(TimeDisplay::AsWritten));
-    }
-}
-
 void TestSession::runSelectionRoundTrip()
 {
     QTemporaryDir dir;
@@ -407,11 +352,8 @@ void TestSession::runSelectionRoundTrip()
     Session in;
     SessionDocument d;
     d.path = QStringLiteral("/logs/multi.log");
-    d.format.pattern = QStringLiteral("%d [%t] %-5p %c - %m%n");
-    // The run-start axis rides in FormatSettings (persisted like the format, §3a).
-    d.format.runStartPattern = QStringLiteral("Application starting");
-    d.format.runStartIsRegex = true;
-    d.format.runStartCaseSensitive = true;
+    // The run-start PATTERN belongs to the settings tree (M20). What the session
+    // records is WHICH run was being viewed (§3a).
     // A specific run selected, keyed by its stable start offset + timestamp.
     d.runAll = false;
     d.selectedRunStartOffset = 4096;
@@ -430,9 +372,6 @@ void TestSession::runSelectionRoundTrip()
     const Session          out = SessionStore::load(s);
     const SessionDocument &od = out.documents.first();
 
-    QCOMPARE(od.format.runStartPattern, QStringLiteral("Application starting"));
-    QCOMPARE(od.format.runStartIsRegex, true);
-    QCOMPARE(od.format.runStartCaseSensitive, true);
     QCOMPARE(od.runAll, false);
     QCOMPARE(od.selectedRunStartOffset, qint64(4096));
     QCOMPARE(od.selectedRunStartTimestamp, qint64(1700000000000LL));
@@ -449,7 +388,6 @@ void TestSession::runSelectionAbsentInOldSession()
     Session in;
     SessionDocument d;
     d.path = QStringLiteral("/logs/old.log");
-    d.format.pattern = QStringLiteral("%m%n");
     in.documents = {d};
     {
         QSettings s(ini, QSettings::IniFormat);
@@ -462,8 +400,7 @@ void TestSession::runSelectionAbsentInOldSession()
         s.beginGroup(QStringLiteral("session"));
         s.beginReadArray(QStringLiteral("documents"));
         s.setArrayIndex(0);
-        for (const char *k : {"runStartPattern", "runStartRegex", "runStartCase", "runAll",
-                              "selectedRunOffset", "selectedRunTs"})
+        for (const char *k : {"runAll", "selectedRunOffset", "selectedRunTs"})
             s.remove(QLatin1String(k));
         s.endArray();
         s.endGroup();
@@ -473,7 +410,6 @@ void TestSession::runSelectionAbsentInOldSession()
     const Session out = SessionStore::load(s);
     QCOMPARE(out.documents.size(), 1); // still loads (schema unchanged)
     const SessionDocument &od = out.documents.first();
-    QVERIFY(od.format.runStartPattern.isEmpty());
     QCOMPARE(od.runAll, false);
     QCOMPARE(od.selectedRunStartOffset, qint64(-1));
 }

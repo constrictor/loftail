@@ -18,7 +18,7 @@ namespace loftail {
 //
 // SHOWN ONLY WHEN THERE IS SOMETHING TO CHOOSE. A bare compressed stream holds one
 // member by construction and a container may hold exactly one, and in neither case is
-// the user asked — the same principle as the Log Format dialog, which appears only
+// the user asked — the same principle as Preferences, which appears only
 // when loftail cannot work the format out for itself.
 //
 // Several members can be picked at once, each opening in its own tab. That is not a
@@ -45,7 +45,7 @@ public:
     // Every member of `container` as a nested address, with the picker shown only when
     // there is a genuine choice. Returns empty when the user cancelled OR when the
     // archive could not be read, with `error` distinguishing the two — cancelling must
-    // abandon the open silently, exactly as cancelling the Log Format dialog does.
+    // abandon the open silently, exactly as cancelling Preferences does.
     static QStringList chooseMembers(const QString &container, QWidget *parent,
                                      QString *error);
 

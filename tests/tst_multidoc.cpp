@@ -468,7 +468,7 @@ void TestMultiDoc::timestampModeSurvivesRestart()
         w.close(); // saves the session
     }
 
-    // The mode rides the same persistence path the Log Format dialog uses, so a
+    // The mode rides the same persistence path Preferences uses, so a
     // relaunch restores it along with the rest of the file's format.
     MainWindow w;
     w.show();

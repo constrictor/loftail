@@ -206,7 +206,7 @@ bool Document::openAndSettleFormat(IFormatProvider &provider, OpenPolicy policy,
         // Bad/empty/uncompilable pattern: the file STILL opens with unparsed lines
         // as plain text (SPEC.md §4). The empty LogFormat drives the indexer's
         // plain-text path (every line an Unparsed record); remember the error so
-        // the Log Format dialog can point at the offending offset.
+        // the format editor can point at the offending offset.
         m_formatError = compiled.error();
     }
     // Settled means settled AGAINST REAL BYTES, which is why this is not simply "we got

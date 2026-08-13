@@ -2,6 +2,7 @@
 
 #include "DocumentContext.h"
 #include "FormatSettings.h"
+#include "LogSettingsStore.h"
 #include "LogView.h"
 #include "SshPromptDialogs.h"
 
@@ -54,10 +55,11 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
-    // Open `path`. Its format is recalled from the per-file cache if seen before
-    // (SPEC.md §4); otherwise `pattern` (or a common log4cplus default) is tried,
-    // and the Log Format dialog is offered when that pattern does not match. Safe
-    // to call repeatedly; it replaces the open document.
+    // Open `path`. Its settings come from the most specific level of the settings tree
+    // that names it — its own entry, the first file pattern that matches, or the
+    // defaults (SPEC.md §4) — unless `pattern` overrides the conversion pattern.
+    // Preferences is offered when what resolved cannot parse the file. Safe to call
+    // repeatedly; it adds a tab.
     // `rawPath` is a local path or an ssh:// URL in any accepted spelling; it is
     // normalized before it becomes a Document path (RemoteLocation.h).
     void openFile(const QString &rawPath, const QString &pattern = QString());
@@ -95,10 +97,10 @@ private slots:
     // the File ▸ Remote Hosts submenu rebuilt from the saved-host store.
     void chooseRemoteToOpen();
     void refreshRemoteHostsMenu();
-    void showFormatDialog();
-    // Application-wide settings (M18): today the default log format, previewed against
-    // whichever log is open. Unlike every other action here it is always available —
-    // it is not about the active document.
+    // The settings tree (M20): the defaults, the file patterns and the per-log entries,
+    // previewed against whichever log is open. Unlike every other action here it is
+    // always available — it is not about the active document, even though it opens on
+    // the active document's entry when there is one.
     void showPreferences();
     // Help ▸ About: aboutText() in a message box. Always available, like Preferences
     // and for a sharper reason — "which build am I running" is a question asked of a
@@ -221,7 +223,7 @@ private:
     void restoreSession();
 
     // Open `path` under `settings`. When `promptIfNoMatch` and the pattern matches
-    // no sample record, the Log Format dialog is offered first (SPEC.md §4). Builds
+    // no sample record, Preferences is offered first (SPEC.md §4). Builds
     // the model/view, starts indexing, and persists the format on a good result.
     // Returns false when the open did not happen — a source that cannot be opened,
     // or a format dialog the user cancelled. On false the previously open document
@@ -250,10 +252,17 @@ private:
     // pattern/encoding change → full rescan; source-zone change → timestamp reparse;
     // display-zone change → repaint only (§5.1, §6.1).
     void applySettings(const FormatSettings &newSettings);
+    // Write `s` into the settings tree as this log's own node — or DELETE that node,
+    // when `s` is exactly what the log would inherit anyway (LogSettingsTree::
+    // setFileProfile). The tree is saved only when it actually changed.
     void persistFormat(const QString &path, const FormatSettings &s);
-    // Save `s` as the default for never-seen files (M18) and refresh m_defaultFormat
-    // from what was actually stored. The counterpart to persistFormat(), one level up:
-    // that one remembers a file, this one remembers a habit.
+    // Put one settings node onto the log that is open: its wrap mode into the tree and
+    // the live views, then its format through applySettings(). TERMINAL — `ctx` and the
+    // Document may be gone when it returns, so nothing may follow a call to it.
+    void applyProfileToActive(const LogProfile &p);
+    // Save `s` as the tree's root defaults: what a log nothing else matches is tried
+    // with. The counterpart to persistFormat(), two levels up — that one remembers a
+    // log, this one remembers a habit.
     void rememberDefaultFormat(const FormatSettings &s);
 
     // What came of asking whether a format fits (offerFormat).
@@ -264,7 +273,7 @@ private:
     };
     // Whether `settings`'s pattern matches the bytes `doc` can now read. Asks nothing.
     static bool formatFits(Document *doc, const FormatSettings &settings);
-    // formatFits(), and if it does not, the Log Format dialog seeded with M8's
+    // formatFits(), and if it does not, Preferences seeded with M8's
     // autodetection. ONE COPY, shared by an ordinary open and by the first resume of a
     // log that opened waiting — which since M17 is every remote and archived log, so a
     // second copy would mean the prompt behaving differently for local and remote files.
@@ -339,7 +348,6 @@ private:
     QAction *m_cancelAction = nullptr;
     QAction *m_copyAction = nullptr;
     QAction *m_copyColumnsAction = nullptr;
-    QAction *m_formatAction = nullptr;
     QAction *m_reconnectAction = nullptr;
     QAction *m_followAction = nullptr; // View ▸ Follow Tail (return-to-bottom, M6)
     // The timestamp-column header submenu and its five exclusive actions, indexed by
@@ -373,14 +381,17 @@ private:
     // have been chosen), so the first-open sizing never overrides a restored layout.
     bool m_layoutRestored = false;
 
-    // The format a file loftail has not seen before is tried with (M18, SPEC.md §4) —
-    // a saved user setting, falling back to the built-in log4cplus layout. Application
-    // scope, not per file: the per-file choice is the FormatCache, which outranks it.
-    // Kept in step with DefaultFormatStore by showPreferences() and showFormatDialog().
-    FormatSettings m_defaultFormat;
-    // The wrap mode new views are created with — a window-wide View-menu choice
-    // (SPEC.md §5), not per-file state; each LogView owns its own mode thereafter.
-    LogView::WrapMode m_wrapMode = LogView::WrapMode::Off;
+    // THE SETTINGS TREE (M20, SPEC.md §4): the defaults, the ordered file patterns and
+    // the per-log nodes, resolved on every open. Read once in the constructor — after
+    // the one-time migration off the two QSettings stores it replaced and BEFORE
+    // restoreSession(), which now resolves through it rather than carrying its own copy
+    // of each document's format.
+    LogSettingsStore m_settingsStore{LogSettingsStore::defaultDir()};
+    LogSettingsTree  m_logSettings;
+    // View ▸ Line Wrap. Held so the checked entry can be made to track the ACTIVE view,
+    // which matters now that the mode a log opens in is its own (M20) rather than one
+    // window-wide choice: each action carries its WrapMode in QAction::data().
+    QActionGroup *m_wrapGroup = nullptr;
 
     // --- Notification surface (M19) ------------------------------------------------
     // Created only while some rule asks for one; see updateTrayPresence().

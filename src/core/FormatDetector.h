@@ -12,7 +12,7 @@ class Decoder;
 
 // The outcome of an attempt to autodetect a file's log4cplus ConversionPattern
 // (M8, ARCHITECTURE.md §9). `detected` is the confidence gate: when false, the
-// caller falls back to manual entry (the Log Format dialog opens as it does
+// caller falls back to manual entry (the format editor opens as it does
 // today). When true, `pattern` is the ConversionPattern string and `format` is
 // the LogFormat it compiled to — both handed on exactly as if the user had typed
 // the pattern, so nothing downstream ever learns detection happened (invariant #3).

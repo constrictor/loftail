@@ -1,10 +1,9 @@
 #include <QtTest>
 
 #include <QDir>
-#include <QSettings>
 #include <QTemporaryDir>
 
-#include "FormatCache.h"
+#include "LogSettings.h"
 #include "RemoteLocation.h"
 
 using namespace loftail;
@@ -32,8 +31,8 @@ private slots:
     void targetGroupsFilesOnOneHost();
     void displayHelpersFallBackToLocalBehavior();
     void availabilityIsOptimisticForRemote();
-    void formatCacheKeyIsWorkingDirectoryIndependent();
-    void formatCacheRoundTripsARemotePath();
+    void settingsKeyIsWorkingDirectoryIndependent();
+    void theSettingsTreeRoundTripsARemotePath();
 };
 
 void TestRemoteLocation::recognisesRemoteSchemes()
@@ -215,20 +214,20 @@ void TestRemoteLocation::availabilityIsOptimisticForRemote()
     QVERIFY(!logSourceAvailable(QStringLiteral("ssh://")));
 }
 
-void TestRemoteLocation::formatCacheKeyIsWorkingDirectoryIndependent()
+void TestRemoteLocation::settingsKeyIsWorkingDirectoryIndependent()
 {
-    // Regression: canonicalKey() fell through to QFileInfo::absoluteFilePath() for a
-    // remote URL, which prepended the working directory and collapsed the "//" —
-    // so a file's remembered format was lost whenever loftail was launched from a
-    // different directory.
+    // Regression: the key fell through to QFileInfo::absoluteFilePath() for a remote
+    // URL, which prepended the working directory and collapsed the "//" — so a log's
+    // remembered settings were lost whenever loftail was launched from a different
+    // directory.
     const QString url = QStringLiteral("ssh://deploy@web1/var/log/app.log");
 
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString before = QDir::currentPath();
-    const QString keyHere = FormatCache::canonicalKey(url);
+    const QString keyHere = logSettingsKey(url);
     QVERIFY(QDir::setCurrent(dir.path()));
-    const QString keyThere = FormatCache::canonicalKey(url);
+    const QString keyThere = logSettingsKey(url);
     QVERIFY(QDir::setCurrent(before));
 
     QCOMPARE(keyHere, keyThere);
@@ -236,30 +235,25 @@ void TestRemoteLocation::formatCacheKeyIsWorkingDirectoryIndependent()
     QVERIFY(!keyHere.contains(QStringLiteral("ssh:/var")));
     QVERIFY(keyHere.startsWith(QStringLiteral("ssh://")));
 
-    // Equivalent spellings share one cache entry.
-    QCOMPARE(FormatCache::canonicalKey(QStringLiteral("sftp://deploy@web1:22/var/log/app.log")),
+    // Equivalent spellings share one node.
+    QCOMPARE(logSettingsKey(QStringLiteral("sftp://deploy@web1:22/var/log/app.log")),
              keyHere);
 }
 
-void TestRemoteLocation::formatCacheRoundTripsARemotePath()
+void TestRemoteLocation::theSettingsTreeRoundTripsARemotePath()
 {
-    QTemporaryDir dir;
-    QVERIFY(dir.isValid());
-    QSettings store(dir.filePath(QStringLiteral("s.ini")), QSettings::IniFormat);
+    LogSettingsTree tree;
+    LogProfile p;
+    p.format.pattern = QStringLiteral("%d{ISO8601} [%t] %-5p %c - %m%n");
+    tree.setFileProfile(QStringLiteral("ssh://deploy@web1/var/log/app.log"), p);
 
-    FormatSettings s;
-    s.pattern = QStringLiteral("%d{ISO8601} [%t] %-5p %c - %m%n");
-    FormatCache::save(store, QStringLiteral("ssh://deploy@web1/var/log/app.log"), s);
-
-    // Reopened by a different spelling of the same file: still one entry, found.
-    const auto loaded =
-        FormatCache::load(store, QStringLiteral("ssh://deploy@web1:22/var/log/app.log"));
-    QVERIFY(loaded.has_value());
-    QCOMPARE(loaded->pattern, s.pattern);
+    // Reopened by a different spelling of the same file: still one node, found.
+    const auto hit = tree.resolve(QStringLiteral("ssh://deploy@web1:22/var/log/app.log"));
+    QVERIFY(hit.fileIndex >= 0);
+    QCOMPARE(hit.profile.format.pattern, p.format.pattern);
 
     // A different remote file is not confused with it.
-    QVERIFY(!FormatCache::load(store, QStringLiteral("ssh://deploy@web2/var/log/app.log"))
-                 .has_value());
+    QVERIFY(tree.resolve(QStringLiteral("ssh://deploy@web2/var/log/app.log")).fileIndex < 0);
 }
 
 QTEST_APPLESS_MAIN(TestRemoteLocation)

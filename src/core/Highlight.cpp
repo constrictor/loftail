@@ -119,7 +119,7 @@ HighlightRule HighlightRule::fromJson(const QJsonObject &o)
     // "this rule matches and does nothing", which is a state the user can reach in one
     // click by unticking Colour. Reading the second as the first would silently
     // re-colour every parked rule on the next launch, invisibly until someone wondered
-    // why the setting would not stick — the same trap DefaultFormatStore::load()'s
+    // why the setting would not stick — the same trap LogSettingsStore's
     // contains("pattern") records for an empty saved pattern.
     if (o.contains(QStringLiteral("actions")))
         r.actions = actionsFromJson(o.value(QStringLiteral("actions")).toArray());

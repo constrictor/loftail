@@ -5,7 +5,7 @@
 namespace loftail {
 
 // A structured failure from PatternCompiler::compile. It carries an offset into
-// the original pattern string so the Log Format dialog (M3) can point a caret at
+// the original pattern string so the format editor (M3) can point a caret at
 // the exact character that is wrong, rather than showing a vague "bad pattern"
 // (PLAN.md M1; ARCHITECTURE.md §3).
 //

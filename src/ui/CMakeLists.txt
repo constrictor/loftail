@@ -24,17 +24,19 @@ add_library(loftail_ui STATIC
     # M2b — the production custom record view
     LogView.cpp
     LogView.h
-    # M3 — the Log Format dialog. The controls it edits live in FormatEditor, shared with
+    # M3 — the format editor. Its controls live in FormatEditor, shared with
     # the Preferences dialog below so the per-file format and the default for new files
     # are entered through one widget and cannot drift apart.
     FormatEditor.cpp
     FormatEditor.h
-    LogFormatDialog.cpp
-    LogFormatDialog.h
     # M18 — application-wide settings: the default log format a never-seen file is tried
     # with, and the escape hatch for the per-file formats that outrank it.
     PreferencesDialog.cpp
     PreferencesDialog.h
+    # M20 — every field one settings node carries, on one page: FormatEditor
+    # plus run splitting, timestamp display and the wrap mode a new view starts in.
+    LogProfileEditor.cpp
+    LogProfileEditor.h
     # M4 — the Filters side pane and the Find bar. The five axis controls themselves
     # live in AxisEditor, shared with the per-rule editor in the Highlighters pane so
     # filtering and highlighting offer the same criteria and cannot drift apart.

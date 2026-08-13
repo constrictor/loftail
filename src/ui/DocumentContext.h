@@ -84,7 +84,7 @@ public:
     AlertPolicy      alerts;
 
     // The format choice for this file (SPEC.md §4). Held here as UI configuration;
-    // the source of truth across sessions is the per-file FormatCache. The pattern
+    // the source of truth across sessions is the settings tree (M20). The pattern
     // never reaches the view, filters, or highlighters (invariant #3).
     FormatSettings settings;
 
@@ -114,7 +114,7 @@ public:
 
     // A one-off notice about this file's FORMAT, for the status bar. Set in exactly one
     // situation (M13): a log that was being waited for has arrived and the remembered
-    // pattern does not fit it. That cannot raise the Log Format dialog — it happens on
+    // pattern does not fit it. That cannot raise Preferences — it happens on
     // a watch tick, possibly for a tab that is not on screen — so it says so here and
     // leaves the log readable as plain text. Kept apart from sourceStatus so the two
     // cannot overwrite each other; a fetcher publishing its progress must not erase it.

@@ -24,7 +24,7 @@ struct PreviewRow
 // The result of running a LogFormat over a file sample: the column headers, the
 // per-record breakdown, and how many of the sample records the pattern matched.
 // matchedCount == 0 is the "pattern does not match" signal MainWindow uses to
-// offer the Log Format dialog on a first open.
+// offer Preferences on a first open.
 struct PreviewResult
 {
     QStringList        headers;
@@ -33,7 +33,7 @@ struct PreviewResult
     int                totalCount = 0;
 };
 
-// Builds the Log Format dialog's live preview (SPEC.md §4): it runs `format` over
+// Builds the format editor's live preview (SPEC.md §4): it runs `format` over
 // the leading `sample` bytes, splitting them into records with the SAME
 // record-start rule the indexer uses (invariant #2) and reading through the
 // Decoder rather than scanning raw bytes (invariant #8). Pure — no LogSource, no

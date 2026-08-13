@@ -12,6 +12,7 @@
 #include "ArchiveFixtures.h"
 #include "MainWindow.h"
 #include "OpenArchiveDialog.h"
+#include "LogSettingsStore.h"
 #include "SessionStore.h"
 
 using namespace loftail;
@@ -188,6 +189,18 @@ void TestArchiveOpen::theFormatAndTheSessionRememberAnArchivedPath()
     const QString address = tgz + QStringLiteral("/app.log");
 
     {
+        // Defaults that cannot parse this log, so the pattern passed below is the only
+        // thing that can — which is what makes the reopen at the bottom prove that the
+        // settings were found under the ARCHIVED key rather than inherited.
+        LogSettingsStore store(LogSettingsStore::defaultDir());
+        LogSettingsTree tree;
+        LogProfile root;
+        root.format.pattern = QStringLiteral("%p|%c|%m%n");
+        tree.setDefaults(root);
+        QVERIFY(store.save(tree));
+    }
+
+    {
         MainWindow window;
         window.show();
         window.openFile(address, QString::fromLatin1(kPattern));
@@ -196,13 +209,18 @@ void TestArchiveOpen::theFormatAndTheSessionRememberAnArchivedPath()
         window.close();
     }
 
-    // The format cache keyed on the archived address, not on a mangled one — the bug
+    // The settings tree keyed on the archived address, not on a mangled one — the bug
     // M11 fixed for URLs, in its archived form.
     QSettings settings;
     const Session session = SessionStore::load(settings);
     QCOMPARE(session.documents.size(), 1);
     QCOMPARE(session.documents.at(0).path, address);
-    QCOMPARE(session.documents.at(0).format.pattern, QString::fromLatin1(kPattern));
+
+    LogSettingsStore store(LogSettingsStore::defaultDir());
+    const LogSettingsTree tree = store.load();
+    const auto hit = tree.resolve(address);
+    QVERIFY2(hit.fileIndex >= 0, "no per-log node was written for the archived address");
+    QCOMPARE(hit.profile.format.pattern, QString::fromLatin1(kPattern));
 
     {
         // Restored WITHOUT a pattern argument: it opens correctly only because the

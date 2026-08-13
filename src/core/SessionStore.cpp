@@ -56,21 +56,9 @@ Session SessionStore::load(QSettings &settings)
         settings.setArrayIndex(i);
         SessionDocument d;
         d.path = settings.value(QStringLiteral("path")).toString();
-        d.format.pattern = settings.value(QStringLiteral("pattern")).toString();
-        d.format.encoding =
-            static_cast<Encoding>(settings.value(QStringLiteral("encoding")).toUInt());
-        d.format.sourceZone =
-            ZoneChoice::fromString(settings.value(QStringLiteral("sourceZone")).toString());
-        // Legacy-key fallback: the display axis was a ZoneChoice under "displayZone"
-        // until the header menu subsumed it. See FormatCache::readAt for the full
-        // reasoning; the vocabularies overlap on "local"/"utc" by design.
-        const QString mode = settings.value(QStringLiteral("timeDisplay")).toString();
-        d.format.timeDisplay = timeDisplayFromString(
-            mode.isEmpty() ? settings.value(QStringLiteral("displayZone")).toString() : mode);
-        d.format.runStartPattern =
-            settings.value(QStringLiteral("runStartPattern")).toString();
-        d.format.runStartIsRegex = settings.value(QStringLiteral("runStartRegex")).toBool();
-        d.format.runStartCaseSensitive = settings.value(QStringLiteral("runStartCase")).toBool();
+        // The format keys a pre-M20 session wrote are simply not read: the settings
+        // tree answers for this path now. They are left in place rather than removed,
+        // so rolling back to an earlier build still finds them.
         d.runAll = settings.value(QStringLiteral("runAll"), false).toBool();
         d.selectedRunStartOffset =
             settings.value(QStringLiteral("selectedRunOffset"), qint64(-1)).toLongLong();
@@ -137,13 +125,6 @@ void SessionStore::save(QSettings &settings, const Session &session)
         settings.setArrayIndex(i);
         const SessionDocument &d = session.documents.at(i);
         settings.setValue(QStringLiteral("path"), d.path);
-        settings.setValue(QStringLiteral("pattern"), d.format.pattern);
-        settings.setValue(QStringLiteral("encoding"), uint(d.format.encoding));
-        settings.setValue(QStringLiteral("sourceZone"), d.format.sourceZone.toString());
-        settings.setValue(QStringLiteral("timeDisplay"), timeDisplayToString(d.format.timeDisplay));
-        settings.setValue(QStringLiteral("runStartPattern"), d.format.runStartPattern);
-        settings.setValue(QStringLiteral("runStartRegex"), d.format.runStartIsRegex);
-        settings.setValue(QStringLiteral("runStartCase"), d.format.runStartCaseSensitive);
         settings.setValue(QStringLiteral("runAll"), d.runAll);
         settings.setValue(QStringLiteral("selectedRunOffset"), d.selectedRunStartOffset);
         settings.setValue(QStringLiteral("selectedRunTs"), d.selectedRunStartTimestamp);

@@ -79,11 +79,13 @@ struct ZoneChoice
 // The complete per-file format choice (SPEC.md §4): the ConversionPattern, the
 // encoding, the source time-zone choice, and how timestamps are displayed. This is
 // what MainWindow diffs to pick the change-cost (encoding rescan / source-zone
-// reparse / display reformat) and what the FormatCache persists per file path.
+// reparse / display reformat) and what one node of the settings tree carries (M20,
+// LogProfile.h).
 //
-// Note the two editors: the Log Format dialog owns everything here EXCEPT
-// `timeDisplay`, whose sole control is the timestamp column's header context menu.
-// Both routes funnel through MainWindow::applySettings, so persistence is shared.
+// Note the two editors: Preferences owns all of it — one node of the settings tree
+// holds the whole struct — while `timeDisplay` additionally has the timestamp column's
+// header context menu as a shortcut. Both routes funnel through
+// MainWindow::applySettings, so persistence is shared.
 //
 // The pattern STRING lives here and in ManualFormatProvider only — nothing
 // downstream of PatternCompiler ever sees it (invariant #3).
@@ -101,7 +103,7 @@ struct FormatSettings
     // Run splitting (SPEC.md §3a): the run-start regexp that divides the file into
     // app runs. Not part of the log FORMAT (nothing in PatternCompiler reads it), but
     // persisted with the same per-file lifecycle as the format, so it rides in here
-    // through the FormatCache and the session. Empty pattern == no run splitting.
+    // through the settings tree. Empty pattern == no run splitting.
     QString    runStartPattern;
     bool       runStartIsRegex = false;
     bool       runStartCaseSensitive = false;

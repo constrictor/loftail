@@ -7,7 +7,7 @@ namespace loftail {
 
 // How the timestamp column renders (SPEC.md §4). Chosen per FILE from the Date
 // column's header context menu, which is the SOLE control: the first three kinds
-// are what the Log Format dialog's "Display time zone" combo used to be, so that
+// are what the format editor's old "Display time zone" combo used to be, so that
 // combo is gone and this enum replaced FormatSettings::displayZone.
 //
 // AsWritten/LocalTime/Utc render the file's OWN date format
@@ -27,7 +27,7 @@ enum class TimeDisplay : quint8 {
 // Round-trip through a plain string for QSettings persistence. The vocabulary
 // deliberately EXTENDS the legacy ZoneChoice one rather than replacing it —
 // "local" and "utc" keep their old spelling — so a store written before this
-// setting existed reads correctly through the fallback in FormatCache and
+// setting existed reads correctly through the legacy-key fallback in LogSettingsStore and
 // SessionStore, with no mapping table.
 inline QString timeDisplayToString(TimeDisplay d)
 {

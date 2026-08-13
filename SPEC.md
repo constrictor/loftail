@@ -128,10 +128,10 @@ A single log file often contains the output of several application runs, one aft
 
 ## 4. Log format configuration
 
-Because a log file does not describe its own layout, loftail needs to be told the `ConversionPattern` the writing application used.
+Because a log file does not describe its own layout, loftail needs to be told the `ConversionPattern` the writing application used. That is set in **Edit ▸ Preferences**, at whichever of three levels it belongs to — see "Settings for a log, a kind of log, and every log" below.
 
-- A **Log Format** dialog accepts the pattern string and shows a **live preview**: sample lines from the current file, split into the fields loftail would extract, in the same fixed-width font the record table uses. This makes a wrong pattern immediately obvious rather than failing silently.
-- The dialog reports which fields were found. If **priority** or **subsystem** is absent from the pattern, loftail warns that filtering on the missing axis will be unavailable.
+- The format editor accepts the pattern string and shows a **live preview**: sample lines from the current file, split into the fields loftail would extract, in the same fixed-width font the record table uses. This makes a wrong pattern immediately obvious rather than failing silently.
+- It reports which fields were found. If **priority** or **subsystem** is absent from the pattern, loftail warns that filtering on the missing axis will be unavailable.
 
 - **Every conversion specifier log4cplus's `PatternLayout` defines is accepted**, each becoming its own column:
 
@@ -145,23 +145,38 @@ Because a log file does not describe its own layout, loftail needs to be told th
 
   Padding and truncation modifiers (`%-5p`, `%.30c`, `%20.30m`) are understood on any of them. A specifier outside this set is rejected with the position of the offending character, rather than being ignored — a pattern written for a different logging library should fail visibly, not produce a table with a column silently missing.
 - If a pattern matches poorly, the file still opens: unparsed lines are shown as plain text rather than being hidden or dropped. The user is never left staring at an empty window because of a format mistake.
-- **Cancelling the dialog cancels the open.** When the dialog is shown because loftail could not parse a file it was asked to open, dismissing it (Cancel or Esc) abandons that open entirely — no file is opened, and whatever was already on screen stays there. Cancelling means "not like that", so loftail does not fall back to opening the file as a wall of unparsed plain text.
-- The chosen format is remembered per file, so a file already configured opens correctly without asking again. A file is never assumed to share the format of another file that happens to be open; what a *never-seen* file is tried with is the configured default, below.
-- The dialog also offers **"Also use this format for new files"**, which promotes what is on screen to that default. A pattern is worth keeping once it has been checked against real lines, which is exactly what this dialog was doing.
+- **Cancelling cancels the open.** When Preferences opens by itself because loftail could not parse a file it was asked to open, dismissing it (Cancel or Esc) abandons that open entirely — no file is opened, whatever was already on screen stays there, and the entry it had just created for that log is discarded along with every other edit. Cancelling means "not like that", so loftail does not fall back to opening the file as a wall of unparsed plain text.
 
-### Default log format
+### Settings for a log, a kind of log, and every log
 
-Logs loftail has not seen before are opened with a **default format** — the pattern, the encoding and the source time zone — set in **Edit ▸ Preferences**. Somebody whose logs all share one house layout sets it once instead of confirming the same dialog for every file.
+Most people have a handful of house layouts and a great many log files. So the settings that say how a log is read are arranged in **three levels**, and the most specific one that names a log decides:
 
-- Preferences previews the default against whichever log is open, so it can be checked against real lines rather than typed blind. With nothing open the preview is simply empty; the setting is still editable, which is when most people will want it.
-- **The default is not applied silently.** It is what the file is *tried* with; if it does not parse, the Log Format dialog appears exactly as it would have otherwise, pre-filled with the autodetected pattern. A wrong default costs a dialog, never a mis-split table.
-- Out of the box the default is log4cplus's own conventional layout. Clearing the pattern entirely is a valid answer, and means "ask me about every log".
-- A file that has already been configured keeps **its own** format and ignores the default — the per-file memory above outranks it. **Forget Remembered Formats**, in Preferences, drops every per-file format so all logs fall back to the default; logs already open are unaffected.
-- Only the format is defaulted. The timestamp display mode and the run-start pattern are choices about one particular log and stay per file.
+| Level | Applies to |
+| --- | --- |
+| **Default settings** | any log the two levels below do not name |
+| **A file pattern** | every log whose name matches — `*.log`, `audit-*`, a regular expression |
+| **One log** | that log alone, local or remote |
+
+Each level holds the same complete set: the conversion pattern, the character encoding, the source time zone, how timestamps are displayed, the run-start pattern with its two flags, and the line wrapping a newly opened view starts in. **The deepest level that names a log supplies all of them** — the levels are not merged field by field, so what a log opens with is always exactly what one entry says.
+
+**Edit ▸ Preferences** shows the whole arrangement as a tree, with the selected entry's settings beside it.
+
+- **File patterns are ordered, and the first match wins.** A log matching two patterns takes the higher one; ↑ and ↓ change which. A pattern is a **wildcard** (`*` and `?`, matching the whole name) or a **regular expression** (matching anywhere in it), optionally case sensitive.
+- By default a pattern is matched against the log's **own file name** — the member's name inside an archive, the file name at the end of an `ssh://` address. **Match the whole path** widens it to the entire address, host included, so "every log on prod-web" is expressible.
+- **A log gets an entry of its own only when you change something.** Opening a log leaves nothing behind; entries appear when a setting is made to differ from what the log would otherwise inherit, and disappear again when it is brought back into line.
+- **Copy to Parent Pattern** gives one log's settings to the pattern above it, so every log that pattern matches gets them. The log's own entry then has nothing left to say and is removed.
+- **Apply to \<log>** puts the selected entry's settings on the log that is open, without waiting for the next time it is opened.
+- A log matched by no pattern is listed under **Logs with no matching pattern**. That heading is not itself a setting and has nothing to edit; it is simply where such logs are shown.
+- **Forget Remembered Formats** deletes every per-log entry at once, so each log falls back to its pattern or to the defaults. Logs already open are unaffected.
+- Nothing is written until **OK**. Cancel discards every edit, including a pattern added, an entry deleted and a bulk forget.
+
+**Settings are never applied silently to a log they cannot parse.** Whichever level answered, loftail checks the result against the file it just opened; if not one record parses, Preferences appears with an entry for that log, pre-filled with the autodetected pattern. A wrong entry costs a dialog, never a mis-split table.
+
+Out of the box the defaults are log4cplus's own conventional layout. Clearing the pattern entirely is a valid answer, and means "ask me about every log".
 
 ### Character encoding
 
-Encoding is an explicit setting in the Log Format dialog, offered as a list:
+Encoding is an explicit setting, offered as a list:
 
 | Choice                      | Behavior                                                    |
 | --------------------------- | ----------------------------------------------------------- |
@@ -171,19 +186,19 @@ Encoding is an explicit setting in the Log Format dialog, offered as a list:
 | System 8-bit                | The platform's local codepage                               |
 
 - Auto-detect is the default because it is right nearly always — this matters because log4cplus built for `wchar_t` writes UTF-16 on Windows, and users should not have to know that.
-- When auto-detect is active the dialog shows **which** encoding it settled on, so a wrong guess is visible rather than silent.
+- When auto-detect is active, Preferences shows **which** encoding it settled on, so a wrong guess is visible rather than silent.
 - The choice is explicit and forceable because no heuristic is reliable on short files, on files whose first records are pure ASCII, or on legacy 8-bit logs — auto-detect is a convenience, not a guarantee.
-- The setting is remembered per file along with the rest of the format.
+- The setting travels with the rest of an entry's settings, at whichever level that entry sits.
 
 ### Timestamps and time zones
 
 Timestamps are parsed into real points in time, not treated as opaque text — this is what makes time-range filtering (§6) and jump-to-time possible.
 
-Because a log file records no zone information, **how timestamps are read** and **how they are shown** are configured separately. Both are remembered per file, but they are edited in different places.
+Because a log file records no zone information, **how timestamps are read** and **how they are shown** are configured separately. Both belong to an entry in the settings tree, and both can be set there; the display mode additionally has a shortcut of its own.
 
-- **Source time zone** — how to read the timestamps in the file: **Infer from pattern** *(default)*, Local time, UTC, or a fixed offset. Inference uses the date specifier in the configured pattern, since log4cplus distinguishes local-time and UTC forms. Explicit selection exists because the producing application may have been configured in ways the pattern does not reveal, and because logs are routinely read on a different machine than they were written on. *This one lives in the Log Format dialog.*
+- **Source time zone** — how to read the timestamps in the file: **Infer from pattern** *(default)*, Local time, UTC, or a fixed offset. Inference uses the date specifier in the configured pattern, since log4cplus distinguishes local-time and UTC forms. Explicit selection exists because the producing application may have been configured in ways the pattern does not reveal, and because logs are routinely read on a different machine than they were written on.
 
-- **Timestamp display** — how to show them. **Right-clicking the timestamp column's header** offers five mutually exclusive modes. This is the only place the choice is made, and it applies to the *file*, so every view of it agrees.
+- **Timestamp display** — how to show them. **Right-clicking the timestamp column's header** offers five mutually exclusive modes, and applies the choice to the *file*, so every view of it agrees. The same five are in Preferences, where they can be set for a pattern or for the defaults rather than for one log.
 
   | Mode | Shows |
   | --- | --- |
@@ -197,7 +212,7 @@ Because a log file records no zone information, **how timestamps are read** and 
 
 Time-range filter bounds (§6) are always entered as wall clock in the display time zone, so what you type matches what you see in the first three modes; the seconds modes do not change how bounds are entered.
 
-**Format autodetection.** Opening a file loftail has not seen before, whose pattern is not already remembered, guesses the `ConversionPattern` from the file itself and **pre-fills the dialog with the guess for confirmation** — never applying it silently, since a wrong pattern quietly mis-splits every record. A **Detect** button re-runs the guess into the pattern field at any time. Detection failure leaves the dialog on the fallback default, so manual entry is always the authority and always available.
+**Format autodetection.** Opening a file whose settings do not parse it guesses the `ConversionPattern` from the file itself and **pre-fills the dialog with the guess for confirmation** — never applying it silently, since a wrong pattern quietly mis-splits every record. A **Detect** button re-runs the guess into the pattern field at any time. Detection failure leaves the dialog on the fallback default, so manual entry is always the authority and always available.
 
 ## 5. Main view
 
@@ -216,8 +231,8 @@ Time-range filter bounds (§6) are always entered as wall clock in the display t
   - **Off** — long lines extend horizontally; the view scrolls sideways.
   - **Selected record only** — the focused record wraps so it can be read in full; all others stay unwrapped.
   - **Always on** — every record wraps to the viewport width.
-  
-  The setting is remembered. Note that in *always on* mode the vertical scrollbar is an approximation that refines as you scroll, since exact total height cannot be known without measuring every record (see `ARCHITECTURE.md` §7.1). Scroll position and navigation stay accurate; only the thumb size and position are estimates.
+
+  The mode a newly opened view starts in is remembered for the log (§4); changing it afterwards changes the view in front of you and is remembered for that view alone, so two views of one file can differ. Note that in *always on* mode the vertical scrollbar is an approximation that refines as you scroll, since exact total height cannot be known without measuring every record (see `ARCHITECTURE.md` §7.1). Scroll position and navigation stay accurate; only the thumb size and position are estimates.
 
 - Rows can be selected individually or as a range, and copied to the clipboard. Copying yields the original raw text by default, with **Copy as Columns** available as a separate action for pasting into a spreadsheet.
 
@@ -357,14 +372,15 @@ Filters, highlighters, and runs (§3) are each presented in a side pane — and 
 On relaunch, loftail restores:
 
 - Every file that was open — each reopened at its end and following, like any open (§3), so follow state is never a remembered choice
-- The log format in use for each, and its timestamp display mode (§4)
-- The run-start pattern and which run was being viewed, per file (§3)
+- Which run of each file was being viewed (§3)
 - Active filters and highlighters per file, including which were enabled
 - Every view: how many views each file had, each one's column layout and wrap mode, and which view was active
 - Saved presets, where the build has them (§9)
 - Window geometry, the order of the tabs, and the arrangement of the side panes (§5a, §8)
 
-**Scoping:** the log format, the timestamp display mode, the run-start pattern, active filters, active highlighters, and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a second view showing wide messages and one showing just timestamps each keep their shape. Presets, the **default log format** (§4) and the window/pane layout are global.
+**Scoping:** active filters, active highlighters and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a second view showing wide messages and one showing just timestamps each keep their shape. Presets and the window/pane layout are global.
+
+The log format, the encoding, the source time zone, the timestamp display mode and the run-start pattern are **not** part of the session at all: they are settings (§4), resolved from the file's own entry, its file pattern or the defaults every time it is opened. That is what makes a change in Preferences reach a tab that was restored from a previous session rather than only a freshly opened one.
 
 **Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is keyed by file, so instances viewing different logs never conflict. For genuinely global state — window layout, and which files to restore on next launch — **the last instance to close wins**.
 

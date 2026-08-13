@@ -57,7 +57,7 @@ public:
     // opened AND cannot be waited for (see isWaiting()). A bad/empty/uncompilable
     // pattern is NOT a failure: the file still
     // opens with unparsed lines as plain text (SPEC.md §4), and the compile error
-    // is left in formatError() for the Log Format dialog to surface.
+    // is left in formatError() for the format editor to surface.
     //
     // Routing the pattern through an IFormatProvider (ARCHITECTURE.md §9) is what
     // keeps the pattern string out of Document and everything below it — Document
