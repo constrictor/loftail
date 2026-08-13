@@ -225,3 +225,57 @@ to everyone, but with tool versions that still move. That leg started non-blocki
 is now a required check like the rest — it has run green with no preview-side trouble,
 and since it is the only job compiling against a Qt newer than the floor, letting it
 fail quietly would leave the ceiling untested at exactly the moment it broke.
+
+## Releasing
+
+**A release promotes a build; it does not make one.** `.github/workflows/release.yml`
+takes the run ID of a `build-test-package` run that has already gone green, downloads
+that run's artifacts, tags the commit it was built from, and publishes those exact
+files. It never compiles anything.
+
+That is deliberate, and the reason is in this directory. `build-appimage.sh` fetches
+linuxdeploy and its Qt plugin from their upstream **`continuous`** tag, the Windows job
+installs libarchive through vcpkg at build time, and the Linux jobs take Qt from
+whatever the runner image currently carries. Rebuilding a tagged commit a week later
+therefore produces *different bytes* — bundled by different tooling, linked against
+different libraries — that no one has smoke-tested. Promoting ships the artifact whose
+green tick you actually looked at.
+
+`packaging.yml` consequently has **no tag trigger**, and should not regain one: the tag
+is applied to a commit that workflow already built, so building again on the tag would
+produce artifacts nothing publishes while suggesting they are what ships.
+
+The cycle, with the version bumped *after* the release:
+
+1. `master` already reads, say, `project(VERSION 0.2.0)`. Every build off it reports
+   `loftail 0.2.0+<run>.g<sha>` — recognisably a build heading for 0.2.0, never
+   confusable with released 0.2.0.
+2. Pick a green run and note its ID (the number in its URL).
+3. Actions ▸ **release** ▸ Run workflow, with that run ID and the tag `v0.2.0`. It
+   defaults to a **draft** so the generated notes can be read before they go out.
+4. Publish the draft.
+5. Bump `project(VERSION)` to `0.3.0` and commit. `master` is now heading for 0.3.0.
+
+**The version comes from `CMakeLists.txt`, never from the tag.** The tag only has to
+agree with it, and the workflow checks that rather than trusting it: it runs the
+downloaded AppImage's `--version` and requires both halves to match — the release
+against the tag, and the build id against the run being promoted. So the classic
+mistake, tagging `v0.3.0` on a tree still saying `0.2.0`, fails the promote instead of
+mislabelling a release. Deriving the version from the tag instead would leave every
+build from source claiming no version at all, which ARCHITECTURE.md §1 rules out.
+
+Four things worth knowing before the first run:
+
+- **Only a successful `push`-to-`master` run can be promoted.** A `pull_request` run
+  builds a throwaway merge commit that exists on no branch and is garbage-collected;
+  tagging one would point the release at a commit nobody can check out.
+- **Artifacts expire after 90 days** (the GitHub maximum for a public repository), so
+  that is how long a run stays promotable. Nothing sets `retention-days:` today, which
+  means the default — raise it there if the release cadence ever approaches it.
+- **The tag is created before the release**, because a *draft* release does not create
+  its tag: GitHub defers that until the draft is published, which would leave the
+  promoted commit unmarked for as long as the draft sat there. The trade is that
+  abandoning a draft leaves the tag behind, and deleting it is a manual step.
+- **`release.yml` is unexercised until it is first used.** Its guards and its version
+  parsing were driven against real run JSON and fabricated artifacts before it shipped,
+  but nothing in CI runs it — publishing a release is not a thing a test may do.

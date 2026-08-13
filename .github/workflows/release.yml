@@ -1,0 +1,203 @@
+name: release
+
+# Promotes an existing build-test-package run to a GitHub Release.
+#
+# It does NOT build. The files published here are the exact bytes that run produced
+# and smoke-tested, downloaded back from it. That is the whole point of the workflow
+# rather than an optimisation: rebuilding at a tag would not reproduce those bytes.
+# packaging/linux/build-appimage.sh fetches linuxdeploy and its Qt plugin from their
+# upstream `continuous` tag, the Windows job installs libarchive through vcpkg at build
+# time, and the Linux jobs take Qt from whatever the runner image currently carries —
+# so a rebuild a week later is bundled by different tooling and links different
+# libraries. Under this workflow the artifact a human watched go green is the artifact
+# a user downloads; under a tag-triggered rebuild it provably is not.
+#
+# The counterpart to that is that release.yml can publish something never tested — so
+# every guard below exists to make the promoted run prove what it is before anything is
+# tagged or published. Nothing here is recoverable by re-running it: a tag and a release
+# are visible to everyone the moment they exist.
+#
+# Deliberately a workflow of its own rather than a job inside packaging.yml, whose
+# `workflow_dispatch` means "build this by hand" and must keep meaning only that. A
+# release input on that trigger would have to be answered — or explicitly skipped — on
+# every manual build, and each of the four build jobs would need an `if:` keeping it out
+# of a promote run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run ID of the build-test-package run to promote (the number in its URL)"
+        required: true
+        type: string
+      tag:
+        description: "Tag to create, e.g. v0.2.0. Must match the version that run was built from"
+        required: true
+        type: string
+      draft:
+        description: "Publish as a draft, to review the notes before it goes out"
+        type: boolean
+        default: true
+
+# Creating a tag and creating a release both write repository contents, and the default
+# token is read-only unless the repository setting says otherwise. Asked for explicitly,
+# and nothing else is asked for.
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ inputs.run_id }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      # No actions/checkout: nothing here reads the source tree. The tag is created
+      # through the API at the run's own head commit, which is the commit that was
+      # built — resolving it from a checkout would only offer ways to get it wrong.
+      - name: Resolve the run, and refuse to promote one that cannot be released
+        id: run
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > run.json
+          path=$(jq -r '.path' run.json)
+          event=$(jq -r '.event' run.json)
+          branch=$(jq -r '.head_branch' run.json)
+          status=$(jq -r '.status' run.json)
+          conclusion=$(jq -r '.conclusion' run.json)
+          head_sha=$(jq -r '.head_sha' run.json)
+          run_number=$(jq -r '.run_number' run.json)
+          echo "run #$run_number, $event on $branch, $conclusion, at $head_sha"
+
+          # The artifacts and the version stamp both come from that one workflow.
+          if [ "$path" != ".github/workflows/packaging.yml" ]; then
+            echo "::error::run $RUN_ID is $path, not the build-test-package workflow"; exit 1
+          fi
+
+          # Green, and finished being green. `conclusion` is null while a run is still
+          # in progress, so testing it alone would read a running build as "not success"
+          # for the right reason and a cancelled one as the same — say which.
+          if [ "$status" != "completed" ]; then
+            echo "::error::run $RUN_ID is $status; wait for it to finish"; exit 1
+          fi
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::run $RUN_ID concluded $conclusion; only a successful run may be released"; exit 1
+          fi
+
+          # A pull_request run builds a throwaway merge commit that exists on no branch:
+          # tagging it would produce a release pointing at a commit nobody can check out,
+          # and one that GitHub garbage-collects. Only a push to master is releasable.
+          if [ "$event" != "push" ] || [ "$branch" != "master" ]; then
+            echo "::error::run $RUN_ID is a '$event' run on '$branch'; only a push to master can be released"
+            exit 1
+          fi
+
+          # Tag first, before anything is downloaded: this is the cheapest guard and the
+          # one most likely to fire, since re-promoting an already-released run is the
+          # obvious mistake. Creating the ref later would fail anyway, but only after the
+          # artifacts had been fetched and verified.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::tag $TAG already exists"; exit 1
+          fi
+
+          {
+            echo "head_sha=$head_sha"
+            echo "run_number=$run_number"
+            echo "sha7=${head_sha:0:7}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download that run's artifacts
+        run: |
+          set -euo pipefail
+          # Provenance is the API's guarantee, not a check of ours: these are by
+          # definition the files run $RUN_ID uploaded. What is verified below is that
+          # they are all here and that they know which run they came from.
+          gh run download "$RUN_ID" -D artifacts
+          find artifacts -type f | sort
+
+      - name: Check the release is complete
+        run: |
+          set -euo pipefail
+          # A run that went green with an upload silently removed would otherwise ship a
+          # release missing a platform. Counted by family rather than by exact filename,
+          # since two .debs (one per Ubuntu release) is a matrix width, and re-enabling
+          # the macOS job adds a file here that must not fail this step.
+          appimages=$(find artifacts -type f -name '*.AppImage' | wc -l)
+          zips=$(find artifacts -type f -name '*.zip' | wc -l)
+          debs=$(find artifacts -type f -name '*.deb' | wc -l)
+          echo "AppImage: $appimages, zip: $zips, deb: $debs"
+          [ "$appimages" -eq 1 ] || { echo "::error::expected 1 AppImage, found $appimages"; exit 1; }
+          [ "$zips" -eq 1 ] || { echo "::error::expected 1 Windows zip, found $zips"; exit 1; }
+          [ "$debs" -ge 1 ] || { echo "::error::expected at least one .deb, found none"; exit 1; }
+
+      - name: Check the artifacts say which run and which release they are
+        env:
+          # As the AppImage smoke test in packaging.yml: the runner is headless and the
+          # bundled offscreen QPA plugin is what lets QApplication start without a display.
+          QT_QPA_PLATFORM: offscreen
+          EXPECTED_RELEASE: ${{ inputs.tag }}
+          EXPECTED_BUILD: ${{ steps.run.outputs.run_number }}.g${{ steps.run.outputs.sha7 }}
+        run: |
+          set -euo pipefail
+          # One executable is enough, and the AppImage is the one this runner can run.
+          # The check is worth more than it looks: --version reporting the expected
+          # release AND the expected build id at once proves the tag matches the version
+          # the run was built from (the forgotten bump, which is the classic way to
+          # mislabel a release), that the build-identity stamping still reaches the
+          # binaries, and that these artifacts are the promoted run's.
+          APPIMG=$(find artifacts -type f -name '*.AppImage' | head -n1)
+          chmod +x "$APPIMG"
+          reported=$(APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMG" --version)
+          echo "reported: $reported"
+
+          # "loftail 0.2.0+1234.gabc1234" -> release "0.2.0", build "1234.gabc1234"
+          version=${reported#loftail }
+          release=${version%%+*}
+          build=${version#*+}
+
+          # The tag is the release with a leading v; that convention is what the input
+          # description promises and what the tag filter used to match.
+          want_release=${EXPECTED_RELEASE#v}
+          if [ "$release" != "$want_release" ]; then
+            echo "::error::run $RUN_ID was built from version $release, but the tag asks for $want_release."
+            echo "::error::Bump project(VERSION) in CMakeLists.txt, let it build, and promote that run instead."
+            exit 1
+          fi
+          if [ "$build" = "$version" ] || [ "$build" != "$EXPECTED_BUILD" ]; then
+            echo "::error::expected build id $EXPECTED_BUILD, got '$build' — the artifacts are not from run $RUN_ID,"
+            echo "::error::or packaging.yml has stopped stamping one (see its top-level env:)."
+            exit 1
+          fi
+
+      # Created explicitly, and BEFORE the release, because a draft release does not
+      # create its tag — GitHub defers that until the draft is published, so a draft
+      # alone would leave the promoted commit unmarked for as long as it stayed a draft.
+      # The consequence to know: abandoning a draft leaves this tag behind, and deleting
+      # it is a manual step.
+      - name: Tag the promoted commit
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" \
+            -f sha="${{ steps.run.outputs.head_sha }}"
+          echo "tagged ${{ steps.run.outputs.head_sha }} as $TAG"
+
+      - name: Create the release
+        env:
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          args=(--title "$TAG" --generate-notes --verify-tag)
+          # --verify-tag: refuse to invent a tag rather than use the one just created.
+          # Belt and braces — if the step above somehow did not take, the release must
+          # not quietly paper over it by creating a tag of its own at the default branch.
+          # An `if` rather than `[ … ] && args+=(…)`, which is exempt from `set -e` only
+          # while it is not the last line of the step — a property no one preserves
+          # deliberately when they reorder the lines below it.
+          if [ "$DRAFT" = "true" ]; then
+            args+=(--draft)
+          fi
+          mapfile -t assets < <(find artifacts -type f | sort)
+          gh release create "$TAG" "${args[@]}" "${assets[@]}"
+          echo "released $TAG from run $RUN_ID (#${{ steps.run.outputs.run_number }})"
