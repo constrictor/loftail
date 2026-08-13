@@ -7,12 +7,28 @@ name: build-test-package
 # and smoke-tests them, and doubles as the "verify the build on Windows and
 # macOS" check that PLAN.md M0 left open.
 
+# No tag trigger. A tag is applied to a commit that has ALREADY been built and tested
+# here, by release.yml promoting that run — so building again on the tag would rebuild
+# the same commit to produce artifacts nothing publishes, and would invite the belief
+# that a tag build is what ships. Releasing is not building; see release.yml.
 on:
   push:
     branches: [master]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+
+# Stamped into --version by every configure in every job below, which reads these two
+# from the environment (top-level CMakeLists.txt, "Build identity"). Set here rather
+# than on each cmake command line because two of the four packaged builds configure
+# inside a packaging script whose command line no caller can reach — and because a
+# per-job flag is exactly the kind of thing a new job forgets, which would ship one
+# unidentifiable artifact among four identified ones.
+#
+# It does NOT touch the version in the artifacts' FILENAMES: those name the release,
+# and the .deb job asserts on the shape of that name.
+env:
+  LOFTAIL_BUILD_NUMBER: ${{ github.run_number }}
+  LOFTAIL_BUILD_COMMIT: ${{ github.sha }}
 
 jobs:
   linux:
