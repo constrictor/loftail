@@ -92,7 +92,7 @@ What it does:
    `src/CMakeLists.txt` place the binary in `usr/bin`, the `.desktop` file in
    `usr/share/applications`, and the icon in `usr/share/icons/...`),
 4. runs `linuxdeploy --plugin qt` to pull the Qt libraries + platform plugins
-   into the AppDir and emit `dist/loftail-Release-x86_64.AppImage`.
+   into the AppDir and emit `dist/loftail-0.1.0-x86_64.AppImage`.
 
 For an offline build, drop the two `linuxdeploy*.AppImage` tools into
 `packaging/linux/tools/` yourself; the script only downloads what is missing.
@@ -101,8 +101,8 @@ For an offline build, drop the two `linuxdeploy*.AppImage` tools into
 no Qt installed and run it. Headless smoke check:
 
 ```bash
-./loftail-Release-x86_64.AppImage --version
-QT_QPA_PLATFORM=offscreen ./loftail-Release-x86_64.AppImage some.log --pattern '%d{%Y-%m-%d %H:%M:%S} [%t] %-5p %c - %m%n'
+./loftail-0.1.0-x86_64.AppImage --version
+QT_QPA_PLATFORM=offscreen ./loftail-0.1.0-x86_64.AppImage some.log --pattern '%d{%Y-%m-%d %H:%M:%S} [%t] %-5p %c - %m%n'
 ```
 
 A GUI launch should show the window with no `libQt6*.so` on the system.
@@ -169,7 +169,7 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\build-portable.ps1 `
 ```
 
 Builds Release, installs the exe, runs `windeployqt` to copy the Qt DLLs +
-plugins next to it, and produces `dist\loftail-Release-windows-x64.zip`. Unzip
+plugins next to it, and produces `dist\loftail-0.1.0-windows-x64.zip`. Unzip
 anywhere and run `loftail.exe`.
 
 An MSI/NSIS installer can wrap the same staged tree (and is the right place for
@@ -191,7 +191,7 @@ packaging/macos/build-appbundle.sh
 ```
 
 Builds Release as a `MACOSX_BUNDLE`, runs `macdeployqt` to copy the Qt
-frameworks into the bundle, and wraps it in `dist/loftail-Release-macos.dmg`.
+frameworks into the bundle, and wraps it in `dist/loftail-0.1.0-macos.dmg`.
 
 **Signing / notarization:** the baseline bundle is **unsigned**. Distributed as
 is, Gatekeeper warns users and they must right-click ▸ Open (or

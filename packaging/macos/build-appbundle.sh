@@ -53,6 +53,14 @@ cmake "${CMAKE_ARGS[@]}"
 echo ">> Building"
 cmake --build "$BUILD_DIR"
 
+# The release this artifact belongs to, read back from the configured build rather than
+# repeated here — see the same three lines in build-appimage.sh and build-portable.ps1.
+VERSION=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$BUILD_DIR/CMakeCache.txt")
+if [[ -z "$VERSION" ]]; then
+    echo "!! could not read CMAKE_PROJECT_VERSION from $BUILD_DIR/CMakeCache.txt" >&2
+    exit 1
+fi
+
 # Locate the built bundle (qt_add_executable + MACOSX_BUNDLE -> loftail.app).
 APP="$(find "$BUILD_DIR" -maxdepth 4 -name 'loftail.app' -type d | head -n1)"
 if [[ -z "$APP" ]]; then
@@ -73,7 +81,13 @@ fi
 # macdeployqt writes loftail.dmg next to the .app; move it to OUTPUT_DIR.
 DMG="$(dirname "$APP")/loftail.dmg"
 if [[ -f "$DMG" ]]; then
-    DEST="$OUTPUT_DIR/loftail-${BUILD_TYPE}-macos.dmg"
+    # Named for the release, and keeping the build type only when it is not the shipped
+    # one, exactly as the AppImage and the Windows zip are.
+    if [[ "$BUILD_TYPE" == "Release" ]]; then
+        DEST="$OUTPUT_DIR/loftail-${VERSION}-macos.dmg"
+    else
+        DEST="$OUTPUT_DIR/loftail-${VERSION}-${BUILD_TYPE}-macos.dmg"
+    fi
     mv -f "$DMG" "$DEST"
     echo ">> Built: $DEST"
     ls -lh "$DEST"

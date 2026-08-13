@@ -100,7 +100,23 @@ Write-Host ">> Running windeployqt"
 & $WinDeployQt --release --no-translations --compiler-runtime $Exe
 
 Write-Host ">> Zipping"
-$Zip = Join-Path $DistDir "loftail-$Config-windows-x64.zip"
+# The release this artifact belongs to, read back from the configured build rather than
+# repeated here, so it stays right when project(VERSION) moves. Matches what the .deb and
+# the AppImage carry: a file downloaded from a release page has to say which release it
+# is once it is out of the browser. It used to carry $Config, which named the same thing
+# for every release ever made. $Config survives only when it is not the shipped one, so a
+# local Debug zip cannot silently overwrite the Release one beside it in dist\.
+$VersionLine = Select-String -Path (Join-Path $BuildDir "CMakeCache.txt") `
+                             -Pattern "^CMAKE_PROJECT_VERSION:STATIC=" | Select-Object -First 1
+if (-not $VersionLine) {
+    throw "could not read CMAKE_PROJECT_VERSION from $BuildDir\CMakeCache.txt"
+}
+$Version = $VersionLine.Line -replace "^CMAKE_PROJECT_VERSION:STATIC=", ""
+# Written as an assignment plus an override rather than `$x = if (…) {…} else {…}`,
+# whose line-broken form is the kind of thing only a Windows runner can adjudicate.
+$ZipName = "loftail-$Version-windows-x64.zip"
+if ($Config -ne "Release") { $ZipName = "loftail-$Version-$Config-windows-x64.zip" }
+$Zip = Join-Path $DistDir $ZipName
 if (Test-Path $Zip) { Remove-Item -Force $Zip }
 Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $Zip
 
