@@ -34,7 +34,7 @@ class LogModel;
 struct SessionDocument;
 class FilterPane;
 class HighlighterPane;
-class PresetPane;
+class PresetPane; // built only under LOFTAIL_HAVE_PRESETS; declaring it always is free
 class RunPane;
 class PaneTitleStyle;
 
@@ -333,9 +333,11 @@ private:
 
     FilterPane      *m_filterPane = nullptr;      // M4 filters side pane
     HighlighterPane *m_highlighterPane = nullptr; // M5 highlighters side pane
-    PresetPane      *m_presetPane = nullptr;      // M5 presets side pane
+#if defined(LOFTAIL_HAVE_PRESETS)
+    PresetPane      *m_presetPane = nullptr;      // M5 presets side pane (a presets build only)
+#endif
     RunPane         *m_runPane = nullptr;         // run selection side pane (§3a)
-    QVector<QDockWidget *> m_paneDocks;                     // the four above, for View ▸ Panes
+    QVector<QDockWidget *> m_paneDocks;                     // the panes above, for View ▸ Panes
     QDockWidget *m_filtersDock = nullptr;                   // marked while filters are in force
     QDockWidget *m_highlightersDock = nullptr;              // marked while rules are present
     QAction     *m_clearFiltersAction = nullptr;

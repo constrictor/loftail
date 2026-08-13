@@ -78,20 +78,34 @@ target_link_libraries(tst_filtercontext PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_filtercontext COMMAND tst_filtercontext)
 
 # M5 — highlight core (palette-index persistence, first-match-wins roles with the
-# default fallback), the preset store (schema-versioned JSON, atomic writes,
-# export/import portability), and the session `documents`-array round-trip. All
-# core-only; the highlight test is even QApplication-free (QColor is a value type).
+# default fallback) and the session `documents`-array round-trip. Both core-only; the
+# highlight test is even QApplication-free (QColor is a value type). The preset store,
+# the third member of this group until presets went behind a build option, is registered
+# separately below.
 #
 # `matchcriteria` covers the portable form of the five match axes that the Filters
 # pane and every highlight rule share: its JSON keys (unchanged from FilterPane's, so
 # existing presets and sessions keep loading) and the two arguments where filtering
 # and highlighting deliberately disagree — the absent-field exemption and whether a
 # no-op axis collapses.
-foreach(unit highlight matchcriteria presetstore session)
+foreach(unit highlight matchcriteria session)
     qt_add_executable(tst_${unit} tst_${unit}.cpp)
     target_link_libraries(tst_${unit} PRIVATE loftail_core Qt6::Test)
     add_test(NAME tst_${unit} COMMAND tst_${unit})
 endforeach()
+
+# The preset store (schema-versioned JSON, atomic writes, export/import portability).
+#
+# GATED, unlike tst_secretstore and tst_archivelocation beside their own gates: those stay
+# ungated because a seam survives in both configurations and has to behave identically in
+# each, and a rule tested in one configuration is a rule that holds in one configuration.
+# Presets leave no seam behind — PresetStore is simply not compiled — so there is nothing
+# for this to assert about a build without them.
+if(LOFTAIL_HAVE_PRESETS)
+    qt_add_executable(tst_presetstore tst_presetstore.cpp)
+    target_link_libraries(tst_presetstore PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_presetstore COMMAND tst_presetstore)
+endif()
 
 # M11 — remote sources, path layer. The ssh:// URL value type, the one-spelling
 # normalization every entry point relies on, the display/availability helpers, and

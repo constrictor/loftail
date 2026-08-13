@@ -33,9 +33,36 @@ class TestPaneChrome : public QObject
     Q_OBJECT
 
 private:
-    static QDockWidget *paneDock(const MainWindow &w, const char *name)
+    static QDockWidget *paneDock(const MainWindow &w, const QString &name)
     {
-        return w.findChild<QDockWidget *>(QLatin1String(name));
+        return w.findChild<QDockWidget *>(name);
+    }
+
+    // Which panes this build has, in the order they are tabbed. Presets are a build
+    // option and off by default (SPEC.md §9), so the shipped group is three panes and a
+    // presets build's is four — and the cases below turn on the COUNT as well as the
+    // names, so neither may be written out.
+    static QStringList paneDockNames()
+    {
+        QStringList names{QStringLiteral("filtersDock"), QStringLiteral("highlightersDock")};
+#if defined(LOFTAIL_HAVE_PRESETS)
+        names << QStringLiteral("presetsDock");
+#endif
+        names << QStringLiteral("runsDock");
+        return names;
+    }
+
+    // The same list as the tab bar spells it. Asserting on visible text is the exception
+    // here rather than the usual mistake: that the tab carries the name is the very thing
+    // making the title bar's copy redundant, so it is the subject of the test.
+    static QStringList paneTabTitles()
+    {
+        QStringList titles{QStringLiteral("Filters"), QStringLiteral("Highlighters")};
+#if defined(LOFTAIL_HAVE_PRESETS)
+        titles << QStringLiteral("Presets");
+#endif
+        titles << QStringLiteral("Runs");
+        return titles;
     }
 
 private slots:
@@ -52,29 +79,29 @@ void TestPaneChrome::tabbedPanesSuppressTheirTitleText()
     w.show();
     QTest::qWait(50);
 
-    // The shipped arrangement: four panes in one tab group on the right.
-    for (const char *name : {"filtersDock", "highlightersDock", "presetsDock", "runsDock"}) {
+    // The shipped arrangement: every pane this build has, in one tab group on the right.
+    const QStringList names = paneDockNames();
+    for (const QString &name : names) {
         QDockWidget *dock = paneDock(w, name);
-        QVERIFY2(dock, name);
-        QVERIFY2(PaneTitleStyle::isTabbedWithAnother(dock), name);
+        QVERIFY2(dock, qPrintable(name));
+        QVERIFY2(PaneTitleStyle::isTabbedWithAnother(dock), qPrintable(name));
         // The NAME ITSELF is untouched — only the painting of it is suppressed. This is
         // load-bearing: the dock tab bar takes its label from windowTitle(), so clearing
         // the title to hide the duplicate would blank the tab instead.
-        QVERIFY2(!dock->windowTitle().isEmpty(), name);
+        QVERIFY2(!dock->windowTitle().isEmpty(), qPrintable(name));
     }
 
     // And the tab bar really is carrying those names, which is what makes the title bar
     // text redundant in the first place.
     QStringList tabs;
     for (QTabBar *bar : w.findChildren<QTabBar *>()) {
-        if (bar->count() != 4)
+        if (bar->count() != names.size())
             continue;
         for (int i = 0; i < bar->count(); ++i)
             tabs << bar->tabText(i);
         break;
     }
-    QCOMPARE(tabs, QStringList({QStringLiteral("Filters"), QStringLiteral("Highlighters"),
-                                QStringLiteral("Presets"), QStringLiteral("Runs")}));
+    QCOMPARE(tabs, paneTabTitles());
 }
 
 void TestPaneChrome::aPaneAloneKeepsItsTitleText()
@@ -109,7 +136,7 @@ void TestPaneChrome::aPaneAloneKeepsItsTitleText()
     // survivor needs its name back even though Qt still calls them tabified.
     QDockWidget *runs = paneDock(w, "runsDock");
     QVERIFY(runs);
-    for (const char *name : {"highlightersDock", "presetsDock", "runsDock"}) {
+    for (const QString &name : paneDockNames().mid(1)) { // every pane but Filters
         if (QDockWidget *d = paneDock(w, name))
             d->hide();
     }

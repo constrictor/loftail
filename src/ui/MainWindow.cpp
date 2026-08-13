@@ -29,7 +29,9 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include "OpenRemoteDialog.h"
+#if defined(LOFTAIL_HAVE_PRESETS)
 #include "PresetPane.h"
+#endif
 #include "PaneTitleStyle.h"
 #include "RemoteLocation.h"
 #include "RunPane.h"
@@ -177,8 +179,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_centre->addWidget(m_tabs);
     setCentralWidget(m_centre);
 
-    // Three side panes (SPEC.md §8): filters, highlighters, presets. Each binds to
-    // the active document by signal (invariant #7 / §12.3), never a fixed Document.
+    // The side panes (SPEC.md §8): filters, highlighters, runs — and presets, which is a
+    // build option and off by default, so a stock build has three. Each binds to the
+    // active document by signal (invariant #7 / §12.3), never a fixed Document; the
+    // presets pane is the exception that binds to nothing, being file-independent.
     m_filterPane = new FilterPane(this);
     QDockWidget *filterDock = addPaneDock(m_filterPane, QStringLiteral("filtersDock"),
                                           tr("Filters"));
@@ -212,9 +216,11 @@ MainWindow::MainWindow(QWidget *parent)
             m_highlightersDock->setWindowTitle(active ? tr("Highlighters •") : tr("Highlighters"));
     });
 
+#if defined(LOFTAIL_HAVE_PRESETS)
     m_presetPane = new PresetPane(m_filterPane, m_highlighterPane, this);
     QDockWidget *presetDock = addPaneDock(m_presetPane, QStringLiteral("presetsDock"),
                                           tr("Presets"));
+#endif
 
     // Run selection pane (§3a): a run-start regexp splits the file into runs and the
     // user views one at a time. Binds to the active document by signal like the rest.
@@ -227,9 +233,16 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Tab the panes together by default so they share the right edge; the user can
     // pull any out, and the arrangement is part of the saved session.
+    // The chain runs through a cursor rather than naming each link, because the presets
+    // pane is optional and dropping the middle link of a written-out chain would leave
+    // the Runs pane docked on its own instead of tabbed with the rest.
     tabifyDockWidget(filterDock, highlightDock);
+    QDockWidget *lastTabbed = highlightDock;
+#if defined(LOFTAIL_HAVE_PRESETS)
     tabifyDockWidget(highlightDock, presetDock);
-    tabifyDockWidget(presetDock, runDock);
+    lastTabbed = presetDock;
+#endif
+    tabifyDockWidget(lastTabbed, runDock);
     filterDock->raise();
 
     buildMenus();

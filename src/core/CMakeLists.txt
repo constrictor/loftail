@@ -125,8 +125,9 @@ add_library(loftail_core STATIC
     FormatDetector.h
     DetectingFormatProvider.cpp
     DetectingFormatProvider.h
-    # M5 — highlighting, presets, session persistence (all UI-free, name/index
-    # based so they are theme- and reindex-portable, ARCHITECTURE.md §8/§12.4).
+    # M5 — highlighting and session persistence (all UI-free, name/index based so
+    # they are theme- and reindex-portable, ARCHITECTURE.md §8/§12.4). The third
+    # member of that milestone, the preset store, is gated below.
     Palette.cpp
     Palette.h
     Highlight.cpp
@@ -136,10 +137,10 @@ add_library(loftail_core STATIC
     # of its delivery, so the part that DECIDES has to be testable without a desktop.
     AlertPolicy.cpp
     AlertPolicy.h
+    # AtomicJson stays here whatever the preset gate says: HostBookmarkStore writes
+    # through it too.
     AtomicJson.cpp
     AtomicJson.h
-    PresetStore.cpp
-    PresetStore.h
     SessionStore.cpp
     SessionStore.h
 )
@@ -220,6 +221,20 @@ if(LOFTAIL_HAVE_KEYCHAIN)
     )
     target_compile_definitions(loftail_core PUBLIC LOFTAIL_HAVE_KEYCHAIN=1)
     target_link_libraries(loftail_core PRIVATE ${LOFTAIL_KEYCHAIN_TARGET})
+endif()
+
+# The preset store, gated in the shape of the three blocks above — with no
+# target_link_libraries, because unlike them this gates a feature and not a dependency
+# (the option itself is the answer; see the top-level CMakeLists). PUBLIC on the
+# definition for the same reason they are: loftail_ui and every test must see the same
+# feature state, and it is what MainWindow's presets pane and tst_panechrome's expected
+# dock list are compiled against.
+if(LOFTAIL_HAVE_PRESETS)
+    target_sources(loftail_core PRIVATE
+        PresetStore.cpp
+        PresetStore.h
+    )
+    target_compile_definitions(loftail_core PUBLIC LOFTAIL_HAVE_PRESETS=1)
 endif()
 
 # QtGui (not QtWidgets) for QColor: the highlight palette stores concrete colors and
