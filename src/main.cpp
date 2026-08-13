@@ -47,7 +47,10 @@ int main(int argc, char *argv[])
     // hardcoded paths; QSettings derives its path from these).
     QApplication::setOrganizationName(QString::fromLatin1(loftail::organizationName));
     QApplication::setApplicationName(QString::fromLatin1(loftail::applicationName));
-    QApplication::setApplicationVersion(loftail::applicationVersion());
+    // The version string, NOT the bare version: this is what --version prints, and a
+    // binary downloaded from a workflow run has to be able to say which run built it
+    // (Version.h). The packages keep naming the plain release in their filenames.
+    QApplication::setApplicationVersion(loftail::applicationVersionString());
     // No setApplicationDisplayName(): QPlatformWindow::formatWindowTitle() appends it to
     // every window title that does not already END with it, so "loftail — app.log" reached
     // the window manager as "loftail — app.log - loftail". MainWindow writes the whole
