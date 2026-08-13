@@ -47,6 +47,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QLabel>
@@ -65,6 +66,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <utility>
@@ -150,13 +152,49 @@ MainWindow::MainWindow(QWidget *parent)
     m_sshPrompter->setBookmarkDir(HostBookmarkStore::defaultDir());
     setSshPrompter(m_sshPrompter.get());
 
-    m_progressBar = new QProgressBar(this);
+    // Scan progress, and beside it the one way to stop the scan (SPEC.md §3). The stop
+    // button lives here rather than in a menu because the progress bar is the only thing
+    // that says a scan is running at all, and on any ordinary log the whole opportunity
+    // to act lasts a fraction of a second — long enough to click what is already under
+    // the eye, not long enough to go looking through the menu bar for it.
+    m_progressBox = new QWidget(this);
+    m_progressBox->setObjectName(QStringLiteral("scanProgress")); // findChild, for tests
+    auto *progressLayout = new QHBoxLayout(m_progressBox);
+    progressLayout->setContentsMargins(0, 0, 0, 0);
+    progressLayout->setSpacing(4);
+    m_progressBar = new QProgressBar(m_progressBox);
+    m_progressBar->setObjectName(QStringLiteral("scanProgressBar")); // findChild, for tests
     m_progressBar->setMaximumWidth(200);
-    m_progressBar->setVisible(false);
+    auto *cancelIndexButton = new QToolButton(m_progressBox);
+    cancelIndexButton->setObjectName(QStringLiteral("cancelIndexButton")); // findChild, for tests
+    cancelIndexButton->setAutoRaise(true);
+    // Icon, never a letter: the glyph sits in a 16 px box beside a progress bar, and a
+    // "✕" typed as text is a blank on any platform whose font database is empty (the
+    // Windows offscreen case). The close mark is one of QCommonStyle's own built-in
+    // pixmaps, so it resolves without an icon theme; the text is the fallback of last
+    // resort for a style that answers with nothing.
+    const QIcon stopIcon = style()->standardIcon(QStyle::SP_TitleBarCloseButton);
+    if (stopIcon.isNull())
+        cancelIndexButton->setText(QString::fromUtf8("✕"));
+    else
+        cancelIndexButton->setIcon(stopIcon);
+    cancelIndexButton->setToolTip(tr("Stop scanning this log. What has been scanned so "
+                                     "far stays usable."));
+    cancelIndexButton->setAccessibleName(tr("Cancel indexing"));
+    connect(cancelIndexButton, &QToolButton::clicked, this, [this]() {
+        if (DocumentContext *ctx = activeContext(); ctx && ctx->controller)
+            ctx->controller->cancel();
+    });
+    progressLayout->addWidget(m_progressBar);
+    progressLayout->addWidget(cancelIndexButton);
+
     m_statusLabel = new QLabel(tr("No file open"), this);
     m_statusLabel->setObjectName(QStringLiteral("statusLabel")); // findChild, for tests
     statusBar()->addWidget(m_statusLabel, 1);
-    statusBar()->addPermanentWidget(m_progressBar);
+    statusBar()->addPermanentWidget(m_progressBox);
+    // AFTER the add, never before: QStatusBar shows what it is handed once it is itself
+    // visible, so hiding first is a race with when the window is shown.
+    m_progressBox->setVisible(false);
 
     // The document well: every open file is a page here (SPEC.md §5a). Movable so
     // tabs can be reordered, closable so a tab carries its own close button; NOT a
@@ -327,13 +365,16 @@ void MainWindow::buildMenus()
     });
 
 
+    // M18 — application-wide settings. Deliberately NOT disabled when no log is open:
+    // the default format is what the NEXT open uses, so the moment before there is a
+    // document is exactly when someone wants to set it. PreferencesRole is what moves it
+    // into the application menu on macOS, where a File menu entry is the wrong place for it.
     fileMenu->addSeparator();
-    m_cancelAction = fileMenu->addAction(tr("&Cancel Indexing"));
-    m_cancelAction->setEnabled(false);
-    connect(m_cancelAction, &QAction::triggered, this, [this]() {
-        if (DocumentContext *ctx = activeContext(); ctx && ctx->controller)
-            ctx->controller->cancel();
-    });
+    QAction *preferencesAction = fileMenu->addAction(tr("&Preferences..."));
+    preferencesAction->setObjectName(QStringLiteral("preferencesAction")); // findChild, for tests
+    preferencesAction->setShortcut(QKeySequence::Preferences);
+    preferencesAction->setMenuRole(QAction::PreferencesRole);
+    connect(preferencesAction, &QAction::triggered, this, &MainWindow::showPreferences);
 
     fileMenu->addSeparator();
     QAction *quitAction = fileMenu->addAction(tr("&Quit"));
@@ -373,17 +414,6 @@ void MainWindow::buildMenus()
     QAction *findPrevAction = editMenu->addAction(tr("Find Pre&vious"));
     findPrevAction->setShortcut(QKeySequence::FindPrevious); // Shift+F3
     connect(findPrevAction, &QAction::triggered, this, [this]() { runFind(false, false); });
-
-    // M18 — application-wide settings. Deliberately NOT disabled when no log is open:
-    // the default format is what the NEXT open uses, so the moment before there is a
-    // document is exactly when someone wants to set it. PreferencesRole is what moves it
-    // into the application menu on macOS, where the Edit menu is the wrong place for it.
-    editMenu->addSeparator();
-    QAction *preferencesAction = editMenu->addAction(tr("&Preferences..."));
-    preferencesAction->setObjectName(QStringLiteral("preferencesAction")); // findChild, for tests
-    preferencesAction->setShortcut(QKeySequence::Preferences);
-    preferencesAction->setMenuRole(QAction::PreferencesRole);
-    connect(preferencesAction, &QAction::triggered, this, &MainWindow::showPreferences);
 
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
     QMenu *wrapMenu = viewMenu->addMenu(tr("Line &Wrap"));
@@ -775,10 +805,8 @@ void MainWindow::updateActionStates()
     }
     // The timestamp mode is per FILE, so the checkmark has to follow the active tab.
     updateTimeDisplayActions();
-    if (m_cancelAction)
-        m_cancelAction->setEnabled(hasFile && ctx->indexing);
-    if (m_progressBar) {
-        m_progressBar->setVisible(hasFile && ctx->indexing);
+    if (m_progressBox) {
+        m_progressBox->setVisible(hasFile && ctx->indexing);
         if (hasFile && ctx->indexing)
             m_progressBar->setValue(ctx->progressPercent);
     }
@@ -1540,10 +1568,8 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
     ctx->indexing = false;
     updateTabTitles(ctx);
     const bool isActive = ctx == activeContext();
-    if (isActive) {
-        m_progressBar->setVisible(false);
-        m_cancelAction->setEnabled(false);
-    }
+    if (isActive)
+        m_progressBox->setVisible(false);
 
     // The full subsystem/thread value sets are known now, so fill the panes'
     // auto-discovered lists (SPEC.md §6) and re-run any active filter over the
@@ -1762,7 +1788,7 @@ void MainWindow::resumeWaitingDocument(DocumentContext *ctx)
             // Either the user closed the dialog, or there was nobody to show one to. The
             // log stays readable as plain text and the status bar says where to fix it;
             // nothing is persisted, so reopening still offers the dialog properly.
-            ctx->formatNotice = tr("format not recognised — Edit ▸ Preferences…");
+            ctx->formatNotice = tr("format not recognised — File ▸ Preferences…");
             break;
         }
     }

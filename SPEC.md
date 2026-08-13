@@ -53,7 +53,7 @@ The same string is what `loftail --version` prints, in one line — `loftail 0.1
 - **Multiple instances may run simultaneously.** loftail does not enforce a single instance; launching it again opens an independent window with its own files and its own filters.
 - The 10 most recently opened files are listed for quick reopening.
 - Opening a large file shows progress and remains responsive; the view populates as scanning proceeds rather than blocking until it finishes.
-- Scanning can be cancelled, leaving whatever was scanned so far usable.
+- Scanning can be cancelled, leaving whatever was scanned so far usable. The stop button sits **beside the progress bar**, appearing and disappearing with it: the progress bar is the only thing that says a scan is running, and on an ordinary log the whole chance to act is over in well under a second — long enough to press what is already under the eye, not long enough to go looking for it in a menu.
 
 ### Live updates
 
@@ -128,7 +128,7 @@ A single log file often contains the output of several application runs, one aft
 
 ## 4. Log format configuration
 
-Because a log file does not describe its own layout, loftail needs to be told the `ConversionPattern` the writing application used. That is set in **Edit ▸ Preferences**, at whichever of three levels it belongs to — see "Settings for a log, a kind of log, and every log" below.
+Because a log file does not describe its own layout, loftail needs to be told the `ConversionPattern` the writing application used. That is set in **File ▸ Preferences**, at whichever of three levels it belongs to — see "Settings for a log, a kind of log, and every log" below.
 
 - The format editor accepts the pattern string and shows a **live preview**: sample lines from the current file, split into the fields loftail would extract, in the same fixed-width font the record table uses. This makes a wrong pattern immediately obvious rather than failing silently.
 - It reports which fields were found. If **priority** or **subsystem** is absent from the pattern, loftail warns that filtering on the missing axis will be unavailable.
@@ -159,7 +159,7 @@ Most people have a handful of house layouts and a great many log files. So the s
 
 Each level holds the same complete set: the conversion pattern, the character encoding, the source time zone, how timestamps are displayed, the run-start pattern with its two flags, and the line wrapping a newly opened view starts in. **The deepest level that names a log supplies all of them** — the levels are not merged field by field, so what a log opens with is always exactly what one entry says.
 
-**Edit ▸ Preferences** shows the whole arrangement as a tree, with the selected entry's settings beside it.
+**File ▸ Preferences** shows the whole arrangement as a tree, with the selected entry's settings beside it.
 
 - **File patterns are ordered, and the first match wins.** A log matching two patterns takes the higher one; ↑ and ↓ change which. A pattern is a **wildcard** (`*` and `?`, matching the whole name) or a **regular expression** (matching anywhere in it), optionally case sensitive.
 - By default a pattern is matched against the log's **own file name** — the member's name inside an archive, the file name at the end of an `ssh://` address. **Match the whole path** widens it to the entire address, host included, so "every log on prod-web" is expressible.
