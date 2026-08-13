@@ -47,22 +47,37 @@ constexpr int kCellMargin = 2;
 // answer in two halves.
 constexpr int kColourGap = 2;
 
-// The letter a text-colour swatch is drawn as, in three strokes. Not a character from a
-// font: the offscreen QPA plugin on Windows resolves no font at all (CLAUDE.md), so a
-// glyph taken from one is a guaranteed blank there.
-void drawLetterA(QPainter &p, const QColor &c, qreal weight)
+// The letter a text-colour swatch is drawn as, in three strokes inside `box`. Not a
+// character from a font: the offscreen QPA plugin on Windows resolves no font at all
+// (CLAUDE.md), so a glyph taken from one is a guaranteed blank there.
+void drawLetterA(QPainter &p, const QColor &c, qreal weight, const QRectF &box)
 {
+    const qreal midX = box.center().x();
     p.setPen(QPen(c, weight, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    p.drawLine(QPointF(3.0, 11.0), QPointF(7.0, 3.2));
-    p.drawLine(QPointF(7.0, 3.2), QPointF(11.0, 11.0));
-    p.drawLine(QPointF(4.8, 8.3), QPointF(9.2, 8.3));
+    p.drawLine(QPointF(box.left(), box.bottom()), QPointF(midX, box.top()));
+    p.drawLine(QPointF(midX, box.top()), QPointF(box.right(), box.bottom()));
+    const qreal crossY = box.top() + box.height() * 0.65;
+    const qreal inset = box.width() * 0.22;
+    p.drawLine(QPointF(box.left() + inset, crossY), QPointF(box.right() - inset, crossY));
 }
 
-// One picker's swatch, and the two roles are drawn DIFFERENTLY on purpose. They share a
-// column now, so nothing above them says which is which: a background is the colour
-// filling a whole cell, and a text colour is a letterform in that colour — which is also
-// what each one does to a record.
-QIcon swatchIcon(const QColor &c, HighlighterPane::ColourRole role, const QColor &ink)
+// One picker's swatch. It previews the PAIR, not the one colour it sets: the tile is the
+// rule's background and the letter on it is the rule's text colour, so every item in
+// either picker shows what a matching record would actually look like if that item were
+// chosen. Only which half the item varies differs — the text picker runs the LETTER
+// through the palette over the background the rule already has, the background picker
+// runs the TILE through it under the text colour the rule already has. `counterpart` is
+// the other role's colour, already resolved (see HighlighterPane::roleColour), because
+// what the preview must show is what the record gets, not what the rule stores.
+//
+// That makes the two pickers' *closed* swatches identical, both being the rule's own
+// pair, so what says which role a picker sets is the BAR under the text picker's letter,
+// in the letter's own colour — the one long-standing idiom for a text-colour control,
+// and the only mark that survives at 14 px. The tile's shape used to carry it (a fill
+// for the background, a letterform for the text), which a preview of both colours has
+// nothing left to spend.
+QIcon swatchIcon(const QColor &c, HighlighterPane::ColourRole role, const QColor &ink,
+                 const QColor &counterpart)
 {
     QPixmap pm(kGlyphPx, kGlyphPx);
     pm.fill(Qt::transparent);
@@ -75,7 +90,10 @@ QIcon swatchIcon(const QColor &c, HighlighterPane::ColourRole role, const QColor
         // *default* is a choice like any other and has to be visible as one, in either
         // role. A blank 14 px square reads as a missing icon, and in an icon-only picker
         // there is no word beside it to say otherwise — so the empty slot is drawn as an
-        // empty slot: an outline with a stroke through it.
+        // empty slot: an outline with a stroke through it. Deliberately NOT previewed
+        // like the rest: previewed, the theme's own text on the theme's own base is what
+        // Ink-on-Paper already looks like, and the one thing this item has to say is
+        // that it names no colour at all.
         line.setAlpha(140);
         p.setPen(QPen(line, 1.0));
         p.drawRect(tile);
@@ -83,15 +101,16 @@ QIcon swatchIcon(const QColor &c, HighlighterPane::ColourRole role, const QColor
         return QIcon(pm);
     }
 
-    if (role == HighlighterPane::ColourRole::Foreground) {
-        // The letter in the chosen colour, on the neutral that shows it. Which neutral is
-        // decided by the colour itself rather than by the theme: Paper on a white ground
-        // and Ink on a black one are both invisible, and the palette offers both in both
-        // themes, so the tile is the opposite of whatever is being previewed.
-        p.fillRect(pm.rect(), c.lightness() > 140 ? QColor(70, 70, 70) : QColor(238, 238, 238));
-        drawLetterA(p, c, 1.6);
+    const bool foreground = (role == HighlighterPane::ColourRole::Foreground);
+    const QColor text = foreground ? c : counterpart;
+    p.fillRect(pm.rect(), foreground ? counterpart : c);
+    if (foreground) {
+        // The letter sits in what is left above the bar, so the two together are centred
+        // rather than the letter alone being pushed off-centre by it.
+        drawLetterA(p, text, 1.6, QRectF(3.0, 2.4, 8.0, 6.6));
+        p.fillRect(QRectF(2.8, 10.6, kGlyphPx - 5.6, 2.0), text);
     } else {
-        p.fillRect(pm.rect(), c);
+        drawLetterA(p, text, 1.6, QRectF(3.0, 3.2, 8.0, 7.8));
     }
     // ...inside an outline, which is not decoration: Paper is a near-white and Ink a
     // near-black, so on the theme that matches one of them a swatch with no edge is an
@@ -417,10 +436,11 @@ QComboBox *HighlighterPane::makeSwatchCombo(int row, ColourRole role, QWidget *p
     combo->setObjectName(foreground ? QStringLiteral("textColor")
                                     : QStringLiteral("backgroundColor"));
     combo->setProperty("ruleRow", row);
-    const bool dark = isDark();
-    const QColor ink = palette().text().color();
     // Item 0 is the *default* sentinel: leave this role at the theme's normal color.
-    combo->addItem(swatchIcon(QColor(), role, ink), tr("Default"), HighlightPalette::kDefault);
+    // NO ICONS HERE: every swatch previews this rule's pair, which needs the OTHER
+    // picker's value, so all of them are painted by updateColourPreviews() once both
+    // pickers exist — and repainted there whenever either value moves.
+    combo->addItem(tr("Default"), HighlightPalette::kDefault);
     for (int i = 0; i < HighlightPalette::count(); ++i) {
         // A rule separating the three tone bands, so a list this long reads as
         // "pick a loudness, then a hue" rather than as one run of swatches. A
@@ -429,8 +449,7 @@ QComboBox *HighlighterPane::makeSwatchCombo(int row, ColourRole role, QWidget *p
         if (i > 0 && i % HighlightPalette::kSlotsPerBand == 0)
             combo->insertSeparator(combo->count());
         const PaletteSlot &s = HighlightPalette::slot(i);
-        combo->addItem(swatchIcon(HighlightPalette::color(i, dark), role, ink),
-                       QString(s.name), i);
+        combo->addItem(QString(s.name), i);
     }
     // Twenty-seven slots plus the default and two separators is a taller popup than
     // a style will always fit on a short screen, so cap it and let Qt scroll rather
@@ -460,8 +479,54 @@ QComboBox *HighlighterPane::makeSwatchCombo(int row, ColourRole role, QWidget *p
                 applyColourAction(rule);
                 commit();
                 refreshRow(r);
+                // The colour just chosen is the ground the OTHER picker previews its
+                // items on, so its whole list is now out of date. Repainting both is
+                // twenty-eight 14 px pixmaps and keeps the two halves of one answer
+                // from ever being painted by different rules.
+                updateColourPreviews(r);
             });
     return combo;
+}
+
+QColor HighlighterPane::roleColour(int paletteIndex, ColourRole role) const
+{
+    // What a role actually PAINTS with, which is what the other picker has to preview
+    // against: the palette entry, or — for *default* — the theme's own colour, the same
+    // fallback LogView applies when it draws the record (base under, text over).
+    const QColor c = HighlightPalette::color(paletteIndex, isDark());
+    if (c.isValid())
+        return c;
+    return role == ColourRole::Foreground ? palette().text().color()
+                                          : palette().base().color();
+}
+
+void HighlighterPane::updateColourPreviews(int row)
+{
+    if (row < 0 || row >= m_rules.size() || row >= m_ruleTable->rowCount())
+        return;
+    QWidget *cell = m_ruleTable->cellWidget(row, kColColours);
+    if (!cell)
+        return;
+    const HighlightRule &r = m_rules.at(row);
+    const bool dark = isDark();
+    const QColor ink = palette().text().color();
+    const QColor fg = roleColour(r.foreground, ColourRole::Foreground);
+    const QColor bg = roleColour(r.background, ColourRole::Background);
+    for (ColourRole role : {ColourRole::Foreground, ColourRole::Background}) {
+        const bool foreground = (role == ColourRole::Foreground);
+        auto *combo = cell->findChild<QComboBox *>(foreground ? QStringLiteral("textColor")
+                                                              : QStringLiteral("backgroundColor"));
+        if (!combo)
+            continue;
+        for (int i = 0; i < combo->count(); ++i) {
+            const QVariant v = combo->itemData(i);
+            if (!v.isValid())
+                continue; // a band separator, which carries no slot
+            // kDefault yields an invalid colour, which is the *default* swatch.
+            combo->setItemIcon(i, swatchIcon(HighlightPalette::color(v.toInt(), dark), role, ink,
+                                             foreground ? bg : fg));
+        }
+    }
 }
 
 QToolButton *HighlighterPane::makeActionButton(int row, HighlightAction action, QWidget *parent)
@@ -860,6 +925,9 @@ void HighlighterPane::buildRow(int row)
         colourRow->addWidget(combo);
     }
     m_ruleTable->setCellWidget(row, kColColours, colours);
+    // Both pickers exist now, which is exactly what their swatches need: each one
+    // previews its items against the colour the other one holds.
+    updateColourPreviews(row);
 
     // One icon button per action, centred in its cell rather than filling it: stretched
     // to a cell a button stops looking like a button and starts looking like a panel.

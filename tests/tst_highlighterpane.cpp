@@ -202,6 +202,7 @@ private slots:
     void tableRowsWearTheirRuleColours();
     void clearRemovesEveryRuleAndMarksThePane();
     void swatchMenuIsBandedAndFitsAShortScreen();
+    void aSwatchPreviewsTheRulesPair();
     void oneClickRuleSetsBothColours();
     void reloadingTheListKeepsRulesEnabled();
 
@@ -582,6 +583,70 @@ void TestHighlighterPane::swatchMenuIsBandedAndFitsAShortScreen()
                  qPrintable(QStringLiteral("popup wants %1 px")
                                 .arg(combo->maxVisibleItems() * rowHeight)));
     }
+}
+
+void TestHighlighterPane::aSwatchPreviewsTheRulesPair()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click(); // a picker belongs to a rule's row
+
+    QComboBox *text = swatch(pane, 0, HighlighterPane::ColourRole::Foreground);
+    QComboBox *back = swatch(pane, 0, HighlighterPane::ColourRole::Background);
+    QVERIFY(text && back);
+
+    // The pane's own cue for the theme, so the expected colours are the variants it drew.
+    const bool dark = pane.palette().base().color().lightness()
+                      < pane.palette().text().color().lightness();
+    const int textSlot = HighlightPalette::kPaper;
+    const int backSlot = 0; // Deep Red — nothing like Paper in either theme
+    text->setCurrentIndex(text->findData(textSlot));
+    back->setCurrentIndex(back->findData(backSlot));
+
+    const auto iconOf = [](QComboBox *combo, int slot) {
+        return combo->itemIcon(combo->findData(slot)).pixmap(combo->iconSize()).toImage();
+    };
+    // Antialiased strokes, so "this colour was painted here" is a near miss, not an
+    // equality: the letterform's core lands exact and its edges blend into the tile.
+    const auto carries = [](const QImage &image, const QColor &c) {
+        for (int y = 0; y < image.height(); ++y) {
+            for (int x = 0; x < image.width(); ++x) {
+                const QColor px = image.pixelColor(x, y);
+                if (qAbs(px.red() - c.red()) + qAbs(px.green() - c.green())
+                        + qAbs(px.blue() - c.blue()) <= 12)
+                    return true;
+            }
+        }
+        return false;
+    };
+
+    // Every item, in EITHER picker, is drawn as the whole pair — the letter in the
+    // rule's text colour on a tile of its background — so what an item shows is what a
+    // matching record will look like if it is chosen. Only which half the item varies
+    // differs between the two pickers.
+    const QColor fg = HighlightPalette::color(textSlot, dark);
+    const QColor bg = HighlightPalette::color(backSlot, dark);
+    QVERIFY2(carries(iconOf(text, textSlot), bg), "the text picker ignores the background");
+    QVERIFY2(carries(iconOf(text, textSlot), fg), "the text picker does not show its colour");
+    QVERIFY2(carries(iconOf(back, backSlot), fg), "the background picker shows no text colour");
+    QVERIFY2(carries(iconOf(back, backSlot), bg), "the background picker does not show its colour");
+
+    // Which means a choice in one picker invalidates the OTHER's entire list: it is the
+    // ground (or the ink) every one of those items is previewed against. Repainting on
+    // the way in is not enough — the two are edited in either order.
+    const QImage textBefore = iconOf(text, HighlightPalette::kInk);
+    back->setCurrentIndex(back->findData(HighlightPalette::kPaper));
+    QVERIFY2(iconOf(text, HighlightPalette::kInk) != textBefore,
+             "choosing a background left the text picker previewing the old one");
+
+    const QImage backBefore = iconOf(back, 9); // Vivid Red
+    text->setCurrentIndex(text->findData(HighlightPalette::kInk));
+    QVERIFY2(iconOf(back, 9) != backBefore,
+             "choosing a text colour left the background picker previewing the old one");
 }
 
 void TestHighlighterPane::oneClickRuleSetsBothColours()

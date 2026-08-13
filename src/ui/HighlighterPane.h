@@ -2,6 +2,7 @@
 
 #include "Highlight.h"
 
+#include <QColor>
 #include <QJsonObject>
 #include <QVector>
 #include <QWidget>
@@ -143,6 +144,14 @@ private:
     QComboBox *makeSwatchCombo(int row, ColourRole role, QWidget *parent);
     void setSwatchCombo(QComboBox *combo, int paletteIndex);
     int swatchValue(const QComboBox *combo) const;
+    // Paint every swatch in one row's TWO pickers. A swatch previews the rule's PAIR —
+    // the letter is its text colour, the tile behind it its background — so each picker's
+    // items are drawn against the value the other one holds, and choosing in either
+    // picker invalidates the other's whole list. The only place a swatch icon is made.
+    void updateColourPreviews(int row);
+    // The colour a role actually paints with: the palette entry, or the theme's own
+    // colour where the rule names *default*. What a preview must be drawn against.
+    QColor roleColour(int paletteIndex, ColourRole role) const;
     // One row's action toggle: an icon button, checked while the rule carries it.
     QToolButton *makeActionButton(int row, HighlightAction action, QWidget *parent);
     bool isDark() const;
