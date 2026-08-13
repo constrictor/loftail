@@ -69,6 +69,12 @@ public:
     // are there.
     void buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, int column);
 
+    // What Help ▸ About shows (SPEC.md §1 "Which build this is"): which release this
+    // is, and which build of it. Public and separate from showAbout() for the same
+    // reason buildRecordMenu() is separate from showRecordMenu() — a test can read the
+    // text without a modal dialog on screen, which is the only part worth pinning.
+    static QString aboutText();
+
 signals:
     // Panes bind to the active document by signal, not by construction (invariant
     // #7, ARCHITECTURE.md §12.3). Emitted with the newly-active Document (or
@@ -94,6 +100,10 @@ private slots:
     // whichever log is open. Unlike every other action here it is always available —
     // it is not about the active document.
     void showPreferences();
+    // Help ▸ About: aboutText() in a message box. Always available, like Preferences
+    // and for a sharper reason — "which build am I running" is a question asked of a
+    // window that has failed to open anything.
+    void showAbout();
     void showColumnMenu(const QPoint &pos);
     // Pop up the record menu where the click was (SPEC.md §5). Built per invocation
     // on the stack, exactly as the column menu is.

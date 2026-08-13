@@ -25,6 +25,7 @@
 #include "PreferencesDialog.h"
 #include "SourceSpool.h"
 #include "SpooledLogSource.h"
+#include "Version.h"
 
 #include <QElapsedTimer>
 #include <QTimer>
@@ -54,6 +55,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QProgressBar>
 #include <QScrollBar>
@@ -453,6 +455,18 @@ void MainWindow::buildMenus()
     connect(m_newViewAction, &QAction::triggered, this, &MainWindow::newViewOfActiveDocument);
     connect(m_windowMenu, &QMenu::aboutToShow, this, &MainWindow::refreshWindowMenu);
     refreshWindowMenu();
+
+    // Help: where a running binary says which build it is (SPEC.md §1 "Which build
+    // this is"). Until now that answer existed only on the command line, in
+    // `--version` — which an installed .deb or an AppImage double-clicked from a file
+    // manager never shows, so the one identity a bug report needs was the one identity
+    // the application would not tell you. AboutRole moves it into the application menu
+    // on macOS, exactly as PreferencesRole does for Preferences above.
+    QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
+    QAction *aboutAction = helpMenu->addAction(tr("&About loftail"));
+    aboutAction->setObjectName(QStringLiteral("aboutAction")); // findChild, for tests
+    aboutAction->setMenuRole(QAction::AboutRole);
+    connect(aboutAction, &QAction::triggered, this, &MainWindow::showAbout);
 }
 
 void MainWindow::refreshWindowMenu()
@@ -1297,6 +1311,40 @@ void MainWindow::showPreferences()
         rememberDefaultFormat(dlg.defaultFormat());
     // dlg.formatCacheCleared() needs no action: nothing here caches the per-file store,
     // and open documents deliberately keep the format they are displaying.
+}
+
+QString MainWindow::aboutText()
+{
+    // The release and the build are shown on lines of their own rather than as the
+    // single `0.1.0+100.g443daf4` token --version prints: that token is one word
+    // because a shell grep and a Windows message box both wanted it to be, and here
+    // there is room to say which half is which. Both are still present verbatim, so
+    // pasting either into a bug report matches what CI stamped.
+    const QString build = applicationBuildId();
+    const QString buildLine = build.isEmpty()
+        // Empty is the ordinary value for a build made on a developer's machine, not
+        // a failure to read one (Version.h) — so it says what the binary IS, rather
+        // than leaving a blank field that reads as a missing value.
+        ? tr("Build: local build")
+        : tr("Build: %1").arg(build);
+
+    return QStringLiteral("loftail ") + applicationVersion() + QLatin1Char('\n')
+        + buildLine + QLatin1Char('\n') + tr("A viewer for log4cplus logs.");
+}
+
+void MainWindow::showAbout()
+{
+    QMessageBox box(this);
+    box.setWindowTitle(tr("About loftail"));
+    box.setIcon(QMessageBox::NoIcon);
+    // Plain text, because the build id is machine-written and a '<' arriving from a
+    // stamped value must not be read as markup — QMessageBox auto-detects otherwise.
+    box.setTextFormat(Qt::PlainText);
+    box.setText(aboutText());
+    // Selectable: the reason this dialog exists is to be copied into a bug report,
+    // and a QMessageBox's text is not selectable by default.
+    box.setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    box.exec();
 }
 
 void MainWindow::showFormatDialog()

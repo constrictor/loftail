@@ -18,6 +18,21 @@ These are not separate modes. Every file is opened watched for new content (§3)
 
 It runs on Windows, macOS, and Linux.
 
+### Which build this is
+
+**Help ▸ About** names the release and the build behind it:
+
+```
+loftail 0.1.0
+Build: 100.g443daf4
+```
+
+The **release** is the version the download was published under — the same number the `.deb`, the AppImage and the Windows zip carry in their file names. The **build** is the one below it: which continuous-integration run produced these exact bytes, and the commit it was made from. Two downloads of one release can differ, and this is what tells them apart, so it is what a bug report should quote.
+
+A copy built from source on your own machine says `Build: local build`, because there is no run behind it to name.
+
+The same string is what `loftail --version` prints, in one line — `loftail 0.1.0+100.g443daf4`. The dialog exists because an installed application launched from a desktop menu has no command line to ask on.
+
 ## 2. Core concepts
 
 | Term           | Meaning to the user                                                                                                                                                         |
