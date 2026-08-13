@@ -1,6 +1,5 @@
 #pragma once
 
-#include "FormatSettings.h"
 #include "Record.h"
 
 #include <QByteArray>
@@ -15,28 +14,35 @@ QT_END_NAMESPACE
 namespace loftail {
 
 // Session persistence (SPEC.md §10, ARCHITECTURE.md §8, §12). What loftail restores
-// on relaunch: every open file, its format, active filters and highlighters, every
-// view onto it with its own column layout and wrap mode, and the global window
-// geometry and pane layout.
+// on relaunch: every open file, its active filters and highlighters, every view onto
+// it with its own column layout and wrap mode, and the global window geometry and pane
+// layout. NOT how a log is READ — the format, encoding, zones and run-start pattern are
+// settings, resolved from the tree on every open (M20, LogSettings.h).
 //
 // The schema has TWO arrays, because a file and a view are different things: N files
-// are open, and one file may have several views onto it. Per-file scope (format,
-// filters, highlighters, run selection) lives in `documents`; per-view scope (column
-// layout and wrap mode) lives in `views`, whose ORDER is the tab order; window and
-// pane layout is global. Filters/highlighters are stored as their portable
+// are open, and one file may have several views onto it. Per-file scope (filters,
+// highlighters, run selection) lives in `documents`; per-view scope (column layout and
+// wrap mode) lives in `views`, whose ORDER is the tab order; window and pane layout is
+// global. Filters/highlighters are stored as their portable
 // name/index JSON so restoring is the same code path as applying a preset.
 //
 // Backed by QSettings, which gives its own store the atomic-write guarantee the
 // multi-instance case needs (§8.1); the global keys are last-writer-wins (§10).
 struct SessionDocument
 {
-    QString        path;
-    FormatSettings format;       // pattern / encoding / source+display zones + run-start (§4, §3a)
-    QJsonObject    filters;      // FilterPane portable state (names, not ids)
-    QJsonObject    highlighters; // { rules: [...] } — names + palette indices (§8)
+    QString     path;
+    QJsonObject filters;      // FilterPane portable state (names, not ids)
+    QJsonObject highlighters; // { rules: [...] } — names + palette indices (§8)
 
-    // Run selection (SPEC.md §3a). The run-start PATTERN rides in `format`. This
-    // records WHICH run was viewed, by a STABLE key (start byte offset, with the
+    // NO FORMAT. A log's format, encoding, source zone, timestamp display and run-start
+    // pattern live in the settings tree (M20, LogSettings.h) and are resolved from the
+    // path on restore, exactly as an ordinary open resolves them. They were carried
+    // here as well until M20, and the copy was the reason a Preferences edit did not
+    // reach a restored tab. Removing keys needs no schema bump: an older file simply
+    // has some this build does not read.
+
+    // Run selection (SPEC.md §3a). The run-start PATTERN belongs to the settings tree.
+    // This records WHICH run was viewed, by a STABLE key (start byte offset, with the
     // start timestamp as a fallback hint) rather than the ordinal, which shifts as
     // the file grows. runAll == the explicit "all runs" view; otherwise a
     // selectedRunStartOffset >= 0 names a specific run; the default (nothing saved)
@@ -91,10 +97,11 @@ public:
     // restoring either into this shell yields a mangled layout with no diagnostic
     // (for v2, a document area squeezed to zero width).
     //
-    // `timeDisplay` was added WITHIN v2 rather than bumping the version: it is one
-    // additive key in the existing shape, read with the legacy `displayZone` key as a
-    // fallback (SessionStore.cpp), so a store written by either build round-trips. A
-    // version bump is earned by structural change — a new array, a field moved
+    // `timeDisplay` was added WITHIN v2 rather than bumping the version, and M20
+    // REMOVED the whole format group without one either: an added key is additive, and
+    // a removed key is exactly what a backward read handles — an older store simply
+    // carries fields this build does not consult. A version bump is earned by
+    // structural change — a new array, a field moved
     // between scopes, a renamed key, a dropped blob — and it costs every session
     // whose version load() does not list.
     static constexpr int kSchemaVersion = 3;

@@ -9,7 +9,7 @@ Each item notes what already-shipped code does to accommodate it, so that adding
 
 ## ~~Format autodetection~~ — shipped
 
-Delivered in M8 and specified in `SPEC.md` §4: an unrecognized file's `ConversionPattern` is guessed and pre-filled into the Log Format dialog for confirmation, never applied silently, with manual entry remaining authoritative. The accommodation did its job — detection reaches the format layer through the existing `IFormatProvider` seam and produces a *pattern string* fed to the same `PatternCompiler` as manual entry, so it needed no new parsing path and no new UI. See `ARCHITECTURE.md` §9 for the three-layer design (candidate scoring → structural inference → fall back to manual).
+Delivered in M8 and specified in `SPEC.md` §4: an unrecognized file's `ConversionPattern` is guessed and pre-filled into the format editor for confirmation, never applied silently, with manual entry remaining authoritative. The accommodation did its job — detection reaches the format layer through the existing `IFormatProvider` seam and produces a *pattern string* fed to the same `PatternCompiler` as manual entry, so it needed no new parsing path and no new UI. See `ARCHITECTURE.md` §9 for the three-layer design (candidate scoring → structural inference → fall back to manual).
 
 ## ~~Multiple open files~~ — shipped
 

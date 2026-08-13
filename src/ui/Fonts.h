@@ -5,7 +5,7 @@
 namespace loftail {
 
 // The fixed-pitch font used by every table that shows log text: the record view
-// (all columns, header included) and the Log Format dialog's preview.
+// (all columns, header included) and the format editor's preview.
 //
 // Fixed pitch is not cosmetic in LogView — the estimated-geometry path computes a
 // wrapped record's height as ceil(chars / viewportCols) with no text shaping

@@ -42,9 +42,10 @@ qt_add_executable(tst_estimatedgeometry tst_estimatedgeometry.cpp)
 target_link_libraries(tst_estimatedgeometry PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_estimatedgeometry COMMAND tst_estimatedgeometry)
 
-# M3 — log-format seam and per-file cache: ManualFormatProvider round-trip,
-# FormatCache save/restore (QSettings), the pure preview/field-breakdown builder,
-# and the source-zone timestamp reparse. Core-only, no QApplication.
+# M3 — the log-format seam: ManualFormatProvider round-trip, the pure preview /
+# field-breakdown builder, and the source-zone timestamp reparse. The per-file memory
+# that used to be tested here is one level of the settings tree now — tst_logsettings.
+# Core-only, no QApplication.
 foreach(unit formatprovider formatpreview documentzone)
     qt_add_executable(tst_${unit} tst_${unit}.cpp)
     target_link_libraries(tst_${unit} PRIVATE loftail_core Qt6::Test)
@@ -109,7 +110,7 @@ endif()
 
 # M11 — remote sources, path layer. The ssh:// URL value type, the one-spelling
 # normalization every entry point relies on, the display/availability helpers, and
-# the format-cache key that used to mangle a URL into a working-directory-dependent
+# the settings key that used to mangle a URL into a working-directory-dependent
 # string. No libssh2 and no network, so it runs in every build configuration.
 qt_add_executable(tst_remotelocation tst_remotelocation.cpp)
 target_link_libraries(tst_remotelocation PRIVATE loftail_core Qt6::Test)
@@ -117,7 +118,7 @@ add_test(NAME tst_remotelocation COMMAND tst_remotelocation)
 
 # M12 — archived sources, path layer. The nested-path value type, the resolution rule
 # (where the container ends) and the collapse rule (a bare compressed stream keeps its
-# plain path), plus the same display/availability/format-cache obligations the remote
+# plain path), plus the same display/availability/settings-key obligations the remote
 # path layer carries. UNGATED: recognising, normalizing, persisting and displaying an
 # archived path must be identical with and without libarchive, or the two builds would
 # disagree about what a settings file means.
@@ -207,6 +208,15 @@ set_tests_properties(tst_uilanguage PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offs
 qt_add_executable(tst_hostbookmarks tst_hostbookmarks.cpp)
 target_link_libraries(tst_hostbookmarks PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_hostbookmarks COMMAND tst_hostbookmarks)
+
+# M20 — the settings TREE: defaults, an ordered list of file patterns, per-file nodes,
+# and the one JSON file behind them. The matcher's semantics are pinned here rather
+# than left to Qt: the wildcard dialect is written out because the option that would
+# have bought it from QRegularExpression is Qt 6.6, above this project's floor. Core
+# only — no QApplication, no widgets.
+qt_add_executable(tst_logsettings tst_logsettings.cpp)
+target_link_libraries(tst_logsettings PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_logsettings COMMAND tst_logsettings)
 
 # M14 — the seam a remembered password goes through. UNGATED, and for the same reason
 # tst_sshexec is: what it pins is a rule about CONSENT — a keychain that refuses is
@@ -446,7 +456,7 @@ target_link_libraries(tst_sessiongui PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_sessiongui COMMAND tst_sessiongui)
 set_tests_properties(tst_sessiongui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-# M3 — the open flow around the Log Format dialog: Esc cancels the open (SPEC.md
+# M3 — the open flow around the Preferences dialog: Esc cancels the open (SPEC.md
 # §4) and an accepted pattern opens the file. Drives the real MainWindow and
 # dismisses the modal dialog from a timer; UI layer, offscreen, isolated config.
 # M18 added the two cases that pin the DEFAULT format end to end — a saved default

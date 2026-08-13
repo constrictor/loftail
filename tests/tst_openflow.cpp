@@ -8,18 +8,19 @@
 #include <QTemporaryDir>
 #include <QTimer>
 
-#include "DefaultFormatStore.h"
-#include "LogFormatDialog.h"
+#include "LogSettingsStore.h"
+#include "PreferencesDialog.h"
 #include "LogView.h"
 #include "MainWindow.h"
 
 using namespace loftail;
 
-// The open flow around the Log Format dialog (SPEC.md §4). The dialog appears only
-// when loftail is asked to open a never-seen file the fallback pattern cannot parse,
-// and dismissing it (Esc) CANCELS THE OPEN: no file is opened, and whatever was on
-// screen stays. Accepting it opens the file with the pattern entered. Drives the real
-// MainWindow under the offscreen platform, dismissing the modal dialog from a timer.
+// The open flow around the Preferences dialog (SPEC.md §4). It appears only when the
+// settings that resolved for a log cannot parse it, and dismissing it (Esc) CANCELS THE
+// OPEN: no log is opened, whatever was on screen stays, and the node it created for the
+// log is discarded with the rest of its working copy. Accepting it opens the log with
+// what was entered. Drives the real MainWindow under the offscreen platform, dismissing
+// the modal dialog from a timer.
 class TestOpenFlow : public QObject
 {
     Q_OBJECT
@@ -50,7 +51,7 @@ private:
     {
         d.timer.setInterval(10);
         QObject::connect(&d.timer, &QTimer::timeout, [&d, key]() {
-            auto *dlg = qobject_cast<LogFormatDialog *>(QApplication::activeModalWidget());
+            auto *dlg = qobject_cast<PreferencesDialog *>(QApplication::activeModalWidget());
             if (!dlg)
                 return;
             d.seen = true;
@@ -72,23 +73,25 @@ private slots:
     void escapeCancelsOpenAndKeepsCurrentFile();
     void acceptedPatternOpensTheFile();
     void absentFileOpensAWaitingTabWithNoDialog();
-    // M18 — the DEFAULT format, the level between "this file's remembered format" and
-    // "ask". These are the cases that show it doing its job and knowing its limits.
+    // The settings tree's three levels (M20): the DEFAULTS a log nothing matches is
+    // tried with, and a FILE PATTERN covering a class of logs. These are the cases that
+    // show each doing its job and knowing its limits.
     void savedDefaultOpensWithoutADialog();
     void aDefaultThatDoesNotParseStillAsks();
+    void aPatternMatchOpensWithoutADialog();
+    void aPatternThatDoesNotParseStillAsks();
 };
 
 void TestOpenFlow::init()
 {
     QSettings settings;
     settings.remove(QStringLiteral("session"));
-    // Each case decides for itself what the two format levels hold. A per-file entry
-    // left by the previous case suppresses the very prompt under test, and a leaked
-    // DEFAULT (M18) changes what a never-seen file is tried with — both would make a
-    // case pass or fail depending on what ran before it.
-    settings.remove(QStringLiteral("formatCache"));
-    settings.remove(QStringLiteral("defaultFormat"));
     settings.sync();
+    // Each case decides for itself what the settings tree holds. A per-log node left by
+    // the previous case suppresses the very prompt under test, and leaked defaults
+    // change what a never-seen log is tried with — either would make a case pass or fail
+    // depending on what ran before it.
+    QFile::remove(LogSettingsStore(LogSettingsStore::defaultDir()).filePath());
 }
 
 void TestOpenFlow::initTestCase()
@@ -117,7 +120,7 @@ void TestOpenFlow::escapeWithNothingOpenLeavesEmptyView()
     Dismisser d;
     dismissWhenShown(d, Qt::Key_Escape);
     w.openFile(m_weird);
-    QVERIFY2(d.seen, "the format dialog was never shown");
+    QVERIFY2(d.seen, "the Preferences dialog was never shown");
 
     // Cancelled with nothing to fall back to: no view at all, rather than a table
     // of unparsed plain text.
@@ -141,7 +144,7 @@ void TestOpenFlow::escapeCancelsOpenAndKeepsCurrentFile()
     Dismisser d;
     dismissWhenShown(d, Qt::Key_Escape);
     w.openFile(m_weird); // the default cannot parse it: prompts, and we press Esc
-    QVERIFY2(d.seen, "the format dialog was never shown");
+    QVERIFY2(d.seen, "the Preferences dialog was never shown");
 
     // The cancelled open changed nothing: same file, same view, still usable.
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — good.log"));
@@ -162,12 +165,13 @@ void TestOpenFlow::acceptedPatternOpensTheFile()
     Dismisser d;
     d.timer.setInterval(10);
     connect(&d.timer, &QTimer::timeout, [&d, &w]() {
-        auto *dlg = qobject_cast<LogFormatDialog *>(QApplication::activeModalWidget());
+        auto *dlg = qobject_cast<PreferencesDialog *>(QApplication::activeModalWidget());
         if (!dlg)
             return;
         d.seen = true;
         d.timer.stop();
-        auto *edit = dlg->findChild<QLineEdit *>();
+        // By object name, never "the first QLineEdit": this dialog has several.
+        auto *edit = dlg->findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
         QVERIFY(edit);
         edit->setText(QStringLiteral("%D{%m/%d/%y %H:%M:%S} %-5p %c [%t] - %m%n"));
         dlg->accept();
@@ -175,7 +179,7 @@ void TestOpenFlow::acceptedPatternOpensTheFile()
     d.timer.start();
 
     w.openFile(m_weird);
-    QVERIFY2(d.seen, "the format dialog was never shown");
+    QVERIFY2(d.seen, "the Preferences dialog was never shown");
     QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     QTest::qWait(200);
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — weird.log"));
@@ -200,7 +204,7 @@ void TestOpenFlow::absentFileOpensAWaitingTabWithNoDialog()
     dismissWhenShown(d, Qt::Key_Escape); // fires only if a dialog appears, which it must not
     w.openFile(absent);
     QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
-    QVERIFY2(!d.seen, "the format dialog was shown for a log with no bytes in it");
+    QVERIFY2(!d.seen, "Preferences was shown for a log with no bytes in it");
 
     LogView *view = w.findChild<LogView *>(QStringLiteral("logView"));
     QVERIFY(view);
@@ -212,7 +216,7 @@ void TestOpenFlow::absentFileOpensAWaitingTabWithNoDialog()
     // than guessed at the empty open.
     QVERIFY(write(absent, "2026-07-21 10:00:00,000 [main] INFO  net.io - at last\n"));
     QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() == 1, 5000);
-    QVERIFY2(!d.seen, "the format dialog was shown when the log arrived");
+    QVERIFY2(!d.seen, "Preferences was shown when the log arrived");
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — notyet.log"));
     w.close();
 }
@@ -228,13 +232,15 @@ void TestOpenFlow::savedDefaultOpensWithoutADialog()
         "03/12/26 11:50:47 DEBUG Vms::App [] - starting up\n"
         "03/12/26 11:50:48 INFO  Vms::Http [7f2a] - listening on 8080\n"));
 
-    FormatSettings def;
-    def.pattern = QStringLiteral("%D{%m/%d/%y %H:%M:%S} %-5p %c [%t] - %m%n");
     {
-        // Saved BEFORE the window exists: MainWindow reads the default once, in its
+        // Saved BEFORE the window exists: MainWindow reads the tree once, in its
         // constructor, so a test that saved it afterwards would be testing nothing.
-        QSettings store;
-        DefaultFormatStore::save(store, def);
+        LogSettingsStore store(LogSettingsStore::defaultDir());
+        LogSettingsTree tree;
+        LogProfile p;
+        p.format.pattern = QStringLiteral("%D{%m/%d/%y %H:%M:%S} %-5p %c [%t] - %m%n");
+        tree.setDefaults(p);
+        QVERIFY(store.save(tree));
     }
 
     MainWindow w;
@@ -246,7 +252,7 @@ void TestOpenFlow::savedDefaultOpensWithoutADialog()
     w.openFile(house);
     QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     QTest::qWait(200);
-    QVERIFY2(!d.seen, "the format dialog was shown for a log the saved default parses");
+    QVERIFY2(!d.seen, "Preferences was shown for a log the saved defaults parse");
 
     LogView *view = w.findChild<LogView *>(QStringLiteral("logView"));
     QVERIFY(view);
@@ -265,11 +271,13 @@ void TestOpenFlow::aDefaultThatDoesNotParseStillAsks()
     QVERIFY(write(other,
         "03/12/26 11:50:47 DEBUG Vms::App [] - starting up\n"));
 
-    FormatSettings def;
-    def.pattern = QStringLiteral("%p|%c|%m%n"); // compiles fine; matches nothing here
     {
-        QSettings store;
-        DefaultFormatStore::save(store, def);
+        LogSettingsStore store(LogSettingsStore::defaultDir());
+        LogSettingsTree tree;
+        LogProfile p;
+        p.format.pattern = QStringLiteral("%p|%c|%m%n"); // compiles; matches nothing here
+        tree.setDefaults(p);
+        QVERIFY(store.save(tree));
     }
 
     MainWindow w;
@@ -283,10 +291,82 @@ void TestOpenFlow::aDefaultThatDoesNotParseStillAsks()
     w.close();
 }
 
+// A pattern node covers a CLASS of logs, so one house layout is entered once and every
+// log named like it opens silently — the level the two-store arrangement had no room for.
+void TestOpenFlow::aPatternMatchOpensWithoutADialog()
+{
+    const QString housed = m_dir.filePath(QStringLiteral("service.house"));
+    QVERIFY(write(housed,
+        "03/12/26 11:50:47 DEBUG Vms::App [] - starting up\n"
+        "03/12/26 11:50:48 INFO  Vms::Http [7f2a] - listening on 8080\n"));
+
+    {
+        LogSettingsStore store(LogSettingsStore::defaultDir());
+        LogSettingsTree tree;
+        // The DEFAULTS deliberately cannot parse it. Only the pattern can, so a dialog
+        // appearing would mean the pattern level was skipped.
+        LogProfile root;
+        root.format.pattern = QStringLiteral("%p|%c|%m%n");
+        tree.setDefaults(root);
+
+        LogPatternNode n;
+        n.match = QStringLiteral("*.house");
+        n.profile.format.pattern =
+            QStringLiteral("%D{%m/%d/%y %H:%M:%S} %-5p %c [%t] - %m%n");
+        tree.addPattern(n);
+        QVERIFY(store.save(tree));
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape);
+    w.openFile(housed);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTest::qWait(200);
+    QVERIFY2(!d.seen, "a matching file pattern was not applied silently");
+
+    LogView *view = w.findChild<LogView *>(QStringLiteral("logView"));
+    QVERIFY(view);
+    QCOMPARE(view->recordCount(), 2);
+    w.close();
+}
+
+// And the same limit the defaults have: a pattern is checked against the file like
+// anything else, so a house layout that has drifted asks rather than mis-splitting.
+void TestOpenFlow::aPatternThatDoesNotParseStillAsks()
+{
+    const QString housed = m_dir.filePath(QStringLiteral("drifted.house"));
+    QVERIFY(write(housed,
+        "03/12/26 11:50:47 DEBUG Vms::App [] - starting up\n"));
+
+    {
+        LogSettingsStore store(LogSettingsStore::defaultDir());
+        LogSettingsTree tree;
+        LogPatternNode n;
+        n.match = QStringLiteral("*.house");
+        n.profile.format.pattern = QStringLiteral("%p|%c|%m%n");
+        tree.addPattern(n);
+        QVERIFY(store.save(tree));
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape);
+    w.openFile(housed);
+    QVERIFY2(d.seen, "a file pattern that cannot parse the log was applied without asking");
+    w.close();
+}
+
 int main(int argc, char *argv[])
 {
-    // Isolate persistent state: the per-file format cache must start empty, or a
-    // remembered format would suppress the very prompt under test.
+    // Isolate persistent state: the settings tree must start empty, or a remembered
+    // node would suppress the very prompt under test.
     QTemporaryDir configHome;
     qputenv("XDG_CONFIG_HOME", configHome.path().toUtf8());
     qputenv("XDG_DATA_HOME", configHome.path().toUtf8());

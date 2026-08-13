@@ -110,13 +110,17 @@ add_library(loftail_core STATIC
     IFormatProvider.h
     ManualFormatProvider.cpp
     ManualFormatProvider.h
-    FormatCache.cpp
-    FormatCache.h
-    # M18 — the DEFAULT format, the second level below the per-file cache: what a
-    # never-seen file is tried with, so one house pattern is entered once rather than
-    # confirmed per file. Consulted only when the cache has nothing.
-    DefaultFormatStore.cpp
-    DefaultFormatStore.h
+    # M20 — the settings TREE: the defaults, an ordered list of file patterns, and
+    # per-log nodes, in one JSON file (SPEC.md §4, ARCHITECTURE.md §8). It supersedes
+    # M3's per-file FormatCache and M18's DefaultFormatStore, whose contents it migrates
+    # in once and whose QSettings groups it then removes.
+    WrapMode.h
+    LogProfile.cpp
+    LogProfile.h
+    LogSettings.cpp
+    LogSettings.h
+    LogSettingsStore.cpp
+    LogSettingsStore.h
     FormatPreview.cpp
     FormatPreview.h
     # M8 — format autodetection: candidate-library scoring + priority-anchored

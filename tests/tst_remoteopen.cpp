@@ -19,7 +19,7 @@
 
 #include "FakeFetcher.h"
 #include "HostBookmarkStore.h"
-#include "LogFormatDialog.h"
+#include "PreferencesDialog.h"
 #include "LogView.h"
 #include "MainWindow.h"
 #include "OpenRemoteDialog.h"
@@ -442,7 +442,7 @@ void TestRemoteOpen::anInteractiveRemoteOpenStillGetsTheFormatDialog()
 {
     // THE SILENT REGRESSION THIS PREVENTS. openWithSettings() suppresses the format
     // prompt for a waiting document, and since M17 EVERY remote log opens waiting — so
-    // without the deferral, no remote log would ever see the Log Format dialog again,
+    // without the deferral, no remote log would ever see Preferences again,
     // M8's autodetection would be unreachable for them, and nothing would be persisted,
     // so every reopen would repeat the non-offer. All without an error anywhere.
     FakeRemoteFarm farm;
@@ -464,7 +464,7 @@ void TestRemoteOpen::anInteractiveRemoteOpenStillGetsTheFormatDialog()
     watcher.setInterval(10);
     QObject::connect(&watcher, &QTimer::timeout, &watcher, [&watcher, &shown] {
         auto *dlg = qobject_cast<QDialog *>(QApplication::activeModalWidget());
-        if (!qobject_cast<loftail::LogFormatDialog *>(dlg))
+        if (!qobject_cast<loftail::PreferencesDialog *>(dlg))
             return;
         shown = true;
         watcher.stop();
@@ -501,7 +501,7 @@ void TestRemoteOpen::aBackgroundResumeRaisesNoFormatDialog()
     watcher.setInterval(10);
     QObject::connect(&watcher, &QTimer::timeout, &watcher, [&shown] {
         auto *dlg = qobject_cast<QDialog *>(QApplication::activeModalWidget());
-        if (qobject_cast<loftail::LogFormatDialog *>(dlg)) {
+        if (qobject_cast<loftail::PreferencesDialog *>(dlg)) {
             shown = true;
             dlg->reject();
         }

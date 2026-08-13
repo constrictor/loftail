@@ -410,7 +410,7 @@ void TestPatternCompiler::errors()
     QCOMPARE(int(result.error().code), code);
     QCOMPARE(result.error().offset, offset);
     QVERIFY(!result.error().message.isEmpty());
-    // The message is shown verbatim in the Log Format dialog, so it must name the
+    // The message is shown verbatim in the format editor, so it must name the
     // specifier the way the user typed it. QString::arg() has no "%%" escape, and a
     // format string that tries to use one leaks a doubled percent into the dialog.
     QVERIFY2(!result.error().message.contains(QStringLiteral("%%")),

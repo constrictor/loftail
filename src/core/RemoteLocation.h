@@ -74,6 +74,26 @@ struct RemoteLocation
 // in viewOfPath(), the recent-files dedupe and the format cache no matter who opened it.
 QString normalizeLogPath(const QString &s);
 
+// The key one log is remembered under in the settings tree (LogSettings.h): its
+// normalized address for anything read through a spool, its canonical path otherwise.
+//
+// The spooled branch is load-bearing. canonicalFilePath() returns EMPTY for a remote
+// URL and for an archive member — neither is a file on this filesystem — and the
+// absoluteFilePath() fallback would then mangle one into "<cwd>/ssh:/user@host/a.log",
+// a key that changes with the working directory and silently loses the log's settings.
+QString logSettingsKey(const QString &path);
+
+// The string a file pattern is matched against (LogSettings.h).
+//
+//   fullPath == false  the log's own file name: the member's name inside an archive,
+//                      the compressed name with its suffix taken off for a bare .gz,
+//                      the last component of the remote path for an ssh:// address.
+//                      An archive is a file TYPE and SSH is a TRANSPORT; neither is
+//                      part of what the log is called.
+//   fullPath == true   the normalized address verbatim, scheme and port included, so
+//                      what the pattern sees is exactly what the dialog shows.
+QString logMatchTarget(const QString &path, bool fullPath);
+
 // Whether this path is read through a spool rather than directly, so what grows on
 // disk is the local cache and not the path itself. Such a path is never handed to
 // QFileSystemWatcher: it is either not a local path at all, or — an archive — a

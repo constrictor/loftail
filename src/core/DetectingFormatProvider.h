@@ -12,7 +12,7 @@ namespace loftail {
 // It sits behind the SAME IFormatProvider seam and hands back a LogFormat produced
 // by the SAME PatternCompiler, so nothing downstream of the parser can tell a
 // detected format from a typed one (invariant #3). The detected pattern STRING is
-// exposed via detectedPattern() so the caller can PRE-FILL the Log Format dialog
+// exposed via detectedPattern() so the caller can PRE-FILL the format editor
 // for confirmation — detection is never applied silently (SPEC.md §4).
 //
 // On a confident detection formatFor() returns the LogFormat. When nothing clears

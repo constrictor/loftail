@@ -1,11 +1,10 @@
 #include <QtTest>
 
 #include <QDir>
-#include <QSettings>
 #include <QTemporaryDir>
 
 #include "ArchiveLocation.h"
-#include "FormatCache.h"
+#include "LogSettings.h"
 #include "LogSource.h"
 #include "RemoteLocation.h"
 
@@ -38,7 +37,7 @@ private slots:
     void aRemoteContainerSplitsAndKeepsItsAddress();
     void displayNamesReadLikeALog();
     void availabilityAsksAboutTheContainer();
-    void formatCacheKeepsAnArchivedPathUnmangled();
+    void theSettingsKeyKeepsAnArchivedPathUnmangled();
     void aPlainPathIsUntouchedByAllOfIt();
     void openingReportsWhenArchivesAreNotBuiltIn();
 
@@ -234,29 +233,29 @@ void TestArchiveLocation::availabilityAsksAboutTheContainer()
     QVERIFY(!logSourceAvailable(m_dir.path() + QStringLiteral("/absent.tgz/app.log")));
 }
 
-void TestArchiveLocation::formatCacheKeepsAnArchivedPathUnmangled()
+void TestArchiveLocation::theSettingsKeyKeepsAnArchivedPathUnmangled()
 {
     // The latent bug M11 fixed for URLs, in its archived form: canonicalFilePath() is
     // empty for a member that is not a file on this filesystem, and the absolute-path
     // fallback would then produce a working-directory-dependent key.
     const QString path = m_dir.path() + QStringLiteral("/b.tgz/var/log/app.log");
-    const QString key = FormatCache::canonicalKey(path);
+    const QString key = logSettingsKey(path);
     QCOMPARE(key, normalizeLogPath(path));
 
     const QString previous = QDir::currentPath();
     QVERIFY(QDir::setCurrent(QDir::tempPath()));
-    const QString elsewhere = FormatCache::canonicalKey(path);
+    const QString elsewhere = logSettingsKey(path);
     QVERIFY(QDir::setCurrent(previous));
     QCOMPARE(elsewhere, key);
 
-    // And a format saved against it comes back.
-    QSettings settings(m_dir.path() + QStringLiteral("/fmt.ini"), QSettings::IniFormat);
-    FormatSettings saved;
-    saved.pattern = QStringLiteral("%d %p %c - %m%n");
-    FormatCache::save(settings, path, saved);
-    const auto loaded = FormatCache::load(settings, path);
-    QVERIFY(loaded.has_value());
-    QCOMPARE(loaded->pattern, saved.pattern);
+    // And settings saved against it come back.
+    LogSettingsTree tree;
+    LogProfile saved;
+    saved.format.pattern = QStringLiteral("%d %p %c - %m%n");
+    tree.setFileProfile(path, saved);
+    const auto hit = tree.resolve(path);
+    QVERIFY(hit.fileIndex >= 0);
+    QCOMPARE(hit.profile.format.pattern, saved.format.pattern);
 }
 
 void TestArchiveLocation::aPlainPathIsUntouchedByAllOfIt()

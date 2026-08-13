@@ -1,7 +1,6 @@
 #include "MainWindow.h"
 
 #include "Decoder.h"
-#include "DefaultFormatStore.h"
 #include "DetectingFormatProvider.h"
 #include "Document.h"
 #include "DocumentContext.h"
@@ -9,13 +8,11 @@
 #include "Filter.h"
 #include "FilterPane.h"
 #include "FindBar.h"
-#include "FormatCache.h"
 #include "FormatPreview.h"
 #include "HighlighterPane.h"
 #include "IndexController.h"
 #include "LiveController.h"
 #include "LogFormat.h"
-#include "LogFormatDialog.h"
 #include "LogModel.h"
 #include "LogSource.h"
 #include "ManualFormatProvider.h"
@@ -75,9 +72,9 @@
 namespace loftail {
 
 namespace {
-// The default format a never-seen file is tried with now lives in the core
-// DefaultFormatStore (M18): it is a user setting, and the built-in log4cplus layout is
-// only what it falls back to. A file that matches neither still opens with unparsed
+// What a never-seen log is tried with lives in the settings tree (M20): the defaults,
+// the file patterns, and the per-log nodes, with the built-in log4cplus layout only as
+// what the defaults fall back to. A log that matches nothing still opens with unparsed
 // lines as plain text (SPEC.md §4).
 constexpr int  kMaxRecentFiles = 10;
 
@@ -113,11 +110,16 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     {
-        // The saved default format (M18), or the built-in when the user has saved none.
-        // Read once here and kept in step by showPreferences()/showFormatDialog(), so an
-        // open never touches QSettings for it.
+        // THE SETTINGS TREE (M20), read once here so an open never touches the disk for
+        // it and kept in step by showPreferences() and persistFormat().
+        //
+        // The migration runs FIRST, and that ordering is load-bearing: restoreSession()
+        // later in this constructor resolves each restored tab's settings through the
+        // tree instead of carrying its own copy, so migrating after it would open every
+        // restored tab on the built-in defaults, once, on the first launch after upgrade.
         QSettings store;
-        m_defaultFormat = DefaultFormatStore::load(store);
+        m_settingsStore.migrateLegacy(store);
+        m_logSettings = m_settingsStore.load();
     }
 
     setWindowTitle(QStringLiteral("loftail"));
@@ -324,11 +326,6 @@ void MainWindow::buildMenus()
         }
     });
 
-    fileMenu->addSeparator();
-    m_formatAction = fileMenu->addAction(tr("&Log Format..."));
-    m_formatAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
-    m_formatAction->setEnabled(false);
-    connect(m_formatAction, &QAction::triggered, this, &MainWindow::showFormatDialog);
 
     fileMenu->addSeparator();
     m_cancelAction = fileMenu->addAction(tr("&Cancel Indexing"));
@@ -390,19 +387,34 @@ void MainWindow::buildMenus()
 
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
     QMenu *wrapMenu = viewMenu->addMenu(tr("Line &Wrap"));
-    auto *wrapGroup = new QActionGroup(this);
+    m_wrapGroup = new QActionGroup(this);
     QAction *wrapOff = wrapMenu->addAction(tr("&Off"));
     QAction *wrapSel = wrapMenu->addAction(tr("&Selected Record Only"));
     QAction *wrapAll = wrapMenu->addAction(tr("&Always On"));
+    wrapOff->setData(int(LogView::WrapMode::Off));
+    wrapSel->setData(int(LogView::WrapMode::SelectedRecordOnly));
+    wrapAll->setData(int(LogView::WrapMode::AlwaysOn));
     for (QAction *a : {wrapOff, wrapSel, wrapAll}) {
         a->setCheckable(true);
-        wrapGroup->addAction(a);
+        m_wrapGroup->addAction(a);
     }
     wrapOff->setChecked(true);
     auto setWrap = [this](LogView::WrapMode mode) {
-        m_wrapMode = mode; // the default for views created from here on
-        if (LogView *v = activeLogView())
-            v->setWrapMode(mode);
+        LogView *v = activeLogView();
+        if (!v)
+            return;
+        v->setWrapMode(mode);
+        // Remembered for this log (M20), so it opens the same way next time. It is
+        // still the VIEW that owns the live mode — a second view of the same log keeps
+        // its own, and the session restores each view's — but the node is what a NEW
+        // view starts from, and a gesture the user made is the best answer it can hold.
+        if (DocumentContext *ctx = activeContext(); ctx && ctx->doc) {
+            const QString path = ctx->doc->path();
+            LogProfile p = m_logSettings.resolve(path).profile;
+            p.wrapMode = mode;
+            if (m_logSettings.setFileProfile(path, p))
+                m_settingsStore.save(m_logSettings);
+        }
     };
     connect(wrapOff, &QAction::triggered, this, [setWrap]() { setWrap(LogView::WrapMode::Off); });
     connect(wrapSel, &QAction::triggered, this,
@@ -732,12 +744,6 @@ void MainWindow::updateActionStates()
         m_copyAction->setEnabled(hasFile);
     if (m_copyColumnsAction)
         m_copyColumnsAction->setEnabled(hasFile);
-    // The format dialog samples the source's first 64 KB, and a waiting document has
-    // no source and no bytes to show — there is literally nothing to configure a format
-    // against. It settles its own format from the log when it arrives, and the action
-    // comes back with it (SPEC.md §3, §4).
-    if (m_formatAction)
-        m_formatAction->setEnabled(hasFile && !ctx->doc->isWaiting());
     // Only a spooled log has a fetcher to poke; a local one is watched, not connected.
     if (m_reconnectAction) {
         m_reconnectAction->setEnabled(
@@ -754,6 +760,18 @@ void MainWindow::updateActionStates()
         // With no file the next open follows again (SPEC.md §3); with one, the
         // checkbox tracks that view's own follow state.
         m_followAction->setChecked(hasFile ? m_activeView->logView()->following() : true);
+    }
+    if (m_wrapGroup) {
+        // Wrap belongs to the view (invariant #7) and a log now opens in the mode its
+        // settings name, so the checked entry has to follow whichever view is in front
+        // rather than record one window-wide choice.
+        const int mode =
+            hasFile ? int(m_activeView->logView()->wrapMode()) : int(LogView::WrapMode::Off);
+        for (QAction *a : m_wrapGroup->actions()) {
+            a->setEnabled(hasFile);
+            if (a->data().toInt() == mode)
+                a->setChecked(true);
+        }
     }
     // The timestamp mode is per FILE, so the checkmark has to follow the active tab.
     updateTimeDisplayActions();
@@ -926,7 +944,7 @@ void MainWindow::openFile(const QString &rawPath, const QString &pattern)
     // EXACTLY HERE and nowhere else. Document::prepare(), rescan() and session restore
     // must only ever see an address that already names one, or a dialog could appear
     // behind the user's back during a rotation or a relaunch. Cancelling abandons the
-    // open silently, the same contract cancelling the Log Format dialog has.
+    // open silently, the same contract cancelling Preferences has.
     if (const auto archive = ArchiveLocation::split(path); archive && archive->needsMember()) {
         QString error;
         const QStringList members =
@@ -943,32 +961,24 @@ void MainWindow::openFile(const QString &rawPath, const QString &pattern)
         return;
     }
 
-    // Per-file recall (SPEC.md §4): a file already configured reopens with its
-    // saved format and no prompt. A never-seen file gets the supplied pattern, or the
-    // user's DEFAULT format (M18), and the dialog is offered when that does not match.
+    // THREE LEVELS, ONE ANSWER (SPEC.md §4). The deepest node that names this log wins
+    // WHOLE — its own per-log node, else the first file pattern that matches it, else
+    // the defaults. The levels never mix: a node is taken entire, exactly as the
+    // per-file cache and the default this replaced never merged.
     //
-    // The two levels never mix: a cached entry is taken whole, and the default is
-    // consulted only when there is none. The default brings its encoding and source zone
-    // along with its pattern, since those are the same three things the Log Format dialog
-    // sets — but an explicitly supplied pattern still overrides just the pattern, so a
-    // command line naming one keeps the default's encoding rather than silently reverting
-    // it to auto-detect.
-    FormatSettings settings;
-    QSettings store;
-    bool cached = false;
-    if (auto loaded = FormatCache::load(store, path)) {
-        settings = *loaded;
-        cached = true;
-    } else {
-        settings = m_defaultFormat;
-        if (!pattern.isEmpty())
-            settings.pattern = pattern;
-    }
-    // Offer the dialog only on an interactive open of a never-seen file that the
-    // fallback default fails to parse. An explicitly-supplied pattern (command
-    // line) is taken as the user's intent — a wrong one opens as plain text
-    // without a blocking prompt, which also keeps headless/scripted opens safe.
-    const bool promptIfNoMatch = !cached && pattern.isEmpty();
+    // An explicitly supplied pattern still overrides just the pattern, so a command
+    // line naming one keeps the resolved encoding and source zone rather than silently
+    // reverting them to auto-detect.
+    FormatSettings settings = m_logSettings.resolve(path).profile.format;
+    if (!pattern.isEmpty())
+        settings.pattern = pattern;
+
+    // Checked against the file at EVERY level, including a per-log node: applying a
+    // node silently is not a promise that it still parses, and a log whose writer was
+    // reconfigured should say so rather than show a wall of plain text. An
+    // explicitly-supplied pattern (command line) is taken as the user's intent instead,
+    // which keeps headless and scripted opens free of a blocking dialog.
+    const bool promptIfNoMatch = pattern.isEmpty();
     openWithSettings(path, settings, promptIfNoMatch);
 }
 
@@ -1067,7 +1077,10 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
     connect(view, &DocumentView::findRequested, this, &MainWindow::runFind);
 
     LogView *logView = view->logView();
-    logView->setWrapMode(m_wrapMode);
+    // The mode a new view starts in comes from this log's settings node (M20, SPEC.md
+    // §5) — a seed, not a per-file property: the view owns it from here, and the
+    // session restores each view's own saved mode over this one.
+    logView->setWrapMode(m_logSettings.resolve(ctx->doc->path()).profile.wrapMode);
     // A view made for a document that is ALREADY waiting — the first view of a waiting
     // open, a restored tab, or a second view onto one — needs the message now; the
     // waitingChanged signal it would otherwise learn from has already fired.
@@ -1145,18 +1158,23 @@ void MainWindow::newViewOfActiveDocument()
 
 DocumentContext *MainWindow::prepareContext(const SessionDocument &d)
 {
+    // Resolved through the settings tree like any other open (M20), not carried in the
+    // session: one home for a log's settings means a Preferences edit reaches a restored
+    // tab, which it could not while the session held its own copy.
+    const FormatSettings format = m_logSettings.resolve(d.path).profile.format;
+
     auto doc = std::make_unique<Document>();
-    ManualFormatProvider provider(d.format.pattern);
-    if (!doc->prepare(d.path, provider, d.format.encoding, d.format.sourceZone.toZone()))
+    ManualFormatProvider provider(format.pattern);
+    if (!doc->prepare(d.path, provider, format.encoding, format.sourceZone.toZone()))
         return nullptr;
-    doc->setTimeDisplay(d.format.timeDisplay);
+    doc->setTimeDisplay(format.timeDisplay);
 
     auto owned = std::make_unique<DocumentContext>();
     DocumentContext *ctx = owned.get();
     ctx->doc = std::move(doc);
-    ctx->settings = d.format;
+    ctx->settings = format;
     ctx->filterState = d.filters;
-    if (!d.format.runStartPattern.isEmpty()) {
+    if (!format.runStartPattern.isEmpty()) {
         ctx->pendingRunRestore =
             RunRestore{d.runAll, d.selectedRunStartOffset, d.selectedRunStartTimestamp};
     }
@@ -1260,38 +1278,30 @@ MainWindow::FormatOutcome MainWindow::offerFormat(Document *doc, const QString &
     const QByteArray sample = sampleLen > 0
         ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
 
-    // The default did not match and no format is cached (M3 unchanged: a cached file
-    // never reaches here). Autodetect (M8, ARCHITECTURE.md §9) and PRE-FILL the dialog
-    // with the detected pattern for confirmation — never applied silently. A no-detection
-    // result leaves the dialog seeded with the fallback default.
-    FormatSettings seed = *settings;
+    // What resolved for this log did not match. Autodetect (M8, ARCHITECTURE.md §9) and
+    // PRE-FILL the node with the detected pattern for confirmation — never applied
+    // silently. A no-detection result leaves it seeded with what was resolved.
+    LogProfile seed = m_logSettings.resolve(path).profile;
+    seed.format = *settings;
     DetectingFormatProvider detector(settings->encoding);
     detector.formatFor(QByteArrayView(sample.constData(), sample.size()));
     if (detector.detected())
-        seed.pattern = detector.detectedPattern();
+        seed.format.pattern = detector.detectedPattern();
 
-    LogFormatDialog dlg(logSourceDisplayName(path), sample, seed, this);
-    if (dlg.exec() != QDialog::Accepted)
+    // Preferences, opened on a node for THIS log. The whole tree is reachable from it,
+    // so the answer can be given once for a class of logs (a file pattern) rather than
+    // for this one — which is the level the two-store arrangement had no room for.
+    PreferencesDialog dlg(m_logSettings, logSourceDisplayName(path), sample, this);
+    dlg.selectLog(path, seed);
+    if (dlg.exec() != QDialog::Accepted) {
+        // Everything the dialog touched, including the node it created for this log,
+        // went with its working copy. Nothing is persisted and nothing is applied.
         return FormatOutcome::Declined;
-    *settings = dlg.settings();
-    // The checkbox is honoured here as well as in showFormatDialog(), because this is
-    // the dialog most users meet first: it is the one that appears by itself when a log
-    // does not parse, and having just fixed it against real lines is the moment the
-    // answer is worth keeping.
-    if (dlg.useAsDefault())
-        rememberDefaultFormat(*settings);
+    }
+    m_logSettings = dlg.tree();
+    m_settingsStore.save(m_logSettings);
+    *settings = m_logSettings.resolve(path).profile.format;
     return FormatOutcome::Chosen;
-}
-
-void MainWindow::rememberDefaultFormat(const FormatSettings &s)
-{
-    QSettings store;
-    DefaultFormatStore::save(store, s);
-    // Re-read rather than assigning `s`: the store keeps three fields on purpose, and
-    // reading back is what guarantees the in-memory copy holds the same three rather
-    // than quietly carrying this file's timestamp mode and run-start pattern into the
-    // next open (DefaultFormatStore::save).
-    m_defaultFormat = DefaultFormatStore::load(store);
 }
 
 void MainWindow::showPreferences()
@@ -1306,11 +1316,54 @@ void MainWindow::showPreferences()
             sample = ctx->doc->source()->bytes(0, sampleLen).toByteArray();
     }
 
-    PreferencesDialog dlg(sample, m_defaultFormat, this);
-    if (dlg.exec() == QDialog::Accepted)
-        rememberDefaultFormat(dlg.defaultFormat());
-    // dlg.formatCacheCleared() needs no action: nothing here caches the per-file store,
-    // and open documents deliberately keep the format they are displaying.
+    // Re-read before showing rather than trusting the in-memory copy: another instance
+    // may have written the tree since this window started (§8.1, last writer wins).
+    m_logSettings = m_settingsStore.load();
+
+    QString activePath;
+    if (DocumentContext *ctx = activeContext(); ctx && ctx->doc)
+        activePath = ctx->doc->path();
+
+    PreferencesDialog dlg(m_logSettings,
+                          activePath.isEmpty() ? QString() : logSourceDisplayName(activePath),
+                          sample, this);
+    if (!activePath.isEmpty()) {
+        // Open on the log in front of the user, so the common errand — "this one is not
+        // parsing" — needs no navigation. A node is created for it only if it had none,
+        // and dropped again on OK if it ends up saying nothing new.
+        dlg.selectLog(activePath, m_logSettings.resolve(activePath).profile);
+        dlg.setApplyTarget(logSourceDisplayName(activePath));
+    }
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    m_logSettings = dlg.tree();
+    m_settingsStore.save(m_logSettings);
+
+    // LAST, because applying reindexes the log and destroys the context and Document
+    // this function has been holding. Nothing may follow it.
+    if (dlg.applyRequested())
+        applyProfileToActive(dlg.applyProfile());
+}
+
+void MainWindow::applyProfileToActive(const LogProfile &p)
+{
+    DocumentContext *ctx = activeContext();
+    if (!ctx || !ctx->doc)
+        return;
+    const QString path = ctx->doc->path();
+
+    // Wrap first, into the tree AND the views already on screen: applySettings() below
+    // may reindex, and a view built afterwards seeds its mode from the tree.
+    LogProfile stored = m_logSettings.resolve(path).profile;
+    stored.wrapMode = p.wrapMode;
+    if (m_logSettings.setFileProfile(path, stored))
+        m_settingsStore.save(m_logSettings);
+    for (DocumentView *v : std::as_const(ctx->views))
+        v->logView()->setWrapMode(p.wrapMode);
+
+    // TERMINAL: `ctx` and `doc` may be gone when this returns.
+    applySettings(p.format);
 }
 
 QString MainWindow::aboutText()
@@ -1345,34 +1398,6 @@ void MainWindow::showAbout()
     // and a QMessageBox's text is not selectable by default.
     box.setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     box.exec();
-}
-
-void MainWindow::showFormatDialog()
-{
-    DocumentContext *ctx = activeContext();
-    if (!ctx || !ctx->doc->source())
-        return;
-    Document *doc = ctx->doc.get();
-
-    const qint64 sampleLen = qMin<qint64>(64 * 1024, doc->source()->size());
-    const QByteArray sample = sampleLen > 0
-        ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
-
-    LogFormatDialog dlg(logSourceDisplayName(doc->path()), sample, ctx->settings, this);
-    if (dlg.exec() == QDialog::Accepted) {
-        // The dialog does not edit the run-start axis. FormatEditor carries it through,
-        // but restate it from the context anyway: this is the one place that KNOWS what
-        // the run-start pattern is, and the cost of the belt is a line (§3a).
-        FormatSettings s = dlg.settings();
-        s.runStartPattern = ctx->settings.runStartPattern;
-        s.runStartIsRegex = ctx->settings.runStartIsRegex;
-        s.runStartCaseSensitive = ctx->settings.runStartCaseSensitive;
-        // Ticked "also use for new files" (M18). Saved BEFORE applySettings(), which
-        // rescans and destroys `ctx` and `doc` when the pattern changed.
-        if (dlg.useAsDefault())
-            rememberDefaultFormat(s);
-        applySettings(s);
-    }
 }
 
 void MainWindow::applySettings(const FormatSettings &newSettings)
@@ -1436,8 +1461,18 @@ void MainWindow::applySettings(const FormatSettings &newSettings)
 
 void MainWindow::persistFormat(const QString &path, const FormatSettings &s)
 {
-    QSettings store;
-    FormatCache::save(store, path, s);
+    // The wrap mode is carried over from whatever already answers for this log, so a
+    // format change does not quietly reset it: this function is reached from the format
+    // dialog, the timestamp header menu and the Run pane, none of which sets it.
+    LogProfile p = m_logSettings.resolve(path).profile;
+    p.format = s;
+
+    // Creates, updates or DELETES the per-log node — one exists only while it says
+    // something the log would not inherit anyway. Writing only on a real change matters:
+    // this is called on every resume of a remote or archived log, and without the gate
+    // that is one atomic rewrite of the whole tree per poll.
+    if (m_logSettings.setFileProfile(path, p))
+        m_settingsStore.save(m_logSettings);
 }
 
 void MainWindow::updateTabTitles(DocumentContext *ctx)
@@ -1727,7 +1762,7 @@ void MainWindow::resumeWaitingDocument(DocumentContext *ctx)
             // Either the user closed the dialog, or there was nobody to show one to. The
             // log stays readable as plain text and the status bar says where to fix it;
             // nothing is persisted, so reopening still offers the dialog properly.
-            ctx->formatNotice = tr("format not recognised — Log ▸ Format…");
+            ctx->formatNotice = tr("format not recognised — Edit ▸ Preferences…");
             break;
         }
     }
@@ -2208,8 +2243,8 @@ void MainWindow::setTimeDisplay(TimeDisplay mode)
     DocumentContext *ctx = activeContext();
     if (!ctx || ctx->settings.timeDisplay == mode)
         return;
-    // Through applySettings, exactly like the Log Format dialog: that is what puts
-    // the choice in the FormatCache and the session, so it survives a restart.
+    // Through applySettings, exactly like Preferences: that is what puts
+    // the choice in the settings tree, so it survives a restart.
     FormatSettings s = ctx->settings;
     s.timeDisplay = mode;
     applySettings(s);
@@ -2572,15 +2607,14 @@ void MainWindow::saveSession()
         Document *doc = ctx->doc.get();
         SessionDocument d;
         d.path = doc->path();
-        d.format = ctx->settings;
         d.filters = ctx->filterState;
         // Highlighter rules are read straight off the Document, which HighlighterPane
         // keeps authoritative (it syncs on every edit) — so this is correct for a
         // background file just as much as for the active one.
         d.highlighters.insert(QStringLiteral("rules"), doc->highlighters().toJson());
 
-        // Run selection (§3a). The run-start pattern rides in d.format; here we save
-        // WHICH run was viewed by its stable start offset/timestamp (not the ordinal,
+        // Run selection (§3a). The run-start pattern belongs to the settings tree; here
+        // we save WHICH run was viewed by its stable start offset/timestamp (not the ordinal,
         // which shifts as the file grows). selectedRun() == -1 means "all runs" when a
         // pattern is set, otherwise nothing meaningful (restore falls back to newest).
         const int sel = doc->selectedRun();

@@ -131,6 +131,31 @@ bool logPathIsSpooled(const QString &s)
     return RemoteLocation::isRemote(s) || ArchiveLocation::isArchivePath(s);
 }
 
+QString logSettingsKey(const QString &path)
+{
+    if (logPathIsSpooled(path))
+        return normalizeLogPath(path);
+
+    const QFileInfo info(path);
+    const QString canonical = info.canonicalFilePath();
+    // A log that does not exist yet (M13) still needs one stable key, and its absolute
+    // path is the best available one.
+    return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+}
+
+QString logMatchTarget(const QString &path, bool fullPath)
+{
+    const QString normalized = normalizeLogPath(path);
+    if (fullPath)
+        return normalized;
+
+    if (const auto loc = ArchiveLocation::split(normalized))
+        return loc->displayMember();
+    if (const auto url = RemoteLocation::parse(normalized))
+        return QFileInfo(url->path).fileName();
+    return QFileInfo(normalized).fileName();
+}
+
 QString logSourceDisplayName(const QString &path)
 {
     if (const auto loc = ArchiveLocation::split(path)) {

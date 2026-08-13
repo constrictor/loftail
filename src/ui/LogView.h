@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EstimatedGeometry.h"
+#include "WrapMode.h"
 
 #include <QAbstractScrollArea>
 #include <QVector>
@@ -51,11 +52,10 @@ class LogView : public QAbstractScrollArea
     Q_OBJECT
 
 public:
-    enum class WrapMode {
-        Off,                // long lines extend horizontally (SPEC.md §5)
-        SelectedRecordOnly, // only the focused record wraps
-        AlwaysOn,           // every record wraps; estimated geometry (M2c, §7.1.1)
-    };
+    // Declared in core (WrapMode.h) since M20, because a log's settings node carries the
+    // mode a new view of it starts in and nothing in core may see a widget. Aliased here
+    // so `LogView::WrapMode::AlwaysOn` still means what it always did.
+    using WrapMode = loftail::WrapMode;
 
     // What this view is FOR (M19, SPEC.md §7). Configuration, not a subclass: the
     // digest strip differs from the log table only in what it is allowed to do.
