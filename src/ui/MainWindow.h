@@ -116,9 +116,17 @@ private slots:
     void onRunSelected(int runIndex);
 
 private:
+    // Whether a filter re-apply keeps every view of the file where it was (SPEC.md §6)
+    // or leaves the caller to position it. Yes is the default because a filter edit is
+    // the case the feature exists for. No is for the two callers that position EVERY
+    // view explicitly on the next line — opening at the file's end, and picking a run:
+    // anchoring first would measure a wrapped selection and scroll to a place the very
+    // next statement overwrites, which is one wasted pass and one visible jump.
+    enum class KeepPosition { Yes, No };
+
     // applyActiveFilters() for a NAMED file, so a background file finishing its scan
     // re-applies its own filters without disturbing the active one.
-    void applyFiltersFor(DocumentContext *ctx);
+    void applyFiltersFor(DocumentContext *ctx, KeepPosition keep = KeepPosition::Yes);
 
     // The log a waiting document has been waiting for has turned up (M13, SPEC.md §3):
     // reopen it, index it, and settle its format from the bytes that have now arrived.

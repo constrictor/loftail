@@ -59,6 +59,14 @@ public:
     // View row -> source record ordinal in THIS model's view index, or -1.
     int sourceRow(int viewRow) const;
 
+    // The inverse, and its nearest-survivor form: a source ordinal is the one coordinate
+    // a filter change does not move, so it is what a view anchors its selection and its
+    // scroll position to across a re-apply (SPEC.md §6, ARCHITECTURE.md §7.1.2).
+    // viewRowAtOrAfter() is meaningful only over an ascending subset — a filter's, never
+    // the digest's, whose ordinals publishDigest() reorders by timestamp.
+    int viewRowOf(int sourceRow) const;
+    int viewRowAtOrAfter(int sourceRow) const;
+
     // Which highlight action decides this model's row colours (M19, SPEC.md §7).
     // Color for the log itself; Digest for the digest strip, so a digest row wears the
     // colours of the rule that put it there whether or not that rule also colours the
@@ -125,8 +133,9 @@ private:
     // have admitted the record (invariant #4).
     int matchedRule(int row) const;
 
-    // The subset this model shows: m_view when set, the document's own otherwise. The
-    // FOUR places that map view rows to source records go through here and nowhere else.
+    // The subset this model shows: m_view when set, the document's own otherwise. Every
+    // place that maps between view rows and source records goes through here and
+    // nowhere else.
     const FilteredIndex &view() const;
 
     const Document      *m_document;

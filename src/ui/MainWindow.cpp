@@ -1494,7 +1494,7 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
     if (isActive && m_runPane)
         m_runPane->refresh();
     if (doc->filters().anyActive() || doc->viewRestricted())
-        applyFiltersFor(ctx);
+        applyFiltersFor(ctx, KeepPosition::No); // every view is sent to the end below
     // AFTER the run selection settles, never with resolveHighlighters() above it: the
     // digest is bounded by the selected run, so building it before selectNewestRun()
     // would scan the whole file and then describe the wrong part of it.
@@ -1698,7 +1698,7 @@ void MainWindow::resumeWaitingDocument(DocumentContext *ctx)
     updateStatus();
 }
 
-void MainWindow::applyFiltersFor(DocumentContext *ctx)
+void MainWindow::applyFiltersFor(DocumentContext *ctx, KeepPosition keep)
 {
     if (!ctx || !ctx->model)
         return;
@@ -1706,9 +1706,23 @@ void MainWindow::applyFiltersFor(DocumentContext *ctx)
     // recompute: the view/header/selection refresh over the new visible set and
     // LogView rebuilds its line geometry (invariant #6). The predicate chain inside
     // applyFilters runs integer axes first, message text last (invariant #4).
+    //
+    // That remap is also what would throw the reader's place away, so each view of the
+    // file brackets the reset with its own anchor in source-record terms (SPEC.md §6).
+    // Each keeps ITS OWN position — scroll and selection are per-view state (invariant
+    // #7). The digest strip is deliberately untouched: applyFilters() does not move the
+    // digest index.
+    if (keep == KeepPosition::Yes) {
+        for (DocumentView *v : std::as_const(ctx->views))
+            v->logView()->beginFilterUpdate();
+    }
     ctx->model->beginFilterReset();
     ctx->doc->applyFilters();
     ctx->model->endFilterReset();
+    if (keep == KeepPosition::Yes) {
+        for (DocumentView *v : std::as_const(ctx->views))
+            v->logView()->endFilterUpdate();
+    }
     for (DocumentView *v : std::as_const(ctx->views)) {
         v->logView()->updateGeometry();
         v->logView()->viewport()->update();
@@ -1929,7 +1943,10 @@ void MainWindow::onRunSelected(int runIndex)
     Document *doc = ctx->doc.get();
 
     doc->selectRun(runIndex);
-    applyActiveFilters();
+    // No anchor: every view is positioned explicitly at the end of this function, so
+    // anchoring first would measure a wrapped selection and scroll to a place the very
+    // next statement overwrites — one wasted pass and one visible jump.
+    applyFiltersFor(ctx, KeepPosition::No);
     if (m_runPane)
         m_runPane->refresh();
 

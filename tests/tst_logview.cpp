@@ -65,6 +65,76 @@ private:
         return bytes;
     }
 
+    // A log for the filter-anchor cases: `n` single-line records, every 4th of them
+    // ERROR and the rest INFO, each numbered so one record can be named exactly by a
+    // text filter and each message long enough to wrap under SelectedRecordOnly.
+    // ONE physical line per record, so in WrapMode::Off a scroll line index IS a view
+    // row and every expectation below is arithmetic rather than a second geometry
+    // implementation.
+    static QByteArray makeMixedLog(int n)
+    {
+        QByteArray bytes;
+        for (int i = 0; i < n; ++i) {
+            bytes += "2026-07-21 14:32:05,123 [main] ";
+            bytes += (i % 4 == 0) ? "ERROR " : "INFO  ";
+            bytes += "net.socket - record ";
+            bytes += QByteArray::number(i).rightJustified(4, '0');
+            bytes += " ";
+            bytes += QByteArray("payload ").repeated(25); // ~200 chars: wraps
+            bytes += "\n";
+        }
+        return bytes;
+    }
+
+    static bool openMixedLog(Document &doc, QTemporaryFile &file, int n)
+    {
+        if (!writeLog(file, makeMixedLog(n)))
+            return false;
+        return doc.open(file.fileName(),
+                        QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                        Encoding::Utf8, QTimeZone::utc());
+    }
+
+    // The five calls MainWindow::applyFiltersFor() makes, in its order.
+    static void refilter(LogView &view, LogModel &model, Document &doc, const FilterSet &fs)
+    {
+        doc.filters() = fs;
+        view.beginFilterUpdate();
+        model.beginFilterReset();
+        doc.applyFilters();
+        model.endFilterReset();
+        view.endFilterUpdate();
+    }
+
+    // Priority >= WARN, which over makeMixedLog keeps exactly every 4th record.
+    static FilterSet everyFourth()
+    {
+        FilterSet fs;
+        fs.priorityEnabled = true;
+        fs.minPriority = Priority::Warn;
+        return fs;
+    }
+
+    static FilterSet messageContaining(const QString &needle)
+    {
+        FilterSet fs;
+        fs.text.enabled = true;
+        fs.text.matcher.set(needle, false, Qt::CaseInsensitive);
+        return fs;
+    }
+
+    // The source ordinal of the record the view is scrolled to the top of. Single-line
+    // records under WrapMode::Off, so the scroll value is the top view row.
+    static int topSourceRow(const LogView &view, const Document &doc)
+    {
+        return doc.filtered().sourceRow(view.verticalScrollBar()->value());
+    }
+
+    static int currentSourceRow(const LogView &view, const Document &doc)
+    {
+        return view.currentRecord() < 0 ? -1 : doc.filtered().sourceRow(view.currentRecord());
+    }
+
     static bool openLog(Document &doc, QTemporaryFile &file, int n)
     {
         if (!writeLog(file, makeLog(n)))
@@ -87,6 +157,16 @@ private slots:
     void filterRestrictsVisibleSetAndGeometry();
     void followDetachesAndReattaches();
     void rightClickReportsTheRecordUnderIt();
+    void aFilterKeepsTheSelectedRecordAtTheSameOffset();
+    void aFilterThatHidesTheSelectionKeepsThePlaceInTheFile();
+    void aHiddenSelectionComesBackWhenTheFilterIsWidened();
+    void clickingAnotherRecordForgetsAHiddenSelection();
+    void aRescanForgetsAHiddenSelection();
+    void aFilterNeverChangesTheFollowState();
+    void aFilterWithNothingSelectedStillKeepsThePlace();
+    void anEmptyResultLandsAtZeroWithNothingSelected();
+    void clearingAFilterPutsTheViewBackWhereItWas();
+    void theWrappedSelectionIsFoldedInBeforeTheViewIsRepositioned();
 };
 
 void TestLogView::wrapOffMappingMatchesBase()
@@ -500,6 +580,299 @@ void TestLogView::rightClickReportsTheRecordUnderIt()
                             view.viewport()->mapToGlobal(QPoint(50, 295)));
     QApplication::sendEvent(view.viewport(), &below);
     QCOMPARE(spy.count(), 0);
+}
+
+// --- the filter anchor (SPEC.md §6) ------------------------------------------
+//
+// Changing a filter remaps every view row, so the scroll value — a line index in the
+// view's own line space — and the selected VIEW row both stop meaning what they meant.
+// beginFilterUpdate()/endFilterUpdate() carry them across in SOURCE-record terms. The
+// cases below run in WrapMode::Off over single-line records, where a scroll line IS a
+// view row, so each expectation is arithmetic and not a second copy of the geometry.
+
+void TestLogView::aFilterKeepsTheSelectedRecordAtTheSameOffset()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 400), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    QScrollBar *sb = view.verticalScrollBar();
+    sb->setValue(100);
+    view.setCurrentRecord(104);      // inside the viewport, and a survivor (104 % 4 == 0)
+    QCOMPARE(sb->value(), 100);      // already visible: selecting it did not scroll
+    const int offsetBefore = 104 - sb->value();
+
+    refilter(view, model, doc, everyFourth());
+
+    QCOMPARE(currentSourceRow(view, doc), 104);            // same record, new row
+    QCOMPARE(view.currentRecord(), 26);                    // 104/4
+    QCOMPARE(view.currentRecord() - sb->value(), offsetBefore); // same place in the window
+}
+
+void TestLogView::aFilterThatHidesTheSelectionKeepsThePlaceInTheFile()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 400), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    QScrollBar *sb = view.verticalScrollBar();
+    sb->setValue(100);
+    view.setCurrentRecord(101); // 101 % 4 != 0: the filter below will hide it
+
+    refilter(view, model, doc, everyFourth());
+
+    // Nothing is selected — the selection is never moved to a neighbour...
+    QCOMPARE(view.currentRecord(), -1);
+    // ...but the viewport still shows the same part of the file: record 100 survives,
+    // so it is what the view is scrolled to.
+    QCOMPARE(topSourceRow(view, doc), 100);
+}
+
+void TestLogView::aHiddenSelectionComesBackWhenTheFilterIsWidened()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 400), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    view.verticalScrollBar()->setValue(100);
+    view.setCurrentRecord(101);
+
+    refilter(view, model, doc, everyFourth());
+    QCOMPARE(view.currentRecord(), -1); // hidden
+
+    // Widening brings it back: the ordinal was kept while it was out of view.
+    refilter(view, model, doc, FilterSet{});
+    QCOMPARE(currentSourceRow(view, doc), 101);
+}
+
+void TestLogView::clickingAnotherRecordForgetsAHiddenSelection()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 400), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    view.verticalScrollBar()->setValue(100);
+    view.setCurrentRecord(101);
+    refilter(view, model, doc, everyFourth());
+    QCOMPARE(view.currentRecord(), -1);
+
+    // The user picks a different record while the old one is hidden. Widening must
+    // honour that choice rather than re-selecting what they moved away from.
+    view.setCurrentRecord(30); // view row 30 == source 120
+    QCOMPARE(currentSourceRow(view, doc), 120);
+    refilter(view, model, doc, FilterSet{});
+    QCOMPARE(currentSourceRow(view, doc), 120);
+}
+
+void TestLogView::aRescanForgetsAHiddenSelection()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 400), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    view.verticalScrollBar()->setValue(100);
+    view.setCurrentRecord(101);
+    refilter(view, model, doc, everyFourth());
+    QCOMPARE(view.currentRecord(), -1);
+
+    // A model reset that is NOT a filter re-apply — a rotation rescan is the real one —
+    // replaces the record space, where the remembered ordinal means something else.
+    model.beginFilterReset();
+    model.endFilterReset();
+
+    refilter(view, model, doc, FilterSet{});
+    QCOMPARE(view.currentRecord(), -1);
+}
+
+void TestLogView::aFilterNeverChangesTheFollowState()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 400), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(400, 300);
+
+    QScrollBar *sb = view.verticalScrollBar();
+
+    // Following: still following, still pinned to the newest record.
+    view.followTail();
+    QVERIFY(view.following());
+    refilter(view, model, doc, everyFourth());
+    QVERIFY(view.following());
+    QCOMPARE(sb->value(), sb->maximum());
+
+    // Detached: stays detached even when the new subset is SHORTER THAN A PAGE, so the
+    // clamp inside endResetModel() lands the old value at the bottom. That clamp used to
+    // arrive as an ordinary scroll and silently re-attach follow.
+    refilter(view, model, doc, FilterSet{});
+    sb->setValue(100);
+    QVERIFY(!view.following());
+
+    QSignalSpy spy(&view, &LogView::followingChanged);
+    refilter(view, model, doc, messageContaining(QStringLiteral("record 0007")));
+    QCOMPARE(model.rowCount(), 1);
+    QCOMPARE(sb->maximum(), 0); // one row, so the bottom IS the top
+    QVERIFY(!view.following());
+    QCOMPARE(spy.count(), 0);   // and the state never even wobbled
+}
+
+void TestLogView::aFilterWithNothingSelectedStillKeepsThePlace()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 400), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    view.verticalScrollBar()->setValue(101); // top is 101, which the filter hides
+    QCOMPARE(view.currentRecord(), -1);
+
+    refilter(view, model, doc, everyFourth());
+
+    QCOMPARE(view.currentRecord(), -1);
+    // The nearest survivor AT OR AFTER the old top comes to the top: reading direction,
+    // so what has already been read scrolls off rather than back into view.
+    QCOMPARE(topSourceRow(view, doc), 104);
+}
+
+void TestLogView::anEmptyResultLandsAtZeroWithNothingSelected()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 400), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    view.verticalScrollBar()->setValue(100);
+    view.setCurrentRecord(104);
+
+    refilter(view, model, doc, messageContaining(QStringLiteral("no such record")));
+
+    QCOMPARE(model.rowCount(), 0);
+    QCOMPARE(view.currentRecord(), -1);
+    QCOMPARE(view.verticalScrollBar()->value(), 0);
+
+    // And the selection was only hidden, not forgotten: it comes back with the records.
+    refilter(view, model, doc, FilterSet{});
+    QCOMPARE(currentSourceRow(view, doc), 104);
+}
+
+void TestLogView::clearingAFilterPutsTheViewBackWhereItWas()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 400), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    QScrollBar *sb = view.verticalScrollBar();
+    sb->setValue(100);
+    view.setCurrentRecord(104);
+
+    refilter(view, model, doc, everyFourth());
+    refilter(view, model, doc, FilterSet{});
+
+    QCOMPARE(currentSourceRow(view, doc), 104);
+    QCOMPARE(sb->value(), 100); // exactly where it started
+}
+
+void TestLogView::theWrappedSelectionIsFoldedInBeforeTheViewIsRepositioned()
+{
+    // The selection is part of the line space in SelectedRecordOnly, so the target
+    // scroll line has to be computed AFTER the selection is restored — otherwise a
+    // record BELOW the selection is placed by a mapping that does not know the
+    // selected record grew, and the view lands short by its extra lines.
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve under this QPA plugin; nothing wraps to measure");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 400), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::SelectedRecordOnly);
+    view.resize(320, 400); // narrow, so the ~200-char message wraps hard
+
+    QScrollBar *sb = view.verticalScrollBar();
+    // A survivor selected near the TOP of the file, then scrolled away from: the top
+    // anchor drives the scroll, and it sits below the selection.
+    view.setCurrentRecord(8);
+    sb->setValue(200);
+
+    // Where the view actually is, in RECORD terms. Read back through the public statics
+    // rather than assumed: in this mode the scroll line of a record below the selection
+    // already carries the selection's extra wrapped lines, which is the whole point.
+    int topBefore = 0;
+    qint64 topOffset = 0;
+    {
+        const RecordIndex &before = doc.filtered().geometry();
+        const qint64 extraBefore = qint64(sb->maximum()) + sb->pageStep() - before.totalLines();
+        if (extraBefore <= 0)
+            QSKIP("the selected record did not wrap in this environment");
+        const int selWrapBefore = int(extraBefore) + 1; // one display line unwrapped
+        topBefore = LogView::recordAtScrollLine(before, 8, selWrapBefore, sb->value());
+        topOffset = sb->value()
+                  - LogView::scrollLineOfRecord(before, 8, selWrapBefore, topBefore);
+    }
+
+    refilter(view, model, doc, everyFourth());
+
+    QCOMPARE(currentSourceRow(view, doc), 8);
+    const int selRow = view.currentRecord();
+    const int topRow = doc.filtered().viewRowAtOrAfter(topBefore);
+    QVERIFY(topRow < model.rowCount());
+    QVERIFY(topRow > selRow); // the anchor is BELOW the selection: the case that bites
+
+    const RecordIndex &geo = doc.filtered().geometry();
+    const qint64 extra = qint64(sb->maximum()) + sb->pageStep() - geo.totalLines();
+    if (extra <= 0)
+        QSKIP("the selected record did not wrap in this environment");
+
+    // `+ extra` is the assertion: the anchor row is placed by a mapping that already
+    // knows the restored selection wraps. Computing the target before restoring the
+    // selection lands the view `extra` lines short.
+    qint64 expected = geo.firstLineOfRecord(topRow) + extra;
+    if (doc.filtered().sourceRow(topRow) == topBefore)
+        expected += topOffset;
+    QCOMPARE(qint64(sb->value()), expected);
 }
 
 int main(int argc, char *argv[])

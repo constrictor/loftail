@@ -37,6 +37,7 @@ void RunPane::buildUi()
         box));
 
     m_patternEdit = new QLineEdit(box);
+    m_patternEdit->setObjectName(QStringLiteral("runStartPattern")); // test contract, never translated
     m_patternEdit->setPlaceholderText(tr("e.g. Application starting"));
     ensureReadablePlaceholder(m_patternEdit);
     m_patternEdit->setClearButtonEnabled(true);

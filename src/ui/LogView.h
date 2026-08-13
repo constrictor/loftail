@@ -134,6 +134,23 @@ public:
     int currentRecord() const { return m_current; }
     void scrollToEnd();
 
+    // Keep this view where it is across a FILTER re-apply (SPEC.md §6). The scroll
+    // position is a line index in the view's OWN line space, which a refilter remaps
+    // wholesale, and handleModelReset() drops the selection with it — so these two
+    // bracket the caller's model reset and put both back in SOURCE-record terms, the
+    // one coordinate a refilter does not move.
+    //
+    // begin() goes BEFORE LogModel::beginFilterReset(), end() AFTER endFilterReset():
+    // QItemSelectionModel clears itself from the same modelReset signal, so a restore
+    // running inside the reset would be undone by it.
+    //
+    // Only around a filter re-apply (MainWindow::applyFiltersFor). Every other model
+    // reset — a rotation rescan, a resume from waiting, a digest republish, a
+    // setViewIndex — replaces the record space itself, where a source ordinal means
+    // something different or nothing.
+    void beginFilterUpdate();
+    void endFilterUpdate();
+
     // Follow mode (SPEC.md §3, M6). Every open starts following: as records are
     // appended the view stays pinned to the newest. Scrolling away from the bottom
     // DETACHES follow (history stays put while the file keeps growing); returning to
@@ -262,6 +279,10 @@ private:
     void updateScrollBars();
     void layoutHeader();
     void ensureRecordVisible(int record);
+    // Focus a record and select it WITHOUT scrolling. setCurrentRecord() is the
+    // interactive form and deliberately scrolls; a filter restore must not, because
+    // the scroll position is restored separately and by a different rule.
+    void selectRecordSilently(int record);
     int recordAtViewportY(int y) const; // hit-test, or -1
     void selectRange(int anchor, int current);
 
@@ -276,6 +297,24 @@ private:
     int      m_current = -1;   // focused record (drives keyboard nav + wrap)
     int      m_anchor = -1;    // range-selection anchor
     int      m_selWrapCache = -1; // memoized selWrapLines() for the current width
+
+    // What beginFilterUpdate() captured, in source ordinals. `active` doubles as the
+    // in-bracket guard: while it is set, the scrollbar clamp that endResetModel()
+    // provokes is not the user scrolling and must not be read as such.
+    struct FilterAnchor {
+        bool   active = false;
+        bool   following = false;
+        int    topSource = -1;     // source ordinal of the record at the viewport top
+        qint64 topOffset = 0;      // display lines scrolled INTO that record (>= 0)
+        int    currentSource = -1; // source ordinal of the focused record, or -1
+        qint64 currentOffset = 0;  // its first line minus the top line (may be < 0)
+        bool   currentOnScreen = false;
+    };
+    FilterAnchor m_filterAnchor;
+    // A selection a filter hid: nothing is selected while it is out of view, but
+    // widening the filter again brings it back (SPEC.md §6). Any model reset that is
+    // not a filter re-apply forgets it — the record space itself changed.
+    int m_stickySource = -1;
 
     // Estimated geometry for AlwaysOn (M2c). Only ever constructed/consulted in
     // AlwaysOn; switching to an exact mode leaves it untouched so its cache
