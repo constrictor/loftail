@@ -261,3 +261,13 @@ target_include_directories(loftail_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(loftail_core PRIVATE
     LOFTAIL_VERSION="${PROJECT_VERSION}"
 )
+
+# The CI stamp (top-level CMakeLists.txt, "Build identity"), and why it is a separate
+# definition from LOFTAIL_VERSION rather than part of it: see there. Added only when
+# there IS one, rather than defined to the empty string, because an empty string
+# definition has to survive the generator's quoting on every toolchain and MSVC is the
+# one this project cannot try locally. Version.cpp's #ifndef supplies the empty
+# default, so a local build takes a path that is exercised on every dev machine.
+if(LOFTAIL_BUILD_ID)
+    target_compile_definitions(loftail_core PRIVATE LOFTAIL_BUILD_ID="${LOFTAIL_BUILD_ID}")
+endif()

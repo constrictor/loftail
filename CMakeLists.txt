@@ -267,6 +267,67 @@ else()
                    "(configure with -DLOFTAIL_WITH_PRESETS=ON to build the presets pane)")
 endif()
 
+# --- Build identity -----------------------------------------------------------
+#
+# Which BUILD a binary is, as distinct from which RELEASE it belongs to. The two are
+# deliberately separate: PROJECT_VERSION is typed at the top of this file and names the
+# release, so it is what the .deb, the AppImage and the macOS bundle carry in their
+# filenames and metadata — where a suffix would be actively harmful, since the deb job
+# asserts on the shape of that filename and two releases' packages must not collide.
+# The build id below names the one CI run that produced this particular binary, and is
+# appended to --version and nowhere else.
+#
+# Both are EMPTY BY DEFAULT, so a developer build prints a bare "loftail 0.1.0" exactly
+# as it always has. That is the point rather than a concession: a downloaded artifact
+# says which run built it, and a local build says it is a local build.
+#
+# Nothing is read from git here. A configure-time `git describe` goes stale the moment
+# the tree moves under an already-configured build directory, and it would make git a
+# build dependency for a source tarball that has no .git in it at all.
+#
+# The default comes from the ENVIRONMENT so that every configure in the packaging
+# workflow is stamped by one job-level `env:` block, including the two that run inside
+# packaging scripts (build-appimage.sh, build-appbundle.sh) whose cmake command lines
+# no caller can reach. -D still overrides. Being a cache variable, the value is fixed at
+# first configure and a reconfigure keeps it; CI configures a fresh build directory every
+# run and caches none, so it cannot go stale there.
+set(LOFTAIL_BUILD_NUMBER "$ENV{LOFTAIL_BUILD_NUMBER}" CACHE STRING
+    "CI run number stamped into --version; empty for a local build")
+set(LOFTAIL_BUILD_COMMIT "$ENV{LOFTAIL_BUILD_COMMIT}" CACHE STRING
+    "Commit the build was made from, stamped into --version; empty for a local build")
+
+set(loftail_build_parts "")
+if(LOFTAIL_BUILD_NUMBER)
+    list(APPEND loftail_build_parts "${LOFTAIL_BUILD_NUMBER}")
+endif()
+if(LOFTAIL_BUILD_COMMIT)
+    # Abbreviated HERE rather than by the caller, because the caller is a GitHub
+    # expression: `github.sha` is 40 characters and that syntax has no substring
+    # function, so doing it in CMake keeps one rule in one place instead of the same
+    # incantation written once for bash and once for PowerShell. Guarded rather than
+    # trusting SUBSTRING to clamp, since a caller may reasonably pass a short sha.
+    string(LENGTH "${LOFTAIL_BUILD_COMMIT}" loftail_commit_length)
+    if(loftail_commit_length GREATER 7)
+        string(SUBSTRING "${LOFTAIL_BUILD_COMMIT}" 0 7 loftail_short_commit)
+    else()
+        set(loftail_short_commit "${LOFTAIL_BUILD_COMMIT}")
+    endif()
+    list(APPEND loftail_build_parts "g${loftail_short_commit}")
+endif()
+# Joined with '.' and consumed as SemVer build metadata — everything after the first
+# '+' is defined to be ignored when versions are compared, so "0.1.0+1234.g1a2b3c4"
+# still names release 0.1.0 to anything that parses it. One token, no spaces: on
+# Windows --version is printed into a MessageBox when there is no console to attach
+# to (src/main.cpp), and every smoke test in the workflow greps the line.
+list(JOIN loftail_build_parts "." LOFTAIL_BUILD_ID)
+
+if(LOFTAIL_BUILD_ID)
+    message(STATUS "Build identity: ${PROJECT_VERSION}+${LOFTAIL_BUILD_ID}")
+else()
+    message(STATUS "Build identity: ${PROJECT_VERSION} (local build; set "
+                   "LOFTAIL_BUILD_NUMBER / LOFTAIL_BUILD_COMMIT to stamp one)")
+endif()
+
 # --- Translation tooling ------------------------------------------------------
 #
 # loftail ships NO translations. Every user-facing string goes through tr() so that one
