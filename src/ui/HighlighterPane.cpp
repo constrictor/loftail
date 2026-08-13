@@ -105,19 +105,41 @@ QIcon swatchIcon(const QColor &c, HighlighterPane::ColourRole role, const QColor
 // The three action glyphs, drawn for the same reason the letter above is.
 enum class Glyph { Digest, Notify, Tab };
 
-QIcon actionGlyph(Glyph g, const QColor &ink)
+// One glyph in one state. OFF is a thin outline in muted ink; ON is the same shape
+// FILLED, at full ink and a heavier stroke.
+//
+// The state has to be in the glyph because it is nowhere else. A checked QToolButton is
+// a slightly darker panel — on Fusion, a gradient a few percent down from the unchecked
+// one — which at 14 px inside a dock is invisible, and worse than invisible in this
+// table: a selected row already tints every button in it, so the only cue distinguishing
+// on from off was ALSO the cue distinguishing the current rule from the rest. Rendered
+// side by side, "digest on" and "digest off" were the same button. Outline-versus-filled
+// is the one contrast that survives at this size, in either theme and under any style,
+// because it does not depend on the style drawing anything at all.
+//
+// Deliberately monochrome. Colour is what the two swatches in the very next cell mean,
+// and an action button that went coloured when switched on would read as a third colour
+// choice on the same row.
+QPixmap actionPixmap(Glyph g, const QColor &ink, bool on)
 {
     QPixmap pm(kGlyphPx, kGlyphPx);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(ink, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    p.setBrush(Qt::NoBrush);
+
+    QColor stroke = ink;
+    if (!on)
+        stroke.setAlpha(115); // present, plainly not in force
+    p.setPen(QPen(stroke, on ? 1.6 : 1.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(on ? QBrush(stroke) : QBrush(Qt::NoBrush));
 
     switch (g) {
     case Glyph::Digest: {
         // Three lines of a strip, the last one short — a list, which is what the digest
-        // under the log is.
+        // under the log is. Its "fill" is the weight of the rules themselves: there is
+        // no interior to a line, so ON draws them as bars.
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(stroke, on ? 2.2 : 1.1, Qt::SolidLine, Qt::RoundCap));
         p.drawLine(QPointF(2.5, 4.0), QPointF(11.5, 4.0));
         p.drawLine(QPointF(2.5, 7.0), QPointF(11.5, 7.0));
         p.drawLine(QPointF(2.5, 10.0), QPointF(8.0, 10.0));
@@ -143,14 +165,23 @@ QIcon actionGlyph(Glyph g, const QColor &ink)
         mark.lineTo(7.0, 9.4);
         mark.lineTo(4.0, 12.0);
         mark.closeSubpath();
-        QColor fill = ink;
-        fill.setAlpha(90);
-        p.setBrush(fill);
         p.drawPath(mark);
         break;
     }
     }
-    return QIcon(pm);
+    return pm;
+}
+
+// Both states in one icon, which is what makes a checkable QToolButton swap them for
+// free: Qt asks for QIcon::On while the button is checked and QIcon::Off while it is
+// not. Nothing has to hear about a toggle, so no state can be missed — a rule loaded
+// from a session draws itself correctly without a refresh.
+QIcon actionGlyph(Glyph g, const QColor &ink)
+{
+    QIcon icon;
+    icon.addPixmap(actionPixmap(g, ink, false), QIcon::Normal, QIcon::Off);
+    icon.addPixmap(actionPixmap(g, ink, true), QIcon::Normal, QIcon::On);
+    return icon;
 }
 
 // The enable column: the indicator CENTRED in its cell, and the whole cell toggling it.

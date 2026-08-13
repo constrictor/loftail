@@ -208,6 +208,7 @@ private slots:
     // M19 — a rule's effect is a set of actions, and colour is one of them. All four
     // are now set in the rule's own table row: three ticks and a pair of swatch columns.
     void everyActionIsAColumnAndOnlyColourStartsOn();
+    void anActionThatIsOnLooksIt();
     void togglingAnActionReachesTheDocument();
     void clickingAnywhereInACheckCellTogglesIt();
     void aRuleWithNoColourDoesNotColour();
@@ -727,6 +728,56 @@ void TestHighlighterPane::everyActionIsAColumnAndOnlyColourStartsOn()
                 ->flags()
                 .testFlag(Qt::ItemIsUserCheckable));
     QVERIFY(!actionButton(pane, 0, HighlighterPane::kColEnabled));
+}
+
+// An action button that is ON must not look like one that is off, and the only place
+// that can be said is the glyph. A checked QToolButton is a panel a few percent darker
+// than an unchecked one — invisible at 14 px in a dock, and worse than invisible in this
+// table, because a selected row already tints every button in it: the cue for "this
+// action is in force" was the same cue as "this is the rule being edited". So OFF is a
+// thin outline in muted ink and ON is the shape filled at full ink, which is a contrast
+// no style can take away.
+//
+// Asserted as INK — the summed alpha of the two renderings — rather than as "the two
+// images differ", which a one-pixel change would satisfy while the buttons went on
+// looking identical to a reader.
+void TestHighlighterPane::anActionThatIsOnLooksIt()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
+
+    const auto ink = [](const QImage &image) {
+        qint64 total = 0;
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x)
+                total += qAlpha(image.pixel(x, y));
+        return total;
+    };
+
+    for (HighlighterPane::Column column : {HighlighterPane::kColDigest,
+                                           HighlighterPane::kColNotify,
+                                           HighlighterPane::kColTab}) {
+        QToolButton *b = actionButton(pane, 0, column);
+        QVERIFY(b);
+        const QSize size = b->iconSize();
+        // Straight off the icon, in both states, without touching the button: Qt asks
+        // for QIcon::On while a checkable button is checked and QIcon::Off while it is
+        // not, so the swap costs no signal and a rule restored from a session is drawn
+        // right without a refresh.
+        const QImage off = b->icon().pixmap(size, QIcon::Normal, QIcon::Off).toImage();
+        const QImage on = b->icon().pixmap(size, QIcon::Normal, QIcon::On).toImage();
+        QVERIFY(!off.isNull() && !on.isNull());
+        QVERIFY2(ink(on) > ink(off) * 3 / 2,
+                 qPrintable(QStringLiteral("column %1: on=%2 off=%3 ink")
+                                .arg(int(column))
+                                .arg(ink(on))
+                                .arg(ink(off))));
+    }
 }
 
 void TestHighlighterPane::togglingAnActionReachesTheDocument()
