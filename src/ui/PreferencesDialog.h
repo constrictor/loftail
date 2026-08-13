@@ -40,7 +40,7 @@ class SectionBox;
 // the tree; the caller reads tree() after Accepted and does the single write. That is
 // what makes Cancel exact — it discards a pattern added, a node deleted, a bulk forget,
 // and the scratch node a mid-open invocation created, with no special case for any of
-// them. "Apply to Current Log" is no exception: it only records the request, because
+// them. "Apply to current file" is no exception: it only records the request, because
 // applying reindexes and destroys the very Document this dialog is previewing.
 class PreferencesDialog : public QDialog
 {
@@ -59,9 +59,9 @@ public:
     // nothing its parent does not already say.
     void selectLog(const QString &address, const LogProfile &seed);
 
-    // Offer "Apply to <name>". Without this the button stays hidden — there is nothing
-    // to apply to, which is also the mid-open case, where OK already means "open the
-    // log like this".
+    // Offer "Apply to current file", naming `name` in its tooltip. Without this the
+    // button stays hidden — there is nothing to apply to, which is also the mid-open
+    // case, where OK already means "open the log like this".
     void setApplyTarget(const QString &name);
 
     // The edited tree. Read after exec() returns Accepted.

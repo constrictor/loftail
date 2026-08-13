@@ -1,5 +1,6 @@
 #include <QtTest>
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -11,6 +12,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 
+#include "MnemonicCheck.h"
 #include "PreferencesDialog.h"
 
 using namespace loftail;
@@ -97,8 +99,10 @@ private slots:
     void thePatternEditorIsShownOnlyForAPattern();
     void editingAPatternRehomesItsLogsAndKeepsTheSelection();
     void reorderingChangesWhichPatternWins();
+    void everyMnemonicHasABuddyAndNoLetterIsClaimedTwice();
     void aNewPatternStartsEmptyAndClaimsNoLogs();
     void promotingIsOfferedOnlyWithAParentPattern();
+    void promotingAPatternMovesItsSettingsIntoTheDefaults();
     void promotingMovesTheSettingsUpAndRemovesTheLogEntry();
     void aScratchNodeSayingNothingNewIsNotKept();
     void applyToCurrentIsReportedNeverApplied();
@@ -233,6 +237,22 @@ void TestPreferences::reorderingChangesWhichPatternWins()
     QCOMPARE(tree->currentItem(), rowNamed(tree, QStringLiteral("app.*")));
 }
 
+// Mnemonics over the whole dialog: none dead, none shared (MnemonicCheck.h explains
+// both). Three rows of the format editor read "&Encoding:", "&Source time zone:" and
+// "&Conversion pattern:" on screen before this, because QFormLayout's QLayout-field
+// overload cannot give its label a buddy. Checked over the dialog rather than on those
+// three, because the trap is the overload and not the rows.
+void TestPreferences::everyMnemonicHasABuddyAndNoLetterIsClaimedTwice()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    dlg.setApplyTarget(QStringLiteral("app.log")); // the one mnemonic taken from data
+    // A pattern node, so the pattern editor is on screen with the rest.
+    treeOf(dlg)->setCurrentItem(rowNamed(treeOf(dlg), QStringLiteral("*.log")));
+
+    QString why;
+    QVERIFY2(loftail_test::mnemonicsAreSound(&dlg, &why, 6), qPrintable(why));
+}
+
 // Add Pattern creates a row that matches NOTHING until it is named. It used to seed the
 // match — "*.log" from a constant, or from the selected log's extension — which claimed
 // every log on the machine the moment the row appeared, and handed them either the
@@ -281,15 +301,52 @@ void TestPreferences::promotingIsOfferedOnlyWithAParentPattern()
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
     QVERIFY(promote->isEnabled());
 
-    // Under the virtual parent there is nothing above but the defaults, and promoting to
-    // those would hand one log's settings to every log in the world.
+    // A pattern's parent is the defaults, so it promotes too — and the button says which
+    // level it is aimed at, because "parent" is a different thing one row up.
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+    QVERIFY(promote->isEnabled());
+    QVERIFY(promote->text().contains(QStringLiteral("Default")));
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    QVERIFY(promote->text().contains(QStringLiteral("Pattern")));
+
+    // Under the virtual parent there is nothing above but the defaults, and handing one
+    // log's settings to every log in the world is not a level up but a level skipped.
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("other.trace")));
     QVERIFY(!promote->isEnabled());
 
-    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
-    QVERIFY(!promote->isEnabled());
+    // The defaults are the top: nothing above them to promote to.
     tree->setCurrentItem(tree->topLevelItem(0));
     QVERIFY(!promote->isEnabled());
+}
+
+// A pattern promotes its settings to the DEFAULTS, and stays where it is. It is not only
+// settings but a matcher, and its place in the order is what keeps a later pattern off
+// its logs — so unlike a promoted file node it is not removed for having nothing left to
+// say. (SPEC.md §4.)
+void TestPreferences::promotingAPatternMovesItsSettingsIntoTheDefaults()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    QTreeWidget *tree = treeOf(dlg);
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+    dlg.findChild<QPushButton *>(QStringLiteral("promoteToParentButton"))->click();
+
+    const LogSettingsTree &out = dlg.tree();
+    QCOMPARE(out.defaults().format.pattern, QStringLiteral("PATTERN"));
+    // Still there, still first, still matching what it matched.
+    QCOMPARE(out.patterns().size(), 1);
+    QCOMPARE(out.patterns().at(0).match, QStringLiteral("*.log"));
+    QVERIFY(rowNamed(tree, QStringLiteral("*.log")));
+    QCOMPARE(tree->currentItem(), rowNamed(tree, QStringLiteral("*.log")));
+
+    // A log that matched nothing now opens on what the pattern said.
+    QCOMPARE(out.resolve(QStringLiteral("/var/log/other.trace")).profile.format.pattern,
+             QStringLiteral("ORPHAN")); // its own entry still outranks the defaults
+    QCOMPARE(out.resolve(QStringLiteral("/etc/never/seen.trace")).profile.format.pattern,
+             QStringLiteral("PATTERN"));
+    // And the log under the pattern is untouched: it inherits from the pattern, which
+    // has not changed, so there is nothing to re-prune.
+    QCOMPARE(out.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+             QStringLiteral("MINE"));
 }
 
 void TestPreferences::promotingMovesTheSettingsUpAndRemovesTheLogEntry()

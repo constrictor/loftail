@@ -12,7 +12,7 @@ namespace loftail {
 // WHOLE-NODE VALUES, no per-field merging. The deepest matching node wins outright and
 // the levels never mix — the rule the two-store arrangement this replaced already had,
 // kept deliberately. A file node that differs from its pattern in one field therefore
-// carries a complete copy of the rest; "Copy to Parent Pattern" in Preferences is what
+// carries a complete copy of the rest; "Promote to Parent Pattern" in Preferences is what
 // puts that copy back where it belongs.
 //
 // `wrapMode` sits BESIDE FormatSettings rather than inside it because MainWindow diffs

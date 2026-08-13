@@ -23,6 +23,16 @@
 namespace loftail {
 
 namespace {
+// A form label that owns its mnemonic. QFormLayout's addRow(QString, QWidget *) sets the
+// buddy for you; the QLayout overload cannot, and a buddy-less QLabel shows the '&'
+// rather than acting on it.
+QLabel *buddyLabel(const QString &text, QWidget *buddy)
+{
+    auto *label = new QLabel(text, buddy->parentWidget());
+    label->setBuddy(buddy);
+    return label;
+}
+
 // Encoding <-> combo index. Order matches the SPEC.md §4 list.
 const Encoding kEncodingByIndex[] = {
     Encoding::Auto, Encoding::Utf8, Encoding::Utf16LE, Encoding::Utf16BE, Encoding::System,
@@ -85,7 +95,18 @@ void FormatEditor::buildUi()
     m_detectButton->setToolTip(tr("Guess the pattern from the sample lines"));
     m_detectButton->setEnabled(!m_sample.isEmpty());
     patRow->addWidget(m_detectButton);
-    form->addRow(tr("Conversion &pattern:"), patRow);
+    // Built by hand rather than by addRow(QString, QLayout *): that overload makes a
+    // label with NO BUDDY, and a QLabel interprets '&' as a mnemonic only when it has
+    // one — so every accelerator on a row whose field is a layout rendered as a literal
+    // ampersand ("&Encoding:"), and did nothing. Measured: the label's width hint is
+    // that of the text WITH the '&' in it. Same construction, and the same reason, as
+    // the Host row in OpenRemoteDialog.
+    //
+    // The letter is C rather than the P of "conversion &pattern", because these
+    // accelerators only became live here and P is already &Promote to Parent Pattern in the
+    // dialog this editor sits in — two mnemonics on one letter make Alt+P a focus cycle
+    // rather than a shortcut.
+    form->addRow(buddyLabel(tr("&Conversion pattern:"), m_patternEdit), patRow);
     connect(m_patternEdit, &QLineEdit::textChanged, this, &FormatEditor::refresh);
     connect(m_detectButton, &QPushButton::clicked, this, &FormatEditor::detect);
 
@@ -120,7 +141,7 @@ void FormatEditor::buildUi()
         QStringLiteral("color: %1;").arg(mutedColor(palette()).name()));
     encRow->addWidget(m_detectedLabel);
     encRow->addStretch();
-    form->addRow(tr("&Encoding:"), encRow);
+    form->addRow(buddyLabel(tr("&Encoding:"), m_encodingCombo), encRow);
     connect(m_encodingCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
             &FormatEditor::refresh);
 
@@ -140,7 +161,7 @@ void FormatEditor::buildUi()
     m_offsetSpin->setToolTip(tr("Offset east of UTC, in minutes"));
     srcRow->addWidget(m_offsetSpin);
     srcRow->addStretch();
-    form->addRow(tr("&Source time zone:"), srcRow);
+    form->addRow(buddyLabel(tr("&Source time zone:"), m_sourceZoneCombo), srcRow);
     connect(m_sourceZoneCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this]() {
         m_offsetSpin->setVisible(m_sourceZoneCombo->currentIndex()
                                  == int(ZoneChoice::Kind::FixedOffset));
