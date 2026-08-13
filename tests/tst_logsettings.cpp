@@ -245,7 +245,7 @@ void TestLogSettings::bringingAFileBackIntoLineRemovesItsNode()
     t.setFileProfile(QStringLiteral("/var/log/app.log"), mine);
     QCOMPARE(t.files().size(), 1);
 
-    // This is what "Copy to Parent Pattern" leaves behind: the pattern now says what
+    // This is what "Promote to Parent Pattern" leaves behind: the pattern now says what
     // the file said, so the file node has nothing left to say.
     t.patternAt(0).profile = mine;
     t.setFileProfile(QStringLiteral("/var/log/app.log"), mine);

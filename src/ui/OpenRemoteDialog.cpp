@@ -466,7 +466,9 @@ void OpenRemoteDialog::updateActions()
     // rather than appended was the selection moving afterwards. Say which it will be.
     const bool replacing =
         m_store && HostBookmarkStore::indexOfName(m_bookmarks, fields.displayName()) >= 0;
-    m_saveButton->setText(replacing ? tr("&Update") : tr("&Save"));
+    // "Up&date", not "&Update": U is already the User field's accelerator, and two
+    // claims on one letter turn Alt+U into a focus cycle rather than a shortcut.
+    m_saveButton->setText(replacing ? tr("Up&date") : tr("&Save"));
 }
 
 void OpenRemoteDialog::absorbPastedUrl(QLineEdit *field)

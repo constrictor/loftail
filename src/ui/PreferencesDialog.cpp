@@ -133,7 +133,7 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     toolRow->addStretch();
     leftLayout->addLayout(toolRow);
 
-    m_forgetFiles = new QPushButton(tr("&Forget Remembered Formats"), left);
+    m_forgetFiles = new QPushButton(tr("&Forget Individual Files"), left);
     m_forgetFiles->setObjectName(QStringLiteral("forgetFormatsButton")); // findChild, for tests
     m_forgetFiles->setToolTip(
         tr("Delete every per-log entry, so each log falls back to its pattern or the defaults"));
@@ -229,21 +229,15 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     rightLayout->addWidget(m_editor, 1);
 
     auto *actionRow = new QHBoxLayout;
-    m_applyButton = new QPushButton(right);
+    m_applyButton = new QPushButton(tr("&Apply to current file"), right);
     m_applyButton->setObjectName(QStringLiteral("applyToCurrentButton")); // findChild, for tests
-    // Naming what it does to the TREE as well as to the log: applying a parent's
-    // settings makes this log equal to what it inherits, which deletes its own entry.
-    m_applyButton->setToolTip(
-        tr("Put these settings on the log that is open. If they match what it would "
-           "inherit anyway, its own entry is removed."));
     m_applyButton->hide();
     connect(m_applyButton, &QPushButton::clicked, this, &PreferencesDialog::applyToCurrent);
 
-    m_promoteButton = new QPushButton(tr("Copy to &Parent Pattern"), right);
+    // Text and tooltip are set by updateButtons(), which is the only thing that knows
+    // which level the selected node's parent IS.
+    m_promoteButton = new QPushButton(right);
     m_promoteButton->setObjectName(QStringLiteral("promoteToParentButton")); // findChild, for tests
-    m_promoteButton->setToolTip(
-        tr("Give these settings to the pattern above, so every log it matches gets them. "
-           "This log's own entry then has nothing left to say and is removed."));
     connect(m_promoteButton, &QPushButton::clicked, this, &PreferencesDialog::promoteToParent);
 
     actionRow->addWidget(m_applyButton);
@@ -487,10 +481,24 @@ void PreferencesDialog::updateButtons()
     m_moveDown->setEnabled(patternIndex >= 0
                            && patternIndex < m_settings.patterns().size() - 1);
 
-    // Promotable only when there IS a parent pattern. A log under the virtual node has
-    // nothing above it but the defaults, and promoting to those would hand one log's
-    // settings to every log in the world.
-    m_promoteButton->setEnabled(isFile && m_settings.resolve(ref.key).patternIndex >= 0);
+    // Promotion goes up exactly one level, and the button says which level that is: a
+    // pattern's parent is the defaults, a log's is the pattern that matched it. A log
+    // under the VIRTUAL node is still not promotable — its only parent is the defaults,
+    // and handing one log's settings to every log in the world is not a level up, it is
+    // a level skipped. Its pattern is the thing that should be promoted, once it has one.
+    if (isPattern) {
+        m_promoteButton->setText(tr("&Promote to Default Settings"));
+        m_promoteButton->setToolTip(
+            tr("Make these the default settings, which every log with no pattern of its "
+               "own opens with. This pattern stays where it is."));
+    } else {
+        m_promoteButton->setText(tr("&Promote to Parent Pattern"));
+        m_promoteButton->setToolTip(
+            tr("Give these settings to the pattern above, so every log it matches gets "
+               "them. This log's own entry then has nothing left to say and is removed."));
+    }
+    m_promoteButton->setEnabled(
+        isPattern || (isFile && m_settings.resolve(ref.key).patternIndex >= 0));
 
     m_applyButton->setVisible(!m_applyTarget.isEmpty());
     m_applyButton->setEnabled(!m_applyTarget.isEmpty() && ref.kind != NodeKind::Orphan);
@@ -517,7 +525,14 @@ void PreferencesDialog::selectLog(const QString &address, const LogProfile &seed
 void PreferencesDialog::setApplyTarget(const QString &name)
 {
     m_applyTarget = name;
-    m_applyButton->setText(tr("Apply to &%1").arg(name));
+    // The name goes in the TOOLTIP, not in the label. It used to be the label — "Apply to
+    // app.log" — which put a value of unbounded length in a button and took its mnemonic
+    // from data, so which letter Alt claimed depended on what happened to be open. The
+    // tooltip also says what applying does to the TREE: settings equal to what the log
+    // inherits leave it with nothing of its own to say, so its entry goes.
+    m_applyButton->setToolTip(
+        tr("Put these settings on %1, the log that is open. If they match what it would "
+           "inherit anyway, its own entry is removed.").arg(name));
     updateButtons();
 }
 
@@ -580,6 +595,22 @@ void PreferencesDialog::movePattern(int delta)
 void PreferencesDialog::promoteToParent()
 {
     const NodeRef ref = currentRef();
+    if (ref.kind == NodeKind::Pattern) {
+        commitCurrent();
+        const int i = m_settings.indexOfPatternId(ref.key);
+        if (i < 0)
+            return;
+        m_settings.setDefaults(m_settings.patterns().at(i).profile);
+        // The PATTERN STAYS, which is where this parts company with the file case below.
+        // A file node is nothing but settings, so once it says what its parent says it
+        // has nothing left to say and goes. A pattern node is also a MATCHER, and its
+        // place in the order is what stops a later pattern claiming its logs — deleting
+        // it because its settings are now the defaults would silently re-home every log
+        // under it. Nothing needs re-pruning either: the file nodes under it inherit
+        // from the pattern, which has not changed.
+        rebuildTree(ref);
+        return;
+    }
     if (ref.kind != NodeKind::File)
         return;
     commitCurrent();
@@ -620,7 +651,7 @@ void PreferencesDialog::forgetAllPerLogSettings()
     // settings they are displaying, which is why the wording is about what opening a log
     // does from now on rather than about what is on screen.
     const auto answer = QMessageBox::question(
-        this, tr("Forget Remembered Formats"),
+        this, tr("Forget Individual Files"),
         tr("Forget the settings remembered for every log?\n\n"
            "From now on, opening a log will use the file pattern that matches it, or the "
            "default settings. Logs already open are not affected."),

@@ -14,6 +14,7 @@
 #include "CollapsibleSection.h"
 #include "FakeSecretStore.h"
 #include "HostBookmarkStore.h"
+#include "MnemonicCheck.h"
 #include "OpenRemoteDialog.h"
 
 using namespace loftail;
@@ -56,6 +57,7 @@ private slots:
     void openIsRefusedUntilTheAddressIsComplete();
     void saveNeedsAHostAndRemoveNeedsASelection();
     void saveSaysUpdateWhenItWouldReplace();
+    void everyMnemonicHasABuddyAndNoLetterIsClaimedTwice();
     void theRememberedPathsAreListedAndPrunable();
     void theConsentNoteIsPresentInBothSignInModes();
     void theEmptyListExplainsItself();
@@ -125,18 +127,42 @@ void TestRemoteDialog::saveSaysUpdateWhenItWouldReplace()
     auto *save = dialog.findChild<QPushButton *>(QStringLiteral("remoteSaveButton"));
     QVERIFY(save);
 
+    // Read WITHOUT the mnemonic: the accelerator moved to "Up&date" to stop it
+    // claiming the User field's Alt+U, and the word is what this case is about.
+    auto label = [save]() { return save->text().remove(QLatin1Char('&')); };
+
     field(dialog, "remoteHostField")->setText(QStringLiteral("web9"));
-    QVERIFY2(!save->text().contains(QStringLiteral("Update")),
+    QVERIFY2(!label().contains(QStringLiteral("Update")),
              "a name nobody is using is a new entry");
 
     // The name is the identity, and it is compared trimmed and case-insensitively —
     // so the button has to agree with HostBookmarkStore about what collides.
     field(dialog, "remoteNameField")->setText(QStringLiteral(" PROD "));
-    QVERIFY2(save->text().contains(QStringLiteral("Update")),
+    QVERIFY2(label().contains(QStringLiteral("Update")),
              "saving under an existing name replaces it, and should say so first");
 
     field(dialog, "remoteNameField")->setText(QStringLiteral("staging"));
-    QVERIFY(!save->text().contains(QStringLiteral("Update")));
+    QVERIFY(!label().contains(QStringLiteral("Update")));
+}
+
+// Mnemonics over the whole dialog: none dead, none shared (MnemonicCheck.h explains
+// both). Checked in BOTH states of the save button, because its label is the one that
+// changes at run time — "&Update" collided with the &User field until it became
+// "Up&date", and the collision existed only while a bookmark of that name was there.
+void TestRemoteDialog::everyMnemonicHasABuddyAndNoLetterIsClaimedTwice()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    HostBookmarkStore store(dir.path());
+    store.save(host(QStringLiteral("prod"), QStringLiteral("web1"),
+                    {QStringLiteral("/var/log/a.log")}));
+
+    OpenRemoteDialog dialog(&store);
+    QString why;
+    QVERIFY2(loftail_test::mnemonicsAreSound(&dialog, &why, 8), qPrintable(why));
+
+    field(dialog, "remoteNameField")->setText(QStringLiteral("prod")); // button says Update
+    QVERIFY2(loftail_test::mnemonicsAreSound(&dialog, &why, 8), qPrintable(why));
 }
 
 // Saving appends to a host's remembered paths. Until the combo box the list was
