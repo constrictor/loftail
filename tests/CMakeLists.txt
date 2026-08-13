@@ -475,6 +475,16 @@ target_link_libraries(tst_preferences PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_preferences COMMAND tst_preferences)
 set_tests_properties(tst_preferences PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# The scan indicator and its stop button (SPEC.md §3). Cancelling a scan moved out of
+# the File menu and onto the progress bar, so what needs pinning is that the pair
+# appears exactly while a scan runs and that the button reaches the cancel seam — the
+# partial index a cancel leaves behind is tst_indexcontroller's. Needs the real window,
+# since the two are shown by updateStatus() and hidden by onIndexFinished().
+qt_add_executable(tst_scanprogress tst_scanprogress.cpp)
+target_link_libraries(tst_scanprogress PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_scanprogress COMMAND tst_scanprogress)
+set_tests_properties(tst_scanprogress PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # M9 — several logs open at once as tabs, and several views onto one log
 # (SPEC.md §3, §5a). Covers what multi-document changes: an open adds a tab rather
 # than replacing, pane rebinding on a FILE switch but not a view switch, and a file

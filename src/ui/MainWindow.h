@@ -345,7 +345,6 @@ private:
     QAction *m_closeTabAction = nullptr;
     QAction *m_closeAllAction = nullptr;
     QAction *m_newViewAction = nullptr; // Window ▸ New View (a second view on one file)
-    QAction *m_cancelAction = nullptr;
     QAction *m_copyAction = nullptr;
     QAction *m_copyColumnsAction = nullptr;
     QAction *m_reconnectAction = nullptr;
@@ -355,6 +354,9 @@ private:
     QMenu   *m_timeDisplayMenu = nullptr;
     QAction *m_timeDisplayActions[5] = {};
     QLabel       *m_statusLabel = nullptr;
+    // The scan indicator and its stop button, shown and hidden as one: cancelling is
+    // only offered while there is a scan to cancel, so the two are never apart.
+    QWidget      *m_progressBox = nullptr;
     QProgressBar *m_progressBar = nullptr;
 
     FilterPane      *m_filterPane = nullptr;      // M4 filters side pane
