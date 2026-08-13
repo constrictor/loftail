@@ -106,6 +106,8 @@ Makes M1 reachable by the user. `SPEC.md` §4.
 
 Delivers the side-pane workflow that motivates the product. `SPEC.md` §7–§10.
 
+**Presets were later put behind `LOFTAIL_WITH_PRESETS`, off by default** (`SPEC.md` §9, `ARCHITECTURE.md` §8). Everything below shipped and still builds; a stock build simply has three panes rather than four and compiles neither `PresetStore` nor `PresetPane`.
+
 - [x] Curated 12-entry dual-theme palette; each rule persists a **background** and a **foreground** palette index (or *default*), never an RGB value
 - [x] Highlight rules: ordered list, first-match-wins evaluated in `data()`; the matched rule supplies both roles, *default* falling back to the theme color
 - [x] Rule editor: match on subsystem and/or priority, pick background and text color (each palette-or-default), reorder, enable/disable

@@ -247,6 +247,26 @@ else()
                    "remembered password then falls back to plain text in hosts.json)")
 endif()
 
+# --- Presets (M5) -------------------------------------------------------------
+#
+# Unlike LOFTAIL_WITH_SSH/_ARCHIVE/_KEYCHAIN, this gates a FEATURE rather than a
+# dependency, which is why it is the one that defaults OFF. Those three mean "auto-detect
+# this library if it is installed", so ON is the honest default and LOFTAIL_HAVE_* is the
+# probe's ANSWER. Here there is nothing to probe: the option IS the answer, and HAVE only
+# mirrors it so that every sub-CMakeLists keeps reading `if(LOFTAIL_HAVE_...)`.
+#
+# Off by default means a stock build has no Presets pane, none of the preset code compiled
+# and no preset files read or written (SPEC.md §9).
+option(LOFTAIL_WITH_PRESETS "Build the filter and highlighter presets pane" OFF)
+set(LOFTAIL_HAVE_PRESETS ${LOFTAIL_WITH_PRESETS})
+
+if(LOFTAIL_HAVE_PRESETS)
+    message(STATUS "Presets: ENABLED")
+else()
+    message(STATUS "Presets: DISABLED "
+                   "(configure with -DLOFTAIL_WITH_PRESETS=ON to build the presets pane)")
+endif()
+
 # --- Translation tooling ------------------------------------------------------
 #
 # loftail ships NO translations. Every user-facing string goes through tr() so that one

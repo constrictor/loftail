@@ -44,11 +44,10 @@ add_library(loftail_ui STATIC
     FilterPane.h
     FindBar.cpp
     FindBar.h
-    # M5 — the Highlighters and Presets side panes
+    # M5 — the Highlighters side pane. The Presets pane, the other half of that
+    # milestone's pane work, is gated below.
     HighlighterPane.cpp
     HighlighterPane.h
-    PresetPane.cpp
-    PresetPane.h
     # Run selection side pane (a run-start regexp splits the file into runs)
     RunPane.cpp
     RunPane.h
@@ -76,6 +75,17 @@ add_library(loftail_ui STATIC
     CollapsibleSection.cpp
     CollapsibleSection.h
 )
+
+# The Presets pane, gated as PresetStore is in loftail_core. No compile definition here:
+# LOFTAIL_HAVE_PRESETS arrives PUBLIC from loftail_core, so the two halves of the feature
+# cannot fall out of step. AUTOMOC picks the Q_OBJECT up from a conditional target_sources
+# exactly as it does for the gated files in core.
+if(LOFTAIL_HAVE_PRESETS)
+    target_sources(loftail_ui PRIVATE
+        PresetPane.cpp
+        PresetPane.h
+    )
+endif()
 
 target_link_libraries(loftail_ui PUBLIC
     Qt6::Widgets

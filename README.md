@@ -29,7 +29,7 @@ loftail does **not** link log4cplus. It reads log files as text and has no compi
 | 🧭 **Runs** | Give a regex that marks the start of an application run, and view one run at a time — scrolling, filtering, and find all restricted to it. |
 | 🌐 **Remote logs** | `ssh://user@host/var/log/app.log` opens and follows a log on another machine exactly like a local one, rotation and all. Agent and key auth, host-key confirmation, and saved hosts. |
 | 🗂️ **Tabs** | Several logs open at once, as reorderable tabs in a document area the side panes can never invade — and a second view onto one log pins the history while the other keeps tailing. |
-| 💾 **Session restore** | Every open file, its format, run selection, filters and highlighters; each view's column layout and wrap mode; presets, window geometry, the tab order and the pane layout — all come back. |
+| 💾 **Session restore** | Every open file, its format, run selection, filters and highlighters; each view's column layout and wrap mode; window geometry, the tab order and the pane layout — all come back. |
 | 📐 **Multi-line records** | A record whose message spans lines occupies a taller row and is shown in full, in place. Oversized records cap at 100 lines and expand on request. |
 | 🔎 **Find** | Regex or plain, case options, wrap-around — distinct from filtering; it moves the cursor and hides nothing. |
 | 🌍 **Encodings & zones** | Auto-detected encoding (incl. the UTF-16 a `wchar_t` build writes on Windows), forceable. Timestamps are real points in time, with configurable source and display zones. |

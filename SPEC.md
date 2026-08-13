@@ -307,7 +307,7 @@ Highlighting colors matching records without removing anything, for spotting eve
 
 ## 8. Side panes
 
-Filters, highlighters, presets, and runs (§3) are each presented in a side pane, so they are visible and toggleable without opening dialogs.
+Filters, highlighters, and runs (§3) are each presented in a side pane — and presets (§9) where the build has them — so they are visible and toggleable without opening dialogs.
 
 - Panes can be shown/hidden, resized, moved to either side, or tabbed together. They arrange themselves *around* the log area and never inside it (§5a): a pane cannot be tabbed next to a log, and dragging one can never displace the file being read. A closed pane is brought back from the View menu.
 - **Dragging a pane moves that pane**, not the group it is tabbed with, and a pane can be dropped on the left or right side only — not as a strip above or below the log.
@@ -318,12 +318,15 @@ Filters, highlighters, presets, and runs (§3) are each presented in a side pane
 
 ## 9. Presets
 
+**Presets are a build option and are OFF by default.** A build configured with `-DLOFTAIL_WITH_PRESETS=ON` has the pane described below; a default build has no Presets pane and never reads or writes preset files. Everything else in this section describes a build that has them.
+
 - **Filter presets** store a complete set of filters; **highlighter presets** store a complete set of highlight rules. The two are independent and separately recallable.
 - Presets are created from the current state, and can be renamed and deleted.
 - Applying a preset replaces the current set on that axis, rather than merging — which would make the result hard to predict.
 - Presets are listed in a side pane and applied in one click.
 - Presets persist across sessions and are independent of any particular log file.
 - Presets can be exported to and imported from a JSON file, for sharing with colleagues.
+- Moving between a build that has presets and one that does not costs nothing either way. The preset files are left where they are, and a remembered pane arrangement (§10) still restores: the pane is simply absent, and it returns alongside the others when a presets build next reads that arrangement.
 
 ## 10. Session persistence
 
@@ -334,7 +337,7 @@ On relaunch, loftail restores:
 - The run-start pattern and which run was being viewed, per file (§3)
 - Active filters and highlighters per file, including which were enabled
 - Every view: how many views each file had, each one's column layout and wrap mode, and which view was active
-- Saved presets
+- Saved presets, where the build has them (§9)
 - Window geometry, the order of the tabs, and the arrangement of the side panes (§5a, §8)
 
 **Scoping:** the log format, the timestamp display mode, the run-start pattern, active filters, active highlighters, and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a second view showing wide messages and one showing just timestamps each keep their shape. Presets, the **default log format** (§4) and the window/pane layout are global.
