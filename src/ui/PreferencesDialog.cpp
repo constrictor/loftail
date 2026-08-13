@@ -159,6 +159,9 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
 
     m_patternMatch = new QLineEdit(m_patternGroup);
     m_patternMatch->setObjectName(QStringLiteral("patternMatchEdit")); // findChild, for tests
+    // A placeholder rather than a starting value: it says what the field wants without
+    // the field claiming anything, which is the whole reason a new pattern starts empty.
+    m_patternMatch->setPlaceholderText(tr("e.g. *.audit.log"));
     patternForm->addRow(tr("Logs named:"), m_patternMatch);
 
     m_patternKind = new QComboBox(m_patternGroup);
@@ -524,21 +527,21 @@ void PreferencesDialog::addPattern()
     commitCurrent();
 
     LogPatternNode n;
-    // Seeded from the selected log where there is one: "*.log" for /var/log/app.log is
-    // the pattern most people are about to type anyway.
-    if (ref.kind == NodeKind::File) {
-        const QString name = logMatchTarget(ref.key, false);
-        const int dot = name.lastIndexOf(u'.');
-        n.match = dot > 0 ? QLatin1Char('*') + name.mid(dot) : name;
-        n.profile = m_settings.resolve(ref.key).profile;
-    } else {
-        n.match = QStringLiteral("*.log");
-        n.profile = m_settings.defaults();
-    }
+    // The match text starts EMPTY, and a suggestion is not worth what it costs here.
+    // "*.log" — whether typed in as a constant or derived from the selected log's
+    // extension — claims every log on the machine the instant the row appears, which is
+    // the one thing a new pattern must not do: the settings under it are the defaults
+    // or one log's, and they would silently become everything's while the user is still
+    // deciding what the pattern is for. An empty pattern matches nothing (LogSettings.h),
+    // so the row sits there claiming no logs until it says what it is about.
+    //
+    // The PROFILE is still seeded from the selected log, which is the useful half of the
+    // gesture: "make a pattern out of how this one is read".
+    n.profile = ref.kind == NodeKind::File ? m_settings.resolve(ref.key).profile
+                                           : m_settings.defaults();
     const int i = m_settings.addPattern(n);
     rebuildTree(NodeRef{NodeKind::Pattern, m_settings.patterns().at(i).id});
     m_patternMatch->setFocus();
-    m_patternMatch->selectAll();
 }
 
 void PreferencesDialog::deleteNode()
