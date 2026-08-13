@@ -67,6 +67,15 @@ fi
 echo ">> Building"
 cmake --build "$BUILD_DIR"
 
+# The release this artifact belongs to, read back from the configured build rather than
+# repeated here — one source of truth, and it stays right when project(VERSION) moves.
+# After the build, because the cache does not exist until the configure step above ran.
+VERSION=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$BUILD_DIR/CMakeCache.txt")
+if [[ -z "$VERSION" ]]; then
+    echo "!! could not read CMAKE_PROJECT_VERSION from $BUILD_DIR/CMakeCache.txt" >&2
+    exit 1
+fi
+
 # 2. Stage a clean install tree into the AppDir.
 echo ">> Installing into $APPDIR"
 rm -rf "$APPDIR"
@@ -75,7 +84,16 @@ DESTDIR="$APPDIR" cmake --install "$BUILD_DIR" --prefix /usr
 # 3. Let linuxdeploy pull in Qt + build the AppImage.
 #    --plugin qt bundles the Qt libraries, platform plugins, and QPA.
 echo ">> Running linuxdeploy (+qt plugin)"
-export OUTPUT="$OUTPUT_DIR/loftail-${BUILD_TYPE}-x86_64.AppImage"
+# Named for the RELEASE, as the .deb is, so a file downloaded from a release page still
+# says which release it is once it is sitting in somebody's Downloads folder. It used to
+# carry the CMake build type, which named the same thing for every release ever made.
+# The build type survives only when it is NOT the shipped one, so that a local Debug
+# AppImage cannot silently overwrite the Release one beside it in dist/.
+if [[ "$BUILD_TYPE" == "Release" ]]; then
+    export OUTPUT="$OUTPUT_DIR/loftail-${VERSION}-x86_64.AppImage"
+else
+    export OUTPUT="$OUTPUT_DIR/loftail-${VERSION}-${BUILD_TYPE}-x86_64.AppImage"
+fi
 # FUSE is often unavailable in CI/containers; extract-and-run avoids needing it.
 export APPIMAGE_EXTRACT_AND_RUN=1
 # Bundle the offscreen QPA plugin alongside xcb so the AppImage supports the
