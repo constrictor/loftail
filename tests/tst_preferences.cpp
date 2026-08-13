@@ -97,6 +97,7 @@ private slots:
     void thePatternEditorIsShownOnlyForAPattern();
     void editingAPatternRehomesItsLogsAndKeepsTheSelection();
     void reorderingChangesWhichPatternWins();
+    void aNewPatternStartsEmptyAndClaimsNoLogs();
     void promotingIsOfferedOnlyWithAParentPattern();
     void promotingMovesTheSettingsUpAndRemovesTheLogEntry();
     void aScratchNodeSayingNothingNewIsNotKept();
@@ -230,6 +231,44 @@ void TestPreferences::reorderingChangesWhichPatternWins()
              QStringLiteral("SECOND"));
     // Still on the pattern that moved, not on whatever now occupies its old row.
     QCOMPARE(tree->currentItem(), rowNamed(tree, QStringLiteral("app.*")));
+}
+
+// Add Pattern creates a row that matches NOTHING until it is named. It used to seed the
+// match — "*.log" from a constant, or from the selected log's extension — which claimed
+// every log on the machine the moment the row appeared, and handed them either the
+// defaults or that one log's settings while the user was still deciding what the pattern
+// was for. The PROFILE seeding is the useful half and stays.
+void TestPreferences::aNewPatternStartsEmptyAndClaimsNoLogs()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    QTreeWidget *tree = treeOf(dlg);
+    auto *add = dlg.findChild<QToolButton *>(QStringLiteral("addPatternButton"));
+    auto *match = dlg.findChild<QLineEdit *>(QStringLiteral("patternMatchEdit"));
+    QVERIFY(add);
+    QVERIFY(match);
+
+    // From a selected log, which is where a derived "*.log" used to come from.
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    add->click();
+
+    QCOMPARE(dlg.tree().patterns().size(), 2);
+    const LogPatternNode &added = dlg.tree().patterns().at(1);
+    QVERIFY2(added.match.isEmpty(), "a new pattern arrived already matching something");
+    QVERIFY(match->text().isEmpty());
+    // Seeded from the log it was added from: that is what makes it worth adding there.
+    QCOMPARE(added.profile.format.pattern, QStringLiteral("MINE"));
+
+    // Nothing moved under it — the orphan is still an orphan and the existing pattern
+    // still owns its log.
+    QCOMPARE(dlg.tree().resolve(QStringLiteral("/var/log/other.trace")).patternIndex, -1);
+    QCOMPARE(dlg.tree().resolve(QStringLiteral("/etc/never/seen.log")).profile.format.pattern,
+             QStringLiteral("PATTERN")); // *.log, the pattern that was already there
+
+    // And from a non-file node, which is where the "*.log" constant used to come from.
+    tree->setCurrentItem(tree->topLevelItem(0));
+    add->click();
+    QCOMPARE(dlg.tree().patterns().size(), 3);
+    QVERIFY(dlg.tree().patterns().at(2).match.isEmpty());
 }
 
 void TestPreferences::promotingIsOfferedOnlyWithAParentPattern()

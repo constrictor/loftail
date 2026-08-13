@@ -162,6 +162,7 @@ Each level holds the same complete set: the conversion pattern, the character en
 **File ▸ Preferences** shows the whole arrangement as a tree, with the selected entry's settings beside it.
 
 - **File patterns are ordered, and the first match wins.** A log matching two patterns takes the higher one; ↑ and ↓ change which. A pattern is a **wildcard** (`*` and `?`, matching the whole name) or a **regular expression** (matching anywhere in it), optionally case sensitive.
+- **A pattern added starts empty, and an empty pattern matches nothing.** It claims logs only once it says which — a new row cannot take over every log on the machine while you are still deciding what it is for. Its *settings* are seeded from wherever it was added: from the selected log, so "make a pattern out of how this one is read" is one button.
 - By default a pattern is matched against the log's **own file name** — the member's name inside an archive, the file name at the end of an `ssh://` address. **Match the whole path** widens it to the entire address, host included, so "every log on prod-web" is expressible.
 - **A log gets an entry of its own only when you change something.** Opening a log leaves nothing behind; entries appear when a setting is made to differ from what the log would otherwise inherit, and disappear again when it is brought back into line.
 - **Copy to Parent Pattern** gives one log's settings to the pattern above it, so every log that pattern matches gets them. The log's own entry then has nothing left to say and is removed.
