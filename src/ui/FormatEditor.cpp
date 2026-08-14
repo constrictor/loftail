@@ -136,7 +136,14 @@ void FormatEditor::buildUi()
     m_errorLabel->setStyleSheet(
         QStringLiteral("color: %1;").arg(errorColor(palette()).name()));
     m_errorLabel->setVisible(false);
-    form->addRow(QString(), m_errorLabel);
+    // A SPANNING row, not a field beside an empty label. Measured under Breeze: a
+    // word-wrapped QLabel in the field column was handed 105x17 px against a 105x34 hint
+    // — Breeze answers SH_FormLayoutFieldGrowthPolicy with FieldsStayAtSizeHint, so the
+    // field never gets the column's width, wraps to two lines and is then allotted one
+    // line's height, and the second line lands on the row below. Spanning both columns
+    // hands it the form's whole width, where these messages fit on one line. Fusion grows
+    // the field and never showed it, which is the usual shape of a layout bug here.
+    form->addRow(m_errorLabel);
 
     // Missing %p / %c warning (filtering on that axis degrades).
     m_warnLabel = new QLabel(formatBox);
@@ -145,7 +152,7 @@ void FormatEditor::buildUi()
     m_warnLabel->setStyleSheet(
         QStringLiteral("color: %1;").arg(warningColor(palette()).name()));
     m_warnLabel->setVisible(false);
-    form->addRow(QString(), m_warnLabel);
+    form->addRow(m_warnLabel); // spanning, for the reason above
 
     // --- Encoding ----------------------------------------------------------
     auto *encRow = new QHBoxLayout;
@@ -340,6 +347,16 @@ void FormatEditor::refresh()
             m_warnLabel->setText(tr("Warning: %1").arg(warns.join(QStringLiteral("; "))));
             m_warnLabel->setVisible(true);
         }
+    } else if (pattern.isEmpty()) {
+        // AN EMPTY FIELD IS NOT AN ERROR. PatternCompiler is right to refuse it, but
+        // "Error at position 0: Pattern is empty" in red, about a field the user has not
+        // typed in yet, reports their not having started as a fault — and it is the state
+        // a fresh pattern node and an unconfigured defaults node both open in, so it was
+        // the first thing the dialog said in half the cases it opens in. The placeholder
+        // already says what belongs there, and the preview below says what the log looks
+        // like meanwhile.
+        m_errorLabel->setVisible(false);
+        m_warnLabel->setVisible(false);
     } else {
         const CompileError &e = compiled.error();
         const QString where = e.offset >= 0
