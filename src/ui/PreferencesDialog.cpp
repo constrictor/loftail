@@ -515,8 +515,12 @@ void PreferencesDialog::loadNode()
             haveProfile = false;
             break;
         }
-        m_nodeTitle->setText(tr("What this one log opens with. It outranks the pattern "
-                                "above it and the defaults."));
+        // No heading: "Concrete file" above the address already says which of the three
+        // levels this is, and a second bold line under the rule saying the same thing at
+        // greater length is the caption twice. The pattern and the defaults keep theirs,
+        // because "Matches" and "Default settings" name the node without saying what it
+        // then does for the logs it claims.
+        m_nodeTitle->clear();
         m_fileAddress->setText(logSourceDisplayPath(m_settings.files().at(i).path));
         profile = m_settings.files().at(i).profile;
         break;
@@ -530,6 +534,9 @@ void PreferencesDialog::loadNode()
 
     m_patternGroup->setVisible(isPattern);
     m_fileGroup->setVisible(ref.kind == NodeKind::File);
+    // A heading with no words is a blank line the width of the panel — its margins are
+    // still 14 px whatever the text says.
+    m_nodeTitle->setVisible(!m_nodeTitle->text().isEmpty());
     // Exactly when something identifies the node above it. The defaults and the virtual
     // "no matching pattern" row have no identity block, and a rule under nothing is a
     // line across the top of the panel separating it from its own edge.

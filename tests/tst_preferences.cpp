@@ -808,7 +808,10 @@ void TestPreferences::whatTheNodeIsSitsAboveTheHeadingWithARuleBetweenThem()
              qPrintable(QStringLiteral("the heading ends at %1, the settings start at %2")
                             .arg(bottom(title)).arg(top(editor))));
 
-    // A log's address is the same kind of thing and goes in the same place.
+    // A log's address is the same kind of thing and goes in the same place — under its
+    // own caption, which then does the heading's job: a log node has NO heading under the
+    // rule, because "Concrete file" over the address already says which level this is and
+    // a second bold line saying so at greater length is the caption twice.
     auto *address = dlg.findChild<QLabel *>(QStringLiteral("fileAddressLabel"));
     QVERIFY(address);
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
@@ -817,6 +820,10 @@ void TestPreferences::whatTheNodeIsSitsAboveTheHeadingWithARuleBetweenThem()
     QVERIFY2(bottom(address) <= top(rule),
              qPrintable(QStringLiteral("the address ends at %1, the rule starts at %2")
                             .arg(bottom(address)).arg(top(rule))));
+    QVERIFY2(!title->isVisible(), "a log node drew a heading as well as its caption");
+    QVERIFY2(bottom(rule) <= top(editor),
+             qPrintable(QStringLiteral("the rule ends at %1, the settings start at %2")
+                            .arg(bottom(rule)).arg(top(editor))));
 
     // And on a node with no identity block there is nothing to cut off: a rule under
     // nothing is a line across the top of the panel, separating it from its own edge.
