@@ -44,8 +44,21 @@ public:
     // (invariant #5). 0 if unavailable.
     virtual quint64 identity() const = 0;
 
-    // True if the file shrank below the last-indexed size since open — a
-    // copytruncate or truncation. Detection only; ingestion is M6.
+    // True when the bytes already handed out are NO LONGER THE BYTES IN THE FILE, so
+    // everything indexed from this source has to be thrown away and read again.
+    //
+    // Two ways in, and the second is the one that is easy to forget. The file shrank
+    // below the last-indexed size (a truncation, or logrotate's copytruncate); OR its
+    // already-read extent was REWRITTEN IN PLACE — `cp new.log app.log`, an editor
+    // saving over it, a service restarting onto the same path. A rewrite moves neither
+    // the inode nor, once the new content reaches the old length, the size, so it is
+    // invisible to wasReplaced() and to a shrink check alike; only the content gives it
+    // away (HeadWitness.h). Miss it and the tick reads the growth as an append, resumes
+    // indexing from the old tail offset, and the pre-rewrite records stay on screen for
+    // the rest of the session.
+    //
+    // Distinct from wasReplaced() only in what has to be re-resolved, not in what the
+    // caller does about it: both mean rescan, and LiveController treats them as one.
     virtual bool wasTruncated() const = 0;
 
     // True when the thing at this source's ORIGIN is no longer the thing we hold: a

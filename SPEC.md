@@ -62,6 +62,7 @@ The same string is what `loftail --version` prints, in one line — `loftail 0.1
 - **Follow** can then be turned off: scrolling up manually detaches, so the user can inspect history while the file keeps growing; a control returns to the bottom and re-attaches. Follow is simply on at every open.
 - Active filters and highlighters apply to incoming records exactly as they do to existing ones.
 - If the file is rotated or truncated by the writing application, loftail detects this and reloads rather than showing stale or corrupt data. This happens silently — no notice is shown.
+- **Rewriting a log in place counts as replacing it.** Copying another file over the open one, saving over it from an editor, or restarting a service onto the same path all reload, whether the new content is shorter, longer or exactly the same length as what it replaced. The rule the user can rely on is simply that what is on screen is what is in the file: anything that is not a plain append to the end reloads.
 - Because loftail always holds the file open for reading, it must never prevent the writing application from appending to, rotating, or truncating it. Observing a log must not disturb the process producing it.
 
 ### Logs that are not there

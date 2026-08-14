@@ -38,6 +38,11 @@ std::unique_ptr<MappedLogSource> MappedLogSource::open(const QString &path)
         if (st.st_size != 0)
             return nullptr;
     }
+    // The baseline for the rewrite check. Taken here rather than lazily on the first
+    // refresh, because a rewrite that lands between the open and the first watch tick is
+    // exactly as invisible as any other (HeadWitness.h). An empty log takes nothing and
+    // says so — its first bytes, whenever they arrive, are an append.
+    src->m_head.take(src->bytes(0, HeadWitness::kBytes));
     return src;
 }
 
@@ -81,13 +86,30 @@ qint64 MappedLogSource::refreshSize()
     const quint64 id = (static_cast<quint64>(st.st_dev) << 32) ^ static_cast<quint64>(st.st_ino);
 
     // Shrink or identity change => the file was rotated/truncated (invariant #5,
-    // §6). Flag it; actual rescan/ingestion is M6. Re-map to the new (smaller or
-    // larger) extent so no read can run past the live EOF (SIGBUS guard).
+    // §6). Re-map to the new (smaller or larger) extent so no read can run past the
+    // live EOF (SIGBUS guard).
     if (current < m_mappedSize || id != m_identity)
         m_truncated = true;
 
     if (current != m_mappedSize)
         remap(current);
+
+    // The third way the bytes we indexed can stop being the bytes in the file, and the
+    // only one with nothing in the stat to give it away: the file was rewritten in place
+    // and is now the same size or bigger. Neither the inode nor the size moved, so
+    // without this the growth reads as an append and the pre-rewrite records stay on
+    // screen for ever (HeadWitness.h). Cheap enough for every tick — the prefix is
+    // already mapped, so this is a memcmp of at most a kilobyte.
+    //
+    // AFTER the remap, never before: on a file that grew, the mapping in hand still ends
+    // at the old extent, and on one that shrank it would run past the live EOF.
+    if (!m_truncated) {
+        const QByteArrayView head = bytes(0, HeadWitness::kBytes);
+        if (m_head.contradicts(head))
+            m_truncated = true;
+        else if (m_head.wantsMore())
+            m_head.take(head); // a log shorter than kBytes when it opened has grown
+    }
     return m_mappedSize;
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "HeadWitness.h"
 #include "LogSource.h"
 
 namespace loftail {
@@ -12,7 +13,9 @@ namespace loftail {
 // Append-safe (invariant #5): the file is opened read-only and NON-BLOCKING for
 // the writer — a shared mmap never prevents the logging process from appending,
 // renaming, or unlinking. Truncation (copytruncate) is caught by refreshSize()'s
-// shrink check so a read past the new EOF cannot SIGBUS.
+// shrink check so a read past the new EOF cannot SIGBUS, and a rewrite in place that
+// does NOT shrink is caught by the head witness beside it (HeadWitness.h) — the one
+// change that moves neither the inode nor the size below what we indexed.
 class MappedLogSource final : public LogSource
 {
 public:
@@ -41,6 +44,7 @@ private:
     QString  m_path;            // re-stat'd by wasReplaced(); the fd follows the inode
     quint64  m_identity = 0;    // dev<<32 ^ inode, for rotation detection
     bool     m_truncated = false;
+    HeadWitness m_head;         // the file's first bytes, to catch a rewrite in place
 };
 
 } // namespace loftail

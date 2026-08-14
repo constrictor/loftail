@@ -1,5 +1,6 @@
 #pragma once
 
+#include "HeadWitness.h"
 #include "LogSource.h"
 
 #include <QByteArray>
@@ -36,6 +37,7 @@ public:
 private:
     BufferedLogSource() = default;
     quint64 computeIdentity() const;
+    QByteArray readHead();
 
     QFile      m_file;
     qint64     m_size = 0;
@@ -46,6 +48,11 @@ private:
     // cannot answer "was this file replaced".
     quint64    m_pathIdentity = 0;
     bool       m_truncated = false;
+    // The file's first bytes, to catch a rewrite in place (HeadWitness.h). It carries
+    // more weight here than in the mapped source: on Windows pathIdentity() is still a
+    // stub, so wasReplaced() is always false there and this is the only thing that can
+    // tell a rotation apart from an append at all.
+    HeadWitness m_head;
     QByteArray m_buffer;      // backs the QByteArrayView returned by bytes()
 };
 
