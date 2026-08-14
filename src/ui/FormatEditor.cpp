@@ -8,8 +8,10 @@
 #include "FormatPreview.h"
 #include "PatternCompiler.h"
 
+#include <QApplication>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QEvent>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -194,9 +196,45 @@ void FormatEditor::buildUi()
     m_previewTable->verticalHeader()->setVisible(false);
     outer->addWidget(m_previewTable, 1);
 
+    // Centred ON the empty grid, not above or below it: it is the caption the blank
+    // area would otherwise be missing. A child of the viewport rather than of the table
+    // itself, so the column header stays clear of it, and its geometry is the viewport's
+    // whole rect — Qt::AlignCenter then does the centring at every width.
+    m_previewEmpty = new QLabel(m_previewTable->viewport());
+    m_previewEmpty->setObjectName(QStringLiteral("formatPreviewEmptyLabel")); // findChild, for tests
+    m_previewEmpty->setAlignment(Qt::AlignCenter);
+    m_previewEmpty->setWordWrap(true);
+    // The UI font, explicitly: a child of the viewport inherits the table's fixed-pitch
+    // one, and prose in the font the sample lines are rendered in reads as a sample line
+    // — which is the one thing an empty preview must not appear to contain. The fields
+    // are re-set rather than the font merely assigned, because a QFont carries a resolve
+    // mask of what was asked for and setFont() propagates the parent's font over
+    // everything not in it: setFont(font()) is a no-op here, since font() hands back an
+    // effective font with nothing marked as set.
+    QFont uiFont = QApplication::font();
+    uiFont.setFamily(uiFont.family());
+    uiFont.setStyleHint(QFont::System);
+    uiFont.setFixedPitch(false);
+    m_previewEmpty->setFont(uiFont);
+    // The viewport paints under it, so it must not eat the wheel or a click on the grid.
+    m_previewEmpty->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_previewEmpty->setStyleSheet(
+        QStringLiteral("color: %1;").arg(mutedColor(palette()).name()));
+    m_previewEmpty->hide();
+    m_previewTable->viewport()->installEventFilter(this);
+
     m_matchLabel = new QLabel(this);
     m_matchLabel->setObjectName(QStringLiteral("formatMatchLabel")); // findChild, for tests
     outer->addWidget(m_matchLabel);
+}
+
+bool FormatEditor::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_previewEmpty && watched == m_previewTable->viewport()
+        && event->type() == QEvent::Resize) {
+        m_previewEmpty->setGeometry(m_previewTable->viewport()->rect());
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void FormatEditor::setSample(const QByteArray &sample)
@@ -343,9 +381,21 @@ void FormatEditor::refresh()
     m_previewTable->resizeColumnsToContents();
     m_previewTable->resizeRowsToContents();
 
-    if (pv.totalCount == 0)
-        m_matchLabel->setText(tr("No sample lines to preview."));
-    else
+    // The empty case is announced ON the grid and the match count under it, and the two
+    // never show at once. Both were m_matchLabel's, which put "No sample lines to
+    // preview." at the far end of a full-height empty table — after the reader has
+    // already met the blank grid and worked out for themselves that something is wrong.
+    const bool empty = pv.totalCount == 0;
+    m_previewEmpty->setText(empty ? tr("No sample lines to preview.") : QString());
+    // The geometry is set here as well as from the resize, because a viewport that has
+    // not been resized since construction has never sent one — which is exactly the
+    // state the dialog opens in when there is no log open to sample.
+    m_previewEmpty->setGeometry(m_previewTable->viewport()->rect());
+    m_previewEmpty->setVisible(empty);
+    if (empty)
+        m_previewEmpty->raise();
+    m_matchLabel->setVisible(!empty);
+    if (!empty)
         m_matchLabel->setText(tr("%1 of %2 sample records matched the pattern.")
                                   .arg(pv.matchedCount)
                                   .arg(pv.totalCount));
@@ -360,10 +410,15 @@ void FormatEditor::detect()
     const Decoder decoder = Decoder::detect(m_sample, currentEncoding());
     const DetectionResult r =
         FormatDetector::detect(QByteArrayView(m_sample.constData(), m_sample.size()), decoder);
-    if (r.detected)
+    if (r.detected) {
         m_patternEdit->setText(r.pattern);
-    else
+    } else {
+        // Shown explicitly: a sample with bytes but no records leaves the match label
+        // hidden (refresh() gives the empty case to the label above the table), and this
+        // is the one message that is about the button press rather than about the rows.
         m_matchLabel->setText(tr("No log format could be detected — enter the pattern manually."));
+        m_matchLabel->setVisible(true);
+    }
 }
 
 } // namespace loftail

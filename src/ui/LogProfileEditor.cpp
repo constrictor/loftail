@@ -58,7 +58,11 @@ LogProfileEditor::LogProfileEditor(QWidget *parent)
     m_runStart = new QLineEdit(runBox);
     m_runStart->setObjectName(QStringLiteral("profileRunStartPattern")); // findChild, for tests
     m_runStart->setPlaceholderText(tr("Leave empty for no run splitting"));
-    runForm->addRow(tr("Run starts at:"), m_runStart);
+    // Not "starts at" (which reads as an offset or a time, with no object) and not
+    // "starts with": the pattern is matched against the WHOLE line, anywhere in it, so
+    // the line that begins a run typically starts with a timestamp instead. The line is
+    // the thing that matches, and saying so is what the Runs pane says at length.
+    runForm->addRow(tr("New run at lines matching:"), m_runStart);
 
     auto *flags = new QHBoxLayout;
     m_runRegex = new QCheckBox(tr("Regular expression"), runBox);
