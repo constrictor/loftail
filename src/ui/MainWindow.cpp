@@ -485,6 +485,21 @@ void MainWindow::buildMenus()
             v->followTail();
     });
 
+    // Re-read the log from the beginning (SPEC.md §3 "Reloading by hand"). Everything
+    // else about following a log is automatic and deliberately has no control — there is
+    // no tail mode to turn on and no rotation notice to acknowledge — so this is not a
+    // setting either: it is the one gesture for the case where what is on screen has
+    // stopped agreeing with the file and the user should not have to work out why.
+    //
+    // F5 rather than Ctrl+R: QKeySequence::Refresh IS F5 on every platform loftail
+    // targets, and it is what a person reaches for without being told.
+    viewMenu->addSeparator();
+    m_reloadAction = viewMenu->addAction(tr("&Reload"));
+    m_reloadAction->setObjectName(QStringLiteral("reloadAction")); // findChild, for tests
+    m_reloadAction->setShortcut(QKeySequence::Refresh);
+    m_reloadAction->setEnabled(false);
+    connect(m_reloadAction, &QAction::triggered, this, &MainWindow::reloadActiveDocument);
+
     // The one way back to an unfiltered view that does not mean visiting five axes by
     // hand. On the menu as well as on the pane's own header because the pane can be
     // closed outright (View ▸ Panes), and a filter left in force with no pane to
@@ -523,6 +538,7 @@ void MainWindow::buildMenus()
     // the application would not tell you. AboutRole moves it into the application menu
     // on macOS, exactly as PreferencesRole does for Preferences above.
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
+
     // Where loftail's own log lives (SPEC.md §3 "Diagnostics", DiagnosticLog.h). The file
     // is written whether or not anybody ever opens this, which is the point of it — but a
     // diagnostic log nobody can find is one nobody attaches to a bug report, and it lands
@@ -821,6 +837,11 @@ void MainWindow::updateActionStates()
         m_reconnectAction->setEnabled(
             hasFile && dynamic_cast<SpooledLogSource *>(ctx->doc->source()) != nullptr);
     }
+    // Enabled for a WAITING document too: there it means "try now" rather than
+    // "re-read", which is exactly what somebody staring at a tab that says a log has not
+    // turned up wants the key to do.
+    if (m_reloadAction)
+        m_reloadAction->setEnabled(hasFile);
     if (m_closeTabAction)
         m_closeTabAction->setEnabled(hasFile);
     if (m_closeAllAction)
@@ -1293,7 +1314,15 @@ void MainWindow::buildContext(DocumentContext *ctx)
                      ctx->settings.runStartCaseSensitive ? Qt::CaseSensitive
                                                          : Qt::CaseInsensitive);
 
-    ctx->controller = new IndexController(doc, ctx->model);
+    buildIndexController(ctx);
+}
+
+// The scanning half of buildContext(), on its own because a RELOAD rebuilds exactly this
+// and nothing else: the model and the digest model are what the live views hold, so they
+// must survive, while the controller is destroyed by stopWorkers() and has to come back.
+void MainWindow::buildIndexController(DocumentContext *ctx)
+{
+    ctx->controller = new IndexController(ctx->doc.get(), ctx->model);
     connect(ctx->controller, &IndexController::progress, this,
             [this, ctx](qint64 done, qint64 total) { onIndexProgress(ctx, done, total); });
     connect(ctx->controller, &IndexController::finished, this,
@@ -1410,8 +1439,11 @@ void MainWindow::showPreferences()
     m_logSettings = dlg.tree();
     m_settingsStore.save(m_logSettings);
 
-    // LAST, because applying reindexes the log and destroys the context and Document
-    // this function has been holding. Nothing may follow it.
+    // LAST, because applying re-reads the log: it stops this document's workers, empties
+    // its index and starts a fresh scan. The context and the Document itself now SURVIVE
+    // that — a format change rebuilds them in place rather than replacing them (§6.6) —
+    // but everything this function has read about them is stale afterwards, so nothing
+    // that depends on the old format may follow.
     if (dlg.applyRequested())
         applyProfileToActive(dlg.applyProfile());
 }
@@ -1432,7 +1464,8 @@ void MainWindow::applyProfileToActive(const LogProfile &p)
     for (DocumentView *v : std::as_const(ctx->views))
         v->logView()->setWrapMode(p.wrapMode);
 
-    // TERMINAL: `ctx` and `doc` may be gone when this returns.
+    // The format last: a pattern or encoding change re-reads the log in place from here
+    // (§6.6), which is what makes this the one entry point Preferences has.
     applySettings(p.format);
 }
 
@@ -1477,8 +1510,6 @@ void MainWindow::applySettings(const FormatSettings &newSettings)
         return;
     Document *doc = ctx->doc.get();
 
-    // Copy the path: a rescan tears the Document down, so `doc` and `ctx` must not
-    // be read after openWithSettings() runs.
     const QString path = doc->path();
     const FormatSettings old = ctx->settings;
     const bool patternChanged  = newSettings.pattern != old.pattern;
@@ -1496,9 +1527,35 @@ void MainWindow::applySettings(const FormatSettings &newSettings)
     persistFormat(path, newSettings);
 
     // Pattern or encoding change alters record boundaries and byte offsets (§6.1,
-    // invariant #3), so the index is invalid — full rescan.
+    // invariant #3), so the index is invalid — read the file again through the new
+    // format, IN PLACE.
+    //
+    // This used to call openWithSettings(), and had done nothing at all since M9. That
+    // function begins "reopening a file already open just raises its view" — which is
+    // right for an open and fatal here, because the file being reformatted is by
+    // definition already open: the freshly prepared Document was discarded and the
+    // existing tab merely raised. Before tabs (commit f197c0d) the same line read
+    // teardownDocument(), which is what had made a format change reindex. So Preferences
+    // ▸ Apply to current file, the timestamp header menu and the deferred format prompt
+    // all silently did nothing for four milestones. It goes through the rebuild path now,
+    // which keeps the tab, the views, the filters and the highlight rules rather than
+    // replacing the document — the thing openWithSettings() could never have done.
     if (patternChanged || encodingChanged) {
-        openWithSettings(path, newSettings, /*promptIfNoMatch=*/false);
+        // A WAITING document has no bytes to re-read and must not have its workers torn
+        // down (§6.5). It settles its format on the resume instead — but only if it is
+        // asked to: a log that vanished AFTER it had been read is still "settled", so
+        // without this it would come back wearing the format it had when it disappeared.
+        if (doc->isWaiting()) {
+            doc->unsettleFormat();
+            diagLog("app", QStringLiteral("format changed while waiting for %1 — it will "
+                                          "settle when the log arrives").arg(path));
+            updateStatus();
+            return;
+        }
+        diagLog("app", QStringLiteral("format changed for %1 — re-reading (%2)")
+                           .arg(path, QString::fromLatin1(patternChanged ? "pattern"
+                                                                         : "encoding")));
+        rebuildDocument(ctx, KeepFormat::No);
         return;
     }
 
@@ -1673,11 +1730,20 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
         return; // a cancelled scan is not watched — the user chose to stop reading it
     }
 
-    // Activate the always-watched model (SPEC.md §3, M6): from here the file
-    // auto-updates as it grows. The initial scan captured the size at open, so the
-    // controller's first check catches up anything appended while it ran.
+    startWatching(ctx);
+}
+
+// Activate the always-watched model (SPEC.md §3, M6): from here the file auto-updates as
+// it grows. The scan that just finished captured the size at open, so the controller's
+// first check catches up anything appended while it ran.
+//
+// Its own function because a RELOAD has to re-arm it too — stopWorkers() destroys the
+// live controller along with the index worker, and a log that came back without its watch
+// would look identical to one that is being watched right up until it next grew.
+void MainWindow::startWatching(DocumentContext *ctx)
+{
     {
-        ctx->live = new LiveController(doc, ctx->model);
+        ctx->live = new LiveController(ctx->doc.get(), ctx->model);
         // So the digest's wholesale ordinal remap is bracketed by a model reset before
         // the mutation rather than after it (M19).
         ctx->live->setDigestModel(ctx->digestModel);
@@ -1754,6 +1820,120 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
 // This lives here rather than in LiveController because the PATTERN lives here: core
 // holds a compiled LogFormat and never a pattern string (invariant #3), so only the
 // window can build the provider that resume() needs.
+void MainWindow::reloadActiveDocument()
+{
+    DocumentContext *ctx = activeContext();
+    if (!ctx || !ctx->doc)
+        return;
+
+    // A log that is not there yet has nothing to re-read, and tearing its workers down
+    // would stop the one thing that is making progress — the watch tick that brings it
+    // back (§6.5). So a reload of a WAITING document means "try now" instead: poke a
+    // spooled one's fetcher, and for a local one simply leave the tick alone, since it
+    // is already retrying within 750 ms of the key being pressed.
+    if (ctx->doc->isWaiting()) {
+        diagLog("app", QStringLiteral("reload of %1 while waiting — poking instead")
+                           .arg(ctx->doc->path()));
+        if (auto *spooled = dynamic_cast<SpooledLogSource *>(ctx->doc->source())) {
+            if (const auto &spool = spooled->spool())
+                spool->poke();
+        }
+        return;
+    }
+
+    diagLog("app", QStringLiteral("reload requested: %1 (records=%2)")
+                       .arg(ctx->doc->path()).arg(ctx->doc->index().records.size()));
+    rebuildDocument(ctx, KeepFormat::Yes);
+}
+
+// THE one way an open document is rebuilt in place, and both callers matter:
+//
+//   KeepFormat::Yes — View ▸ Reload (F5). Re-read the same bytes with the same compiled
+//                     format (invariant #3).
+//   KeepFormat::No  — the conversion pattern or the encoding changed, so every record
+//                     boundary and byte offset in the index is wrong and the file has to
+//                     be read again through a new format (§6.1).
+//
+// One function because the two differ in exactly one call and in nothing else, and the
+// half they share is the half that is easy to get wrong: stopping the workers in the
+// right order, bracketing the wholesale row replacement, re-arming the watch on BOTH
+// outcomes, and handing the scan to the worker thread so a large log does not freeze the
+// window. Two functions that promised to agree is how one of them quietly stops entering
+// the waiting state when the log has gone.
+void MainWindow::rebuildDocument(DocumentContext *ctx, KeepFormat keep)
+{
+    Document *doc = ctx->doc.get();
+
+    // Both workers first, and in that order (stopWorkers): the live watcher would
+    // otherwise tick into a document whose source is being replaced, and a scan in flight
+    // would go on appending batches into the index this is about to empty.
+    ctx->stopWorkers();
+
+    // The visible set is replaced wholesale, which is the same signal — and the same
+    // bracket — a rotation uses (LiveController::doRescan). The digest goes with it,
+    // because every ordinal it holds names a record that is about to stop existing.
+    ctx->model->beginFilterReset();
+    if (ctx->digestModel)
+        ctx->digestModel->beginFilterReset();
+    bool ok = false;
+    if (keep == KeepFormat::Yes) {
+        ok = doc->reopen();
+    } else {
+        ManualFormatProvider provider(ctx->settings.pattern);
+        ok = doc->reformat(provider, ctx->settings.encoding,
+                           ctx->settings.sourceZone.toZone());
+        if (ok)
+            doc->setTimeDisplay(ctx->settings.timeDisplay);
+    }
+    if (ctx->digestModel)
+        ctx->digestModel->endFilterReset();
+    ctx->model->endFilterReset();
+
+    if (!ok) {
+        // The log went away between the gesture and the reopen. reopen()/reformat() have
+        // already put the document into the waiting state where that is what happened, so
+        // the watch below is what brings it back — which is why the live controller is
+        // rebuilt on this path too, rather than only on the successful one.
+        for (DocumentView *v : std::as_const(ctx->views))
+            v->logView()->setPlaceholderText(doc->waitReason());
+        if (!doc->isWaiting())
+            ctx->formatNotice = tr("could not re-read this log — %1").arg(doc->lastError());
+        startWatching(ctx);
+        updateTabTitles(ctx);
+        updateStatus();
+        return;
+    }
+
+    ctx->formatNotice.clear();
+
+    // A NEW format means new answers to questions the panes asked when they bound: which
+    // axes this log can even offer (a pattern with no %t has no Thread axis, one with no
+    // %d has no Time range), and what the timestamp editors are written in. Nothing else
+    // would ask them again — the Document pointer has not changed, so activeDocumentChanged
+    // does not fire on its own — and a pane left holding the old answers offers an axis
+    // the format cannot fill.
+    //
+    // Through stash/hydrate, exactly as a tab switch does, so the user's own filter state
+    // survives the rebind: setDocument() clears the pane's discovered-value bookkeeping by
+    // design, and restoreState() is what puts the choices back.
+    if (keep == KeepFormat::No && ctx == activeContext()) {
+        stashPaneState(ctx);
+        emit activeDocumentChanged(doc);
+        hydratePanes(ctx);
+    }
+
+    // Re-scanned on a worker thread, exactly as an ordinary open is, so a rebuild of a
+    // very large log shows a progress bar rather than freezing the window. Everything that
+    // has to happen afterwards — runs re-detected, filters re-applied, highlights
+    // re-resolved against the rebuilt intern tables, the digest rebuilt, the views sent to
+    // the end, and the live watch re-armed — is onIndexFinished()'s job already, and is
+    // reached here by the same signal an open reaches it by.
+    buildIndexController(ctx);
+    updateTabTitles(ctx);
+    updateStatus();
+    ctx->controller->start();
+}
+
 void MainWindow::resumeWaitingDocument(DocumentContext *ctx)
 {
     Document *doc = ctx->doc.get();

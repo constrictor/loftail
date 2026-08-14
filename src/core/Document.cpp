@@ -318,19 +318,28 @@ bool Document::open(const QString &path,
     return open(path, provider, requestedEncoding, sourceZone);
 }
 
-bool Document::rescan()
+bool Document::reopen()
 {
-    // Rotation/truncation (M6, SPEC.md §3): the bytes we indexed are gone or moved,
-    // so drop the index and read the file at m_path again from the top — a single
-    // forward pass (invariant #9), same format/decoder/zone (invariant #3). The
+    // Rotation/truncation (M6, SPEC.md §3), and a reload the user asked for (§3
+    // "Reloading by hand"): the bytes we indexed are gone or moved, so drop the index and
+    // reopen the file at m_path — same format/decoder/zone (invariant #3). The
     // FilteredIndex is bound to &m_index (a stable member), so reassigning the
     // index's contents keeps that binding valid; we only clear its active subset.
+    //
+    // SPLIT FROM rescan() so the two callers can differ about WHO does the scanning and
+    // about nothing else. A rotation scans inline, because it happens on a watch tick
+    // with nobody waiting for it; a reload hands the scan to the IndexController, because
+    // the user pressed a key and a multi-gigabyte log must not freeze the window while it
+    // is re-read. Both must reopen identically, which is why this is one function and not
+    // two that promise to agree.
     m_filtered.clear();
     clearDigest();
     invalidateTimeBaselines(); // every record is about to be replaced
-    // Reuse: this runs from the live watch tick, on the GUI thread, so a rotation must
-    // not become a reconnect here. A remote file's spool is shared and already live,
-    // which makes this a pointer swap rather than any network work at all (§6.3).
+    // Reuse, not Interactive: the rotation caller runs from the live watch tick on the
+    // GUI thread, so a rotation must not become a reconnect there. A remote file's spool
+    // is shared and already live, which makes this a pointer swap rather than any network
+    // work at all (§6.3) — which is also why a reload re-reads what has been FETCHED and
+    // is not a way to make the far end be asked again. File ▸ Reconnect is that.
     QString openError;
     m_source = openLogSource(m_path, OpenPolicy::Reuse, &openError);
     if (!m_source) {
@@ -347,6 +356,80 @@ bool Document::rescan()
                                           : openError;
         return false;
     }
+
+    // Emptied, not merely stale. rescan() below replaces the whole index in one
+    // assignment and would not care, but the asynchronous caller APPENDS batches into
+    // this very object — so leaving the old records here would have a reload produce one
+    // copy of the log after another, growing by a whole file each time.
+    clearIndex();
+    return true;
+}
+
+bool Document::reformat(IFormatProvider &provider,
+                        Encoding requestedEncoding,
+                        const QTimeZone &sourceZone)
+{
+    // reopen() with a NEW format: the pattern or the encoding changed, so every record
+    // boundary and every byte offset the index holds is wrong (invariant #3, §6.1) and
+    // the file has to be read again from the top.
+    //
+    // Deliberately NOT prepare(). That one is for a document that does not exist yet: it
+    // resets the run-start matcher, opens Interactive (which for a remote path with no
+    // live spool would CONNECT, from a settings dialog), and on an outright failure
+    // clears m_path — "an open that failed outright leaves no document behind", which is
+    // exactly right for an open and exactly wrong here, where the document is on screen in
+    // a tab that must not be left pathless. This is the resume()-shaped sibling: it keeps
+    // the document, keeps its path, and treats a log that has gone as a WAIT.
+    m_requestedEncoding = requestedEncoding;
+    m_sourceZonePinned = sourceZone.isValid();
+    m_formatSettled = false;
+    m_formatError = CompileError{};
+    m_format = LogFormat(); // empty == plain text until the provider succeeds
+
+    // The run-START pattern is deliberately left alone. It is per-file state the user set
+    // (§3a) and is not part of what a format change is asking to change; runs are
+    // re-detected from the new record boundaries by the caller once the scan finishes.
+    // The run SELECTION does go, with the records it named — clearIndex() below.
+    m_filtered.clear();
+    clearDigest();
+    invalidateTimeBaselines();
+
+    QString openError;
+    if (!openAndSettleFormat(provider, OpenPolicy::Reuse, &openError)) {
+        if (!logSourceAvailable(m_path)) {
+            enterWaiting(waitingForText(m_path, WaitCause::Gone));
+            return false;
+        }
+        clearIndex();
+        m_lastError = openError.isEmpty() ? Tr::tr("Cannot reopen file: %1").arg(m_path)
+                                          : openError;
+        return false;
+    }
+
+    // The zone is inferred from the format's DATE SPECIFIER, so a new format can mean a
+    // new zone — a pattern that gained or lost a `%d{...}` with an offset in it changes
+    // the answer (§5.1). A zone the caller pinned is left exactly as it is, which is the
+    // same rule prepare() and resume() follow.
+    m_sourceZone = sourceZone.isValid() ? sourceZone : inferSourceZone(m_format);
+    recomputeDisplayZone();
+
+    // Emptied for reopen()'s reason: the caller scans on a worker thread that APPENDS
+    // into this index.
+    clearIndex();
+    return true;
+}
+
+void Document::unsettleFormat()
+{
+    m_formatSettled = false;
+    m_format = LogFormat();
+    m_formatError = CompileError{};
+}
+
+bool Document::rescan()
+{
+    if (!reopen())
+        return false;
 
     Indexer indexer(m_format, m_decoder, m_sourceZone);
     m_index = indexer.index(*m_source);

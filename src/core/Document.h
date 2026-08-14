@@ -431,6 +431,40 @@ public:
     // enters the waiting state instead of sitting on an error nobody reads (§6.5).
     bool rescan();
 
+    // rescan() WITHOUT the scan: reopens the source, empties the index, and stops. For
+    // the caller that wants to do the reading itself on a worker thread — the reload the
+    // user asks for by hand (SPEC.md §3), where the log may be large enough that scanning
+    // it inline would freeze the window. Everything else about it, including what happens
+    // when the log turns out not to be there, is exactly what rescan() does, because it
+    // IS what rescan() does; the two share this function rather than promising to agree.
+    //
+    // Leaves an EMPTY index behind on success, deliberately: the asynchronous caller
+    // appends into it (IndexController::onBatch), so anything left here would be one more
+    // copy of the log on every reload.
+    bool reopen();
+
+    // reopen() with a NEW format: the conversion pattern or the encoding changed, so every
+    // record boundary and every byte offset in the index is wrong (invariant #3, §6.1) and
+    // the file must be read again from the top. Re-settles the format, the encoding and —
+    // unless `sourceZone` pins one — the inferred source zone, then leaves the index EMPTY
+    // for the caller's worker to fill, exactly as reopen() does.
+    //
+    // Deliberately not prepare(), which is for a document that does not exist yet: that
+    // one resets the run-start matcher, opens Interactive (so a remote path with no live
+    // spool would connect, from a settings dialog), and on an outright failure clears the
+    // path — right for an open, wrong for a document already on screen in a tab. This is
+    // the resume()-shaped sibling: the document keeps its path, its filters, its highlight
+    // rules and its run-start pattern, and a log that has gone becomes a WAIT.
+    bool reformat(IFormatProvider &provider,
+                  Encoding requestedEncoding = Encoding::Auto,
+                  const QTimeZone &sourceZone = QTimeZone());
+
+    // Forget that the format was ever settled against real bytes, so the next resume()
+    // settles it again from whatever arrives. For the one caller that needs it: a format
+    // change made while the document is WAITING, which has no bytes to re-read now and
+    // would otherwise come back wearing the format it was carrying when the log vanished.
+    void unsettleFormat();
+
     // The zone inferred from a compiled format's date specifier (§5.1): UTC for a
     // %d pattern, the system zone otherwise. A hint the user may override.
     static QTimeZone inferSourceZone(const LogFormat &format);
