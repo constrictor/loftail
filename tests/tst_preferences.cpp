@@ -131,7 +131,7 @@ private slots:
     void whatTheNodeIsSitsAboveTheHeadingWithARuleBetweenThem();
     void bothCaptionsAreBoldAndCentred();
     void anEmptyPatternIsNotReportedAsAnErrorAndARealOneFitsItsRow();
-    void theDetectedEncodingIsReportedAgainstTheSample();
+    void theDetectedEncodingIsReportedOnlyForTheLogItRead();
     void theTwoPanesKeepAGapBetweenThem();
     void enterFinishesAFieldWithoutClosingTheDialog();
 };
@@ -568,22 +568,41 @@ void TestPreferences::theEmptyPreviewSaysSoOnTheTableAndTheMatchCountBelowIt()
                             .arg(tableBottom)));
 }
 
-// With bytes to look at it reports what it made of THEM, and says so: these settings may
-// belong to a pattern or to the defaults, which are about a class of logs, while the
-// sample is whichever log happens to be open.
-void TestPreferences::theDetectedEncodingIsReportedAgainstTheSample()
+// With bytes to look at it reports what it made of them — but ONLY under the node for
+// the log those bytes came from. A pattern node and the defaults are about a CLASS of
+// logs, so a reading taken from whichever file happens to be open is a fact about a
+// different file printed under this entry's heading, and nothing on screen tells the
+// reader that the encoding shown is not the one this entry will give the next log it
+// claims. Naming the sample in the words ("detected in the sample: UTF-8") was the
+// earlier attempt and did not go far enough.
+void TestPreferences::theDetectedEncodingIsReportedOnlyForTheLogItRead()
 {
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    QTreeWidget *tree = treeOf(dlg);
     auto *detected = dlg.findChild<QLabel *>(QStringLiteral("formatDetectedLabel"));
     auto *encoding = dlg.findChild<QComboBox *>(QStringLiteral("formatEncodingCombo"));
     QVERIFY(detected);
     QVERIFY(encoding);
 
+    // The defaults, and a pattern: both silent, however good the sample is.
+    QVERIFY2(detected->text().isEmpty(), "the defaults claimed a detection about one log");
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+    QVERIFY2(detected->text().isEmpty(), "a pattern claimed a detection about one log");
+
+    // The log the bytes came from — which is the one selectLog() names, the call both of
+    // MainWindow's entry points make.
+    dlg.selectLog(QStringLiteral("/var/log/app.log"), LogProfile{});
     QVERIFY(detected->text().contains(QStringLiteral("UTF-8")));
     QVERIFY2(detected->text().contains(QStringLiteral("sample")),
              "the label must name what it looked at, not just what it found");
 
-    // Nothing to report once the encoding is stated outright rather than guessed.
+    // Another concrete file is still somebody else's: the sample is not its bytes.
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("other.trace")));
+    QVERIFY2(detected->text().isEmpty(), "another log's node claimed this log's detection");
+
+    // And nothing to report once the encoding is stated outright rather than guessed.
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    QVERIFY(!detected->text().isEmpty());
     encoding->setCurrentIndex(encoding->findText(QStringLiteral("UTF-16 LE")));
     QVERIFY(detected->text().isEmpty());
 }

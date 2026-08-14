@@ -55,6 +55,12 @@ public:
     // The settings as currently entered.
     FormatSettings settings() const;
 
+    // Whether the sample being previewed IS this node's own log. Off by default, and
+    // deliberately the conservative default: what it gates is a claim about a specific
+    // file, and a caller that forgets to say loses a line rather than asserting something
+    // about somebody else's log.
+    void setSampleBelongsHere(bool own);
+
     // The caption above the preview table. The default names the sample generically;
     // a caller with a more specific claim to make about where the sample came from
     // (the active log, say) overrides it.
@@ -75,6 +81,7 @@ private:
     Encoding currentEncoding() const;
 
     QByteArray m_sample;
+    bool       m_sampleBelongsHere = false;
 
     QLineEdit    *m_patternEdit = nullptr;
     QPushButton  *m_detectButton = nullptr;

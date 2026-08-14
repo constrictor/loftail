@@ -275,6 +275,12 @@ void FormatEditor::setSample(const QByteArray &sample)
     refresh();
 }
 
+void FormatEditor::setSampleBelongsHere(bool own)
+{
+    m_sampleBelongsHere = own;
+    refresh();
+}
+
 void FormatEditor::setPreviewCaption(const QString &text)
 {
     m_previewCaption->setText(text);
@@ -381,7 +387,14 @@ void FormatEditor::refresh()
     // pattern or to the defaults, which are about a CLASS of logs, while the sample is
     // whichever log happens to be open — so the label has to name what it looked at, or
     // it reads as a property of the node.
-    m_detectedLabel->setText(enc == Encoding::Auto && !m_sample.isEmpty()
+    // …and only where the sample IS the node's log. Naming it ("in the sample") was the
+    // first attempt at this and does not go far enough: a pattern node and the defaults
+    // are about a CLASS of logs, so a detection made on whichever file happens to be open
+    // is a fact about a different file, printed under this entry's heading — and the
+    // reader has no way to tell that the encoding shown is not the one this entry will
+    // give the next log it claims. Only a concrete-file node naming the very log the
+    // sample came from can say it, and PreferencesDialog is what knows which that is.
+    m_detectedLabel->setText(m_sampleBelongsHere && enc == Encoding::Auto && !m_sample.isEmpty()
         ? tr("(detected in the sample: %1)").arg(encodingName(decoder.resolvedEncoding()))
         : QString());
 

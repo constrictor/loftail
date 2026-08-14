@@ -546,6 +546,12 @@ void PreferencesDialog::loadNode()
     // identity block at all, and a rule under nothing separates the panel from its edge.
     m_nodeDivider->setVisible(isPattern);
     m_editor->setVisible(haveProfile);
+    // Whether what auto-detect made of the sample is a fact about THIS entry's log. Only
+    // a concrete-file node naming the log the bytes came from can say so: a pattern node
+    // and the defaults are about a class of logs, so a reading taken from whichever file
+    // happens to be open is about a different file, printed under this entry's heading.
+    m_editor->setSampleBelongsHere(ref.kind == NodeKind::File && !m_sampleAddress.isEmpty()
+                                   && ref.key == m_sampleAddress);
     if (haveProfile)
         m_editor->setProfile(profile);
 
@@ -669,6 +675,7 @@ void PreferencesDialog::selectLog(const QString &address, const LogProfile &seed
         m_scratchAddress = key;
     }
     m_touchedFiles.insert(key);
+    m_sampleAddress = key;
     rebuildTree(NodeRef{NodeKind::File, key});
 }
 
