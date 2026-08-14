@@ -137,6 +137,9 @@ private:
     QCheckBox        *m_patternCase = nullptr;
     QCheckBox        *m_patternFullPath = nullptr;
     QLabel           *m_patternError = nullptr;
+    // The log node's identity block: a caption and the address under it. The GROUP is
+    // what is shown and hidden, exactly as the pattern's is.
+    QWidget          *m_fileGroup = nullptr;
     QLabel           *m_fileAddress = nullptr;
     // The rule between what the node IS (the Matches box, or a log's address) and what
     // it GIVES its logs. Shown only when there is something above it to cut off.
