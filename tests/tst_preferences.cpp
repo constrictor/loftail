@@ -120,6 +120,7 @@ private slots:
     void promotingIsOfferedOnlyWithAParentPattern();
     void promotingAPatternMovesItsSettingsIntoTheDefaults();
     void promotingMovesTheSettingsUpAndRemovesTheLogEntry();
+    void aLogEntryGoesWhenItsPatternCatchesUpWithIt();
     void aScratchNodeSayingNothingNewIsNotKept();
     void applyToCurrentIsReportedNeverApplied();
     void everyProfileFieldRoundTripsThroughTheEditor();
@@ -397,6 +398,60 @@ void TestPreferences::promotingMovesTheSettingsUpAndRemovesTheLogEntry()
              QStringLiteral("MINE"));
 }
 
+// A per-log entry lasts only as long as it says something its parent does not — and the
+// half setFileProfile() cannot see is the one where the PARENT moved. Nothing writes
+// those log nodes, so before this they sat under the pattern shadowing it for ever: the
+// pattern was editable and its logs no longer followed it.
+void TestPreferences::aLogEntryGoesWhenItsPatternCatchesUpWithIt()
+{
+    // Redundant on arrival: written before the pattern that now covers it. The STORE
+    // keeps such a node, because dropping it on load would be a change the user never
+    // made; here the user is looking at the tree, so it is shown gone.
+    LogSettingsTree loaded = populated();
+    LogProfile agrees;
+    agrees.format.pattern = QStringLiteral("PATTERN"); // exactly what *.log says
+    loaded.insertFileProfile(QStringLiteral("/var/log/agrees.log"), agrees);
+
+    PreferencesDialog opened(loaded, QStringLiteral("app.log"), sample());
+    QVERIFY2(!rowNamed(treeOf(opened), QStringLiteral("agrees.log")),
+             "a log entry saying what its pattern says was still listed");
+    QCOMPARE(opened.tree().indexOfFile(QStringLiteral("/var/log/agrees.log")), -1);
+    // And only that one: an entry that still differs is nobody's business but its own.
+    QVERIFY(rowNamed(treeOf(opened), QStringLiteral("app.log")));
+
+    // Taught mid-dialog, which is the gesture this is really about: give the pattern
+    // what the log's own entry said, and the entry goes as the tree is rebuilt.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    QTreeWidget *tree = treeOf(dlg);
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+    auto *format = dlg.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
+    auto *match = dlg.findChild<QLineEdit *>(QStringLiteral("patternMatchEdit"));
+    QVERIFY(format);
+    QVERIFY(match);
+    format->setText(QStringLiteral("MINE"));
+    emit match->editingFinished(); // any commit-and-rebuild gesture
+
+    QVERIFY2(!rowNamed(tree, QStringLiteral("app.log")),
+             "the log kept an entry saying exactly what its pattern now says");
+    QCOMPARE(dlg.tree().indexOfFile(QStringLiteral("/var/log/app.log")), -1);
+    // It opens on exactly what it opened on — through the pattern it now follows.
+    QCOMPARE(dlg.tree().resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+             QStringLiteral("MINE"));
+    // The log under no pattern still differs from the defaults, so it stays.
+    QVERIFY(rowNamed(tree, QStringLiteral("other.trace")));
+
+    // And on OK, for an edit that never provoked a rebuild: commitCurrent() writes the
+    // node, so the sweep has to run once more after it.
+    PreferencesDialog closed(populated(), QStringLiteral("app.log"), sample());
+    treeOf(closed)->setCurrentItem(rowNamed(treeOf(closed), QStringLiteral("*.log")));
+    closed.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"))
+        ->setText(QStringLiteral("MINE"));
+    closed.accept();
+    QCOMPARE(closed.tree().indexOfFile(QStringLiteral("/var/log/app.log")), -1);
+    QCOMPARE(closed.tree().resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+             QStringLiteral("MINE"));
+}
+
 void TestPreferences::aScratchNodeSayingNothingNewIsNotKept()
 {
     // selectLog() creates a node so there is something to select and edit. If the user
@@ -407,7 +462,13 @@ void TestPreferences::aScratchNodeSayingNothingNewIsNotKept()
 
     PreferencesDialog kept(base, QStringLiteral("fresh.log"), sample());
     kept.selectLog(QStringLiteral("/var/log/fresh.log"), inherited);
-    QVERIFY2(treeOf(kept)->currentItem(), "the scratch node was not selectable");
+    // The ROW, not merely a current item: the sweep every rebuild runs would otherwise
+    // eat this node the moment it was created — it says nothing new, which is exactly
+    // the state it is meant to be edited out of — and the selection would fall back to
+    // the root, which is a current item too.
+    QTreeWidgetItem *scratch = rowNamed(treeOf(kept), QStringLiteral("fresh.log"));
+    QVERIFY2(scratch, "the scratch node was pruned before it could be edited");
+    QCOMPARE(treeOf(kept)->currentItem(), scratch);
     kept.accept();
     QCOMPARE(kept.tree().indexOfFile(QStringLiteral("/var/log/fresh.log")), -1);
 

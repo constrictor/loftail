@@ -402,6 +402,18 @@ void PreferencesDialog::rebuildTree(const NodeRef &select)
     const bool wasUpdating = m_updating; // saved and RESTORED, never forced false
     m_updating = true;
 
+    // Every mutation of this tree ends here, which is what makes this the one place a
+    // log node can be re-tested against a parent it did not itself change. A pattern
+    // edited, added, reordered or deleted re-homes logs and changes what they inherit,
+    // and a log whose own entry now says exactly that has nothing left to say — so it
+    // goes, here, rather than sitting under the pattern shadowing it for ever.
+    //
+    // The SCRATCH node is the one exception: selectLog() creates it precisely so that a
+    // log with nothing of its own has a row to be edited in, and it is meant to say
+    // nothing new until the user makes it. accept() prunes without the exception, so it
+    // survives only as long as the dialog is open.
+    m_settings.pruneRedundantFiles(m_scratchAddress);
+
     m_treeWidget->clear();
 
     auto makeItem = [](QTreeWidgetItem *parent, const QString &text, const NodeRef &ref) {
@@ -599,10 +611,9 @@ void PreferencesDialog::commitCurrent()
         if (i < 0)
             return;
         m_settings.fileAt(i).profile = p;
-        // Re-tested against its parent on OK. Not here: a node vanishing from under the
-        // cursor mid-edit, because one field happens to match the pattern above, would
-        // be a rebuild nobody asked for.
-        m_touchedFiles.insert(m_loaded.key);
+        // Re-tested against its parent by the next rebuild, and by OK. Not here: a node
+        // vanishing from under the cursor mid-edit, because one field happens to match
+        // the pattern above, would be a rebuild nobody asked for.
         break;
     }
     case NodeKind::Orphan:
@@ -683,7 +694,6 @@ void PreferencesDialog::selectLog(const QString &address, const LogProfile &seed
         m_settings.insertFileProfile(key, seed);
         m_scratchAddress = key;
     }
-    m_touchedFiles.insert(key);
     m_sampleAddress = key;
     rebuildTree(NodeRef{NodeKind::File, key});
 }
@@ -736,7 +746,6 @@ void PreferencesDialog::deleteNode()
             m_settings.removePattern(i); // its logs re-home; nothing points at it
     } else if (ref.kind == NodeKind::File) {
         m_settings.removeFile(ref.key);
-        m_touchedFiles.remove(ref.key);
         if (m_scratchAddress == ref.key)
             m_scratchAddress.clear();
     } else {
@@ -791,7 +800,6 @@ void PreferencesDialog::promoteToParent()
     // The log now says exactly what the pattern says, so its own entry has nothing left
     // to say. setFileProfile is what notices that; it is not a special case here.
     m_settings.setFileProfile(ref.key, p);
-    m_touchedFiles.remove(ref.key);
     if (m_scratchAddress == ref.key)
         m_scratchAddress.clear();
 
@@ -827,7 +835,6 @@ void PreferencesDialog::forgetAllPerLogSettings()
 
     m_loadedValid = false;
     m_settings.clearFiles();
-    m_touchedFiles.clear();
     m_scratchAddress.clear();
     rebuildTree(NodeRef{});
 }
@@ -865,17 +872,12 @@ void PreferencesDialog::accept()
 {
     commitCurrent();
 
-    // Every per-log node the user touched — including the scratch one a mid-open
-    // invocation created — goes back through the prune rule, so an entry that ended up
-    // saying nothing its parent does not already say is not kept. Nodes nobody touched
-    // are left exactly as they were loaded.
-    if (!m_scratchAddress.isEmpty())
-        m_touchedFiles.insert(m_scratchAddress);
-    for (const QString &key : std::as_const(m_touchedFiles)) {
-        const int i = m_settings.indexOfFile(key);
-        if (i >= 0)
-            m_settings.setFileProfile(key, m_settings.files().at(i).profile);
-    }
+    // With NO exception this time, which is the only difference from the sweep every
+    // rebuild runs: the scratch node a mid-open invocation created is spared while the
+    // dialog is open so it can be edited, and is pruned here if the user left it saying
+    // nothing its parent does not already say. commitCurrent() above is why this runs at
+    // all — the node just written has not been through a rebuild since.
+    m_settings.pruneRedundantFiles();
 
     QDialog::accept();
 }

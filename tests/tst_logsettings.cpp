@@ -33,6 +33,7 @@ private slots:
     void aFileNodeOutranksItsPattern();
     void aProfileEqualToWhatItInheritsStoresNoFileNode();
     void bringingAFileBackIntoLineRemovesItsNode();
+    void aPatternTaughtWhatItsLogsSayLeavesThemNothingToSay();
     void deletingAPatternReHomesItsFiles();
     void theTreeRoundTripsThroughJson();
     void aLoadedFileNodeIsKeptEvenWhenItMatchesItsParent();
@@ -252,6 +253,63 @@ void TestLogSettings::bringingAFileBackIntoLineRemovesItsNode()
     QCOMPARE(t.files().size(), 0);
     QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
              QStringLiteral("MINE"));
+}
+
+// The half setFileProfile() cannot see. It re-tests the node it is WRITING; a node stops
+// saying anything of its own just as surely when the pattern above it is edited, and
+// nothing writes that node. Left behind, the entries shadow the pattern for ever — it is
+// still editable and they no longer follow it.
+void TestLogSettings::aPatternTaughtWhatItsLogsSayLeavesThemNothingToSay()
+{
+    LogSettingsTree t = treeWithRoot(QStringLiteral("ROOT"));
+    t.addPattern(wildcard(QStringLiteral("*.log"), QStringLiteral("PATTERN")));
+
+    LogProfile mine;
+    mine.format.pattern = QStringLiteral("MINE");
+    t.setFileProfile(QStringLiteral("/var/log/app.log"), mine);
+    t.setFileProfile(QStringLiteral("/var/log/other.log"), mine);
+
+    LogProfile theirs;
+    theirs.format.pattern = QStringLiteral("THEIRS");
+    t.setFileProfile(QStringLiteral("/var/log/third.log"), theirs);
+    QCOMPARE(t.files().size(), 3);
+
+    // The pattern now says what the first two said, and nothing wrote them.
+    t.patternAt(0).profile = mine;
+    QVERIFY(t.pruneRedundantFiles());
+    QCOMPARE(t.files().size(), 1);
+    QCOMPARE(t.indexOfFile(QStringLiteral("/var/log/app.log")), -1);
+    QCOMPARE(t.indexOfFile(QStringLiteral("/var/log/other.log")), -1);
+    // They still open on exactly what they opened on — through the pattern, which they
+    // now follow, rather than through a copy of it that has stopped tracking.
+    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+             QStringLiteral("MINE"));
+    // And the one that still differs is untouched.
+    QCOMPARE(t.resolve(QStringLiteral("/var/log/third.log")).profile.format.pattern,
+             QStringLiteral("THEIRS"));
+
+    // Nothing left to do, and it says so — the caller writes the file only when it did
+    // something, which is what keeps a resume of a remote log off the disk.
+    QVERIFY(!t.pruneRedundantFiles());
+
+    // The DEFAULTS are a parent too, for a log no pattern claims.
+    LogProfile root;
+    root.format.pattern = QStringLiteral("ROOT");
+    t.setFileProfile(QStringLiteral("/var/log/app.trace"), theirs);
+    t.setDefaults(theirs);
+    QVERIFY(t.pruneRedundantFiles());
+    QCOMPARE(t.indexOfFile(QStringLiteral("/var/log/app.trace")), -1);
+
+    // One address can be spared whatever it says: the scratch node Preferences creates
+    // so that a log with nothing of its own has a row to be edited in.
+    t.setDefaults(root);
+    // insertFileProfile, because `mine` is what the pattern already says: this is a node
+    // that exists in order to be edited, which is the whole reason it can be spared.
+    t.insertFileProfile(QStringLiteral("/var/log/scratch.log"), mine);
+    QVERIFY(!t.pruneRedundantFiles(QStringLiteral("/var/log/scratch.log")));
+    QVERIFY(t.indexOfFile(QStringLiteral("/var/log/scratch.log")) >= 0);
+    QVERIFY(t.pruneRedundantFiles());
+    QCOMPARE(t.indexOfFile(QStringLiteral("/var/log/scratch.log")), -1);
 }
 
 void TestLogSettings::deletingAPatternReHomesItsFiles()
