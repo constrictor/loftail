@@ -58,6 +58,9 @@ add_library(loftail_ui STATIC
     # editor, which sit inside a framed section already
     SectionBox.cpp
     SectionBox.h
+    # A wrapping message label that reports its own wrapped height, because a layout
+    # sizing a word-wrapped QLabel from its hint reserves a row the text does not fit in
+    MessageLabel.h
     # Chrome colours that must work on a light AND a dark theme: error red, caution
     # amber, muted secondary text, and the placeholder grey Qt's own role often lacks
     UiColors.cpp

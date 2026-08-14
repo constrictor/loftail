@@ -6,6 +6,7 @@
 #include "Fonts.h"
 #include "FormatDetector.h"
 #include "FormatPreview.h"
+#include "MessageLabel.h"
 #include "PatternCompiler.h"
 #include "SectionBox.h"
 
@@ -130,9 +131,12 @@ void FormatEditor::buildUi()
     connect(m_detectButton, &QPushButton::clicked, this, &FormatEditor::detect);
 
     // Inline compile error, pointing at the offending offset (CompileError::offset).
-    m_errorLabel = new QLabel(formatBox);
+    // A MessageLabel, not a QLabel: these two may wrap, and a wrapped QLabel is sized
+    // from a hint the row then cannot hold — measured here, the warning was given 25 px
+    // for text needing 34 at a 560 px dialog, and drew its second line over the row
+    // below. Spanning the form (below) gives it the width; this gives it the height.
+    m_errorLabel = new MessageLabel(formatBox);
     m_errorLabel->setObjectName(QStringLiteral("formatErrorLabel")); // findChild, for tests
-    m_errorLabel->setWordWrap(true);
     m_errorLabel->setStyleSheet(
         QStringLiteral("color: %1;").arg(errorColor(palette()).name()));
     m_errorLabel->setVisible(false);
@@ -146,9 +150,8 @@ void FormatEditor::buildUi()
     form->addRow(m_errorLabel);
 
     // Missing %p / %c warning (filtering on that axis degrades).
-    m_warnLabel = new QLabel(formatBox);
+    m_warnLabel = new MessageLabel(formatBox);
     m_warnLabel->setObjectName(QStringLiteral("formatWarnLabel")); // findChild, for tests
-    m_warnLabel->setWordWrap(true);
     m_warnLabel->setStyleSheet(
         QStringLiteral("color: %1;").arg(warningColor(palette()).name()));
     m_warnLabel->setVisible(false);
