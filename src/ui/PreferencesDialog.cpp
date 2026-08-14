@@ -2,7 +2,6 @@
 
 #include "LogProfileEditor.h"
 #include "RemoteLocation.h"
-#include "SectionBox.h"
 #include "UiColors.h"
 
 #include <QCheckBox>
@@ -14,6 +13,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QShowEvent>
@@ -41,12 +41,66 @@ constexpr int kPanelGap = 8;
 constexpr int kTitleTopGap = 10;
 constexpr int kTitleBottomGap = 4;
 
+// The air a node's identity/settings rule keeps on each side of itself.
+constexpr int kDividerGap = 6;
+
 // The four glyphs on the tree's toolbar. NOT translated, exactly as the Filters pane's
 // are not: the words live on setToolTip and setAccessibleName beside them.
 constexpr auto kAddGlyph = "+";
 constexpr auto kRemoveGlyph = "\xE2\x88\x92"; // U+2212 MINUS SIGN
 constexpr auto kUpGlyph = "\xE2\x86\x91";     // U+2191
 constexpr auto kDownGlyph = "\xE2\x86\x93";   // U+2193
+
+// The rule between what a node IS and what it gives its logs. PAINTED, not a
+// QFrame::HLine, for exactly the reason SectionBox paints its title hairline: a frame's
+// line colour belongs to the style, and a style sheet does not take it back. Measured on
+// this dialog with `color:` set in one — Fusion drew #acacac, the colour asked for, and
+// Breeze drew #e2e2e2, its own, because a style sheet hands the whole frame to
+// QStyleSheetStyle and it draws the border its way. The two kinds of line here are meant
+// to be one thing at two lengths, and that made them differ per desktop, in a direction
+// nobody chose.
+//
+// Painting also resolves the colour per paint, so it follows a theme switched mid-session
+// and dims with a disabled panel — the same two properties SectionBox's line has.
+class DividerLine : public QWidget
+{
+public:
+    explicit DividerLine(QWidget *parent) : QWidget(parent) {}
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setPen(
+            dividerColor(palette(), isEnabled() ? QPalette::Active : QPalette::Disabled));
+        const int y = height() / 2;
+        painter.drawLine(0, y, width(), y);
+    }
+};
+
+// A panel caption: centred, bold, and standing off whatever is above it. Both captions
+// in this dialog come from here, so "the same look" is one line of code rather than two
+// that agree today.
+//
+// Bold by setFont() and NOT by a style sheet, which is the opposite of what SectionBox
+// does for a group box's title — there a sheet is the only way in, since a QGroupBox's
+// font reaches every widget inside it and setFont() would bold the whole body. A QLabel
+// has no children to bold by accident. What makes the assignment stick is that setBold()
+// marks weight in the font's RESOLVE MASK: Qt propagates the parent's font over
+// everything a font does not claim, so a font handed back unmodified by font() is
+// ignored (the trap the preview's empty-state notice records).
+QLabel *makeCaption(QWidget *parent, const QString &name, const QString &text = QString())
+{
+    auto *label = new QLabel(text, parent);
+    label->setObjectName(name); // findChild, for tests
+    label->setWordWrap(true);
+    label->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+    QFont font = label->font();
+    font.setBold(true);
+    label->setFont(font);
+    label->setContentsMargins(0, kTitleTopGap, 0, kTitleBottomGap);
+    return label;
+}
 
 QToolButton *makeToolButton(QWidget *parent, const char *glyph, const QString &name,
                             const QString &words)
@@ -154,31 +208,29 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     auto *rightLayout = new QVBoxLayout(right);
     rightLayout->setContentsMargins(kPanelGap, 0, 0, 0);
 
-    // The one line that says what the selected node IS, so it reads as this panel's
-    // heading rather than as the first of its labels: centred, bold, and standing off
-    // the top edge. Flush against it and hard left it looked like a stray sentence that
-    // had lost its control.
-    //
-    // Bold by setFont() and not by a style sheet — the opposite of SectionBox, whose
-    // title bolds through one because a QGroupBox's font is inherited by every widget
-    // inside it. A QLabel has no children to bold by accident. The bit that matters is
-    // that setBold() marks weight in the font's RESOLVE MASK, which is what makes the
-    // assignment survive Qt propagating the parent's font over everything unset.
-    m_nodeTitle = new QLabel(right);
-    m_nodeTitle->setObjectName(QStringLiteral("nodeTitleLabel")); // findChild, for tests
-    m_nodeTitle->setWordWrap(true);
-    m_nodeTitle->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
-    QFont titleFont = m_nodeTitle->font();
-    titleFont.setBold(true);
-    m_nodeTitle->setFont(titleFont);
-    m_nodeTitle->setContentsMargins(0, kTitleTopGap, 0, kTitleBottomGap);
-    rightLayout->addWidget(m_nodeTitle);
+    // The line that says what the selected node IS, so it reads as this panel's heading
+    // rather than as the first of its labels. Flush to the top edge and hard left it
+    // looked like a stray sentence that had lost its control.
+    m_nodeTitle = makeCaption(right, QStringLiteral("nodeTitleLabel"));
 
-    m_patternGroup = new SectionBox(tr("Matches"), right);
+    // "Matches" is the OTHER caption, not another section. It says which logs a pattern
+    // claims, which is not one of the settings those logs open with — and dressed as a
+    // section (flat frame, title divider, exactly like File format and Display) that is
+    // precisely what it read as. So: a plain container, captioned the same way the node
+    // title is, from the same helper so the two cannot drift apart.
+    //
+    // SectionBox::setHeading() looked like the answer and is not: its `font-weight: bold`
+    // lives in a QGroupBox::title style-sheet rule, and neither Breeze nor Fusion draws
+    // the title bold from it — measured on a render, the caption came out at normal
+    // weight in both while the same sheet's `subcontrol-position: top center` was obeyed.
+    m_patternGroup = new QWidget(right);
     m_patternGroup->setObjectName(QStringLiteral("patternGroup")); // findChild, for tests
-    m_patternGroup->setFlat(true);
-    m_patternGroup->setTitleDivider(true);
-    auto *patternForm = new QFormLayout(m_patternGroup);
+    auto *patternBox = new QVBoxLayout(m_patternGroup);
+    patternBox->setContentsMargins(0, 0, 0, 0);
+    patternBox->addWidget(makeCaption(m_patternGroup, QStringLiteral("patternCaption"),
+                                      tr("Matches")));
+    auto *patternForm = new QFormLayout;
+    patternBox->addLayout(patternForm);
 
     m_patternMatch = new QLineEdit(m_patternGroup);
     m_patternMatch->setObjectName(QStringLiteral("patternMatchEdit")); // findChild, for tests
@@ -242,6 +294,28 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     m_fileAddress->setStyleSheet(
         QStringLiteral("color: %1;").arg(mutedColor(palette()).name()));
     rightLayout->addWidget(m_fileAddress);
+
+    // WHICH logs, then WHAT they get. The "Matches" box says which logs a pattern node
+    // claims, and it is not a setting those logs open with — sitting under the heading
+    // and above the format it read as the first of them, which is exactly what it is
+    // not. So it goes first, the heading introduces what follows it rather than what is
+    // above it, and a full-width rule marks where the identity of the node stops and its
+    // settings begin. The line is drawn only when there is something above it to cut off
+    // — the defaults have no identity block, and a rule against the panel's top edge
+    // separates nothing.
+    //
+    // The same hairline colour SectionBox paints its title divider in, so the two kinds
+    // of line in this panel are one thing at two lengths rather than two decisions.
+    m_nodeDivider = new DividerLine(right);
+    m_nodeDivider->setObjectName(QStringLiteral("nodeDividerLine")); // findChild, for tests
+    // The air around the rule is the WIDGET'S OWN HEIGHT, not a spacer item beside it: a
+    // QVBoxLayout spacer cannot be hidden, so it would hold the gap open above the
+    // heading on the one node that has no divider. The line is drawn down the middle of
+    // whatever height it is given, so the gap goes away exactly when the line does.
+    m_nodeDivider->setFixedHeight(kDividerGap * 2 + 1);
+    rightLayout->addWidget(m_nodeDivider);
+
+    rightLayout->addWidget(m_nodeTitle);
 
     m_editor = new LogProfileEditor(right);
     m_editor->setObjectName(QStringLiteral("profileEditor")); // findChild, for tests
@@ -427,6 +501,10 @@ void PreferencesDialog::loadNode()
 
     m_patternGroup->setVisible(isPattern);
     m_fileAddress->setVisible(ref.kind == NodeKind::File);
+    // Exactly when something identifies the node above it. The defaults and the virtual
+    // "no matching pattern" row have no identity block, and a rule under nothing is a
+    // line across the top of the panel separating it from its own edge.
+    m_nodeDivider->setVisible(isPattern || ref.kind == NodeKind::File);
     m_editor->setVisible(haveProfile);
     if (haveProfile)
         m_editor->setProfile(profile);

@@ -5,6 +5,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -127,6 +128,8 @@ private slots:
     void theMenuEntryHasAnAcceleratorOnEveryPlatform();
     void thePreviewKeepsTheFormatSectionsMargins();
     void aPatternRowIsQuotedAndALogRowIsNot();
+    void whatTheNodeIsSitsAboveTheHeadingWithARuleBetweenThem();
+    void bothCaptionsAreBoldAndCentred();
     void theDetectedEncodingIsReportedAgainstTheSample();
     void theTwoPanesKeepAGapBetweenThem();
     void enterFinishesAFieldWithoutClosingTheDialog();
@@ -762,6 +765,75 @@ void TestPreferences::aPatternRowIsQuotedAndALogRowIsNot()
     QVERIFY(fresh);
     QVERIFY2(!fresh->text(0).contains(QLatin1Char('"')),
              qPrintable(QStringLiteral("an empty pattern shows as %1").arg(fresh->text(0))));
+}
+
+void TestPreferences::whatTheNodeIsSitsAboveTheHeadingWithARuleBetweenThem()
+{
+    // "Matches" says which logs a pattern claims. It is NOT one of the settings those
+    // logs open with, and under the heading it read as the first of them. So the panel
+    // is identity, rule, then heading-and-settings — and the heading introduces what is
+    // below it. Asserted on the y order, which is the whole claim.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    QTreeWidget *tree = treeOf(dlg);
+    auto *group = dlg.findChild<QWidget *>(QStringLiteral("patternGroup"));
+    auto *title = dlg.findChild<QLabel *>(QStringLiteral("nodeTitleLabel"));
+    auto *rule = dlg.findChild<QWidget *>(QStringLiteral("nodeDividerLine"));
+    auto *editor = dlg.findChild<QWidget *>(QStringLiteral("profileEditor"));
+    QVERIFY(group);
+    QVERIFY(title);
+    QVERIFY(rule);
+    QVERIFY(editor);
+
+    dlg.show();
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+    QCoreApplication::processEvents();
+
+    auto top = [&dlg](QWidget *w) { return w->mapTo(&dlg, QPoint(0, 0)).y(); };
+    auto bottom = [&dlg](QWidget *w) { return w->mapTo(&dlg, QPoint(0, w->height())).y(); };
+
+    QVERIFY(rule->isVisible());
+    QVERIFY2(bottom(group) <= top(rule),
+             qPrintable(QStringLiteral("Matches ends at %1, the rule starts at %2")
+                            .arg(bottom(group)).arg(top(rule))));
+    QVERIFY2(bottom(rule) <= top(title),
+             qPrintable(QStringLiteral("the rule ends at %1, the heading starts at %2")
+                            .arg(bottom(rule)).arg(top(title))));
+    QVERIFY2(bottom(title) <= top(editor),
+             qPrintable(QStringLiteral("the heading ends at %1, the settings start at %2")
+                            .arg(bottom(title)).arg(top(editor))));
+
+    // A log's address is the same kind of thing and goes in the same place.
+    auto *address = dlg.findChild<QLabel *>(QStringLiteral("fileAddressLabel"));
+    QVERIFY(address);
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    QCoreApplication::processEvents();
+    QVERIFY(rule->isVisible());
+    QVERIFY2(bottom(address) <= top(rule),
+             qPrintable(QStringLiteral("the address ends at %1, the rule starts at %2")
+                            .arg(bottom(address)).arg(top(rule))));
+
+    // And on a node with no identity block there is nothing to cut off: a rule under
+    // nothing is a line across the top of the panel, separating it from its own edge.
+    tree->setCurrentItem(tree->topLevelItem(0)); // the defaults
+    QCoreApplication::processEvents();
+    QVERIFY2(!rule->isVisible(), "the defaults drew a rule with nothing above it");
+}
+
+void TestPreferences::bothCaptionsAreBoldAndCentred()
+{
+    // "Matches" was a SectionBox heading, whose bold lives in a QGroupBox::title style
+    // sheet — and neither Breeze nor Fusion draws the title bold from it, while obeying
+    // the same sheet's centring. The caption came out at normal weight on a render with
+    // every other test still green, which is exactly what this asserts instead.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    for (const QString &name : {QStringLiteral("nodeTitleLabel"),
+                                QStringLiteral("patternCaption")}) {
+        auto *caption = dlg.findChild<QLabel *>(name);
+        QVERIFY2(caption, qPrintable(name));
+        QVERIFY2(caption->font().bold(), qPrintable(name + QLatin1String(" is not bold")));
+        QVERIFY2(caption->alignment() & Qt::AlignHCenter,
+                 qPrintable(name + QLatin1String(" is not centred")));
+    }
 }
 
 int main(int argc, char *argv[])

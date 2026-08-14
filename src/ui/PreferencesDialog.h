@@ -21,7 +21,6 @@ QT_END_NAMESPACE
 namespace loftail {
 
 class LogProfileEditor;
-class SectionBox;
 
 // The Preferences dialog (SPEC.md §4): the whole settings tree on the left, the selected
 // node's settings on the right.
@@ -132,13 +131,16 @@ private:
     QToolButton      *m_moveDown = nullptr;
     QPushButton      *m_forgetFiles = nullptr;
     QLabel           *m_nodeTitle = nullptr;
-    SectionBox       *m_patternGroup = nullptr;
+    QWidget          *m_patternGroup = nullptr;
     QComboBox        *m_patternKind = nullptr;
     QLineEdit        *m_patternMatch = nullptr;
     QCheckBox        *m_patternCase = nullptr;
     QCheckBox        *m_patternFullPath = nullptr;
     QLabel           *m_patternError = nullptr;
     QLabel           *m_fileAddress = nullptr;
+    // The rule between what the node IS (the Matches box, or a log's address) and what
+    // it GIVES its logs. Shown only when there is something above it to cut off.
+    QWidget          *m_nodeDivider = nullptr;
     LogProfileEditor *m_editor = nullptr;
     QPushButton      *m_applyButton = nullptr;
     QPushButton      *m_promoteButton = nullptr;
