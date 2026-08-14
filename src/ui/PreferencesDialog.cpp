@@ -299,13 +299,30 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     connect(m_patternFullPath, &QCheckBox::toggled, this, recommit);
     rightLayout->addWidget(m_patternGroup);
 
-    m_fileAddress = new QLabel(right);
+    // A log node's identity block, built exactly as the pattern's is: the caption says
+    // what kind of node this is, and the one thing that identifies it — the address —
+    // sits directly under it. Loose at the panel's top edge the address was a path with
+    // nothing saying why it was there, and it had no gap above it either, which the
+    // caption's own margins now supply.
+    m_fileGroup = new QWidget(right);
+    m_fileGroup->setObjectName(QStringLiteral("fileGroup")); // findChild, for tests
+    auto *fileBox = new QVBoxLayout(m_fileGroup);
+    fileBox->setContentsMargins(0, 0, 0, 0);
+    fileBox->setSpacing(0); // "directly under it" — the caption's own bottom margin is the gap
+    fileBox->addWidget(makeCaption(m_fileGroup, QStringLiteral("fileCaption"),
+                                   tr("Concrete file")));
+
+    m_fileAddress = new QLabel(m_fileGroup);
     m_fileAddress->setObjectName(QStringLiteral("fileAddressLabel")); // findChild, for tests
     m_fileAddress->setWordWrap(true);
+    // Centred under the caption it belongs to, and still selectable: an address is the
+    // one thing here somebody copies out, to paste into a terminal or another window.
+    m_fileAddress->setAlignment(Qt::AlignHCenter);
     m_fileAddress->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_fileAddress->setStyleSheet(
         QStringLiteral("color: %1;").arg(mutedColor(palette()).name()));
-    rightLayout->addWidget(m_fileAddress);
+    fileBox->addWidget(m_fileAddress);
+    rightLayout->addWidget(m_fileGroup);
 
     // WHICH logs, then WHAT they get. The "Matches" box says which logs a pattern node
     // claims, and it is not a setting those logs open with — sitting under the heading
@@ -512,7 +529,7 @@ void PreferencesDialog::loadNode()
     }
 
     m_patternGroup->setVisible(isPattern);
-    m_fileAddress->setVisible(ref.kind == NodeKind::File);
+    m_fileGroup->setVisible(ref.kind == NodeKind::File);
     // Exactly when something identifies the node above it. The defaults and the virtual
     // "no matching pattern" row have no identity block, and a rule under nothing is a
     // line across the top of the panel separating it from its own edge.

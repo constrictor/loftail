@@ -189,7 +189,10 @@ void TestPreferences::thePatternEditorIsShownOnlyForAPattern()
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
     QTreeWidget *tree = treeOf(dlg);
     auto *group = dlg.findChild<QWidget *>(QStringLiteral("patternGroup"));
-    auto *address = dlg.findChild<QLabel *>(QStringLiteral("fileAddressLabel"));
+    // The GROUP, not the address label inside it: what is shown and hidden per node is
+    // the whole identity block, caption included, and a child of a hidden parent is not
+    // itself "hidden" as Qt uses the word.
+    auto *address = dlg.findChild<QWidget *>(QStringLiteral("fileGroup"));
     QVERIFY(group);
     QVERIFY(address);
 
@@ -204,7 +207,9 @@ void TestPreferences::thePatternEditorIsShownOnlyForAPattern()
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
     QVERIFY(group->isHidden());
     QVERIFY(!address->isHidden());
-    QVERIFY(address->text().contains(QLatin1String("app.log")));
+    auto *addressText = dlg.findChild<QLabel *>(QStringLiteral("fileAddressLabel"));
+    QVERIFY(addressText);
+    QVERIFY(addressText->text().contains(QLatin1String("app.log")));
 }
 
 void TestPreferences::editingAPatternRehomesItsLogsAndKeepsTheSelection()
