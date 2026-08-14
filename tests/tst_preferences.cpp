@@ -816,14 +816,14 @@ void TestPreferences::whatTheNodeIsSitsAboveTheHeadingWithARuleBetweenThem()
     QVERIFY(address);
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
     QCoreApplication::processEvents();
-    QVERIFY(rule->isVisible());
-    QVERIFY2(bottom(address) <= top(rule),
-             qPrintable(QStringLiteral("the address ends at %1, the rule starts at %2")
-                            .arg(bottom(address)).arg(top(rule))));
     QVERIFY2(!title->isVisible(), "a log node drew a heading as well as its caption");
-    QVERIFY2(bottom(rule) <= top(editor),
-             qPrintable(QStringLiteral("the rule ends at %1, the settings start at %2")
-                            .arg(bottom(rule)).arg(top(editor))));
+    // And no rule either. It earns its place on a pattern node, where "Matches" is a row
+    // of editable controls above another row of them; two lines of centred text could not
+    // be mistaken for a settings block, so there the line only cuts the panel in half.
+    QVERIFY2(!rule->isVisible(), "a log node drew a rule under its address");
+    QVERIFY2(bottom(address) <= top(editor),
+             qPrintable(QStringLiteral("the address ends at %1, the settings start at %2")
+                            .arg(bottom(address)).arg(top(editor))));
 
     // And on a node with no identity block there is nothing to cut off: a rule under
     // nothing is a line across the top of the panel, separating it from its own edge.

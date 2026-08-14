@@ -537,10 +537,14 @@ void PreferencesDialog::loadNode()
     // A heading with no words is a blank line the width of the panel — its margins are
     // still 14 px whatever the text says.
     m_nodeTitle->setVisible(!m_nodeTitle->text().isEmpty());
-    // Exactly when something identifies the node above it. The defaults and the virtual
-    // "no matching pattern" row have no identity block, and a rule under nothing is a
-    // line across the top of the panel separating it from its own edge.
-    m_nodeDivider->setVisible(isPattern || ref.kind == NodeKind::File);
+    // A PATTERN NODE ONLY. The rule earns its place there because "Matches" is a row of
+    // editable controls sitting above another row of editable controls, and without it
+    // the two blocks run together — which is the whole reason it exists. A log node's
+    // identity is two lines of centred text that could not be mistaken for a settings
+    // block, and with no heading under the rule either it was just a line cutting the
+    // panel in half. The defaults and the virtual "no matching pattern" row have no
+    // identity block at all, and a rule under nothing separates the panel from its edge.
+    m_nodeDivider->setVisible(isPattern);
     m_editor->setVisible(haveProfile);
     if (haveProfile)
         m_editor->setProfile(profile);
