@@ -131,6 +131,7 @@ private slots:
     void whatTheNodeIsSitsAboveTheHeadingWithARuleBetweenThem();
     void bothCaptionsAreBoldAndCentred();
     void anEmptyPatternIsNotReportedAsAnErrorAndARealOneFitsItsRow();
+    void noMessageFitsInLessRoomThanItsTextNeeds();
     void theDetectedEncodingIsReportedOnlyForTheLogItRead();
     void theTwoPanesKeepAGapBetweenThem();
     void enterFinishesAFieldWithoutClosingTheDialog();
@@ -575,6 +576,56 @@ void TestPreferences::theEmptyPreviewSaysSoOnTheTableAndTheMatchCountBelowIt()
 // reader that the encoding shown is not the one this entry will give the next log it
 // claims. Naming the sample in the words ("detected in the sample: UTF-8") was the
 // earlier attempt and did not go far enough.
+void TestPreferences::noMessageFitsInLessRoomThanItsTextNeeds()
+{
+    // Every label here that can WRAP, at widths where it does. Measured before
+    // MessageLabel: the format warning was given 25 px for text needing 34 at a 560 px
+    // dialog and drew its second line over the row below, while the error beside it — in
+    // the same form, one row apart — came out right, because a word-wrapped QLabel's
+    // sizeHint() is a guess and whether the layout chain asks heightForWidth() instead
+    // depends on what sits between the label and the window.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    QTreeWidget *tree = treeOf(dlg);
+    dlg.show();
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+
+    auto *kind = dlg.findChild<QComboBox *>(QStringLiteral("patternKindCombo"));
+    auto *match = dlg.findChild<QLineEdit *>(QStringLiteral("patternMatchEdit"));
+    auto *pattern = dlg.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
+    QVERIFY(kind);
+    QVERIFY(match);
+    QVERIFY(pattern);
+
+    // One of each message in force at once: a broken regexp, and a format pattern that
+    // compiles but carries neither %p nor %c, which is the LONGEST of the three.
+    kind->setCurrentIndex(kind->findData(int(LogPatternNode::Kind::Regex)));
+    match->setText(QStringLiteral("[unclosed"));
+    pattern->setText(QStringLiteral("%m%n"));
+
+    for (const int width : {980, 760, 620}) {
+        dlg.resize(width, 760);
+        for (int settle = 0; settle < 4; ++settle)
+            QCoreApplication::processEvents();
+
+        for (const QString &name : {QStringLiteral("formatErrorLabel"),
+                                    QStringLiteral("formatWarnLabel"),
+                                    QStringLiteral("patternErrorLabel")}) {
+            auto *label = dlg.findChild<QLabel *>(name);
+            QVERIFY2(label, qPrintable(name));
+            if (!label->isVisible())
+                continue;
+            QVERIFY2(label->height() >= label->heightForWidth(label->width()),
+                     qPrintable(QStringLiteral("%1 needs %2 px at %3 wide and was given %4"
+                                               " (dialog %5)")
+                                    .arg(name)
+                                    .arg(label->heightForWidth(label->width()))
+                                    .arg(label->width())
+                                    .arg(label->height())
+                                    .arg(width)));
+        }
+    }
+}
+
 void TestPreferences::theDetectedEncodingIsReportedOnlyForTheLogItRead()
 {
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());

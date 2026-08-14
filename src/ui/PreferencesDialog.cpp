@@ -1,6 +1,7 @@
 #include "PreferencesDialog.h"
 
 #include "LogProfileEditor.h"
+#include "MessageLabel.h"
 #include "RemoteLocation.h"
 #include "UiColors.h"
 
@@ -274,9 +275,11 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     flags->addStretch();
     patternForm->addRow(QString(), flags);
 
-    m_patternError = new QLabel(m_patternGroup);
+    // Same kind of thing as the format editor's two messages, and the same MessageLabel
+    // for the same reason: a regular expression's own complaint about itself is as long
+    // as the expression, so this one wraps sooner than either of those.
+    m_patternError = new MessageLabel(m_patternGroup);
     m_patternError->setObjectName(QStringLiteral("patternErrorLabel")); // findChild, for tests
-    m_patternError->setWordWrap(true);
     m_patternError->setStyleSheet(
         QStringLiteral("color: %1;").arg(errorColor(palette()).name()));
     m_patternError->hide();
