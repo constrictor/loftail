@@ -45,10 +45,10 @@ constexpr int kTitleBottomGap = 4;
 // The air a node's identity/settings rule keeps on each side of itself.
 constexpr int kDividerGap = 6;
 
-// The three glyphs on the tree's toolbar. NOT translated, exactly as the Filters pane's
-// are not: the words live on setToolTip and setAccessibleName beside them. Add is the
-// fourth button and wears words instead — see where it is built.
-constexpr auto kRemoveGlyph = "\xE2\x88\x92"; // U+2212 MINUS SIGN
+// The two glyphs left on the tree's toolbar. NOT translated, exactly as the Filters
+// pane's are not: the words live on setToolTip and setAccessibleName beside them. An
+// arrow is a direction and draws better than it reads; Add and Delete wear words instead
+// — see where they are built.
 constexpr auto kUpGlyph = "\xE2\x86\x91";     // U+2191
 constexpr auto kDownGlyph = "\xE2\x86\x93";   // U+2193
 
@@ -191,8 +191,14 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     m_addPattern->setObjectName(QStringLiteral("addPatternButton")); // findChild, for tests
     m_addPattern->setText(tr("Add Pattern"));
     m_addPattern->setToolTip(tr("Add a file pattern"));
-    m_deleteNode = makeToolButton(left, kRemoveGlyph, QStringLiteral("deleteNodeButton"),
-                                  tr("Delete the selected pattern or log"));
+    // Worded for the same reason Add is, and it is the button that most needs it: a "−"
+    // beside a "+" reads as the pair's other half — remove what was just added — while
+    // this one deletes whichever row is selected, including one with settings behind it.
+    // The tooltip still says WHICH row; the button says what happens to it.
+    m_deleteNode = new QToolButton(left);
+    m_deleteNode->setObjectName(QStringLiteral("deleteNodeButton")); // findChild, for tests
+    m_deleteNode->setText(tr("Delete"));
+    m_deleteNode->setToolTip(tr("Delete the selected pattern or log"));
     m_moveUp = makeToolButton(
         left, kUpGlyph, QStringLiteral("moveUpButton"),
         tr("Move this pattern up — a log matching two patterns takes the higher one"));
