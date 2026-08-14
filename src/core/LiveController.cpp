@@ -2,6 +2,7 @@
 
 #include "ContextEmitter.h"
 #include "Decoder.h"
+#include "DiagnosticLog.h"
 #include "Document.h"
 #include "FilteredIndex.h"
 #include "Indexer.h"
@@ -261,8 +262,17 @@ void LiveController::checkWhileWaiting()
     // Keep the status line current either way: a spooled source spends this whole time
     // publishing why it cannot reach the log, which is the one thing worth showing.
     publishSourceStatus();
-    if (!back)
+    if (!back) {
+        // THE presence-retry line (DiagnosticLog.h), and the one place in loftail where
+        // throttling is not a nicety but the only thing that makes the record possible at
+        // all: this runs on the 750 ms watch tick, so an unthrottled line here would be
+        // 4800 an hour per waiting document and would bury every other kind of evidence
+        // in the file within minutes. One a minute, with the suppressed count, says the
+        // same thing — loftail is still looking and here is how hard.
+        diagLogEvery(60000, "wait", m_document->path(),
+                     QStringLiteral("still waiting for %1").arg(m_document->path()));
         return;
+    }
 
     m_vanishedSince.invalidate();
     // The owner has the pattern and therefore the provider; it calls Document::resume()
@@ -274,12 +284,22 @@ void LiveController::checkWhileWaiting()
         return;
 
     syncBaseline();
+    // "records=N" rather than prose: this file is untranslated and greppable by design,
+    // and a count with no plural to get wrong reads the same at 1 as at 100000.
+    diagLog("wait", QStringLiteral("%1 is back — resumed, records=%2")
+                        .arg(m_document->path())
+                        .arg(m_document->index().records.size()));
     emit waitingChanged(false, QString());
     emit rescanned(); // the visible set was replaced wholesale, exactly as a rotation
 }
 
 void LiveController::beginWaiting(const QString &reason)
 {
+    // A transition, so it is never throttled — this is the line that says WHEN a log the
+    // user was reading stopped being there, which is the question the retries below it
+    // are only context for.
+    diagLog("wait", QStringLiteral("%1 has gone — %2").arg(m_document->path(), reason));
+
     // A full model reset: the visible set is being emptied wholesale, which is the same
     // signal doRescan() uses for the same reason.
     m_model->beginFilterReset();
@@ -328,6 +348,14 @@ void LiveController::doRescan()
     m_model->endFilterReset();
 
     syncBaseline();
+    // Silent to the USER (SPEC.md §3 promises no dialog and no notice), and precisely for
+    // that reason not silent here: a reload the user is deliberately not told about is
+    // the one they will later describe as "it jumped" or "it lost my place", with nothing
+    // on screen to point at.
+    diagLog("wait", QStringLiteral("%1 reloaded — %2, records=%3")
+                        .arg(m_document->path(),
+                             QString::fromLatin1(ok ? "rescanned" : "could not reopen"))
+                        .arg(m_document->index().records.size()));
     emit rescanned();
 }
 

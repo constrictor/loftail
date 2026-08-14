@@ -108,6 +108,15 @@ if(LOFTAIL_HAVE_PRESETS)
     add_test(NAME tst_presetstore COMMAND tst_presetstore)
 endif()
 
+# loftail's own log (SPEC.md §3 "Diagnostics"). UNGATED and core-only: nothing in it
+# needs SSH, an archive or a keychain, and the file it produces is what a bug report is
+# built around, so it must behave identically in every configuration. Includes the
+# concurrency case — fetcher threads write to it — driven with std::thread for
+# ARCHITECTURE.md §13.1's reason.
+qt_add_executable(tst_diaglog tst_diaglog.cpp)
+target_link_libraries(tst_diaglog PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_diaglog COMMAND tst_diaglog)
+
 # M11 — remote sources, path layer. The ssh:// URL value type, the one-spelling
 # normalization every entry point relies on, the display/availability helpers, and
 # the settings key that used to mangle a URL into a working-directory-dependent

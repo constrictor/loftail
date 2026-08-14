@@ -447,6 +447,20 @@ A remote log's absence cannot be answered from a path: there is none to stat, an
 
 **An archive whose container is not there** is where this nearly went wrong. `ArchiveFetcher::start()` runs on the GUI thread and feeds libarchive through `awaitInput()`, which waits while the transport underneath is healthy — and a transport that is *retrying* is healthy, so `ssh://downhost/bundle.tar.gz/app.log` would have spun there forever. The opening of the member is therefore deferred to the worker when the container's source reports its origin vanished (`beginExpansion()` is called from `start()` or from the worker, never both). A *local* container never reaches the fetcher at all: `logSourceAvailable()` asks about the container, so `Document::prepare()` classifies it as waitable first.
 
+### 6.7 loftail's own log
+
+`SPEC.md` §3 "Diagnostics". `DiagnosticLog.h` — always compiled, always on, thread-safe with a `std::mutex` (§13.1 bans `QMutex` in core), capped at 1 MB with exactly one rollover so the total on disk is bounded by twice that.
+
+**On by default is the whole design.** A diagnostic log that has to be enabled before it is useful is never on when it is needed; the cost of that decision is bounded by the cap and by what is written, not by a setting.
+
+**What is written is attempts and outcomes, and states that changed.** Never a tick that changed nothing — which is a real constraint rather than a style note, since the two call sites are a 750 ms watch tick and a fetcher poll. `SshFetcher`'s three status setters compare before logging, so `setState(Live)` on every poll that fetched something produces one line for the *transition* and none afterwards. Where an attempt genuinely does repeat — a host down for an hour, retried every five seconds; a waiting document polled every 750 ms — `diagLogEvery()` collapses it to one line a minute and **counts** the suppressed ones, because a log that under-reported how often loftail tried would be lying about the one thing it is read to answer.
+
+**It is not translated**, and that is the same call `SshExecCommands`' shell text and the log4cplus conversion patterns get (§9.1). The audience for a line in it is whoever is diagnosing the fault — often not the person at the keyboard, and often reading it pasted into an issue — so the tokens have to mean one thing in every build and every locale. `fetchStateName()`, `sizeSourceName()` and `SshSession::modeName()` exist for that: they are the greppable spellings, deliberately not routed through any status-bar wording. Counts are written `records=N` rather than as prose, so there is no plural to get wrong.
+
+**It never records a credential.** That a password was asked for and whether the server accepted it is the diagnostic question; the password is not part of it. Host-key fingerprints *are* written — they are public by definition, they are what the user is asked to compare, and they are exactly what somebody checking a refusal by hand needs.
+
+**The state object is a leaked-on-purpose singleton.** A retired fetcher outlives the window (§6.3.3), so a `static QFile` destroyed at exit would be a use-after-free on precisely the thread most likely to still be writing.
+
 ## 7. Model, view, and filtering
 
 ### 7.1 Variable row heights — why not `QTableView`

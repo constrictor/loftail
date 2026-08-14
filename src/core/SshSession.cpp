@@ -1,5 +1,7 @@
 #include "SshSession.h"
 
+#include "DiagnosticLog.h"
+
 #include "ExecSizeProbe.h"
 #include "SshPrompter.h"
 #include "SecretStore.h"
@@ -346,6 +348,8 @@ bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error,
 
     if (check == LIBSSH2_KNOWNHOST_CHECK_MATCH) {
         libssh2_knownhost_free(hosts);
+        diagLog("ssh", QStringLiteral("host key %1: matches known_hosts (%2)")
+                           .arg(location.target(), keyTypeName(keyType)));
         return true;
     }
 
@@ -355,6 +359,16 @@ bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error,
     info.keyType = keyTypeName(keyType);
     info.fingerprintSha256 = sha256Fingerprint(session);
     info.mismatch = (check == LIBSSH2_KNOWNHOST_CHECK_MISMATCH);
+
+    // The fingerprint is public by definition — it is what a user is asked to compare
+    // against the server's own — so recording it is safe, and it is exactly what somebody
+    // reading this file after a refusal needs in order to check it by hand.
+    diagLog("ssh", QStringLiteral("host key %1: %2 (%3 %4)")
+                       .arg(location.target(),
+                            QString::fromLatin1(info.mismatch ? "MISMATCH against known_hosts"
+                                                              : "not in known_hosts"),
+                            keyTypeName(keyType),
+                            info.fingerprintSha256));
 
     if (info.mismatch) {
         // A DIFFERENT key is on record for this host. That is the man-in-the-middle
@@ -516,12 +530,28 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
     if (!methods && libssh2_userauth_authenticated(session))
         return true;
     const QString available = methods ? QString::fromUtf8(methods) : QString();
+    // The auth ladder, rung by rung. This is the single most useful thing in the
+    // diagnostic log for a connect that "just does not work": which methods the server
+    // was willing to consider, and how far down the ladder loftail got before it ran out
+    // of things to try. The METHOD NAMES are the server's own and safe to record; what is
+    // never recorded, here or anywhere below, is any secret that satisfies one.
+    diagLog("ssh", QStringLiteral("auth %1: server offers %2")
+                       .arg(target, available.isEmpty() ? QStringLiteral("(nothing)")
+                                                        : available));
 
     if (available.contains(QLatin1String("publickey"))) {
         if (prompter)
             prompter->progress(Tr::tr("Trying SSH agent for %1…").arg(target));
-        if (tryAgent() || tryDefaultKeys())
+        if (tryAgent()) {
+            diagLog("ssh", QStringLiteral("auth %1: accepted by SSH agent").arg(target));
             return true;
+        }
+        if (tryDefaultKeys()) {
+            diagLog("ssh", QStringLiteral("auth %1: accepted by a key file").arg(target));
+            return true;
+        }
+        diagLog("ssh", QStringLiteral("auth %1: no agent identity or key file accepted")
+                           .arg(target));
     }
 
     const bool passwordOffered = available.contains(QLatin1String("password"))
@@ -540,8 +570,13 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
         QByteArray cached = SshCredentialCache::password(target).toUtf8();
         const bool ok = tryPassword(cached);
         cached.fill('\0');
-        if (ok)
+        if (ok) {
+            diagLog("ssh", QStringLiteral("auth %1: accepted by the password already "
+                                          "given this session").arg(target));
             return true;
+        }
+        diagLog("ssh", QStringLiteral("auth %1: the password given earlier this session "
+                                      "is no longer accepted").arg(target));
         SshCredentialCache::forget(target); // stale; fall through and ask again
     }
 
@@ -552,6 +587,8 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
         *failure = SshSession::Failure::NeedsPerson;
         *error = Tr::tr("%1 needs a password and there is no way to ask for one here.")
                      .arg(target);
+        diagLog("ssh", QStringLiteral("auth %1: needs a password and this attempt is "
+                                      "unattended").arg(target));
         return false;
     }
 
@@ -574,9 +611,13 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
         if (ok) {
             SshCredentialCache::remember(target, stored);
             stored.fill(QChar(u'\0'));
+            diagLog("ssh", QStringLiteral("auth %1: accepted by the stored password")
+                               .arg(target));
             return true;
         }
         stored.fill(QChar(u'\0'));
+        diagLog("ssh", QStringLiteral("auth %1: the stored password was rejected and has "
+                                      "been forgotten").arg(target));
         // Erased, exactly as SshCredentialCache::forget() erases a stale cache entry, and
         // for a sharper reason than tidiness: sshd counts failed attempts against
         // MaxAuthTries (6 by default) and this chain already spends an agent identity,
@@ -596,6 +637,8 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
         const bool ok = tryPassword(raw);
         raw.fill('\0');
         if (ok) {
+            diagLog("ssh", QStringLiteral("auth %1: accepted by a typed password "
+                                          "(attempt %2)").arg(target).arg(attempt + 1));
             SshCredentialCache::remember(target, password);
             // Only now, with the server's yes in hand — and the prompter decides where it
             // goes, because it drew the checkbox that named the destination.
@@ -606,6 +649,8 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
         password.fill(QChar(u'\0'));
     }
 
+    diagLog("ssh", QStringLiteral("auth %1: all three typed passwords rejected")
+                       .arg(target));
     *error = Tr::tr("Authentication to %1 failed.").arg(target);
     return false;
 }
@@ -788,6 +833,15 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
         // is close to universal.
         const ExecTools tools = parseProbeOutput(probe);
         if (ran && tools.ok && tools.anySizeTool()) {
+            // WHICH of the two shapes of "no SFTP" this was is not knowable from the
+            // error code (see above), but the code and whether a command ran are both
+            // worth recording: together they are what distinguishes a stripped-down image
+            // from an sshd that refuses the subsystem outright.
+            diagLog("ssh", QStringLiteral("%1: no SFTP (libssh2 code %2%3) — falling back "
+                                          "to shell commands")
+                               .arg(location.target())
+                               .arg(code)
+                               .arg(QString::fromLatin1(timedOut ? ", timed out" : "")));
             d->mode = Mode::Exec;
             d->execTools = tools;
             // No handle exists in this mode, so the inode substitute is unavailable and

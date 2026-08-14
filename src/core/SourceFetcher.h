@@ -66,6 +66,25 @@ struct FetchStatus
     QString error;
 };
 
+// The state's name for the diagnostic log, NOT for the user (DiagnosticLog.h). It is
+// deliberately not translated and deliberately not routed through any of the status-bar
+// wording: this is the token somebody greps a bug report for, so it has to mean one thing
+// in every build and every locale.
+inline const char *fetchStateName(FetchStatus::State state)
+{
+    switch (state) {
+    case FetchStatus::State::Idle:         return "idle";
+    case FetchStatus::State::Connecting:   return "connecting";
+    case FetchStatus::State::Priming:      return "priming";
+    case FetchStatus::State::Live:         return "live";
+    case FetchStatus::State::Error:        return "error";
+    case FetchStatus::State::Disconnected: return "disconnected";
+    case FetchStatus::State::Waiting:      return "waiting";
+    case FetchStatus::State::Complete:     return "complete";
+    }
+    return "?";
+}
+
 // Fills a local spool file forward from somewhere else, and keeps following it.
 //
 // This is the seam that keeps *how a log is obtained* out of the rest of the

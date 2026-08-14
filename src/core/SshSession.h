@@ -101,6 +101,13 @@ public:
         Exec, // the fallback: `stat` and `tail` over a plain exec channel (§6.3.1)
     };
 
+    // The mode's name for the diagnostic log, NOT for the user — untranslated, for the
+    // reason fetchStateName() and sizeSourceName() are (DiagnosticLog.h).
+    static const char *modeName(Mode mode)
+    {
+        return mode == Mode::Exec ? "exec" : "sftp";
+    }
+
     // Which of the two connectTo() settled on. Sftp unless the server refused it, in
     // which case the fallback was tried before giving up. Worth surfacing rather than
     // hiding: the exec transport spends a process per read on the far end and detects

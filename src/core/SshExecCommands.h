@@ -49,6 +49,22 @@ enum class SizeSource {
     Wc,   // wc -c <                            — exact, and O(FILE SIZE) every time
 };
 
+// The rung's name for the diagnostic log, NOT for the user (DiagnosticLog.h) — which is
+// why it is untranslated, exactly as the commands in this file are. Which rung a server
+// settled on explains most of what is otherwise puzzling about a remote tail (no mtime,
+// therefore weaker rotation detection; a clamped poll; a size ceiling), and by the time
+// anybody asks, the connect that decided it is long past.
+inline const char *sizeSourceName(SizeSource source)
+{
+    switch (source) {
+    case SizeSource::None: return "none";
+    case SizeSource::Stat: return "stat";
+    case SizeSource::Ls:   return "ls";
+    case SizeSource::Wc:   return "wc";
+    }
+    return "?";
+}
+
 // What the probe found on the far end.
 //
 // `ok` is about the READ path alone — `tail` and `head`, without which there is nothing
