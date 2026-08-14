@@ -137,6 +137,10 @@ void FormatEditor::buildUi()
     encRow->addWidget(m_encodingCombo);
     m_detectedLabel = new QLabel(this);
     m_detectedLabel->setObjectName(QStringLiteral("formatDetectedLabel")); // findChild, for tests
+    m_detectedLabel->setToolTip(
+        tr("What auto-detect makes of the sample lines previewed below. Every log is "
+           "examined on its own when it is opened, so another one may come out "
+           "differently."));
     m_detectedLabel->setStyleSheet(
         QStringLiteral("color: %1;").arg(mutedColor(palette()).name()));
     encRow->addWidget(m_detectedLabel);
@@ -287,11 +291,22 @@ void FormatEditor::refresh()
         m_warnLabel->setVisible(false);
     }
 
-    // Resolve the encoding for the preview and report what auto-detect settled on.
+    // Resolve the encoding for the preview and report what auto-detect settled on — but
+    // ONLY when there were bytes to settle it from. Detection over an empty sample is not
+    // a detection: sniff() finds no BOM and no UTF-16 pattern in nothing at all and falls
+    // through to its UTF-8 default, so the label claimed "(detected: UTF-8)" with no log
+    // open, and did it just as confidently for a pattern or the defaults, which are not
+    // about any one file. What it says is a fact about the bytes in the preview below it,
+    // and with no bytes there is no fact.
     const Encoding enc = currentEncoding();
     const Decoder decoder = Decoder::detect(m_sample, enc);
-    m_detectedLabel->setText(enc == Encoding::Auto
-        ? tr("(detected: %1)").arg(encodingName(decoder.resolvedEncoding()))
+    //
+    // "in the sample" is the other half of the same point. These settings may belong to a
+    // pattern or to the defaults, which are about a CLASS of logs, while the sample is
+    // whichever log happens to be open — so the label has to name what it looked at, or
+    // it reads as a property of the node.
+    m_detectedLabel->setText(enc == Encoding::Auto && !m_sample.isEmpty()
+        ? tr("(detected in the sample: %1)").arg(encodingName(decoder.resolvedEncoding()))
         : QString());
 
     // Build the live preview over the sample.

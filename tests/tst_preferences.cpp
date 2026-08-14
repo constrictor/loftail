@@ -108,6 +108,7 @@ private slots:
     void applyToCurrentIsReportedNeverApplied();
     void everyProfileFieldRoundTripsThroughTheEditor();
     void emptySampleIsHarmless();
+    void theDetectedEncodingIsReportedAgainstTheSample();
     void theTwoPanesKeepAGapBetweenThem();
     void enterFinishesAFieldWithoutClosingTheDialog();
 };
@@ -458,11 +459,41 @@ void TestPreferences::emptySampleIsHarmless()
     QVERIFY(detect);
     QVERIFY(!detect->isEnabled());
 
+    // And auto-detect says NOTHING, rather than reporting the fallback it lands on when
+    // it is handed no bytes. sniff("") finds no BOM and no UTF-16 pattern in nothing at
+    // all and returns UTF-8, which the label used to present as a detection — on a fresh
+    // start, with no log open, and just as confidently under a pattern node.
+    auto *detected = dlg.findChild<QLabel *>(QStringLiteral("formatDetectedLabel"));
+    QVERIFY(detected);
+    QVERIFY2(detected->text().isEmpty(),
+             qPrintable(QStringLiteral("claimed a detection with no sample: \"%1\"")
+                            .arg(detected->text())));
+
     auto *pattern = dlg.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
     QVERIFY(pattern);
     pattern->setText(QStringLiteral("%p %m%n"));
     dlg.accept();
     QCOMPARE(dlg.tree().defaults().format.pattern, QStringLiteral("%p %m%n"));
+}
+
+// With bytes to look at it reports what it made of THEM, and says so: these settings may
+// belong to a pattern or to the defaults, which are about a class of logs, while the
+// sample is whichever log happens to be open.
+void TestPreferences::theDetectedEncodingIsReportedAgainstTheSample()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    auto *detected = dlg.findChild<QLabel *>(QStringLiteral("formatDetectedLabel"));
+    auto *encoding = dlg.findChild<QComboBox *>(QStringLiteral("formatEncodingCombo"));
+    QVERIFY(detected);
+    QVERIFY(encoding);
+
+    QVERIFY(detected->text().contains(QStringLiteral("UTF-8")));
+    QVERIFY2(detected->text().contains(QStringLiteral("sample")),
+             "the label must name what it looked at, not just what it found");
+
+    // Nothing to report once the encoding is stated outright rather than guessed.
+    encoding->setCurrentIndex(encoding->findText(QStringLiteral("UTF-16 LE")));
+    QVERIFY(detected->text().isEmpty());
 }
 
 void TestPreferences::theTwoPanesKeepAGapBetweenThem()
