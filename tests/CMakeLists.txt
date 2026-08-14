@@ -472,6 +472,15 @@ set_tests_properties(tst_sessiongui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offs
 # opening a never-seen log with no dialog, and a default that cannot parse one still
 # asking. Both need the real open path, because "no dialog appeared" is only
 # observable there.
+# View ▸ Reload / F5 (SPEC.md §3 "Reloading by hand"). Drives the real MainWindow, because
+# the claim is about what SURVIVES a reload — the tab, its views, the filters, the
+# highlight rules, and the live watch that stopWorkers() destroys on the way through —
+# and none of that lives on the Document alone.
+qt_add_executable(tst_reload tst_reload.cpp)
+target_link_libraries(tst_reload PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_reload COMMAND tst_reload)
+set_tests_properties(tst_reload PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 qt_add_executable(tst_openflow tst_openflow.cpp)
 target_link_libraries(tst_openflow PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_openflow COMMAND tst_openflow)

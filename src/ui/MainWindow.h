@@ -71,6 +71,16 @@ public:
     // are there.
     void buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, int column);
 
+    // Put one settings node onto the log that is open: its wrap mode into the tree and
+    // the live views, then its format through applySettings(), which re-reads the log in
+    // place when the pattern or the encoding moved (SPEC.md §4).
+    //
+    // Public for the reason buildRecordMenu() and aboutText() are: this is what
+    // Preferences ▸ OK calls when "Apply to current file" was ticked, and a test can drive
+    // it without a modal dialog on screen. It is the one entry point — the dialog itself
+    // applies nothing, it only records the request.
+    void applyProfileToActive(const LogProfile &p);
+
     // What Help ▸ About shows (SPEC.md §1 "Which build this is"): which release this
     // is, and which build of it. Public and separate from showAbout() for the same
     // reason buildRecordMenu() is separate from showRecordMenu() — a test can read the
@@ -235,6 +245,32 @@ private:
                           std::optional<RunRestore> runRestore = std::nullopt);
     // Build the model and the indexing controller for `ctx`. No views, no scan.
     void buildContext(DocumentContext *ctx);
+    // The scanning half of buildContext(): the IndexController and its two connections.
+    // Separate because a RELOAD rebuilds exactly this — stopWorkers() destroys the
+    // controller, while the model and the digest model are what the live views hold and
+    // must therefore survive.
+    void buildIndexController(DocumentContext *ctx);
+    // Arm the live watch over `ctx`. Reached from the end of a successful scan, and again
+    // from a reload, which destroyed the previous one along with the index worker.
+    void startWatching(DocumentContext *ctx);
+    // View ▸ Reload (F5): re-read the active log from the beginning, with the format it
+    // already has (SPEC.md §3 "Reloading by hand"). Keeps the tab, its views, the filters,
+    // the highlight rules and the run-start pattern; the scan runs on the worker thread,
+    // so a large log shows progress instead of freezing the window. A WAITING document is
+    // poked rather than reloaded — there is nothing to re-read, and tearing its workers
+    // down would stop the only thing making progress.
+    void reloadActiveDocument();
+
+    // Whether a rebuild re-reads through the format the document already has, or settles
+    // a new one from ctx->settings first.
+    enum class KeepFormat { Yes, No };
+    // THE one way an open document is rebuilt in place: F5, and a pattern or encoding
+    // change. The document, the tab and the views survive; only the source, the index and
+    // (for KeepFormat::No) the compiled format are replaced. One function because the two
+    // callers differ in a single call and share everything that is easy to get wrong —
+    // the worker teardown order, the model-reset bracket, re-arming the watch on BOTH
+    // outcomes, and handing the scan to the worker thread.
+    void rebuildDocument(DocumentContext *ctx, KeepFormat keep);
     // An interactive open: buildContext plus one view, shown, with the scan started.
     void buildViewAndIndex(DocumentContext *ctx);
     // Session restore's half of an open: build a context from a saved document with
@@ -249,17 +285,15 @@ private:
     // Window ▸ New View: a second, independently-scrolled view onto the active file.
     void newViewOfActiveDocument();
     // Apply a new format to the ALREADY-OPEN document, choosing the change-cost:
-    // pattern/encoding change → full rescan; source-zone change → timestamp reparse;
-    // display-zone change → repaint only (§5.1, §6.1).
+    // pattern/encoding change → re-read the log in place through the new format
+    // (rebuildDocument, §6.6); source-zone change → timestamp reparse; display-zone
+    // change → repaint only (§5.1, §6.1). The document, its tab and its views survive
+    // all three.
     void applySettings(const FormatSettings &newSettings);
     // Write `s` into the settings tree as this log's own node — or DELETE that node,
     // when `s` is exactly what the log would inherit anyway (LogSettingsTree::
     // setFileProfile). The tree is saved only when it actually changed.
     void persistFormat(const QString &path, const FormatSettings &s);
-    // Put one settings node onto the log that is open: its wrap mode into the tree and
-    // the live views, then its format through applySettings(). TERMINAL — `ctx` and the
-    // Document may be gone when it returns, so nothing may follow a call to it.
-    void applyProfileToActive(const LogProfile &p);
     // Save `s` as the tree's root defaults: what a log nothing else matches is tried
     // with. The counterpart to persistFormat(), two levels up — that one remembers a
     // log, this one remembers a habit.
@@ -348,6 +382,7 @@ private:
     QAction *m_copyAction = nullptr;
     QAction *m_copyColumnsAction = nullptr;
     QAction *m_reconnectAction = nullptr;
+    QAction *m_reloadAction = nullptr;
     QAction *m_followAction = nullptr; // View ▸ Follow Tail (return-to-bottom, M6)
     // The timestamp-column header submenu and its five exclusive actions, indexed by
     // TimeDisplay. Owned by the window (see buildTimeDisplayMenu).

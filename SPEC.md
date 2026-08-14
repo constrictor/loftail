@@ -65,6 +65,16 @@ The same string is what `loftail --version` prints, in one line — `loftail 0.1
 - **Rewriting a log in place counts as replacing it.** Copying another file over the open one, saving over it from an editor, or restarting a service onto the same path all reload, whether the new content is shorter, longer or exactly the same length as what it replaced. The rule the user can rely on is simply that what is on screen is what is in the file: anything that is not a plain append to the end reloads.
 - Because loftail always holds the file open for reading, it must never prevent the writing application from appending to, rotating, or truncating it. Observing a log must not disturb the process producing it.
 
+### Reloading by hand
+
+Everything above is automatic and has no control — there is no tail mode to turn on, no rotation notice to acknowledge, and nothing to press when a log comes back. **View ▸ Reload (F5)** is the one exception, and it is deliberately not a setting: it is the gesture for the case where what is on screen has stopped agreeing with the file and you should not have to work out why.
+
+- **A format you change is applied to the log you changed it on.** Editing a log's conversion pattern or its character encoding in Preferences and ticking *Apply to current file* re-reads that log through the new format, in its own tab: the tab, your filters and your highlight rules stay, and the side panes update to offer whatever the new format can fill — a pattern with no thread field has no Thread filter. If the log is one that has not turned up yet, the new format is what it will be read with when it does.
+- **F5 re-reads the active log from the beginning**, with the format it already has. The tab stays, and so do its views, your filters, your highlight rules and the run pattern; the log is followed again afterwards exactly as before.
+- **It does not freeze the window.** A large log is re-read on a worker thread with the same progress bar an ordinary open shows, and the scan can be cancelled the same way.
+- **On a remote log it re-reads what has been fetched, not the far end.** Reaching the server again is **File ▸ Reconnect**, which is a different question and has its own answer.
+- **On a log that has not turned up yet it means "try now".** There is nothing to re-read, so F5 asks the connection to retry immediately instead of waiting out its backoff.
+
 ### Diagnostics
 
 loftail keeps a small log about itself, because the two things hardest to report from memory are also the two you cannot watch: a connection that failed while you were doing something else, and a log that never turned up.
