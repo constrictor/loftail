@@ -8,6 +8,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -108,6 +109,7 @@ private slots:
     void applyToCurrentIsReportedNeverApplied();
     void everyProfileFieldRoundTripsThroughTheEditor();
     void emptySampleIsHarmless();
+    void theEmptyPreviewSaysSoOnTheTableAndTheMatchCountBelowIt();
     void theDetectedEncodingIsReportedAgainstTheSample();
     void theTwoPanesKeepAGapBetweenThem();
     void enterFinishesAFieldWithoutClosingTheDialog();
@@ -474,6 +476,70 @@ void TestPreferences::emptySampleIsHarmless()
     pattern->setText(QStringLiteral("%p %m%n"));
     dlg.accept();
     QCOMPARE(dlg.tree().defaults().format.pattern, QStringLiteral("%p %m%n"));
+}
+
+void TestPreferences::theEmptyPreviewSaysSoOnTheTableAndTheMatchCountBelowIt()
+{
+    // Reported from the real dialog: with no log open, "No sample lines to preview."
+    // sat under a full-height empty grid, so the reader met the blank table first and
+    // reached the explanation last. It is the caption that blankness is missing, so it
+    // is centred ON the grid. Asserted on the rectangles at several dialog sizes,
+    // because the label exists, holds the right text and answers isVisible() wherever
+    // it is put; only its geometry says it is on the table rather than beside it.
+    LogSettingsTree emptyTree;
+    PreferencesDialog dlg(emptyTree, QString(), QByteArray());
+    auto *notice = dlg.findChild<QLabel *>(QStringLiteral("formatPreviewEmptyLabel"));
+    auto *match = dlg.findChild<QLabel *>(QStringLiteral("formatMatchLabel"));
+    auto *table = dlg.findChild<QTableWidget *>(QStringLiteral("formatPreviewTable"));
+    QVERIFY(notice);
+    QVERIFY(match);
+    QVERIFY(table);
+
+    dlg.show();
+    for (const QSize size : {QSize(980, 700), QSize(760, 560), QSize(1300, 900)}) {
+        dlg.resize(size);
+        QCoreApplication::processEvents();
+
+        QVERIFY2(notice->isVisible(), "the empty preview said nothing at all");
+        QVERIFY2(!match->isVisible(), "a match count was reported over no samples");
+
+        // Centred on the grid the notice is about — its own centre against the
+        // viewport's, in the viewport's coordinates, where the label lives.
+        const QRect view = table->viewport()->rect();
+        const QRect label = notice->geometry();
+        QVERIFY2(view.contains(label.center()),
+                 qPrintable(QStringLiteral("the notice sits at %1,%2, off a %3x%4 grid")
+                                .arg(label.center().x()).arg(label.center().y())
+                                .arg(view.width()).arg(view.height())));
+        QVERIFY2(qAbs(label.center().x() - view.center().x()) <= 1
+                     && qAbs(label.center().y() - view.center().y()) <= 1,
+                 qPrintable(QStringLiteral("notice centre %1,%2 vs grid centre %3,%4 at %5x%6")
+                                .arg(label.center().x()).arg(label.center().y())
+                                .arg(view.center().x()).arg(view.center().y())
+                                .arg(size.width()).arg(size.height())));
+
+        // In the UI font, not the table's. A child of the viewport inherits the
+        // fixed-pitch font the sample lines are rendered in, and a sentence in it reads
+        // as a sample line — an empty preview appearing to contain one entry.
+        QCOMPARE(notice->font().family(), QApplication::font().family());
+    }
+
+    // And with a sample it is gone entirely, with the count back under the rows it
+    // counts — the one message that IS a result of what the reader just looked at.
+    PreferencesDialog withSample(populated(), QStringLiteral("app.log"), sample());
+    withSample.show();
+    QCoreApplication::processEvents();
+    auto *notice2 = withSample.findChild<QLabel *>(QStringLiteral("formatPreviewEmptyLabel"));
+    auto *match2 = withSample.findChild<QLabel *>(QStringLiteral("formatMatchLabel"));
+    auto *table2 = withSample.findChild<QTableWidget *>(QStringLiteral("formatPreviewTable"));
+    QVERIFY2(!notice2->isVisible(), "claimed there was nothing to preview over a sample");
+    QVERIFY(match2->isVisible());
+    const int tableBottom = table2->mapTo(&withSample, QPoint(0, table2->height())).y();
+    const int labelTop = match2->mapTo(&withSample, QPoint(0, 0)).y();
+    QVERIFY2(labelTop >= tableBottom,
+             qPrintable(QStringLiteral("the count starts at y=%1, the table ends at y=%2")
+                            .arg(labelTop)
+                            .arg(tableBottom)));
 }
 
 // With bytes to look at it reports what it made of THEM, and says so: these settings may

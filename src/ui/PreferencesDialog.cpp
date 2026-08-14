@@ -120,10 +120,12 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
                                   tr("Add a file pattern"));
     m_deleteNode = makeToolButton(left, kRemoveGlyph, QStringLiteral("deleteNodeButton"),
                                   tr("Delete the selected pattern or log"));
-    m_moveUp = makeToolButton(left, kUpGlyph, QStringLiteral("moveUpButton"),
-                              tr("Try this pattern earlier — the first match wins"));
-    m_moveDown = makeToolButton(left, kDownGlyph, QStringLiteral("moveDownButton"),
-                                tr("Try this pattern later — the first match wins"));
+    m_moveUp = makeToolButton(
+        left, kUpGlyph, QStringLiteral("moveUpButton"),
+        tr("Move this pattern up — a log matching two patterns takes the higher one"));
+    m_moveDown = makeToolButton(
+        left, kDownGlyph, QStringLiteral("moveDownButton"),
+        tr("Move this pattern down — a log matching two patterns takes the higher one"));
     connect(m_addPattern, &QToolButton::clicked, this, &PreferencesDialog::addPattern);
     connect(m_deleteNode, &QToolButton::clicked, this, &PreferencesDialog::deleteNode);
     connect(m_moveUp, &QToolButton::clicked, this, [this]() { movePattern(-1); });
@@ -364,9 +366,13 @@ void PreferencesDialog::loadNode()
         }
         isPattern = true;
         const LogPatternNode &n = m_settings.patterns().at(i);
+        // "Patterns are tried from the top" named nothing on screen: in the tree the
+        // patterns are siblings under the root with their own file children between
+        // them, so there is no list whose top this could be. Order only ever decides
+        // one thing, so say that thing instead — and it is a position in the tree.
         m_nodeTitle->setText(
-            tr("What every log matching this pattern opens with. Patterns are tried "
-               "from the top; the first match wins."));
+            tr("What every log matching this pattern opens with. A log matching more "
+               "than one pattern takes the one listed higher."));
         m_patternMatch->setText(n.match);
         m_patternKind->setCurrentIndex(m_patternKind->findData(int(n.kind)));
         m_patternCase->setChecked(n.caseSensitive);

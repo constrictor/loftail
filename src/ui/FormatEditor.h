@@ -60,6 +60,12 @@ public:
     // (the active log, say) overrides it.
     void setPreviewCaption(const QString &text);
 
+protected:
+    // Watches the preview table's viewport, and only for its size: the empty-state
+    // notice is a child of that viewport and is kept filling it, which is what keeps it
+    // centred with no geometry arithmetic of its own.
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private slots:
     void refresh(); // recompile the pattern, rebuild the preview, update messages
     void detect();  // autodetect the pattern (M8) and fill the pattern field
@@ -80,6 +86,14 @@ private:
     QSpinBox     *m_offsetSpin = nullptr;
     QLabel       *m_previewCaption = nullptr;
     QTableWidget *m_previewTable = nullptr;
+    // The empty-state notice, and it is a child of the TABLE'S VIEWPORT rather than a
+    // row in the editor's layout: it says why the grid under it is blank, so it belongs
+    // in the blankness. Anywhere in the layout — above the table or below it — it is a
+    // line of prose the reader reaches either before or after meeting the empty grid,
+    // and only the one below has to be scrolled past a full-height table to reach.
+    // Filling the viewport is the whole of the centring (Qt::AlignCenter does the rest),
+    // which is why the only thing eventFilter() cares about is a resize.
+    QLabel       *m_previewEmpty = nullptr;
     QLabel       *m_matchLabel = nullptr;
 
     // Not edited here; seeded in and handed back out by settings() so a trip through
