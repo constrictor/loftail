@@ -187,7 +187,7 @@ Encoding is an explicit setting, offered as a list:
 | System 8-bit                | The platform's local codepage                               |
 
 - Auto-detect is the default because it is right nearly always — this matters because log4cplus built for `wchar_t` writes UTF-16 on Windows, and users should not have to know that.
-- When auto-detect is active, Preferences shows **which** encoding it settled on for the sample it is previewing, so a wrong guess is visible rather than silent. It says nothing when there is no sample — with no log open there is nothing to have detected — and it is a statement about that one sample, not about the entry being edited: a pattern and the defaults cover a class of logs, and each log is examined on its own as it is opened.
+- When auto-detect is active, Preferences shows **which** encoding it settled on, so a wrong guess is visible rather than silent — but only under the entry for **the log it read**, which is the one that was open when Preferences was reached. A pattern and the defaults cover a class of logs and get no such line: a reading taken from whichever file happened to be open is a fact about that file, and each log is examined on its own as it is opened. Nor does another log's entry get it, and nor does anything when there is no sample at all.
 - The choice is explicit and forceable because no heuristic is reliable on short files, on files whose first records are pure ASCII, or on legacy 8-bit logs — auto-detect is a convenience, not a guarantee.
 - The setting travels with the rest of an entry's settings, at whichever level that entry sits.
 

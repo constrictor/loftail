@@ -118,6 +118,10 @@ private:
 
     LogSettingsTree m_settings;
     QString         m_scratchAddress; // the node selectLog() created, if any
+    // The log the previewed sample came from, in tree-key form. Set by selectLog(), the
+    // call both entry points make, and compared against the selected node to decide
+    // whether a claim about those bytes is a claim about THIS entry's log.
+    QString         m_sampleAddress;
     QSet<QString>   m_touchedFiles;   // file nodes to re-test against their parent on OK
 
     QString    m_applyTarget;

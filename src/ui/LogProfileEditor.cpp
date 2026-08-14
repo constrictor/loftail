@@ -107,6 +107,11 @@ void LogProfileEditor::setPreviewCaption(const QString &text)
     m_format->setPreviewCaption(text);
 }
 
+void LogProfileEditor::setSampleBelongsHere(bool own)
+{
+    m_format->setSampleBelongsHere(own);
+}
+
 void LogProfileEditor::setProfile(const LogProfile &p)
 {
     // FormatEditor stashes the fields it does not own and hands them back; seeding it

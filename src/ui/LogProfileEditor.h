@@ -42,6 +42,9 @@ public:
     void setSample(const QByteArray &sample);
     void setPreviewCaption(const QString &text);
 
+    // Forwarded to the format editor: whether the previewed sample is this node's log.
+    void setSampleBelongsHere(bool own);
+
     void setProfile(const LogProfile &p);
     LogProfile profile() const;
 
