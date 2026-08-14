@@ -159,7 +159,7 @@ Most people have a handful of house layouts and a great many log files. So the s
 
 Each level holds the same complete set: the conversion pattern, the character encoding, the source time zone, how timestamps are displayed, the run-start pattern with its two flags, and the line wrapping a newly opened view starts in. **The deepest level that names a log supplies all of them** — the levels are not merged field by field, so what a log opens with is always exactly what one entry says.
 
-**File ▸ Preferences** shows the whole arrangement as a tree, with the selected entry's settings beside it.
+**File ▸ Preferences** (`Ctrl+P`, or the platform's own convention where it has one — `⌘,` on macOS) shows the whole arrangement as a tree, with the selected entry's settings beside it. An entry's settings read as three named blocks: **File format** (the conversion pattern, the encoding, the source time zone) with a live preview of the sample under it, **Run splitting**, and **Display**.
 
 - **File patterns are ordered, and the first match wins.** A log matching two patterns takes the higher one; ↑ and ↓ change which. A pattern is a **wildcard** (`*` and `?`, matching the whole name) or a **regular expression** (matching anywhere in it), optionally case sensitive.
 - **A pattern added starts empty, and an empty pattern matches nothing.** It claims logs only once it says which — a new row cannot take over every log on the machine while you are still deciding what it is for. Its *settings* are seeded from wherever it was added: from the selected log, so "make a pattern out of how this one is read" is one button.

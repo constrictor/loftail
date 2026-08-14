@@ -7,6 +7,7 @@
 #include "FormatDetector.h"
 #include "FormatPreview.h"
 #include "PatternCompiler.h"
+#include "SectionBox.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -79,12 +80,28 @@ void FormatEditor::buildUi()
     // The editor is dropped into a dialog's or a group box's layout, which supplies the
     // margins; adding another set here would indent it twice.
     outer->setContentsMargins(0, 0, 0, 0);
+
+    // The three fields that say how the FILE is written, in a section of their own, so
+    // that a profile reads as three named blocks — File format, Run splitting, Display —
+    // rather than as a bare form followed by two boxes. LogProfileEditor builds the other
+    // two the same way (flat, with the title divider); this one is here rather than there
+    // because these are the fields this editor owns.
+    auto *formatBox = new SectionBox(tr("File format"), this);
+    formatBox->setObjectName(QStringLiteral("formatGroup")); // findChild, for tests
+    formatBox->setFlat(true);
+    formatBox->setTitleDivider(true);
+    // A QVBoxLayout holding the form rather than the form BEING the box's layout, so the
+    // preview can go in under the fields it previews and still take the spare height —
+    // QFormLayout has no stretch factor, and a table added as a spanning row would sit at
+    // its size hint with the slack left under it.
+    auto *boxLayout = new QVBoxLayout(formatBox);
     auto *form = new QFormLayout;
-    outer->addLayout(form);
+    boxLayout->addLayout(form);
+    outer->addWidget(formatBox, 1);
 
     // --- Pattern -----------------------------------------------------------
     auto *patRow = new QHBoxLayout;
-    m_patternEdit = new QLineEdit(this);
+    m_patternEdit = new QLineEdit(formatBox);
     m_patternEdit->setObjectName(QStringLiteral("formatPatternEdit")); // findChild, for tests
     m_patternEdit->setPlaceholderText(QStringLiteral("e.g. %d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"));
     ensureReadablePlaceholder(m_patternEdit);
@@ -92,7 +109,7 @@ void FormatEditor::buildUi()
     // M8: re-run autodetection over the sample and fill the pattern field. It only
     // pre-fills — the user still confirms via the dialog's OK, so nothing is applied
     // silently. With no sample there is nothing to guess from, so it is disabled.
-    m_detectButton = new QPushButton(tr("&Detect"), this);
+    m_detectButton = new QPushButton(tr("&Detect"), formatBox);
     m_detectButton->setObjectName(QStringLiteral("formatDetectButton")); // findChild, for tests
     m_detectButton->setToolTip(tr("Guess the pattern from the sample lines"));
     m_detectButton->setEnabled(!m_sample.isEmpty());
@@ -113,7 +130,7 @@ void FormatEditor::buildUi()
     connect(m_detectButton, &QPushButton::clicked, this, &FormatEditor::detect);
 
     // Inline compile error, pointing at the offending offset (CompileError::offset).
-    m_errorLabel = new QLabel(this);
+    m_errorLabel = new QLabel(formatBox);
     m_errorLabel->setObjectName(QStringLiteral("formatErrorLabel")); // findChild, for tests
     m_errorLabel->setWordWrap(true);
     m_errorLabel->setStyleSheet(
@@ -122,7 +139,7 @@ void FormatEditor::buildUi()
     form->addRow(QString(), m_errorLabel);
 
     // Missing %p / %c warning (filtering on that axis degrades).
-    m_warnLabel = new QLabel(this);
+    m_warnLabel = new QLabel(formatBox);
     m_warnLabel->setObjectName(QStringLiteral("formatWarnLabel")); // findChild, for tests
     m_warnLabel->setWordWrap(true);
     m_warnLabel->setStyleSheet(
@@ -132,12 +149,12 @@ void FormatEditor::buildUi()
 
     // --- Encoding ----------------------------------------------------------
     auto *encRow = new QHBoxLayout;
-    m_encodingCombo = new QComboBox(this);
+    m_encodingCombo = new QComboBox(formatBox);
     m_encodingCombo->setObjectName(QStringLiteral("formatEncodingCombo")); // findChild, for tests
     for (const Encoding e : kEncodingByIndex)
         m_encodingCombo->addItem(encodingName(e));
     encRow->addWidget(m_encodingCombo);
-    m_detectedLabel = new QLabel(this);
+    m_detectedLabel = new QLabel(formatBox);
     m_detectedLabel->setObjectName(QStringLiteral("formatDetectedLabel")); // findChild, for tests
     m_detectedLabel->setToolTip(
         tr("What auto-detect makes of the sample lines previewed below. Every log is "
@@ -153,14 +170,14 @@ void FormatEditor::buildUi()
 
     // --- Source time zone --------------------------------------------------
     auto *srcRow = new QHBoxLayout;
-    m_sourceZoneCombo = new QComboBox(this);
+    m_sourceZoneCombo = new QComboBox(formatBox);
     m_sourceZoneCombo->setObjectName(QStringLiteral("formatSourceZoneCombo")); // findChild, for tests
     m_sourceZoneCombo->addItem(tr("Infer from pattern")); // Default
     m_sourceZoneCombo->addItem(tr("Local time"));         // Local
     m_sourceZoneCombo->addItem(tr("UTC"));                // Utc
     m_sourceZoneCombo->addItem(tr("Fixed offset"));       // FixedOffset
     srcRow->addWidget(m_sourceZoneCombo);
-    m_offsetSpin = new QSpinBox(this);
+    m_offsetSpin = new QSpinBox(formatBox);
     m_offsetSpin->setObjectName(QStringLiteral("formatOffsetSpin")); // findChild, for tests
     m_offsetSpin->setRange(-720, 840); // minutes east of UTC (−12:00 … +14:00)
     m_offsetSpin->setSuffix(tr(" min"));
@@ -179,9 +196,13 @@ void FormatEditor::buildUi()
     // zone modes alongside the two seconds modes (SPEC.md §4).
 
     // --- Live preview ------------------------------------------------------
-    m_previewCaption = new QLabel(tr("Preview (sample lines split into fields):"), this);
-    outer->addWidget(m_previewCaption);
-    m_previewTable = new QTableWidget(this);
+    // Inside the section, not under it: the preview is these settings applied to the
+    // sample, so it belongs to the block that holds them — and being in the box is what
+    // indents it to the same left and right margins as the fields above it, with no
+    // second copy of a style-supplied number to keep in step.
+    m_previewCaption = new QLabel(tr("Preview (sample lines split into fields):"), formatBox);
+    boxLayout->addWidget(m_previewCaption);
+    m_previewTable = new QTableWidget(formatBox);
     m_previewTable->setObjectName(QStringLiteral("formatPreviewTable")); // findChild, for tests
     // Same fixed-pitch font as the record view, so the preview shows the sample
     // lines the way the table will render them (and column contents line up).
@@ -194,7 +215,7 @@ void FormatEditor::buildUi()
     m_previewTable->setSelectionMode(QAbstractItemView::NoSelection);
     m_previewTable->horizontalHeader()->setStretchLastSection(true);
     m_previewTable->verticalHeader()->setVisible(false);
-    outer->addWidget(m_previewTable, 1);
+    boxLayout->addWidget(m_previewTable, 1);
 
     // Centred ON the empty grid, not above or below it: it is the caption the blank
     // area would otherwise be missing. A child of the viewport rather than of the table
@@ -223,9 +244,9 @@ void FormatEditor::buildUi()
     m_previewEmpty->hide();
     m_previewTable->viewport()->installEventFilter(this);
 
-    m_matchLabel = new QLabel(this);
+    m_matchLabel = new QLabel(formatBox);
     m_matchLabel->setObjectName(QStringLiteral("formatMatchLabel")); // findChild, for tests
-    outer->addWidget(m_matchLabel);
+    boxLayout->addWidget(m_matchLabel);
 }
 
 bool FormatEditor::eventFilter(QObject *watched, QEvent *event)

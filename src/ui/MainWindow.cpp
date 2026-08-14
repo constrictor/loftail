@@ -372,7 +372,22 @@ void MainWindow::buildMenus()
     fileMenu->addSeparator();
     QAction *preferencesAction = fileMenu->addAction(tr("&Preferences..."));
     preferencesAction->setObjectName(QStringLiteral("preferencesAction")); // findChild, for tests
-    preferencesAction->setShortcut(QKeySequence::Preferences);
+    // Ctrl+P, ADDED to whatever the platform binds rather than instead of it, and not
+    // added at all on macOS, where Cmd+, is the convention and Cmd+P is Print.
+    //
+    // QKeySequence::Preferences alone is not an accelerator anybody can press: it is
+    // empty on Windows, and on X11/Wayland it resolves to Qt::Key_Settings — a system
+    // key that virtually no keyboard carries — so the entry read "Settings" in the menu
+    // and answered nothing. It is kept in the list because a desktop that DOES deliver
+    // that key should still reach this. Ctrl+P collides with nothing: loftail does not
+    // print. It is FIRST because a QMenu shows the first sequence beside the entry.
+    QList<QKeySequence> preferencesKeys = QKeySequence::keyBindings(QKeySequence::Preferences);
+#ifndef Q_OS_MACOS
+    const QKeySequence ctrlP(Qt::CTRL | Qt::Key_P);
+    if (!preferencesKeys.contains(ctrlP))
+        preferencesKeys.prepend(ctrlP);
+#endif
+    preferencesAction->setShortcuts(preferencesKeys);
     preferencesAction->setMenuRole(QAction::PreferencesRole);
     connect(preferencesAction, &QAction::triggered, this, &MainWindow::showPreferences);
 
