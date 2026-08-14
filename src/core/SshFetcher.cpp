@@ -1,5 +1,7 @@
 #include "SshFetcher.h"
 
+#include "DiagnosticLog.h"
+
 #include "PromptRelay.h"
 #include "SshPrompter.h"
 #include "SshSession.h"
@@ -162,6 +164,7 @@ private:
     void setError(const QString &message);
     void setWaiting(const QString &message);
     void setState(FetchStatus::State state);
+    void logStateChange(FetchStatus::State state, const QString &message);
 
     bool stopping() const
     {
@@ -248,6 +251,23 @@ bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *
     if (status().state != FetchStatus::State::Waiting)
         setState(FetchStatus::State::Connecting);
 
+    // THE connection-attempt line (DiagnosticLog.h). Throttled per target rather than per
+    // file, because "one prompt per host" means several files on one box share a connect
+    // hold and would otherwise each announce the same attempt; and because a host that is
+    // down is retried every five seconds forever, which is the case the suppressed count
+    // exists to report honestly rather than the case to fill the file with.
+    //
+    // An attempt the USER asked for is never throttled: it is one line, they are watching
+    // for it, and it is the line a bug report is opened around.
+    const QString attempt = QStringLiteral("connect attempt: %1 (timeout %2 ms, %3)")
+                                .arg(m_location.toString())
+                                .arg(timeout)
+                                .arg(QString::fromLatin1(mayPrompt ? "may ask" : "unattended"));
+    if (mayPrompt)
+        diagLog("ssh", attempt);
+    else
+        diagLogEvery(60000, "ssh", m_location.target(), attempt);
+
     resetSession();
     // One connect at a time to this host, so that N files on it still cost ONE password
     // prompt — the property that used to fall out of every connect running on the GUI
@@ -329,11 +349,23 @@ bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *
     publishHeldCommits();
 
     setState(FetchStatus::State::Live);
-    // Nothing is said about the exec fallback or the size rung it settled on. A tail that
-    // is working is the ordinary case whatever transport carries it, and a permanent line
-    // in the status bar is read once and ignored forever after. The costs that are worth
-    // interrupting for are the ones that stop the tail working, and those already speak
-    // for themselves as errors — the 64 MB `wc` ceiling names its own remedy (§6.3.1).
+    // Nothing is said IN THE STATUS BAR about the exec fallback or the size rung it
+    // settled on. A tail that is working is the ordinary case whatever transport carries
+    // it, and a permanent line in the status bar is read once and ignored forever after.
+    // The costs that are worth interrupting for are the ones that stop the tail working,
+    // and those already speak for themselves as errors — the 64 MB `wc` ceiling names its
+    // own remedy (§6.3.1).
+    //
+    // The DIAGNOSTIC log is the opposite case and gets all of it: which transport and
+    // which size rung a server settled on is the first thing anybody debugging a remote
+    // tail wants to know, and by the time they ask, the connect is long past.
+    diagLog("ssh", QStringLiteral("connected: %1 — transport %2, size via %3, "
+                                  "fstat tracks handle: %4, remote size %5")
+                       .arg(m_location.toString(),
+                            QString::fromLatin1(SshSession::modeName(m_session->mode())),
+                            QString::fromLatin1(sizeSourceName(m_session->sizeSource())),
+                            QString::fromLatin1(m_session->fstatTracksHandle() ? "yes" : "no"))
+                       .arg(attrs.size));
     *failure = SshSession::Failure::None;
     return true;
 }
@@ -391,20 +423,51 @@ void SshFetcher::requestStop()
     m_status.error.clear();
 }
 
+// One diagnostic line per STATE CHANGE, and only per change (DiagnosticLog.h). The three
+// setters below all funnel here after comparing, because setState(Live) in particular is
+// called on every poll that fetched anything: logging unconditionally would put one line
+// per second per remote log into the file and bury the transition that mattered.
+//
+// Emitted OUTSIDE m_mutex — the callers release it first — so the diagnostic log's own
+// lock is never taken while this fetcher's is held. Nothing needs that ordering today;
+// it costs nothing to make it unable to matter.
+void SshFetcher::logStateChange(FetchStatus::State state, const QString &message)
+{
+    QString line = m_location.toString() + QStringLiteral(": ") + fetchStateName(state);
+    if (!message.isEmpty())
+        line += QStringLiteral(" — ") + message;
+    diagLog("ssh", line);
+}
+
 void SshFetcher::setState(FetchStatus::State state)
 {
-    std::unique_lock<std::mutex> lock(m_mutex);
-    m_status.state = state;
-    // Waiting carries its explanation the same way Error does, so neither clears it.
-    if (state != FetchStatus::State::Error && state != FetchStatus::State::Waiting)
-        m_status.error.clear();
+    FetchStatus::State previous;
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        previous = m_status.state;
+        m_status.state = state;
+        // Waiting carries its explanation the same way Error does, so neither clears it.
+        if (state != FetchStatus::State::Error && state != FetchStatus::State::Waiting)
+            m_status.error.clear();
+    }
+    if (previous != state)
+        logStateChange(state, QString());
 }
 
 void SshFetcher::setError(const QString &message)
 {
-    std::unique_lock<std::mutex> lock(m_mutex);
-    m_status.state = FetchStatus::State::Error;
-    m_status.error = message;
+    bool changed = false;
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        // The MESSAGE counts as part of the state here: a host that fails a different way
+        // on the next attempt has changed something worth a line, even though it was
+        // already in Error.
+        changed = m_status.state != FetchStatus::State::Error || m_status.error != message;
+        m_status.state = FetchStatus::State::Error;
+        m_status.error = message;
+    }
+    if (changed)
+        logStateChange(FetchStatus::State::Error, message);
 }
 
 void SshFetcher::setWaiting(const QString &message)
@@ -412,9 +475,15 @@ void SshFetcher::setWaiting(const QString &message)
     // Not an error: the host or the log is not there, and this fetcher is still trying.
     // SpooledLogSource::originVanished() reads this, which is how the document upstream
     // knows to show itself as waiting rather than as broken (§6.5).
-    std::unique_lock<std::mutex> lock(m_mutex);
-    m_status.state = FetchStatus::State::Waiting;
-    m_status.error = message;
+    bool changed = false;
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        changed = m_status.state != FetchStatus::State::Waiting || m_status.error != message;
+        m_status.state = FetchStatus::State::Waiting;
+        m_status.error = message;
+    }
+    if (changed)
+        logStateChange(FetchStatus::State::Waiting, message);
 }
 
 // Open a fresh spool file and publish it as the new generation. Never rewrites the
@@ -614,9 +683,26 @@ void SshFetcher::pollOnce()
     // wanting one. Without that fence a log being actively written would pay a 4 KB read
     // on every poll for the rest of its life, which is invariant #5's whole subject.
     bool rotated = verdict == RotationVerdict::Rotated;
+    bool byContent = false;
     if (verdict == RotationVerdict::CompareNow
         || (verdict == RotationVerdict::ComparePaced && stallProbeDue())) {
         rotated = remoteHeadDiffersFromSpool();
+        byContent = rotated;
+    }
+
+    if (rotated) {
+        // Not throttled: a rotation is an event, not a repeating condition, and which
+        // SIGNAL caught it is the whole diagnostic value of the line — a log that keeps
+        // rotating by content compare is a log being rewritten in place, which reads
+        // nothing like logrotate and is what somebody would be here to find out.
+        diagLog("ssh", QStringLiteral("rotation detected: %1 — by %2 (size %3 → %4, "
+                                      "consumed %5)")
+                           .arg(m_location.toString(),
+                                QString::fromLatin1(byContent ? "content compare"
+                                                    : byName.size < consumed
+                                                        ? "shrink"
+                                                        : "handle/name size"))
+                           .arg(m_lastSize).arg(byName.size).arg(consumed));
     }
 
     m_lastMtime = byName.mtime;
@@ -712,6 +798,12 @@ void SshFetcher::reconnect()
         setWaiting(error);
     else
         setError(error);
+    // The one state a user cannot work out from the status bar: loftail has STOPPED
+    // trying, and nothing but File ▸ Reconnect will make it start again. Worth a line of
+    // its own rather than leaving the last setWaiting()/setError() to imply it, because
+    // the two read identically to a host that is merely still down.
+    diagLog("ssh", QStringLiteral("giving up on %1 until File ▸ Reconnect — %2")
+                       .arg(m_location.toString(), error));
     std::unique_lock<std::mutex> lock(m_mutex);
     m_reconnectRefused = true;
 }

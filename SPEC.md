@@ -65,6 +65,15 @@ The same string is what `loftail --version` prints, in one line — `loftail 0.1
 - **Rewriting a log in place counts as replacing it.** Copying another file over the open one, saving over it from an editor, or restarting a service onto the same path all reload, whether the new content is shorter, longer or exactly the same length as what it replaced. The rule the user can rely on is simply that what is on screen is what is in the file: anything that is not a plain append to the end reloads.
 - Because loftail always holds the file open for reading, it must never prevent the writing application from appending to, rotating, or truncating it. Observing a log must not disturb the process producing it.
 
+### Diagnostics
+
+loftail keeps a small log about itself, because the two things hardest to report from memory are also the two you cannot watch: a connection that failed while you were doing something else, and a log that never turned up.
+
+- **It records attempts and outcomes, not activity.** A connection attempt and what came of it, which authentication method a server accepted, which transport and which size command it settled on, a host key that did not match, a log that went away and when it came back, a reload. A poll that found nothing new is not recorded.
+- **It never records a password, a passphrase, a key, or anything from the logs you are reading.** That it *asked* for a password and whether the server accepted it is the diagnostic question; the password is not part of it. The file is meant to be attachable to a bug report as it stands.
+- **Something that repeats is collapsed and counted.** A host that has been down for an hour gets one line a minute saying so, and that line says how many attempts it stands for — so the record of how hard loftail tried stays honest without the file filling up.
+- **It is on, it is capped, and it does not need managing.** One megabyte, rolling over once. **Help ▸ Show Diagnostics Log** opens the folder it is in.
+
 ### Logs that are not there
 
 A log that does not exist yet is opened the same way as one that does, and so is one that goes away while you are reading it. This follows from the same reasoning as live updates: loftail cannot know whether a log is finished, and it equally cannot know whether one is late.

@@ -5,6 +5,11 @@
 add_library(loftail_core STATIC
     Version.cpp
     Version.h
+    # loftail's own log about itself: connection attempts and their outcomes, and logs
+    # that have not turned up yet. Always compiled and always on — a diagnostic log that
+    # has to be enabled first is never on when it is needed (see the header).
+    DiagnosticLog.cpp
+    DiagnosticLog.h
     Expected.h
     CompileError.h
     LogFormat.h

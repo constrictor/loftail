@@ -2,6 +2,7 @@
 
 #include "Decoder.h"
 #include "DetectingFormatProvider.h"
+#include "DiagnosticLog.h"
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
@@ -45,6 +46,7 @@
 #include <QDropEvent>
 #include <QEvent>
 #include <QFileDialog>
+#include <QDesktopServices>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -54,6 +56,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QUrl>
 #include <QMimeData>
 #include <QProgressBar>
 #include <QScrollBar>
@@ -520,6 +523,30 @@ void MainWindow::buildMenus()
     // the application would not tell you. AboutRole moves it into the application menu
     // on macOS, exactly as PreferencesRole does for Preferences above.
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
+    // Where loftail's own log lives (SPEC.md §3 "Diagnostics", DiagnosticLog.h). The file
+    // is written whether or not anybody ever opens this, which is the point of it — but a
+    // diagnostic log nobody can find is one nobody attaches to a bug report, and it lands
+    // in a per-platform data directory that no user should be expected to know. Opens the
+    // containing FOLDER rather than the file: there is a rolled-over copy beside it, both
+    // are wanted, and no desktop reliably has an application registered for a .log.
+    QAction *diagAction = helpMenu->addAction(tr("Show &Diagnostics Log"));
+    diagAction->setObjectName(QStringLiteral("diagnosticsLogAction")); // findChild, for tests
+    diagAction->setStatusTip(diagLogPath());
+    diagAction->setToolTip(diagLogPath());
+    connect(diagAction, &QAction::triggered, this, [this]() {
+        const QString path = diagLogPath();
+        // Flushed per line, so there is always something to look at — except on the very
+        // first run of a session that has done nothing yet, where the file may not exist.
+        diagLogSessionStart();
+        if (!QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()))) {
+            // No file manager, or a headless session. The path itself is still the answer,
+            // and it is the thing worth copying into a report.
+            QMessageBox::information(this, tr("Diagnostics Log"),
+                                     tr("loftail's own log is at:\n\n%1").arg(path));
+        }
+    });
+    helpMenu->addSeparator();
+
     QAction *aboutAction = helpMenu->addAction(tr("&About loftail"));
     aboutAction->setObjectName(QStringLiteral("aboutAction")); // findChild, for tests
     aboutAction->setMenuRole(QAction::AboutRole);

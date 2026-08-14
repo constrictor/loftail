@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 
 #include "AppStyle.h"
+#include "DiagnosticLog.h"
 #include "MainWindow.h"
 #include "UiLanguage.h"
 #include "Version.h"
@@ -111,6 +112,13 @@ int main(int argc, char *argv[])
     // reports unknown options; it never throws, so a malformed invocation degrades
     // to a usage message rather than a crash.
     parser.process(app);
+
+    // The first line of loftail's own log, and the reason it is here rather than lazily
+    // on the first interesting event: a diagnostic file whose top says which binary wrote
+    // it is one that can be pasted into a bug report as-is. AFTER process(), so --help and
+    // --version stay side-effect-free, and after the application name is set, since that
+    // is what resolves the file's location (DiagnosticLog.h).
+    loftail::diagLogSessionStart();
 
     loftail::MainWindow window;
     window.show();
