@@ -143,4 +143,59 @@ ExecAttrs parseLsSizeOutput(const QByteArray &output);
 // Parse what wcSizeCommand() printed: exactly one non-negative integer, or nothing.
 ExecAttrs parseWcSizeOutput(const QByteArray &output);
 
+// ---------------------------------------------------------------------------
+// Has the remote log been replaced, and what will it cost to find out?
+// ---------------------------------------------------------------------------
+
+// What one poll's stat justifies doing about it.
+//
+// The three non-trivial answers exist because settling the question is not free: the only
+// thing that can distinguish a REWRITE from an APPEND is the content, and reading content
+// over the network to answer a question nobody asked is exactly what invariant #5 forbids
+// doing to somebody else's machine.
+enum class RotationVerdict {
+    Nothing,      // an append, or no change at all. The overwhelmingly common answer.
+    Rotated,      // certain from the stat alone: it shrank, or the name left our handle.
+    CompareNow,   // it changed in a way NO append can produce. Read the head immediately.
+    ComparePaced, // it might be either. Read the head only when the clock allows.
+};
+
+// One poll's worth of what the server said, plus what the previous poll saw.
+struct RemoteObservation
+{
+    qint64 size = 0;                 // stat-by-name, this poll
+    qint64 mtime = kUnknownMtime;    // stat-by-name, this poll; unknown on the ls/wc rungs
+    qint64 lastSize = 0;             // stat-by-name, previous poll
+    qint64 lastMtime = kUnknownMtime;
+    qint64 consumed = 0;             // baseOffset + committedSize: what we have already read
+
+    // Whether this server's FSTAT genuinely follows the handle we opened. Where it does,
+    // the handle is an inode substitute and a handle/name disagreement is proof of a
+    // rename. Where it does not — and on the whole exec transport, which has no handle at
+    // all — that evidence is simply unavailable.
+    bool   fstatTracksHandle = false;
+    bool   handleValid = false;
+    qint64 handleSize = 0;
+};
+
+// The decision, as a pure function. IT IS HERE, ungated and always compiled, for exactly
+// the reason shellQuote() and the size ladder are: this is the only judgement the remote
+// transport makes on its own, and a rule compiled in one configuration is a rule tested in
+// one configuration. Nothing in it needs libssh2, a socket or a server.
+//
+// THE ORDER OF THE TESTS IS THE CONTRACT, and two of the steps are easy to undo:
+//
+//   * kUnknownMtime is -1, and -1 > -1 is false — so the no-mtime rung must be decided
+//     BEFORE any comparison against lastMtime, or rotation detection silently switches
+//     itself off on precisely the stripped-down servers that have no `stat` to begin with.
+//
+//   * A file that GREW is not evidence of anything. It is what an ordinary append looks
+//     like, and it is also what `cp bigger.log app.log` looks like — no stat can separate
+//     them, on any rung, including the SFTP one where FSTAT works perfectly (the handle
+//     and the name are still the same file after a rewrite in place; only the content
+//     moved). So growth yields ComparePaced everywhere rather than Nothing. Downgrade it
+//     to Nothing and a rewritten log keeps its pre-rewrite records on screen for ever,
+//     with the new bytes parsed from the middle of a record.
+RotationVerdict rotationVerdict(const RemoteObservation &o);
+
 } // namespace loftail

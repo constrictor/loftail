@@ -68,6 +68,17 @@ private slots:
     void wcSizeParsingRejectsRubbish();
     void theProbeRequiresHeadAsWellAsTail();
     void theProbeReportsWhichToolsExist();
+
+    // The rotation ladder: what one poll's stat justifies doing about it. Ungated and
+    // here for the same reason the quoting and the size ladder are — it is the only
+    // judgement the remote transport makes on its own, and a rule compiled in one
+    // configuration is a rule tested in one configuration.
+    void aShrinkBelowWhatWeReadIsCertain();
+    void aHandleNameDisagreementIsCertain();
+    void aPlainAppendCostsNothing();
+    void growthIsAlwaysWorthAContentCheck();
+    void aChangeWithoutGrowthIsCheckedAtOnce();
+    void aServerWithNoMtimeAlwaysPaces();
 };
 
 void TestSshExec::quotingNeutralisesShellMetacharacters()
@@ -387,6 +398,104 @@ void TestSshExec::theProbeReportsWhichToolsExist()
     QVERIFY(!parseProbeOutput(runSh(QStringLiteral("PATH=/nonexistent; %1")
                                         .arg(probeCommand())))
                  .ok);
+}
+
+// --- the rotation ladder ----------------------------------------------------
+
+// A remote log's poll, with the fields a case does not care about left at their defaults.
+// `consumed` defaults to the smaller of the two sizes, so the shrink test never fires by
+// accident in a case that is about something else.
+static RemoteObservation obs(qint64 size, qint64 lastSize, qint64 mtime, qint64 lastMtime)
+{
+    RemoteObservation o;
+    o.size = size;
+    o.lastSize = lastSize;
+    o.mtime = mtime;
+    o.lastMtime = lastMtime;
+    o.consumed = qMin(size, lastSize);
+    return o;
+}
+
+void TestSshExec::aShrinkBelowWhatWeReadIsCertain()
+{
+    RemoteObservation o = obs(500, 1000, 200, 100);
+    o.consumed = 1000; // we had already read 1000 bytes; there are now 500
+    QCOMPARE(rotationVerdict(o), RotationVerdict::Rotated);
+
+    // And it outranks everything else: a server whose FSTAT agrees perfectly still
+    // rotated if the file is now shorter than what we have handed out.
+    o.fstatTracksHandle = true;
+    o.handleValid = true;
+    o.handleSize = 500;
+    QCOMPARE(rotationVerdict(o), RotationVerdict::Rotated);
+}
+
+void TestSshExec::aHandleNameDisagreementIsCertain()
+{
+    // The inode substitute: the handle still names the file we opened while stat
+    // re-resolves the name. This is what catches the SAME-SIZE rotate that a size check
+    // cannot see at all.
+    RemoteObservation o = obs(1000, 1000, 200, 100);
+    o.fstatTracksHandle = true;
+    o.handleValid = true;
+    o.handleSize = 4096;
+    QCOMPARE(rotationVerdict(o), RotationVerdict::Rotated);
+}
+
+void TestSshExec::aPlainAppendCostsNothing()
+{
+    // Nothing moved at all: an idle log on a server with a working stat. The commonest
+    // poll there is, and it must not spend a byte.
+    RemoteObservation o = obs(1000, 1000, 100, 100);
+    o.fstatTracksHandle = true;
+    o.handleValid = true;
+    o.handleSize = 1000;
+    QCOMPARE(rotationVerdict(o), RotationVerdict::Nothing);
+
+    // Same, on a server whose handle cannot be trusted.
+    QCOMPARE(rotationVerdict(obs(1000, 1000, 100, 100)), RotationVerdict::Nothing);
+}
+
+void TestSshExec::growthIsAlwaysWorthAContentCheck()
+{
+    // THE case this ladder was rebuilt for. `cp bigger.log app.log` on the far end moves
+    // neither the inode nor the size below what we read, and on the SFTP rung the handle
+    // and the name still agree — because they are still the same file. Only the content
+    // moved. Read growth as a plain append and the pre-rewrite records stay on screen for
+    // ever, with the new bytes parsed from the middle of a record.
+    //
+    // Paced, not immediate: an ordinary append looks exactly the same from here, and a
+    // log being actively written must not pay a network read on every poll (invariant #5).
+    RemoteObservation sftp = obs(2000, 1000, 200, 100);
+    sftp.fstatTracksHandle = true;
+    sftp.handleValid = true;
+    sftp.handleSize = 2000; // agrees — no rename happened
+    QCOMPARE(rotationVerdict(sftp), RotationVerdict::ComparePaced);
+
+    // And on the weaker rung, where there is no handle to ask.
+    QCOMPARE(rotationVerdict(obs(2000, 1000, 200, 100)), RotationVerdict::ComparePaced);
+}
+
+void TestSshExec::aChangeWithoutGrowthIsCheckedAtOnce()
+{
+    // The mtime moved and the size did not. No append produces that, so it is worth a
+    // read the moment it is seen rather than waiting out the pacing window.
+    QCOMPARE(rotationVerdict(obs(1000, 1000, 200, 100)), RotationVerdict::CompareNow);
+}
+
+void TestSshExec::aServerWithNoMtimeAlwaysPaces()
+{
+    // A box with no `stat`: the ls and wc rungs report a size and nothing else, so
+    // "did it change without growing" cannot be asked at all.
+    //
+    // THE ORDER OF THE TESTS IS WHAT THIS PINS. kUnknownMtime is -1 and -1 > -1 is false,
+    // so a ladder that compared mtimes before checking for their absence would answer
+    // Nothing here for ever — switching rotation detection off on exactly the servers
+    // that have the least of it to begin with.
+    QCOMPARE(rotationVerdict(obs(1000, 1000, kUnknownMtime, kUnknownMtime)),
+             RotationVerdict::ComparePaced);
+    QCOMPARE(rotationVerdict(obs(2000, 1000, kUnknownMtime, kUnknownMtime)),
+             RotationVerdict::ComparePaced);
 }
 
 QTEST_GUILESS_MAIN(TestSshExec)

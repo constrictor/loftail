@@ -209,4 +209,47 @@ ExecAttrs parseWcSizeOutput(const QByteArray &output)
     return out;
 }
 
+RotationVerdict rotationVerdict(const RemoteObservation &o)
+{
+    // Shrank below what we have already read. Nothing an append does can produce this, and
+    // no content check is needed to be sure of it: truncation, or a rotate to a shorter
+    // file. It is tested first because it is the one answer that is free.
+    if (o.size < o.consumed)
+        return RotationVerdict::Rotated;
+
+    if (o.fstatTracksHandle) {
+        // The inode substitute: our handle still refers to the file we opened, while stat
+        // re-resolves the name. A disagreement means the name now points somewhere else —
+        // including the same-size rotate a size check misses entirely.
+        if (o.handleValid && o.handleSize != o.size)
+            return RotationVerdict::Rotated;
+        // It agrees. That rules out a RENAME and says nothing whatever about a rewrite in
+        // place, where handle and name are still the same file. So growth still has to be
+        // settled by content, on this rung exactly as on the weaker ones.
+        return o.size > o.lastSize ? RotationVerdict::ComparePaced : RotationVerdict::Nothing;
+    }
+
+    // MUST COME BEFORE THE mtime COMPARISON BELOW: kUnknownMtime is -1 and -1 > -1 is
+    // false, so a fall-through would leave this rung deciding Nothing forever.
+    if (o.mtime == kUnknownMtime) {
+        // No mtime at all, so "it changed without growing" cannot even be asked. Every
+        // outcome here — stalled, grown, or the odd shrink that stays above what we read —
+        // is equally uninformative, so all of them are paced and share one budget. A
+        // stalled size is also exactly what an idle log looks like, and an idle log must
+        // not cost a read per poll for ever.
+        return RotationVerdict::ComparePaced;
+    }
+
+    // It changed WITHOUT growing. No append does that, so it is worth a read at once.
+    if (o.mtime > o.lastMtime && o.size == o.lastSize)
+        return RotationVerdict::CompareNow;
+
+    // Grew, on a server whose handle cannot be trusted. Append or rewrite; only the
+    // content knows, and it is not worth a read per poll to find out.
+    if (o.size > o.lastSize)
+        return RotationVerdict::ComparePaced;
+
+    return RotationVerdict::Nothing;
+}
+
 } // namespace loftail
