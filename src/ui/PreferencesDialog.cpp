@@ -44,9 +44,9 @@ constexpr int kTitleBottomGap = 4;
 // The air a node's identity/settings rule keeps on each side of itself.
 constexpr int kDividerGap = 6;
 
-// The four glyphs on the tree's toolbar. NOT translated, exactly as the Filters pane's
-// are not: the words live on setToolTip and setAccessibleName beside them.
-constexpr auto kAddGlyph = "+";
+// The three glyphs on the tree's toolbar. NOT translated, exactly as the Filters pane's
+// are not: the words live on setToolTip and setAccessibleName beside them. Add is the
+// fourth button and wears words instead — see where it is built.
 constexpr auto kRemoveGlyph = "\xE2\x88\x92"; // U+2212 MINUS SIGN
 constexpr auto kUpGlyph = "\xE2\x86\x91";     // U+2191
 constexpr auto kDownGlyph = "\xE2\x86\x93";   // U+2193
@@ -176,8 +176,20 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     leftLayout->addWidget(m_treeWidget, 1);
 
     auto *toolRow = new QHBoxLayout;
-    m_addPattern = makeToolButton(left, kAddGlyph, QStringLiteral("addPatternButton"),
-                                  tr("Add a file pattern"));
+    // The one button on this row that SAYS what it does. A glyph works for the other
+    // three because each acts on the row already selected — delete this, move this — so
+    // the tree supplies the noun. "+" has no such subject: it makes a thing that is not
+    // there yet, and nothing on screen says which. The words are the button's own rather
+    // than a tooltip's, since a tooltip is only read by someone who already suspects.
+    //
+    // Still a QToolButton, so it keeps the row's height and metrics (and the tests' handle
+    // on it) rather than sitting a few pixels taller than the glyphs beside it. No
+    // mnemonic: this dialog has already claimed A, C, D, E, F, P and S, and a duplicate
+    // letter turns Alt into a focus cycle rather than a shortcut.
+    m_addPattern = new QToolButton(left);
+    m_addPattern->setObjectName(QStringLiteral("addPatternButton")); // findChild, for tests
+    m_addPattern->setText(tr("Add Pattern"));
+    m_addPattern->setToolTip(tr("Add a file pattern"));
     m_deleteNode = makeToolButton(left, kRemoveGlyph, QStringLiteral("deleteNodeButton"),
                                   tr("Delete the selected pattern or log"));
     m_moveUp = makeToolButton(
