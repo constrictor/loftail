@@ -35,6 +35,12 @@ constexpr int kRefRole = Qt::UserRole;
 // fault: the same reason AxisEditor carries kSideMargin.
 constexpr int kPanelGap = 8;
 
+// What the node title keeps above and below itself. The top gap is the larger of the
+// two on purpose: it separates the heading from the dialog's edge, while below it the
+// first section's own title row already supplies air.
+constexpr int kTitleTopGap = 10;
+constexpr int kTitleBottomGap = 4;
+
 // The four glyphs on the tree's toolbar. NOT translated, exactly as the Filters pane's
 // are not: the words live on setToolTip and setAccessibleName beside them.
 constexpr auto kAddGlyph = "+";
@@ -148,9 +154,24 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     auto *rightLayout = new QVBoxLayout(right);
     rightLayout->setContentsMargins(kPanelGap, 0, 0, 0);
 
+    // The one line that says what the selected node IS, so it reads as this panel's
+    // heading rather than as the first of its labels: centred, bold, and standing off
+    // the top edge. Flush against it and hard left it looked like a stray sentence that
+    // had lost its control.
+    //
+    // Bold by setFont() and not by a style sheet — the opposite of SectionBox, whose
+    // title bolds through one because a QGroupBox's font is inherited by every widget
+    // inside it. A QLabel has no children to bold by accident. The bit that matters is
+    // that setBold() marks weight in the font's RESOLVE MASK, which is what makes the
+    // assignment survive Qt propagating the parent's font over everything unset.
     m_nodeTitle = new QLabel(right);
     m_nodeTitle->setObjectName(QStringLiteral("nodeTitleLabel")); // findChild, for tests
     m_nodeTitle->setWordWrap(true);
+    m_nodeTitle->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+    QFont titleFont = m_nodeTitle->font();
+    titleFont.setBold(true);
+    m_nodeTitle->setFont(titleFont);
+    m_nodeTitle->setContentsMargins(0, kTitleTopGap, 0, kTitleBottomGap);
     rightLayout->addWidget(m_nodeTitle);
 
     m_patternGroup = new SectionBox(tr("Matches"), right);
@@ -284,7 +305,13 @@ void PreferencesDialog::rebuildTree(const NodeRef &select)
 
     QVector<QTreeWidgetItem *> patternItems;
     for (const LogPatternNode &n : m_settings.patterns()) {
-        QString label = n.match.isEmpty() ? tr("(empty pattern)") : n.match;
+        // Quoted, so a row reads as the pattern it is rather than as a file that happens
+        // to be spelt oddly — the rows under it are real names, and `*.log` beside
+        // `app.log` at the same indentation is one glance away from looking like one. The
+        // empty case stays unquoted: it is prose about a pattern that says nothing yet,
+        // and a pair of quotes round nothing is a row wearing an empty name.
+        QString label = n.match.isEmpty() ? tr("(empty pattern)")
+                                          : QStringLiteral("\"%1\"").arg(n.match);
         if (n.kind == LogPatternNode::Kind::Regex)
             label += tr(" (regex)");
         if (n.matchFullPath)
@@ -355,7 +382,7 @@ void PreferencesDialog::loadNode()
     switch (ref.kind) {
     case NodeKind::Root:
         m_nodeTitle->setText(
-            tr("What a log opens with when no file pattern below matches it."));
+            tr("Used by default when file name doesn't match any particular pattern."));
         profile = m_settings.defaults();
         break;
     case NodeKind::Pattern: {
@@ -366,13 +393,12 @@ void PreferencesDialog::loadNode()
         }
         isPattern = true;
         const LogPatternNode &n = m_settings.patterns().at(i);
-        // "Patterns are tried from the top" named nothing on screen: in the tree the
-        // patterns are siblings under the root with their own file children between
-        // them, so there is no list whose top this could be. Order only ever decides
-        // one thing, so say that thing instead — and it is a position in the tree.
-        m_nodeTitle->setText(
-            tr("What every log matching this pattern opens with. A log matching more "
-               "than one pattern takes the one listed higher."));
+        // Nothing here about precedence between patterns. It is a rule about a case
+        // most trees never contain — two patterns matching one log — and it was being
+        // stated on every pattern node, where the reader has come to set a format. The
+        // ↑ and ↓ tooltips are where it belongs: they are the only thing it governs,
+        // and they are read exactly when the question arises.
+        m_nodeTitle->setText(tr("What every log matching this pattern opens with."));
         m_patternMatch->setText(n.match);
         m_patternKind->setCurrentIndex(m_patternKind->findData(int(n.kind)));
         m_patternCase->setChecked(n.caseSensitive);

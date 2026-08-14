@@ -13,6 +13,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 
+#include "MainWindow.h"
 #include "MnemonicCheck.h"
 #include "PreferencesDialog.h"
 
@@ -69,13 +70,26 @@ private:
         return dlg.findChild<QTreeWidget *>(QStringLiteral("settingsTree"));
     }
 
+    // What a row is OF, with the display decoration taken back off: a pattern row wears
+    // quotes so that it reads as a pattern, and may carry a "(regex)" or "(whole path)"
+    // note after them. None of that is identity, and matching on it would tie two dozen
+    // lookups here to a punctuation choice in the dialog.
+    static QString rowIdentity(QTreeWidgetItem *item)
+    {
+        const QString text = item->text(0);
+        if (!text.startsWith(QLatin1Char('"')))
+            return text;
+        const int close = text.lastIndexOf(QLatin1Char('"'));
+        return close > 0 ? text.mid(1, close - 1) : text;
+    }
+
     // Depth-first walk for the row whose label is `text`. A tree ROW has no object name
     // to be found by — it is data, not a widget — so the label is the only handle it
     // has; every widget around it is still found by object name.
     static QTreeWidgetItem *rowNamed(QTreeWidget *tree, const QString &text)
     {
         for (QTreeWidgetItemIterator it(tree); *it; ++it) {
-            if ((*it)->text(0) == text)
+            if (rowIdentity(*it) == text)
                 return *it;
         }
         return nullptr;
@@ -86,7 +100,7 @@ private:
     {
         for (QTreeWidgetItemIterator it(tree); *it; ++it) {
             for (int i = 0; i < (*it)->childCount(); ++i) {
-                if ((*it)->child(i)->text(0) == childLabel)
+                if (rowIdentity((*it)->child(i)) == childLabel)
                     return *it;
             }
         }
@@ -110,6 +124,9 @@ private slots:
     void everyProfileFieldRoundTripsThroughTheEditor();
     void emptySampleIsHarmless();
     void theEmptyPreviewSaysSoOnTheTableAndTheMatchCountBelowIt();
+    void theMenuEntryHasAnAcceleratorOnEveryPlatform();
+    void thePreviewKeepsTheFormatSectionsMargins();
+    void aPatternRowIsQuotedAndALogRowIsNot();
     void theDetectedEncodingIsReportedAgainstTheSample();
     void theTwoPanesKeepAGapBetweenThem();
     void enterFinishesAFieldWithoutClosingTheDialog();
@@ -664,6 +681,87 @@ void TestPreferences::enterFinishesAFieldWithoutClosingTheDialog()
     QTest::keyClick(&second, Qt::Key_Escape);
     QCOMPARE(secondRejected.count(), 1);
     QCOMPARE(rejected.count(), 0);
+}
+
+void TestPreferences::theMenuEntryHasAnAcceleratorOnEveryPlatform()
+{
+    // QKeySequence::Preferences on its own is not an accelerator anybody can press: it
+    // is empty on Windows, and on X11/Wayland it resolves to Qt::Key_Settings, a system
+    // key virtually no keyboard carries — so the entry read "Settings" and answered
+    // nothing. Hence a check on the SEQUENCE and not merely on the list being non-empty,
+    // which the broken state passes.
+    MainWindow w;
+    auto *action = w.findChild<QAction *>(QStringLiteral("preferencesAction"));
+    QVERIFY(action);
+    QVERIFY2(!action->shortcuts().isEmpty(), "File ▸ Preferences has no accelerator");
+#ifndef Q_OS_MACOS
+    QVERIFY2(action->shortcuts().contains(QKeySequence(Qt::CTRL | Qt::Key_P)),
+             qPrintable(QStringLiteral("expected Ctrl+P, got \"%1\"")
+                            .arg(action->shortcut().toString())));
+    // And it is the one the menu shows, which is the first in the list.
+    QCOMPARE(action->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_P));
+#endif
+}
+
+void TestPreferences::thePreviewKeepsTheFormatSectionsMargins()
+{
+    // The preview shows these settings applied to the sample, so it sits INSIDE the File
+    // format section — which is also what indents it to the same left and right margins
+    // as the fields above it. In the editor's own layout it was flush to both panel
+    // edges while every field beside it was inset, and the table's frame made that
+    // half-alignment the most visible edge on the page.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    auto *group = dlg.findChild<QWidget *>(QStringLiteral("formatGroup"));
+    auto *table = dlg.findChild<QTableWidget *>(QStringLiteral("formatPreviewTable"));
+    auto *detect = dlg.findChild<QPushButton *>(QStringLiteral("formatDetectButton"));
+    QVERIFY(group);
+    QVERIFY(table);
+    QVERIFY(detect);
+
+    dlg.show();
+    for (const int width : {760, 980, 1300}) {
+        dlg.resize(width, 700);
+        QCoreApplication::processEvents();
+
+        auto leftIn = [&dlg](QWidget *w) { return w->mapTo(&dlg, QPoint(0, 0)).x(); };
+        auto rightIn = [&dlg](QWidget *w) { return w->mapTo(&dlg, QPoint(w->width(), 0)).x(); };
+
+        // Inside the section on both sides, by the same margin — the alignment a reader
+        // sees, and the one a flush table breaks asymmetrically.
+        const int leftMargin = leftIn(table) - leftIn(group);
+        const int rightMargin = rightIn(group) - rightIn(table);
+        QVERIFY2(leftMargin > 0 && qAbs(leftMargin - rightMargin) <= 1,
+                 qPrintable(QStringLiteral("margins %1 / %2 at width %3")
+                                .arg(leftMargin).arg(rightMargin).arg(width)));
+
+        // And in the same content band as the fields: the row above ends where it does.
+        QCOMPARE(rightIn(table), rightIn(detect));
+    }
+}
+
+void TestPreferences::aPatternRowIsQuotedAndALogRowIsNot()
+{
+    // The two kinds of row sit at neighbouring indents and one of them is not a name:
+    // `*.log` above `app.log` reads as a file with an odd spelling until the quotes say
+    // otherwise. A log's address is a name and stays bare.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    QTreeWidget *tree = treeOf(dlg);
+    QTreeWidgetItem *pattern = rowNamed(tree, QStringLiteral("*.log"));
+    QTreeWidgetItem *log = rowNamed(tree, QStringLiteral("app.log"));
+    QVERIFY(pattern);
+    QVERIFY(log);
+    QCOMPARE(pattern->text(0), QStringLiteral("\"*.log\""));
+    QCOMPARE(log->text(0), QStringLiteral("app.log"));
+
+    // A pattern that says nothing yet is prose about the absence of one, so it is NOT
+    // quoted: an empty pair of quotes is a row wearing a name of no characters.
+    auto *add = dlg.findChild<QToolButton *>(QStringLiteral("addPatternButton"));
+    QVERIFY(add);
+    add->click();
+    QTreeWidgetItem *fresh = tree->currentItem();
+    QVERIFY(fresh);
+    QVERIFY2(!fresh->text(0).contains(QLatin1Char('"')),
+             qPrintable(QStringLiteral("an empty pattern shows as %1").arg(fresh->text(0))));
 }
 
 int main(int argc, char *argv[])
