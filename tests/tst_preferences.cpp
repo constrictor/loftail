@@ -130,6 +130,7 @@ private slots:
     void aPatternRowIsQuotedAndALogRowIsNot();
     void whatTheNodeIsSitsAboveTheHeadingWithARuleBetweenThem();
     void bothCaptionsAreBoldAndCentred();
+    void anEmptyPatternIsNotReportedAsAnErrorAndARealOneFitsItsRow();
     void theDetectedEncodingIsReportedAgainstTheSample();
     void theTwoPanesKeepAGapBetweenThem();
     void enterFinishesAFieldWithoutClosingTheDialog();
@@ -834,6 +835,44 @@ void TestPreferences::bothCaptionsAreBoldAndCentred()
         QVERIFY2(caption->alignment() & Qt::AlignHCenter,
                  qPrintable(name + QLatin1String(" is not centred")));
     }
+}
+
+void TestPreferences::anEmptyPatternIsNotReportedAsAnErrorAndARealOneFitsItsRow()
+{
+    LogSettingsTree empty;
+    PreferencesDialog dlg(empty, QString(), QByteArray());
+    auto *error = dlg.findChild<QLabel *>(QStringLiteral("formatErrorLabel"));
+    auto *edit = dlg.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
+    QVERIFY(error);
+    QVERIFY(edit);
+
+    dlg.show();
+    QCoreApplication::processEvents();
+
+    // A field nobody has typed in yet is not a fault, and it is the state a fresh pattern
+    // node and an unconfigured defaults node both open in — so "Error at position 0:
+    // Pattern is empty", in red, was the first thing the dialog said in half the cases it
+    // opens in.
+    // Cleared by hand, because the DEFAULTS node ships a built-in pattern; the empty
+    // state is what a freshly added pattern node and a cleared field both show.
+    edit->setText(QString());
+    QCoreApplication::processEvents();
+    QVERIFY2(!error->isVisible(), "an untyped pattern was reported as an error");
+
+    // A real error still is one — and it FITS. Measured under Breeze before the message
+    // rows were made to span both columns: a word-wrapped QLabel in the field column got
+    // 105x17 px against a 105x34 hint, because Breeze answers
+    // SH_FormLayoutFieldGrowthPolicy with FieldsStayAtSizeHint, so the second line landed
+    // on the row below. Fusion grows the field and showed nothing wrong, which is why
+    // this asserts on the HEIGHT the row was given rather than on the text.
+    edit->setText(QStringLiteral("%d{"));
+    QCoreApplication::processEvents();
+    QVERIFY(error->isVisible());
+    QVERIFY2(error->height() >= error->heightForWidth(error->width()),
+             qPrintable(QStringLiteral("the message needs %1 px at %2 wide and was given %3")
+                            .arg(error->heightForWidth(error->width()))
+                            .arg(error->width())
+                            .arg(error->height())));
 }
 
 int main(int argc, char *argv[])
