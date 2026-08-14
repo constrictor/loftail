@@ -588,35 +588,34 @@ void SshFetcher::pollOnce()
     const FetchStatus current = status();
     const qint64 consumed = current.baseOffset + current.committedSize;
 
-    bool rotated = false;
-    if (byName.size < consumed) {
-        // Shrank below what we already read: truncation, or a rotate to a shorter file.
-        rotated = true;
-    } else if (m_session->fstatTracksHandle()) {
-        // The inode substitute: our handle still refers to the file we opened, while
-        // stat() re-resolves the name. A disagreement means the name now points
-        // somewhere else — including the same-size rotate that a size check misses.
+    // What this poll's stat justifies, as a pure decision (SshExecCommands.h). It lives
+    // there, ungated, because it is the only judgement this transport makes on its own and
+    // a rule compiled in one configuration is a rule tested in one configuration — the
+    // same argument shellQuote() and the size ladder are kept out here by.
+    RemoteObservation seen;
+    seen.size = byName.size;
+    seen.mtime = byName.mtime;
+    seen.lastSize = m_lastSize;
+    seen.lastMtime = m_lastMtime;
+    seen.consumed = consumed;
+    seen.fstatTracksHandle = m_session->fstatTracksHandle();
+    if (seen.fstatTracksHandle) {
+        // Asked ONLY on the rung that can answer it: on the exec transport there is no
+        // handle, and on an SFTP server whose FSTAT does not follow one the reply is a
+        // fiction. A round trip either way, so it is not spent where it means nothing.
         const SshSession::Attrs byHandle = m_session->statHandle();
-        if (byHandle.valid && byHandle.size != byName.size)
-            rotated = true;
-    } else if (byName.mtime == kUnknownMtime) {
-        // This server has no `stat`, so "it changed without growing" cannot be asked at
-        // all — there is no mtime to ask it about. What is left is a size that has
-        // STALLED, which is also exactly what an idle log looks like, so the compare is
-        // paced by the clock instead: at most one small read every kStallProbeMs.
-        //
-        // THIS BRANCH MUST COME BEFORE THE ONE BELOW. kUnknownMtime is -1, and -1 > -1
-        // is false, so falling through to the mtime comparison would silently switch
-        // rotation detection off on exactly the servers that need it most.
-        //
-        // A growing log never reaches here — the size test below is false while it
-        // grows — so the standing cost is paid only by a log nobody is writing to.
-        if (byName.size == m_lastSize && stallProbeDue())
-            rotated = remoteHeadDiffersFromSpool();
-    } else if (byName.mtime > m_lastMtime && byName.size == m_lastSize) {
-        // FSTAT cannot be trusted on this server. Fall back to comparing the head of
-        // the file — but only on suspicion (it changed without growing), never as
-        // part of the ordinary poll.
+        seen.handleValid = byHandle.valid;
+        seen.handleSize = byHandle.size;
+    }
+    const RotationVerdict verdict = rotationVerdict(seen);
+
+    // The paced verdict is the one that costs a network read, and stallProbeDue() is the
+    // budget: at most one small read every kStallProbeMs, shared by every reason for
+    // wanting one. Without that fence a log being actively written would pay a 4 KB read
+    // on every poll for the rest of its life, which is invariant #5's whole subject.
+    bool rotated = verdict == RotationVerdict::Rotated;
+    if (verdict == RotationVerdict::CompareNow
+        || (verdict == RotationVerdict::ComparePaced && stallProbeDue())) {
         rotated = remoteHeadDiffersFromSpool();
     }
 
