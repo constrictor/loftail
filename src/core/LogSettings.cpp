@@ -126,6 +126,22 @@ bool LogSettingsTree::removeFile(const QString &address)
     return true;
 }
 
+bool LogSettingsTree::pruneRedundantFiles(const QString &except)
+{
+    const QString spared = except.isEmpty() ? QString() : logSettingsKey(except);
+    bool removed = false;
+    // Backwards, so removing one node does not step over the next.
+    for (int i = m_files.size() - 1; i >= 0; --i) {
+        if (!spared.isEmpty() && m_files.at(i).path == spared)
+            continue;
+        if (m_files.at(i).profile == inherited(m_files.at(i).path)) {
+            m_files.remove(i);
+            removed = true;
+        }
+    }
+    return removed;
+}
+
 void LogSettingsTree::removePattern(int index)
 {
     if (index < 0 || index >= m_patterns.size())

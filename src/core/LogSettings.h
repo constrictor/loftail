@@ -95,6 +95,20 @@ public:
     // Drop the file node for `address`, if there is one. Returns whether there was.
     bool removeFile(const QString &address);
 
+    // Drop EVERY file node that says exactly what its address already inherits — the
+    // same rule setFileProfile() applies to one node, applied to the whole list.
+    // setFileProfile() can only notice a node that is being written; a node stops saying
+    // something of its own just as surely when the PATTERN above it is edited, added,
+    // reordered or deleted, and nothing writes that node. Without this, a pattern taught
+    // to say what a hundred logs' own entries said leaves those hundred entries behind,
+    // shadowing it for ever: the pattern is then editable and they no longer follow it.
+    //
+    // `except` names one address to leave alone whatever it says, for the scratch node
+    // Preferences creates so that a log HAS a row to be selected and edited in.
+    //
+    // Returns whether anything went, so a caller can write the file only when it did.
+    bool pruneRedundantFiles(const QString &except = QString());
+
     // Drop every per-log node, so each log falls back to its pattern or the defaults.
     void clearFiles() { m_files.clear(); }
 

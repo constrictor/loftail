@@ -4,7 +4,6 @@
 
 #include <QByteArray>
 #include <QDialog>
-#include <QSet>
 #include <QString>
 
 QT_BEGIN_NAMESPACE
@@ -29,6 +28,12 @@ class LogProfileEditor;
 //     *.log                   a file pattern, in precedence order; first match wins
 //       /var/log/app.log      one concrete log, with settings of its own
 //     Logs with no pattern    a VIRTUAL node with no settings and no editor
+//
+// A LOG ENTRY LASTS ONLY AS LONG AS IT SAYS SOMETHING ITS PATTERN DOES NOT. Every
+// mutation here ends in rebuildTree(), which sweeps the per-log entries against what
+// they would inherit and drops the ones that now agree with it — so teaching a pattern
+// what a log's own entry said removes that entry, in the tree the user is looking at,
+// rather than leaving it behind to shadow the pattern for ever.
 //
 // The virtual node exists here and nowhere else. "No parent" is the absence of a match,
 // not a thing to store, so a row for it in the model would be a row that is not a row —
@@ -72,8 +77,8 @@ public:
     LogProfile applyProfile() const { return m_applyProfile; }
 
 public slots:
-    // Overridden to put every per-log node the user touched back through the tree's
-    // prune rule before the dialog closes. Public, like QDialog's own.
+    // Overridden to sweep the per-log nodes one last time, this time including the
+    // scratch node a mid-open invocation created. Public, like QDialog's own.
     void accept() override;
 
 protected:
@@ -122,7 +127,6 @@ private:
     // call both entry points make, and compared against the selected node to decide
     // whether a claim about those bytes is a claim about THIS entry's log.
     QString         m_sampleAddress;
-    QSet<QString>   m_touchedFiles;   // file nodes to re-test against their parent on OK
 
     QString    m_applyTarget;
     bool       m_applyRequested = false;
