@@ -14,7 +14,19 @@ std::unique_ptr<BufferedLogSource> BufferedLogSource::open(const QString &path)
     src->m_size = src->m_file.size();
     src->m_identity = src->computeIdentity();
     src->m_pathIdentity = pathIdentity(path);
+    src->m_head.take(src->readHead());
     return src;
+}
+
+// The first bytes of the file, read fresh. Deliberately NOT through bytes(), whose
+// QByteArrayView is backed by m_buffer: this runs from refreshSize() on the watch tick,
+// and clobbering the buffer a caller may still be reading from would be a use-after-free
+// in everything but name.
+QByteArray BufferedLogSource::readHead()
+{
+    if (!m_file.isOpen() || !m_file.seek(0))
+        return QByteArray();
+    return m_file.read(HeadWitness::kBytes);
 }
 
 bool BufferedLogSource::wasReplaced() const
@@ -55,6 +67,18 @@ qint64 BufferedLogSource::refreshSize()
     if (current < m_size)
         m_truncated = true;
     m_size = current;
+
+    // A rewrite in place that did not shrink the file moves neither the size nor the
+    // path identity, so the growth would otherwise read as an append and the pre-rewrite
+    // records would stay on screen for ever (HeadWitness.h). AFTER m_size is updated,
+    // because readHead() reads through the same handle the size bounds.
+    if (!m_truncated) {
+        const QByteArray head = readHead();
+        if (m_head.contradicts(head))
+            m_truncated = true;
+        else if (m_head.wantsMore())
+            m_head.take(head); // a log shorter than kBytes when it opened has grown
+    }
     return m_size;
 }
 

@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 
 #include "Document.h"
@@ -28,7 +29,11 @@ using namespace loftail;
 //       the same index as scanning the whole file at once;
 //   (b) a truncation is caught and the file cleanly rescanned;
 //   (c) a rotation (rename + new file at the path) re-indexes the new file;
-//   (d) appended records pass through an active filter and highlight rule unchanged.
+//   (d) a REWRITE IN PLACE is caught too — at the same length and at a greater one,
+//       neither of which moves the inode or drops the size below what was indexed, so
+//       both were read as appends until the content check landed (HeadWitness.h) — and
+//       an ordinary append across the witness boundary still is not one;
+//   (e) appended records pass through an active filter and highlight rule unchanged.
 //
 // Linux only for the mmap + rename identity behavior; Windows file-sharing/rotation
 // semantics differ and must be exercised on Windows separately (not done here).
@@ -124,6 +129,9 @@ private slots:
     void appendUnterminatedStartLineFlips();
     void truncateTriggersRescan();
     void rotateTriggersReindex();
+    void overwriteInPlaceTriggersRescan();
+    void sameSizeOverwriteTriggersRescan();
+    void aPlainAppendNeverRescans();
     void filteredAndHighlightedAppend();
 };
 
@@ -309,6 +317,132 @@ void TestTail::rotateTriggersReindex()
     QCOMPARE(rescans, 1);
     QCOMPARE(model.rowCount(), 3);
     QCOMPARE(doc.index().records.size(), 3);
+
+    Document reference;
+    QVERIFY(reference.open(path, QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));
+    QString why;
+    QVERIFY2(sameIndex(doc.index(), reference.index(), &why), qPrintable(why));
+}
+
+// A rewrite in place that GROWS past the old length. The inode does not move, so
+// wasReplaced() is false; the size never dips below what was indexed, so the shrink
+// check is false too. Before HeadWitness the tick read it as an append and resumed
+// indexing from the old tail offset: the three pre-rewrite records stayed on screen for
+// good and the new bytes were parsed from the middle of a record.
+void TestTail::overwriteInPlaceTriggersRescan()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("overwrite.log"));
+
+    QByteArray whole;
+    for (int i = 0; i < 3; ++i)
+        whole += rec(i, "t0", "INFO ", "logger.old", QByteArray("old") + QByteArray::number(i));
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY(doc.open(path, QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+    QCOMPARE(model.rowCount(), 3);
+
+    int rescans = 0;
+    connect(&live, &LiveController::rescanned, &live, [&] { ++rescans; });
+
+    QByteArray fresh;
+    for (int i = 0; i < 6; ++i)
+        fresh += rec(i, "t9", "WARN ", "logger.new",
+                     QByteArray("rewritten in place ") + QByteArray::number(i));
+    QVERIFY(fresh.size() > whole.size()); // the size check alone cannot see this
+    QVERIFY(writeWhole(path, fresh));
+    live.checkNow();
+
+    QCOMPARE(rescans, 1);
+    QCOMPARE(model.rowCount(), 6);
+    QCOMPARE(doc.index().records.at(0).priorityEnum(), Priority::Warn);
+    QVERIFY(!doc.index().loggers.names().contains(QStringLiteral("logger.old")));
+
+    Document reference;
+    QVERIFY(reference.open(path, QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));
+    QString why;
+    QVERIFY2(sameIndex(doc.index(), reference.index(), &why), qPrintable(why));
+}
+
+// The same rewrite at EXACTLY the same length — nothing about the file's metadata moves
+// at all, so without the content check the tick sees no growth, no shrink and no new
+// inode, and simply does nothing. The view then shows the pre-rewrite log for the rest
+// of the session with no way for the user to tell.
+void TestTail::sameSizeOverwriteTriggersRescan()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("samesize.log"));
+
+    QByteArray whole;
+    for (int i = 0; i < 3; ++i)
+        whole += rec(i, "t0", "INFO ", "logger.aaa", "identical length body");
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY(doc.open(path, QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+    QCOMPARE(model.rowCount(), 3);
+
+    int rescans = 0;
+    connect(&live, &LiveController::rescanned, &live, [&] { ++rescans; });
+
+    QByteArray fresh;
+    for (int i = 0; i < 3; ++i)
+        fresh += rec(i, "t0", "INFO ", "logger.bbb", "identical length body");
+    QCOMPARE(fresh.size(), whole.size());
+    QVERIFY(writeWhole(path, fresh));
+    live.checkNow();
+
+    QCOMPARE(rescans, 1);
+    QCOMPARE(model.rowCount(), 3);
+    QVERIFY(doc.index().loggers.names().contains(QStringLiteral("logger.bbb")));
+    QVERIFY(!doc.index().loggers.names().contains(QStringLiteral("logger.aaa")));
+}
+
+// The other half of the same contract, and the one a content check is at risk of
+// breaking: an ordinary append must go on being an append. Including across the witness
+// boundary — the log starts shorter than HeadWitness::kBytes and grows well past it, so
+// the witness is extended by the very ticks that must not rescan.
+void TestTail::aPlainAppendNeverRescans()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("append.log"));
+
+    // Deliberately a few hundred bytes: short enough that the witness taken at open does
+    // not yet cover its full kBytes.
+    QByteArray whole;
+    for (int i = 0; i < 3; ++i)
+        whole += rec(i, "t0", "INFO ", "logger.a", QByteArray("start") + QByteArray::number(i));
+    QVERIFY(whole.size() < 1024);
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY(doc.open(path, QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+
+    int rescans = 0;
+    connect(&live, &LiveController::rescanned, &live, [&] { ++rescans; });
+
+    for (int i = 3; i < 40; ++i) {
+        QVERIFY(append(path, rec(i % 60, "t0", "INFO ", "logger.a",
+                                 QByteArray("grow") + QByteArray::number(i))));
+        live.checkNow();
+    }
+
+    QCOMPARE(rescans, 0);
+    QCOMPARE(model.rowCount(), 40);
+    QVERIFY(QFileInfo(path).size() > 1024); // the witness was extended past its cap
 
     Document reference;
     QVERIFY(reference.open(path, QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));

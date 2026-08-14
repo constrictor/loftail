@@ -73,6 +73,9 @@ add_library(loftail_core STATIC
     MappedLogSource.h
     BufferedLogSource.cpp
     BufferedLogSource.h
+    # The content check both local sources need and neither the inode nor the size can
+    # stand in for: an in-place rewrite (see the header).
+    HeadWitness.h
     InternTable.h
     TimestampParser.cpp
     TimestampParser.h
