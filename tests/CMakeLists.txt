@@ -535,6 +535,16 @@ target_link_libraries(tst_filteranchor PRIVATE loftail_ui Qt6::Test Qt6::Widgets
 add_test(NAME tst_filteranchor COMMAND tst_filteranchor)
 set_tests_properties(tst_filteranchor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# "Last run" (SPEC.md §3a): the Runs pane's default is a standing instruction and not a
+# run, so a live append that starts a new run moves the view onto it — including on a tab
+# in the BACKGROUND — while a run the user pinned is left alone by the same tick. The
+# document half is core-side in tst_runselect; this is the wiring that gives it a meaning.
+# Offscreen, isolated config.
+qt_add_executable(tst_lastrun tst_lastrun.cpp)
+target_link_libraries(tst_lastrun PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_lastrun COMMAND tst_lastrun)
+set_tests_properties(tst_lastrun PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # M9 — the tab arrangement itself round-trips: the same tabs come back in the same
 # order, each view keeping its own column layout and wrap mode.
 # Two MainWindow instances over one isolated settings store, offscreen.

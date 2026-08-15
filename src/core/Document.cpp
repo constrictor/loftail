@@ -116,6 +116,10 @@ bool Document::prepare(const QString &rawPath,
     // this returns (and after indexing, detectRuns() rebuilds the list).
     m_runStartActive = false;
     m_runStartMatcher = TextMatcher();
+    // ...including the run SELECTION mode: a Document is reused across a format change
+    // and a re-open, and a file the user had pinned to run #2 must not open the next
+    // file pinned to whatever its run #2 turns out to be.
+    m_followLastRun = true;
     clearIndex();
 
     m_path = path;
@@ -283,7 +287,7 @@ bool Document::resume(IFormatProvider &provider)
     Indexer indexer(m_format, m_decoder, m_sourceZone);
     m_index = indexer.index(*m_source);
     detectRuns();
-    selectNewestRun();
+    selectLastRun();
     return true;
 }
 
@@ -436,7 +440,7 @@ bool Document::rescan()
     // The index was rebuilt from fresh content (rotation/truncation): re-detect runs
     // and default to the newest (matches the follow-tail-on-rescan behaviour).
     detectRuns();
-    selectNewestRun();
+    selectLastRun();
     return true;
 }
 
@@ -857,7 +861,7 @@ void Document::setRunStart(const QString &pattern, bool regex, Qt::CaseSensitivi
     m_runStartMatcher.set(pattern, regex, cs);
     m_runStartActive = !pattern.isEmpty();
     detectRuns();
-    selectNewestRun();
+    selectLastRun();
 }
 
 void Document::detectRuns()
@@ -895,8 +899,11 @@ void Document::detectRuns()
         }
     }
 
-    if (m_selectedRun >= m_runs.size())
-        m_selectedRun = m_runs.isEmpty() ? -1 : int(m_runs.size()) - 1;
+    // Following the last run survives a re-detection: the list was just rebuilt from
+    // scratch, so the ordinal that was last a moment ago means nothing, and clamping
+    // it would pin the mode to whatever the rebuild happened to produce.
+    if (m_followLastRun || m_selectedRun >= m_runs.size())
+        m_selectedRun = lastRunIndex();
     recomputeViewBounds();
 }
 
@@ -937,8 +944,31 @@ bool Document::updateRunsAfterAppend(int oldRecordCount)
 
 void Document::selectRun(int index)
 {
+    // An explicit pick — including "All runs" — is the user leaving the follow mode.
+    // Picking the run that happens to be last is NOT the same as following it: the
+    // whole difference is what happens when the next run turns up.
+    m_followLastRun = false;
     m_selectedRun = (index >= 0 && index < m_runs.size()) ? index : -1;
     recomputeViewBounds();
+}
+
+void Document::selectLastRun()
+{
+    m_followLastRun = true;
+    m_selectedRun = lastRunIndex();
+    recomputeViewBounds();
+}
+
+bool Document::retargetLastRun()
+{
+    if (!m_followLastRun)
+        return false;
+    const int last = lastRunIndex();
+    if (last == m_selectedRun)
+        return false;
+    m_selectedRun = last;
+    recomputeViewBounds();
+    return true;
 }
 
 void Document::selectRunByStart(qint64 startOffset, qint64 startTimestamp)
@@ -958,7 +988,13 @@ void Document::selectRunByStart(qint64 startOffset, qint64 startTimestamp)
             }
         }
     }
-    selectRun(best >= 0 ? best : (m_runs.isEmpty() ? -1 : int(m_runs.size()) - 1));
+    // A run that could not be re-resolved falls back to FOLLOWING the last one rather
+    // than pinning it: the session said "this particular run", the file no longer has
+    // it, and the newest is the same answer a first open gives.
+    if (best >= 0)
+        selectRun(best);
+    else
+        selectLastRun();
 }
 
 void Document::invalidateTimeBaselines() const

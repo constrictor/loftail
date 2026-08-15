@@ -28,8 +28,8 @@ class TestRunPane : public QObject
 private:
     static constexpr auto kPattern = "%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n";
 
-    // Three runs plus a leading preamble record, so the list has five rows counting
-    // "All runs" and the newest-run default is not row 1.
+    // Three runs plus a leading preamble record, so the list has six rows counting
+    // "Last run" and "All runs", and no run's row coincides with either of those.
     static constexpr auto kLog =
         "2026-01-01 10:00:00,000 [main] INFO  boot - preamble line\n"
         "2026-01-01 10:00:01,000 [main] INFO  boot - RUN START one\n"
@@ -61,6 +61,8 @@ private:
 
 private slots:
     void theRunsAreAListWithTheSelectedRunOnIt();
+    void theLastRunEntryIsFirstAndIsNotARun();
+    void aLogWithNoRunsStillOffersLastRun();
     void theRunListTakesTheSpareHeight();
     void arrowingThroughTheListSelectsARun();
     void repopulatingTheListIsNotAChoice();
@@ -77,15 +79,79 @@ void TestRunPane::theRunsAreAListWithTheSelectedRunOnIt()
 
     QListWidget *list = runList(pane);
     QVERIFY(list);
-    QCOMPARE(list->count(), 5);          // "All runs" + preamble + three runs
-    QCOMPARE(list->currentRow(), 4);     // newest run selected by setRunStart
+    QCOMPARE(list->count(), 6);          // "Last run" + "All runs" + preamble + three
+    // The newest run is what is on screen, but what is SELECTED is the standing
+    // instruction that put it there — the pane reads the mode off the document rather
+    // than inferring it from the selection being the last ordinal.
+    QCOMPARE(list->currentRow(), RunPane::kLastRunRow);
+    QVERIFY(doc.followingLastRun());
+    QCOMPARE(doc.selectedRun(), 3);
 
     // Every row is readable at a dock's width without widening the pane past it: the
     // labels elide and the full text is on the tooltip, rather than the view growing a
     // horizontal scrollbar and pushing the pane's minimum width out.
     QCOMPARE(list->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
     QCOMPARE(list->textElideMode(), Qt::ElideRight);
-    QVERIFY(!list->item(4)->toolTip().isEmpty());
+    QVERIFY(!list->item(5)->toolTip().isEmpty());
+}
+
+void TestRunPane::theLastRunEntryIsFirstAndIsNotARun()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file), qPrintable(doc.lastError()));
+
+    RunPane pane;
+    pane.setDocument(&doc);
+    QListWidget *list = runList(pane);
+    QVERIFY(list);
+    QSignalSpy spy(&pane, &RunPane::runSelected);
+
+    // Row 0 carries a sentinel and not the ordinal it currently resolves to: the whole
+    // point of the entry is that the ordinal changes underneath it.
+    // (The pane only reports; MainWindow is what turns these into Document calls.)
+    list->setCurrentRow(RunPane::kFirstRunRow + 3); // pin the run that is last today
+    QCOMPARE(spy.size(), 1);
+    QCOMPARE(spy.takeFirst().at(0).toInt(), 3);
+
+    list->setCurrentRow(RunPane::kLastRunRow);
+    QCOMPARE(spy.size(), 1);
+    QCOMPARE(spy.takeFirst().at(0).toInt(), RunPane::kLastRun);
+
+    // ...and a pinned run puts the current row back on that run, never on row 0 —
+    // the two are indistinguishable by selectedRun() alone, which is why the pane asks.
+    doc.selectRun(3);
+    pane.refresh();
+    QCOMPARE(list->currentRow(), RunPane::kFirstRunRow + 3);
+    doc.selectLastRun();
+    pane.refresh();
+    QCOMPARE(list->currentRow(), RunPane::kLastRunRow);
+    QCOMPARE(spy.size(), 0); // neither repopulation was a choice
+}
+
+void TestRunPane::aLogWithNoRunsStillOffersLastRun()
+{
+    // No run-start pattern: nothing is detected, so "Last run" and "All runs" are the
+    // only rows and both mean the whole file. The entry is offered all the same —
+    // it is the pane's default, and a pattern typed a moment later fills it in.
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(file.open());
+    file.write(kLog);
+    file.flush();
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kPattern),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+
+    RunPane pane;
+    pane.setDocument(&doc);
+    QListWidget *list = runList(pane);
+    QVERIFY(list);
+    QCOMPARE(list->count(), 2);
+    QCOMPARE(list->currentRow(), RunPane::kLastRunRow);
+    QVERIFY(doc.followingLastRun());
+    QCOMPARE(doc.selectedRun(), -1);
+    QVERIFY(!doc.viewRestricted()); // ...which is the whole file, as it always was
 }
 
 void TestRunPane::theRunListTakesTheSpareHeight()
@@ -142,15 +208,18 @@ void TestRunPane::arrowingThroughTheListSelectsARun()
 
     // A list is walked with the arrow keys as much as it is clicked, so the selection
     // travels on currentRowChanged rather than on a click signal.
+    list->setCurrentRow(RunPane::kFirstRunRow + 3); // the newest run, pinned
+    QCOMPARE(spy.size(), 1);
+    spy.clear();
     list->setFocus();
-    QTest::keyClick(list, Qt::Key_Up); // row 4 (newest) -> row 3
+    QTest::keyClick(list, Qt::Key_Up); // one row up == the run before it
     QCOMPARE(spy.size(), 1);
-    QCOMPARE(spy.takeFirst().at(0).toInt(), 2); // row 3 == runs()[2]
+    QCOMPARE(spy.takeFirst().at(0).toInt(), 2);
 
-    // Row 0 is "All runs", which is run index -1 and not a run.
-    list->setCurrentRow(0);
+    // Row 1 is "All runs", which is run index -1 and not a run.
+    list->setCurrentRow(RunPane::kAllRunsRow);
     QCOMPARE(spy.size(), 1);
-    QCOMPARE(spy.takeFirst().at(0).toInt(), -1);
+    QCOMPARE(spy.takeFirst().at(0).toInt(), RunPane::kAllRuns);
 }
 
 void TestRunPane::repopulatingTheListIsNotAChoice()
@@ -170,7 +239,7 @@ void TestRunPane::repopulatingTheListIsNotAChoice()
     // reporting one would yank the view to another run while the log was merely growing.
     pane.refresh();
     QCOMPARE(spy.size(), 0);
-    QCOMPARE(list->currentRow(), 4);
+    QCOMPARE(list->currentRow(), RunPane::kLastRunRow);
 
     pane.setDocument(nullptr);
     QCOMPARE(spy.size(), 0);

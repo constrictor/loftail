@@ -23,8 +23,9 @@ using namespace loftail;
 //   (b) selecting a run restricts the visible subset with a correct sourceRow map;
 //   (c) run ∩ user filter composes in one pass;
 //   (d) live append inside the last run grows the view;
-//   (e) live append that STARTS a new run freezes the watched run and lists the new
-//       one (the "stay on current run" decision) without auto-jumping;
+//   (e) live append that STARTS a new run freezes a PINNED run and lists the new one
+//       (the "stay on current run" decision) without auto-jumping — while the pane's
+//       default, following the last run, retargets onto it;
 //   (f) an earlier selected run is untouched by appends;
 //   (g) rescan re-detects runs and defaults to the newest.
 class TestRunSelect : public QObject
@@ -95,6 +96,8 @@ private slots:
     void selectAllRunsShowsWholeFile();
     void liveAppendGrowsLastRun();
     void liveNewRunStaysOnCurrent();
+    void liveNewRunIsFollowedWhenLastRunIsSelected();
+    void followingSurvivesAPatternWithNoMatchesYet();
     void liveEarlierRunUnaffectedByAppend();
     void rescanReDetectsAndSelectsNewest();
 
@@ -325,6 +328,11 @@ void TestRunSelect::liveNewRunStaysOnCurrent()
     QVERIFY(openDoc(doc, path));
     doc.setRunStart(QString::fromLatin1(kMarker), false, Qt::CaseInsensitive);
     QCOMPARE(doc.selectedRun(), 1);
+    // PINNED to run 1, which is where the "stay on current run" claim lives now: the
+    // pane's default is to FOLLOW the last run, and that one moves (the test below).
+    // Picking the run that happens to be last is deliberately not the same gesture.
+    doc.selectRun(1);
+    QVERIFY(!doc.followingLastRun());
     doc.applyFilters();
 
     LogModel model(&doc);
@@ -344,12 +352,107 @@ void TestRunSelect::liveNewRunStaysOnCurrent()
     QCOMPARE(doc.runs().size(), 3);            // the new run is listed
     QCOMPARE(doc.selectedRun(), 1);            // selection unchanged — stay on current
     QCOMPARE(doc.filtered().recordCount(), 2); // view FROZEN at the boundary
+    QVERIFY(!doc.retargetLastRun());           // ...and nothing retargets a pinned run
 
     // Switching to the new run shows the appended records.
     doc.selectRun(2);
     doc.applyFilters();
     QCOMPARE(doc.filtered().recordCount(), 3);
     QCOMPARE(doc.filtered().sourceRow(0), 4); // the new banner
+}
+
+void TestRunSelect::liveNewRunIsFollowedWhenLastRunIsSelected()
+{
+    // The other half of the decision above, and the pane's DEFAULT (SPEC.md §3a):
+    // "Last run" is not an ordinal but a standing instruction, so a restart moves the
+    // view onto the run that just started rather than leaving it on the finished one.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("livelastrun.log"));
+
+    QByteArray whole;
+    int sec = 0;
+    whole += banner(sec++, 0);
+    whole += rec(sec++, "t1", "INFO ", "svc", "a0");
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY(openDoc(doc, path));
+    doc.setRunStart(QString::fromLatin1(kMarker), false, Qt::CaseInsensitive);
+    QVERIFY(doc.followingLastRun()); // what setRunStart leaves behind, unasked
+    QCOMPARE(doc.selectedRun(), 0);
+    doc.applyFilters();
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+    QCOMPARE(doc.filtered().recordCount(), 2);
+
+    // Growth INSIDE the run is not a retarget: the selection is already the last run,
+    // so nothing moves and the caller is told so — this is the answer on every tick
+    // but a restart, and the one that keeps the re-apply out of the tail path.
+    QVERIFY(append(path, rec(sec++, "t1", "INFO ", "svc", "a1")));
+    live.checkNow();
+    QCOMPARE(doc.filtered().recordCount(), 3);
+    QVERIFY(!doc.retargetLastRun());
+
+    // The app restarts. The append itself still freezes at the boundary — the ingest
+    // is mid-flight and must not mix two runs' records — and the retarget afterwards
+    // is a whole re-apply, which is why it is the caller who does it.
+    QByteArray chunk;
+    chunk += banner(sec++, 1);
+    chunk += rec(sec++, "t1", "INFO ", "svc", "b0");
+    QVERIFY(append(path, chunk));
+    live.checkNow();
+    QCOMPARE(doc.runs().size(), 2);
+    QCOMPARE(doc.filtered().recordCount(), 3); // frozen, as for a pinned run
+
+    QVERIFY(doc.retargetLastRun());
+    QCOMPARE(doc.selectedRun(), 1);
+    QVERIFY(doc.followingLastRun()); // still following, ready for the next restart
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 2);
+    QCOMPARE(doc.filtered().sourceRow(0), 3); // the new banner
+    QVERIFY(!doc.retargetLastRun());          // idempotent once it has landed
+}
+
+void TestRunSelect::followingSurvivesAPatternWithNoMatchesYet()
+{
+    // "Show nothing if there is nothing" is not what a run-less file does: with no run
+    // detected there is no bound, and a file with no runs has always been the whole
+    // file. Following it is then inert until the first marker turns up — at which
+    // point it becomes a genuine restriction, with no gesture from the user.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("nomarkers.log"));
+
+    int sec = 0;
+    QVERIFY(writeWhole(path, rec(sec++, "t1", "INFO ", "svc", "a0")
+                                 + rec(sec++, "t1", "INFO ", "svc", "a1")));
+    Document doc;
+    QVERIFY(openDoc(doc, path));
+    doc.setRunStart(QString::fromLatin1(kMarker), false, Qt::CaseInsensitive);
+    QVERIFY(doc.runs().isEmpty());
+    QVERIFY(doc.followingLastRun());
+    QCOMPARE(doc.selectedRun(), -1);
+    QVERIFY(!doc.viewRestricted()); // the whole file
+    doc.applyFilters();
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+    QCOMPARE(doc.filtered().recordCount(), 2);
+
+    QVERIFY(append(path, banner(sec++, 0) + rec(sec++, "t1", "INFO ", "svc", "b0")));
+    live.checkNow();
+    QCOMPARE(doc.runs().size(), 2); // the preamble the marker created, and the run
+
+    QVERIFY(doc.retargetLastRun());
+    QCOMPARE(doc.selectedRun(), 1);
+    QVERIFY(doc.viewRestricted());
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 2);
+    QCOMPARE(doc.filtered().sourceRow(0), 2); // the banner
 }
 
 void TestRunSelect::liveEarlierRunUnaffectedByAppend()

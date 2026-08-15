@@ -32,6 +32,16 @@ class RunPane : public QWidget
 public:
     explicit RunPane(QWidget *parent = nullptr);
 
+    // The list's two fixed rows, and the run index each carries. Row 0 is "Last run"
+    // — not a run but a standing instruction to show whichever run is last, which is
+    // why it needs a sentinel of its own rather than the ordinal it currently means:
+    // the whole point is that the ordinal changes underneath it (SPEC.md §3a).
+    static constexpr int kLastRunRow  = 0;
+    static constexpr int kAllRunsRow  = 1;
+    static constexpr int kFirstRunRow = 2;   // row of runs().at(0)
+    static constexpr int kLastRun     = -2;  // runSelected() payload for row 0
+    static constexpr int kAllRuns     = -1;  // ...and for row 1
+
     // Rebind to a document (or nullptr to clear). Fills the pattern field from the
     // document's configured matcher and rebuilds the run list.
     void setDocument(Document *document);
@@ -46,8 +56,9 @@ signals:
     // FormatSettings (persisting it), reconfigures the Document, and re-applies.
     void runStartChanged(const QString &pattern, bool regex, bool caseSensitive);
 
-    // The user chose a run to view: an index into Document::runs(), or -1 for the
-    // explicit "All runs" entry (no restriction).
+    // The user chose a run to view: an index into Document::runs(), kAllRuns for the
+    // explicit "All runs" entry (no restriction), or kLastRun for "whichever run is
+    // last", which keeps moving as the log grows.
     void runSelected(int runIndex);
 
 private:
@@ -65,7 +76,7 @@ private:
     QLabel     *m_info = nullptr;   // "N runs" / invalid-regex notice
     // The run list is the one thing in this pane that GROWS: it is as long as the log
     // has runs, which is unknown when the pane is built and changes while it scans.
-    // Row 0 is "All runs"; row i+1 is runs().at(i).
+    // Row 0 is "Last run", row 1 is "All runs"; row i + kFirstRunRow is runs().at(i).
     QListWidget *m_runList = nullptr;
 };
 

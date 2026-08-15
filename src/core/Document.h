@@ -236,14 +236,15 @@ public:
     };
 
     // Configure the run-start matcher (whole-line match, invariant #8 via the
-    // Decoder), re-detect runs over the current index, and select the newest run.
+    // Decoder), re-detect runs over the current index, and select the last run.
     // An empty pattern disables run splitting (the whole file is one view again).
     void setRunStart(const QString &pattern, bool regex, Qt::CaseSensitivity cs);
 
     // Rebuild the run list from the current index using the configured matcher.
     // Call after indexing finishes and after a rescan (the index just changed).
-    // Preserves the current selection ordinal (clamped); the caller then picks a
-    // selection policy (selectNewestRun / selectRunByStart).
+    // Preserves the current selection ordinal (clamped) — or re-points it at the new
+    // last run while following one; the caller then picks a selection policy
+    // (selectLastRun / selectRunByStart).
     void detectRuns();
 
     // Incrementally fold newly-appended records [oldRecordCount, size) into the run
@@ -251,15 +252,38 @@ public:
     // last run's end become finite automatically (the next marker's offset), so a
     // watched last run freezes at the boundary and the new run appears in the list
     // (the "stay on current run" behaviour). Returns true when the run list changed.
+    //
+    // It deliberately does NOT move a follow-the-last-run selection, even though that
+    // selection is exactly the one that wants to move: the live append is mid-flight
+    // here, and the frozen boundary above is what keeps the rows already in the view
+    // from mixing with the new run's. The caller retargets afterwards, with
+    // retargetLastRun(), which is a whole re-apply and not an append.
     bool updateRunsAfterAppend(int oldRecordCount);
 
     // Select which run restricts the view: an index into runs(), or -1 for "all
     // runs" (no restriction). Recomputes the cached view interval. The caller
     // re-applies via the model-reset path (applyFilters wrapped in a model reset).
+    // An explicit pick, so it stops following the last run.
     void selectRun(int index);
-    void selectNewestRun() { selectRun(m_runs.isEmpty() ? -1 : int(m_runs.size()) - 1); }
+
+    // Follow the LAST run: the "Last run" entry the Runs pane opens on (SPEC.md §3a).
+    // Not a synonym for selectRun(runs().size() - 1) — it is STICKY, so when a new run
+    // is appended the selection moves to it rather than staying pinned to the run that
+    // was last when it was chosen. With no runs at all (no pattern, or a pattern that
+    // has matched nothing yet) it is the whole file, which is what a file with no runs
+    // has always shown.
+    void selectLastRun();
+    bool followingLastRun() const { return m_followLastRun; }
+    int  lastRunIndex() const { return m_runs.isEmpty() ? -1 : int(m_runs.size()) - 1; }
+
+    // Move a follow-the-last-run selection onto the run that is last NOW. Returns true
+    // when the selection actually moved, which is the caller's cue to re-apply the view
+    // (the previous run's rows are still in it). False — the ordinary answer on every
+    // tick that appends no run — leaves everything alone.
+    bool retargetLastRun();
+
     // Re-resolve a persisted selection to an ordinal by start offset, then timestamp,
-    // else fall back to the newest run (offsets/ordinals shift across sessions).
+    // else fall back to the last run (offsets/ordinals shift across sessions).
     void selectRunByStart(qint64 startOffset, qint64 startTimestamp);
 
     // The baseline instant for TimeDisplay::RunSeconds — "seconds since this
@@ -551,6 +575,11 @@ private:
     // selected run's byte interval is cached in m_viewStart/m_viewEnd.
     QVector<Run> m_runs;
     int          m_selectedRun = -1;   // index into m_runs, or -1 == all runs
+    // "Last run" (SPEC.md §3a) is a MODE and not a third value of m_selectedRun: the
+    // selection has to name a concrete run for every bound, baseline and label below,
+    // so what is sticky is the rule that re-points it. Default true — the entry the
+    // Runs pane opens on. A document with no runs follows nothing and shows the file.
+    bool         m_followLastRun = true;
     TextMatcher  m_runStartMatcher;
     bool         m_runStartActive = false;
     bool         m_viewRestricted = false;

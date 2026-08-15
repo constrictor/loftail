@@ -211,8 +211,10 @@ void TestSessionGui::runSelectionThroughUiAndPersists()
         apply->click();
         QTest::qWait(50);
 
-        QCOMPARE(runs->count(), 4);       // "All runs" + 3 detected runs
-        QCOMPARE(runs->currentRow(), 3);  // newest selected by default
+        QCOMPARE(runs->count(), 5);      // "Last run" + "All runs" + 3 detected runs
+        // Not row 4 — the newest run is what is SHOWN, but what is selected is the
+        // standing "Last run" instruction that put it there (SPEC.md §3a).
+        QCOMPARE(runs->currentRow(), RunPane::kLastRunRow);
 
         w.close(); // saves the session incl. the run-start pattern + selection
     }
@@ -230,7 +232,11 @@ void TestSessionGui::runSelectionThroughUiAndPersists()
         auto *runs = rp->findChild<QListWidget *>(QStringLiteral("runList"));
         QVERIFY(edit && runs);
         QCOMPARE(edit->text(), QStringLiteral("RUN START")); // restored
-        QCOMPARE(runs->count(), 4);                          // runs re-detected
+        QCOMPARE(runs->count(), 5);                          // runs re-detected
+        // "Last run" comes back as itself and not as the run it happened to resolve to
+        // last time: saving that run would restore the session pinned to a run the
+        // application has since finished, which is the one thing it exists not to do.
+        QCOMPARE(runs->currentRow(), RunPane::kLastRunRow);
         w.close();
     }
 }
