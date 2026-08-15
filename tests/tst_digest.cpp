@@ -366,7 +366,7 @@ void TestDigest::digestNeverLeavesTheSelectedRun()
     QVERIFY(openDoc(doc, path));
     doc.setRunStart(QString::fromLatin1(kMarker), /*regex=*/false, Qt::CaseSensitive);
     doc.detectRuns();
-    doc.selectNewestRun();
+    doc.selectLastRun();
 
     doc.highlighters().rules = {textRule("disk")};
     doc.refreshHighlighting();

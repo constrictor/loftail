@@ -133,11 +133,19 @@ private slots:
     // Run selection (SPEC.md §3a). The run-start pattern changed in the Run pane:
     // store it in the format (persist it), reconfigure the document, and re-apply.
     void onRunStartChanged(const QString &pattern, bool regex, bool caseSensitive);
-    // A run was chosen in the Run pane (-1 == all runs): restrict the view and set
-    // follow state (follow only when viewing the newest run or all runs).
+    // A run was chosen in the Run pane (RunPane::kAllRuns == all runs, kLastRun ==
+    // follow the last one): restrict the view and set follow state (follow only when
+    // viewing the newest run or all runs).
     void onRunSelected(int runIndex);
 
 private:
+    // A live append may have started a NEW run, and a document following the last one
+    // (SPEC.md §3a) then has to move onto it. Nothing about that is an append: the
+    // previous run's records leave the view wholesale, so this is the same re-apply an
+    // explicit run switch does, just with nobody having clicked anything. A no-op —
+    // and one integer compare — on every tick that starts no run, which is all of them
+    // but the restart.
+    void followLastRunIfMoved(DocumentContext *ctx);
     // Whether a filter re-apply keeps every view of the file where it was (SPEC.md §6)
     // or leaves the caller to position it. Yes is the default because a filter edit is
     // the case the feature exists for. No is for the two callers that position EVERY

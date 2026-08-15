@@ -1687,17 +1687,23 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
     doc->resolveHighlighters();
     // Runs are detected now that the full index exists (§3a). Restore the
     // persisted selection if this open came from session restore, else default
-    // to the newest run (decision: open a live log on its current run).
+    // to the last run — and to FOLLOWING it (decision: open a live log on the run
+    // the application is in now, and stay on it across a restart).
     doc->detectRuns();
     if (ctx->pendingRunRestore) {
         if (ctx->pendingRunRestore->all)
-            doc->selectRun(-1);
+            doc->selectRun(RunPane::kAllRuns);
+        else if (ctx->pendingRunRestore->startOffset < 0)
+            // No offset saved with runAll false is how "Last run" is written: it names
+            // no run because it names none — see saveSession(), which is also why this
+            // needed no schema bump.
+            doc->selectLastRun();
         else
             doc->selectRunByStart(ctx->pendingRunRestore->startOffset,
                                   ctx->pendingRunRestore->startTimestamp);
         ctx->pendingRunRestore.reset();
     } else {
-        doc->selectNewestRun();
+        doc->selectLastRun();
     }
     if (isActive && m_runPane)
         m_runPane->refresh();
@@ -1753,6 +1759,11 @@ void MainWindow::startWatching(DocumentContext *ctx)
             // handles them below this line works perfectly with one tab open and never
             // fires in real use.
             handleAlerts(ctx);
+            // ABOVE the early return for the same reason, and a stronger one: this
+            // moves what a background tab is SHOWING (§3a). Below the line, a log that
+            // restarts while its tab is in the background would stay on the finished
+            // run until something else re-applied its view.
+            followLastRunIfMoved(ctx);
             if (ctx != activeContext()) {
                 updateStatus();
                 return;
@@ -2273,7 +2284,12 @@ void MainWindow::onRunSelected(int runIndex)
         return;
     Document *doc = ctx->doc.get();
 
-    doc->selectRun(runIndex);
+    // "Last run" is not an ordinal, so it cannot travel as one: it is the standing
+    // instruction the document keeps and re-points itself by as runs appear (§3a).
+    if (runIndex == RunPane::kLastRun)
+        doc->selectLastRun();
+    else
+        doc->selectRun(runIndex);
     // No anchor: every view is positioned explicitly at the end of this function, so
     // anchoring first would measure a wrapped selection and scroll to a place the very
     // next statement overwrites — one wasted pass and one visible jump.
@@ -2302,6 +2318,40 @@ void MainWindow::onRunSelected(int runIndex)
             v->logView()->followTail();
         else
             v->logView()->setCurrentRecord(0); // top of the run; detaches follow
+    }
+}
+
+void MainWindow::followLastRunIfMoved(DocumentContext *ctx)
+{
+    if (!ctx || !ctx->doc->retargetLastRun())
+        return;
+
+    applyFiltersFor(ctx, KeepPosition::No);
+    // Rebuilt, unlike on an explicit run switch: the digest is bounded by the selected
+    // run, and here the run changed under a strip nobody asked to change — its rows
+    // would go on being read as this run's matches while describing the previous one.
+    rebuildDigestFor(ctx);
+
+    // The panes describe the ACTIVE document only (as everywhere else on the ingest
+    // path): a background log starting a new run must not repaint the pane the user is
+    // reading. Its own pane state is rebuilt when its tab is next selected.
+    if (ctx == activeContext()) {
+        if (m_runPane)
+            m_runPane->refresh();
+        // "Seconds from run start" is counted from the SELECTED run, and the selected
+        // run just moved — exactly the case onRunSelected() re-renders these for.
+        if (m_filterPane)
+            m_filterPane->refreshTimeBounds();
+        if (m_highlighterPane)
+            m_highlighterPane->refreshTimeBounds();
+    }
+
+    // The follow state is left alone rather than re-attached, exactly as after a
+    // rotation (rescanned) — which is the same event from the view's side: every row
+    // it held was replaced. A reader who had scrolled back stays detached.
+    for (DocumentView *v : std::as_const(ctx->views)) {
+        if (v->logView()->following())
+            v->logView()->followTail();
     }
 }
 
@@ -2864,9 +2914,19 @@ void MainWindow::saveSession()
         // Run selection (§3a). The run-start pattern belongs to the settings tree; here
         // we save WHICH run was viewed by its stable start offset/timestamp (not the ordinal,
         // which shifts as the file grows). selectedRun() == -1 means "all runs" when a
-        // pattern is set, otherwise nothing meaningful (restore falls back to newest).
+        // pattern is set, otherwise nothing meaningful (restore falls back to the last run).
+        //
+        // "Last run" is asked FIRST and saves no offset at all, because it names no run:
+        // saving the run it currently resolves to would restore it PINNED to a run that
+        // is finished by the next launch, which is the one thing it exists not to do. It
+        // rides the existing schema — runAll false with no offset was already "nothing
+        // meaningful, fall back to the last run", which is precisely this — so neither
+        // store's version moves and an older binary reads the file unchanged.
         const int sel = doc->selectedRun();
-        if (sel >= 0 && sel < doc->runs().size()) {
+        if (doc->followingLastRun()) {
+            d.runAll = false;
+            d.selectedRunStartOffset = -1;
+        } else if (sel >= 0 && sel < doc->runs().size()) {
             d.runAll = false;
             d.selectedRunStartOffset = doc->runs().at(sel).startOffset;
             d.selectedRunStartTimestamp = doc->runs().at(sel).startTimestamp;

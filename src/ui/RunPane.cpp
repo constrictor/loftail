@@ -88,7 +88,12 @@ void RunPane::buildUi()
     connect(m_runList, &QListWidget::currentRowChanged, this, [this](int row) {
         if (m_populating || row < 0)
             return;
-        emit runSelected(row - 1); // row 0 == "All runs" == run index -1
+        if (row == kLastRunRow)
+            emit runSelected(kLastRun);
+        else if (row == kAllRunsRow)
+            emit runSelected(kAllRuns);
+        else
+            emit runSelected(row - kFirstRunRow);
     });
 }
 
@@ -140,13 +145,24 @@ void RunPane::rebuildRunList()
     const int scroll = m_runList->verticalScrollBar()->value();
     m_runList->clear();
 
-    // Row 0 is not a run, so it is italic for the same reason AxisEditor's "Others" is:
-    // it is the entry that lifts the restriction, and a log may well start a run with a
-    // line that reads like this one.
+    // Neither of the first two rows is a run, so both are italic for the same reason
+    // AxisEditor's "Others" is: they are the entries that say something ABOUT the list
+    // rather than name a member of it, and a log may well start a run with a line that
+    // reads like either of them.
+    QFont fixedFont = m_runList->font();
+    fixedFont.setItalic(true);
+
+    // Row 0, and first because it is the one the pane opens on: a standing instruction
+    // to show whichever run is last, not a run. It is what makes a live log show the
+    // application's current run across a restart — the run below it is pinned, this
+    // one moves (SPEC.md §3a).
+    auto *lastRun = new QListWidgetItem(tr("Last run"), m_runList);
+    lastRun->setFont(fixedFont);
+    lastRun->setToolTip(tr("Always show the newest run, switching to each new one as it "
+                           "starts. With no runs detected, the whole file."));
+
     auto *allRuns = new QListWidgetItem(tr("All runs"), m_runList);
-    QFont allFont = m_runList->font();
-    allFont.setItalic(true);
-    allRuns->setFont(allFont);
+    allRuns->setFont(fixedFont);
     allRuns->setToolTip(tr("Show the whole file, with no run restriction."));
 
     if (m_document) {
@@ -173,8 +189,14 @@ void RunPane::rebuildRunList()
             item->setToolTip(label);
         }
 
+        // Following the last run is read off the document, never inferred from the
+        // selection matching runs().size() - 1: those two agree exactly when following
+        // is doing its job, and telling them apart is the whole feature — a run the
+        // user pinned while it was last must not silently start moving.
         const int sel = m_document->selectedRun();
-        m_runList->setCurrentRow(sel >= 0 ? sel + 1 : 0);
+        m_runList->setCurrentRow(m_document->followingLastRun() ? kLastRunRow
+                                 : sel >= 0                     ? sel + kFirstRunRow
+                                                                : kAllRunsRow);
         m_runList->verticalScrollBar()->setValue(scroll);
 
         // Status line under the pattern field.
