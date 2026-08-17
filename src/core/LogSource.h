@@ -183,9 +183,12 @@ std::unique_ptr<LogSource> openContainerSource(const QString &path,
 // identity() follows the inode it holds even after a rename — this re-resolves the
 // path, so the M6 watch loop can detect a rotation that replaced the path with a
 // NEW file (rename + recreate) by comparing this against the open source's
-// identity() (invariant #5, §6). Returns 0 when the path cannot be stat'd or the
-// platform has no cheap identity (then rotation-by-replace relies on size/truncation
-// detection — the Windows path, deferred).
+// identity() (invariant #5, §6). Implemented for both platforms in SharedReadFile.cpp
+// — device+inode from a stat on POSIX, volume serial + file index from a handle on
+// Windows. Returns 0 for "unknown", which is every way of not getting an answer: the
+// path is not there, the file will not open, or the volume has no index that fits (ReFS).
+// Every caller reads 0 as "not replaced" and falls back to size/truncation and the
+// HeadWitness content check, so an unknown never triggers a rescan on its own.
 quint64 pathIdentity(const QString &path);
 
 } // namespace loftail

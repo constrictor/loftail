@@ -12,9 +12,6 @@
 #if defined(Q_OS_WIN)
 #else
 #include "MappedLogSource.h"
-#include <QFile>
-#include <sys/stat.h>
-#include <sys/types.h>
 #endif
 
 namespace loftail {
@@ -127,21 +124,9 @@ std::unique_ptr<LogSource> openContainerSource(const QString &path, OpenPolicy p
 #endif
 }
 
-quint64 pathIdentity(const QString &path)
-{
-#if defined(Q_OS_WIN)
-    // Windows file-identity via GetFileInformationByHandle lands with the M6
-    // Windows work; until then rotation-by-replace there falls back to size checks.
-    Q_UNUSED(path);
-    return 0;
-#else
-    struct stat st{};
-    const QByteArray local = QFile::encodeName(path);
-    if (::stat(local.constData(), &st) != 0)
-        return 0;
-    // Same formula as MappedLogSource::identity() so the two are comparable.
-    return (static_cast<quint64>(st.st_dev) << 32) ^ static_cast<quint64>(st.st_ino);
-#endif
-}
+// pathIdentity() used to live here, next to the platform selection above, with its
+// Windows half stubbed to 0. It is now implemented for both platforms in
+// SharedReadFile.cpp: asking Windows for a file's identity means opening a handle, and
+// opening a handle without disturbing the writer is that file's entire subject.
 
 } // namespace loftail
