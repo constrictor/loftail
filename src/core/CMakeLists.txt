@@ -76,6 +76,10 @@ add_library(loftail_core STATIC
     HostBookmarkStore.cpp
     HostBookmarkStore.h
     MappedLogSource.h
+    # Reading a file its writer is still rolling. The one place a share mode is chosen,
+    # and the only file of ours that includes <windows.h> on purpose (see the header).
+    SharedReadFile.cpp
+    SharedReadFile.h
     BufferedLogSource.cpp
     BufferedLogSource.h
     # The content check both local sources need and neither the inode nor the size can
