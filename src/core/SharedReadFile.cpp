@@ -1,5 +1,13 @@
 #include "SharedReadFile.h"
 
+#include "LogSource.h" // pathIdentity(), implemented at the bottom of this file
+
+#if !defined(Q_OS_WIN)
+#include <QFile>
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
+
 #if defined(Q_OS_WIN)
 // The build already defines both PUBLIC on loftail_core (src/core/CMakeLists.txt); they
 // are repeated here so that this file is correct on its own terms, since it is the one
@@ -128,5 +136,56 @@ QByteArray SharedReadFile::read(qint64 offset, qint64 length)
 }
 
 #endif
+
+// --- the file's identity, which is the other thing a handle is for -----------
+//
+// Declared in LogSource.h and used by both local sources' wasReplaced(); see there for
+// what the number means and why it is re-resolved from the PATH rather than read off
+// the open handle.
+
+quint64 pathIdentity(const QString &path)
+{
+#if defined(Q_OS_WIN)
+    // Volume serial + file index, which Windows will only tell you through a handle —
+    // so this is a second open, and it carries the same discipline as the first.
+    //
+    // FILE_READ_ATTRIBUTES asks for no data access at all, so it succeeds on a file
+    // opened for exclusive writing; and the share mode is again all three bits, which
+    // matters MORE here than in open(): this runs on every watch tick, so a stingier
+    // one would block the writer's roll for a moment 750 ms at a time — intermittently
+    // breaking the very rotation it is being called to detect.
+    const QString native = QDir::toNativeSeparators(path);
+    const HANDLE h = ::CreateFileW(reinterpret_cast<const wchar_t *>(native.utf16()),
+                                   FILE_READ_ATTRIBUTES,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0; // not there, or not answering: "unknown", never "replaced"
+    BY_HANDLE_FILE_INFORMATION info{};
+    const bool ok = ::GetFileInformationByHandle(h, &info);
+    ::CloseHandle(h);
+    if (!ok)
+        return 0;
+
+    const quint64 index = (static_cast<quint64>(info.nFileIndexHigh) << 32)
+                          | static_cast<quint64>(info.nFileIndexLow);
+    // ReFS has a 128-bit file id that does not fit here and reports 0 through this call.
+    // Answer "unknown" rather than a value every file on the volume would share, which
+    // would read as "not replaced" for a genuine rotation AND as a match between two
+    // different files; the HeadWitness content check is the fallback either way.
+    if (index == 0)
+        return 0;
+    // Folded the same way as the POSIX branch below, so the two encodings are the same
+    // shape: the volume distinguishes files that share an index across volumes.
+    return (static_cast<quint64>(info.dwVolumeSerialNumber) << 32) ^ index;
+#else
+    struct stat st{};
+    const QByteArray local = QFile::encodeName(path);
+    if (::stat(local.constData(), &st) != 0)
+        return 0;
+    // Same formula as MappedLogSource::identity() so the two are comparable.
+    return (static_cast<quint64>(st.st_dev) << 32) ^ static_cast<quint64>(st.st_ino);
+#endif
+}
 
 } // namespace loftail

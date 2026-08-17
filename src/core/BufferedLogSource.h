@@ -53,10 +53,11 @@ private:
     // cannot answer "was this file replaced".
     quint64    m_pathIdentity = 0;
     bool       m_truncated = false;
-    // The file's first bytes, to catch a rewrite in place (HeadWitness.h). It carries
-    // more weight here than in the mapped source: on Windows pathIdentity() is still a
-    // stub, so wasReplaced() is always false there and this is the only thing that can
-    // tell a rotation apart from an append at all.
+    // The file's first bytes, to catch a rewrite in place (HeadWitness.h) — the one
+    // rotation shape no identity can see, since the file that was rewritten is the same
+    // file. It used to carry more weight here than in the mapped source, because
+    // pathIdentity() was stubbed on Windows and wasReplaced() was therefore always
+    // false there; now that it is real, the two sources lean on this equally.
     HeadWitness m_head;
     QByteArray m_buffer;      // backs the QByteArrayView returned by bytes()
 };

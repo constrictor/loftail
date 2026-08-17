@@ -30,6 +30,11 @@ namespace loftail {
 //
 // Read-only and positioned: every read names its own offset, because the callers are
 // paint-path reads into an index of byte offsets rather than a stream being consumed.
+//
+// pathIdentity() (declared in LogSource.h) is implemented in this class's .cpp for both
+// platforms rather than in LogSourceFactory.cpp where it used to live: Windows will only
+// name a file's identity through a handle, so it is a second open with the same share
+// bits and the same reason for them — and it runs on every watch tick.
 class SharedReadFile
 {
 public:

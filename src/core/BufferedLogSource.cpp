@@ -33,20 +33,22 @@ bool BufferedLogSource::wasReplaced() const
 {
     // Compare the path's identity NOW against the one captured at open — not against
     // identity(), which is the size+mtime stand-in below and moves on every append.
-    // On Windows pathIdentity() is still a stub returning 0, so this is false there
-    // and rotation-by-replace falls back to the size/truncation checks, exactly as
-    // before (LogSourceFactory.cpp, M6 Windows work).
+    // Real on both platforms since M6's Windows work was finished (SharedReadFile.cpp);
+    // where it cannot answer it returns 0 on both sides of the comparison, and the
+    // guard below reads that as "not replaced" rather than as a rotation.
     const quint64 current = pathIdentity(m_path);
     return current != 0 && m_pathIdentity != 0 && current != m_pathIdentity;
 }
 
 bool BufferedLogSource::originVanished() const
 {
-    // Deliberately NOT pathIdentity() == 0, which is how MappedLogSource answers this.
-    // On Windows pathIdentity() is a stub that returns 0 unconditionally, so routing
-    // through it would report every open file as vanished the instant the watch ticked —
-    // and this is the Windows source. Ask the filesystem the question directly instead;
-    // it is the same stat either way and it is honest on both platforms (§6.5).
+    // Deliberately NOT pathIdentity() == 0, which is how MappedLogSource answers this,
+    // and it stayed that way after the Windows stub that first forced the split was
+    // replaced by a real implementation. 0 there means "unknown", which is a file that
+    // is gone AND a file that would not open AND a volume with no usable index (ReFS) —
+    // and only the first of those is a log that is not there. Asking the filesystem
+    // directly is the same question with one meaning, and it costs an attribute query
+    // rather than an open, on a path walked every watch tick (§6.5).
     return !QFileInfo::exists(m_path);
 }
 

@@ -303,9 +303,9 @@ endif()
 # LiveController::checkNow() against a real temp file. Core-only, GUILESS.
 #
 # POSIX-only: the harness relies on mmap seeing appended bytes and on renaming an
-# open file (rotation), plus stat-based path identity. Windows uses BufferedLogSource
-# and pathIdentity() there is still a stub (LogSourceFactory.cpp) — its rotation/
-# file-sharing semantics are exercised separately, by tst_sharedreadfile just below.
+# open file (rotation), plus stat-based path identity. Windows uses BufferedLogSource,
+# whose rotation and file-sharing semantics are exercised separately by the two ungated
+# tests just below — tst_sharedreadfile and tst_pathidentity.
 if(NOT WIN32)
     qt_add_executable(tst_tail tst_tail.cpp)
     target_link_libraries(tst_tail PRIVATE loftail_core Qt6::Test)
@@ -329,6 +329,16 @@ endif()
 qt_add_executable(tst_sharedreadfile tst_sharedreadfile.cpp)
 target_link_libraries(tst_sharedreadfile PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_sharedreadfile COMMAND tst_sharedreadfile)
+
+# The other half of what that note owed Windows: rotation-by-replace. pathIdentity() was
+# stubbed to 0 there for eight milestones, so a rolled log kept the old file's records
+# until its size happened to shrink. UNGATED and at the SOURCE level rather than the
+# controller's, because that is the layer the stub was in and the only layer where the
+# two platforms differ — tst_tail drives the same question through LiveController, and
+# is POSIX-only for reasons that have nothing to do with identity.
+qt_add_executable(tst_pathidentity tst_pathidentity.cpp)
+target_link_libraries(tst_pathidentity PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_pathidentity COMMAND tst_pathidentity)
 
 # The exec transport's commands and parsing, for a server that will not do SFTP.
 # UNGATED: the quoting is a security boundary and must be tested in every build, and the
