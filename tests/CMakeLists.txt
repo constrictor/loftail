@@ -305,7 +305,7 @@ endif()
 # POSIX-only: the harness relies on mmap seeing appended bytes and on renaming an
 # open file (rotation), plus stat-based path identity. Windows uses BufferedLogSource
 # and pathIdentity() there is still a stub (LogSourceFactory.cpp) — its rotation/
-# file-sharing semantics differ and must be exercised separately (not done yet).
+# file-sharing semantics are exercised separately, by tst_sharedreadfile just below.
 if(NOT WIN32)
     qt_add_executable(tst_tail tst_tail.cpp)
     target_link_libraries(tst_tail PRIVATE loftail_core Qt6::Test)
@@ -319,6 +319,16 @@ if(NOT WIN32)
     target_link_libraries(tst_waiting PRIVATE loftail_core Qt6::Test)
     add_test(NAME tst_waiting COMMAND tst_waiting)
 endif()
+
+# The two above are POSIX-only because of what they lean on; THIS one is what the note
+# above owes Windows, and it is therefore UNGATED and deliberately platform-shaped: the
+# claim is that appending to, renaming and deleting a log all still succeed while loftail
+# holds it open (invariant #5). On POSIX those are free and pass trivially. On Windows
+# they are a share mode that has to be asked for, and were not until the file-sharing
+# violation surfaced in CI as a delete that would not go through.
+qt_add_executable(tst_sharedreadfile tst_sharedreadfile.cpp)
+target_link_libraries(tst_sharedreadfile PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_sharedreadfile COMMAND tst_sharedreadfile)
 
 # The exec transport's commands and parsing, for a server that will not do SFTP.
 # UNGATED: the quoting is a security boundary and must be tested in every build, and the

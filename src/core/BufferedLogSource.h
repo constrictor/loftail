@@ -2,9 +2,9 @@
 
 #include "HeadWitness.h"
 #include "LogSource.h"
+#include "SharedReadFile.h"
 
 #include <QByteArray>
-#include <QFile>
 
 namespace loftail {
 
@@ -12,14 +12,14 @@ namespace loftail {
 // everywhere (ARCHITECTURE.md §6). On Windows it is PREFERRED over a mapping
 // because a held file mapping can block the writer from rotating or truncating —
 // exactly what a logging framework does — and under the always-watched model
-// that risk would apply to every open file. The Windows open uses full sharing
-// (FILE_SHARE_READ | WRITE | DELETE) so loftail never locks the writer out.
+// that risk would apply to every open file.
 //
-// NOTE (M2a, Linux dev host): this is compiled and unit-tested on POSIX via
-// QFile, which is portable, so the seam is real and exercised. The Windows-only
-// non-blocking share-mode open (CreateFile) is NOT reachable to build/test on
-// this machine and lands with the M6 Windows work; QFile already opens for
-// shared read on Windows, which is enough for the M2a read path.
+// The open itself uses full sharing (FILE_SHARE_READ | WRITE | DELETE) so that
+// loftail never locks the writer out; that is SharedReadFile's whole job, and the
+// share bits are the reason it exists rather than a plain QFile — see its header.
+// This class held a plain QFile until M6's Windows work was finally settled, and a
+// QFile's Windows open omits FILE_SHARE_DELETE — so for six milestones a log open in
+// a tab could not be rolled or deleted by the process writing it.
 class BufferedLogSource final : public LogSource
 {
 public:
@@ -39,7 +39,12 @@ private:
     quint64 computeIdentity() const;
     QByteArray readHead();
 
-    QFile      m_file;
+    SharedReadFile m_file;
+    // The path, kept here rather than asked of m_file: a handle opened by descriptor
+    // carries no name on either platform, and wasReplaced(), originVanished() and
+    // computeIdentity() all need one. It outlives close() for the same reason —
+    // "is it back yet?" is a question about a path, asked when nothing is open.
+    QString    m_path;
     qint64     m_size = 0;
     quint64    m_identity = 0;
     // The platform identity OF THE PATH as it stood at open, which is what
