@@ -76,6 +76,13 @@ constexpr int kSeedNameMaxChars = 40;
 // ten-million-record log as on a small one.
 constexpr int kFitSampleRecords = 400;
 constexpr int kFitNamesScanned = 20000;
+// A drag that has left the viewport scrolls on a timer (SPEC.md §5). 50 ms is a rate a
+// reader can steer by rather than one that overshoots the record they meant, and the
+// per-tick distance grows with how far outside the viewport the pointer is, so a long
+// haul does not take a minute — capped, because past a few lines a tick nobody can see
+// what is being selected anyway.
+constexpr int kAutoScrollIntervalMs = 50;
+constexpr int kAutoScrollMaxLines = 8;
 
 int clampColumnWidth(int w) { return qBound(kMinColumnWidth, w, kMaxColumnWidth); }
 
@@ -872,6 +879,31 @@ void LogView::selectRange(int anchor, int current)
     m_selection->setCurrentIndex(m_model->index(current, 0), QItemSelectionModel::NoUpdate);
 }
 
+// Ctrl+click (SPEC.md §5). Toggle, not ClearAndSelect: what makes this gesture worth
+// having is that everything else in the selection survives it — which is also why it
+// goes through the selection model directly rather than through selectRange(), whose
+// whole job is to replace the selection with one contiguous run.
+void LogView::toggleRecordSelection(int record)
+{
+    const int n = recordCount();
+    const int cols = m_model->columnCount();
+    if (n == 0 || cols == 0)
+        return;
+    record = qBound(0, record, n - 1);
+    // An explicit pick forgets a selection a filter had hidden, exactly as a plain click
+    // does (SPEC.md §6): the user is choosing records here and now.
+    m_stickySource = -1;
+    const QItemSelection row(m_model->index(record, 0), m_model->index(record, cols - 1));
+    m_selection->select(row, QItemSelectionModel::Toggle);
+    m_selection->setCurrentIndex(m_model->index(record, 0), QItemSelectionModel::NoUpdate);
+    // The focus and the anchor move even when the click took the record OUT: the anchor
+    // is where the pointer last was, and a Shift+click after this must extend from there.
+    m_current = record;
+    m_anchor = record;
+    recomputeGeometry();  // the focused record's wrapped height is part of the geometry
+    ensureRecordVisible(record);
+}
+
 QVector<int> LogView::selectedRecordsSorted() const
 {
     QVector<int> rows;
@@ -927,16 +959,139 @@ void LogView::ensureRecordVisible(int record)
         verticalScrollBar()->setValue(int(qMax<qint64>(0, recBottom - page)));
 }
 
+// A press picks a record; what the modifiers decide is what happens to the rest of the
+// selection (SPEC.md §5).
+//
+// LEFT button only. A right press must not move the selection, because the context menu
+// that follows it decides for itself whether to — and deliberately leaves a multi-record
+// selection alone, which a press that had already collapsed it would make impossible.
 void LogView::mousePressEvent(QMouseEvent *event)
 {
+    if (event->button() != Qt::LeftButton) {
+        QAbstractScrollArea::mousePressEvent(event);
+        return;
+    }
     const int record = recordAtViewportY(int(event->position().y()));
     if (record < 0) {
         QAbstractScrollArea::mousePressEvent(event);
         return;
     }
     setFocus();
-    const bool shift = event->modifiers().testFlag(Qt::ShiftModifier);
-    setCurrentRecord(record, shift);
+    // Shift outranks Ctrl: "extend to here" is what Shift+click has meant since M2 and
+    // goes on meaning exactly that, whatever else is held down.
+    if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+        setCurrentRecord(record, true);
+    } else if (event->modifiers().testFlag(Qt::ControlModifier)) {
+        // A Ctrl press deliberately does NOT arm a drag. An additive drag would have to
+        // remember the whole selection to put back the rows the pointer passed over and
+        // came back from, and toggling as it went would make the result depend on the
+        // path the pointer took rather than on its two ends.
+        toggleRecordSelection(record);
+        return;
+    } else {
+        setCurrentRecord(record, false);
+    }
+    m_dragging = true;
+    m_autoScrollY = int(event->position().y());
+}
+
+void LogView::mouseMoveEvent(QMouseEvent *event)
+{
+    // Mouse tracking is off, so a move only arrives while a button is down — there is no
+    // hover cost here at all, and the guard is about the presses this view did not take
+    // (a right press, or one that landed below the last record).
+    if (!m_dragging) {
+        QAbstractScrollArea::mouseMoveEvent(event);
+        return;
+    }
+    m_autoScrollY = int(event->position().y());
+    updateAutoScroll(m_autoScrollY);
+    extendDragTo(m_autoScrollY);
+}
+
+void LogView::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton) {
+        QAbstractScrollArea::mouseReleaseEvent(event);
+        return;
+    }
+    endDrag();
+    event->accept(); // the press was this view's to take, and so is the release ending it
+}
+
+void LogView::hideEvent(QHideEvent *event)
+{
+    // A view hidden mid-drag — its tab switched away, its window closed — never sees the
+    // release, so the drag ends here instead of leaving a timer scrolling a widget
+    // nobody is looking at.
+    endDrag();
+    QAbstractScrollArea::hideEvent(event);
+}
+
+void LogView::extendDragTo(int viewportY)
+{
+    // Clamped into the viewport: past either edge the drag is about the first or last
+    // record on screen, and the scrolling is the autoscroll timer's business.
+    const int h = qMax(1, viewport()->height());
+    const int record = recordAtViewportY(qBound(0, viewportY, h - 1));
+    if (record < 0 || record == m_current)
+        return;
+    // Through setCurrentRecord()'s extend path, so a drag and a Shift+click build a
+    // range the same way out of the same anchor.
+    setCurrentRecord(record, true);
+}
+
+void LogView::updateAutoScroll(int viewportY)
+{
+    if (viewportY >= 0 && viewportY < viewport()->height()) {
+        stopAutoScroll();
+        return;
+    }
+    if (!m_autoScrollTimer) {
+        m_autoScrollTimer = new QTimer(this);
+        m_autoScrollTimer->setInterval(kAutoScrollIntervalMs);
+        connect(m_autoScrollTimer, &QTimer::timeout, this, &LogView::autoScrollTick);
+    }
+    if (!m_autoScrollTimer->isActive())
+        m_autoScrollTimer->start();
+}
+
+void LogView::autoScrollTick()
+{
+    if (!m_dragging) {
+        stopAutoScroll();
+        return;
+    }
+    const int h = viewport()->height();
+    const int lh = lineHeight();
+    int lines = 0;
+    if (m_autoScrollY < 0)
+        lines = -(1 + qMin(kAutoScrollMaxLines - 1, -m_autoScrollY / lh));
+    else if (m_autoScrollY >= h)
+        lines = 1 + qMin(kAutoScrollMaxLines - 1, (m_autoScrollY - h) / lh);
+    if (lines == 0) {
+        stopAutoScroll();
+        return;
+    }
+    // The scrollbar, not scrollContentsBy: this IS the user scrolling, so follow must
+    // detach exactly as it does when they drag the bar itself (SPEC.md §3). A bar
+    // already at its end simply does not move, and the extend below then re-selects the
+    // record it is already on — which costs nothing and lets a still-growing log carry
+    // the drag on past what was the end.
+    verticalScrollBar()->setValue(verticalScrollBar()->value() + lines);
+    extendDragTo(m_autoScrollY);
+}
+
+void LogView::stopAutoScroll()
+{
+    if (m_autoScrollTimer)
+        m_autoScrollTimer->stop();
+}
+
+void LogView::endDrag()
+{
+    m_dragging = false;
+    stopAutoScroll();
 }
 
 void LogView::contextMenuEvent(QContextMenuEvent *event)
@@ -1591,6 +1746,9 @@ void LogView::handleModelReset()
     // remembered source ordinal means something different there, or nothing.
     if (!m_filterAnchor.active)
         m_stickySource = -1;
+    // A drag whose record space has just been replaced is over: the anchor it extends
+    // from is dropped on the next line, so the next move would extend from nothing.
+    endDrag();
     m_current = -1;
     m_anchor = -1;
     m_selWrapCache = -1;

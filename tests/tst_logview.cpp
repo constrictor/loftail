@@ -7,6 +7,7 @@
 #include <QImage>
 #include <QScrollBar>
 #include <QHelpEvent>
+#include <QItemSelectionModel>
 #include <QSignalSpy>
 #include <QTemporaryFile>
 #include <QToolTip>
@@ -230,6 +231,11 @@ private slots:
     void fittingAColumnShowsItsWidestValueAndKeepsIt();
     void aFitIsBoundedHoweverWideTheValueIs();
     void doubleClickingASectionDividerFitsThatColumn();
+    void draggingThePointerSelectsEveryRecordItPassesOver();
+    void ctrlClickingTakesOneRecordInAndOutOfTheSelection();
+    void aDragPastTheViewportEdgeScrollsAndGoesOnSelecting();
+    void aModelResetEndsADragInFlight();
+    void aRightPressLeavesAMultiRecordSelectionAlone();
 };
 
 // --- what does not fit says so (SPEC.md §5) ----------------------------------
@@ -1107,6 +1113,7 @@ void TestLogView::aHeaderCaptionTooNarrowToReadNamesItselfOnHover()
     QToolTip::hideText();
 }
 
+
 int main(int argc, char *argv[])
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
@@ -1444,6 +1451,241 @@ void TestLogView::doubleClickingASectionDividerFitsThatColumn()
     QVERIFY2(header->sectionSize(logger) > before, "the divider double-click did nothing");
     QVERIFY(header->sectionSize(logger)
             >= view.fontMetrics().horizontalAdvance(QString::fromLatin1(longName)));
+}
+
+// --- building a selection with the pointer (SPEC.md §5) -----------------------
+//
+// Multi-record selection has always existed and both copy commands act on it; until now
+// the only way to build one was a click and a Shift+click. These drive real mouse events
+// at the viewport rather than the handlers, because the whole of what is being added is
+// the gesture — every one of them passes against handlers called directly.
+//
+// All of them run in WrapMode::Off over makeMixedLog's single-line records, so a view row
+// is one line tall and a viewport y is arithmetic rather than a second geometry.
+
+namespace {
+
+// Which view rows are selected, ascending. The selection MODEL, not the copy commands:
+// what a Ctrl+click has to be judged on is the set, and selectedRecordsSorted() falls
+// back to the focused record when the set is empty.
+QVector<int> selectedRows(const LogView &view)
+{
+    QVector<int> rows;
+    for (const QModelIndex &i : view.selectionModel()->selectedRows(0))
+        rows.push_back(i.row());
+    std::sort(rows.begin(), rows.end());
+    return rows;
+}
+
+// A move with the left button still down. QTest::mouseMove tracks the buttons a
+// QTest::mousePress left down, so it is the right tool DURING a drag — but once the
+// release has cleared them it moves the cursor and sends no event at all, which is
+// exactly the case "a move after the release must not extend" needs to observe.
+void dragMoveTo(QWidget *target, const QPoint &pos)
+{
+    QMouseEvent move(QEvent::MouseMove, pos, target->mapToGlobal(pos),
+                     Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(target, &move);
+}
+
+} // namespace
+
+void TestLogView::draggingThePointerSelectsEveryRecordItPassesOver()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    const int lh = view.fontMetrics().height();
+    QVERIFY(view.viewport()->height() > lh * 8); // room for every row this drag covers
+    const auto rowAt = [&](int row) {
+        return QPoint(50, (row - view.verticalScrollBar()->value()) * lh + lh / 2);
+    };
+
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(1));
+    QCOMPARE(selectedRows(view), QVector<int>({1}));
+
+    QTest::mouseMove(view.viewport(), rowAt(4));
+    QCOMPARE(selectedRows(view), QVector<int>({1, 2, 3, 4}));
+    QCOMPARE(view.currentRecord(), 4);
+
+    // Back toward the anchor SHRINKS the range: a drag names its two ends, not every
+    // record the pointer has ever been over.
+    QTest::mouseMove(view.viewport(), rowAt(2));
+    QCOMPARE(selectedRows(view), QVector<int>({1, 2}));
+
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(2));
+    // The release ends the drag, so a move that arrives afterwards is not one.
+    dragMoveTo(view.viewport(), rowAt(6));
+    QCOMPARE(selectedRows(view), QVector<int>({1, 2}));
+}
+
+void TestLogView::ctrlClickingTakesOneRecordInAndOutOfTheSelection()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    const int lh = view.fontMetrics().height();
+    QVERIFY(view.viewport()->height() > lh * 8);
+    const auto rowAt = [&](int row) {
+        return QPoint(50, (row - view.verticalScrollBar()->value()) * lh + lh / 2);
+    };
+
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(1));
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, rowAt(3));
+    QCOMPARE(selectedRows(view), QVector<int>({1, 2, 3}));
+
+    // A record nowhere near the range joins it, and the range survives.
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, rowAt(6));
+    QCOMPARE(selectedRows(view), QVector<int>({1, 2, 3, 6}));
+    QCOMPARE(view.currentRecord(), 6);
+
+    // And the same gesture takes one back out, leaving the rest where it was.
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, rowAt(2));
+    QCOMPARE(selectedRows(view), QVector<int>({1, 3, 6}));
+
+    // The anchor followed the pointer, so a Shift+click extends from the record last
+    // Ctrl+clicked rather than from wherever the previous range began.
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, rowAt(4));
+    QCOMPARE(selectedRows(view), QVector<int>({2, 3, 4}));
+
+    // Shift outranks Ctrl: both held is still an extend.
+    QTest::mouseClick(view.viewport(), Qt::LeftButton,
+                      Qt::ShiftModifier | Qt::ControlModifier, rowAt(6));
+    QCOMPARE(selectedRows(view), QVector<int>({2, 3, 4, 5, 6}));
+}
+
+void TestLogView::aDragPastTheViewportEdgeScrollsAndGoesOnSelecting()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 400), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 300);
+    view.show(); // a hide has to have something to undo, for the second half
+
+    QScrollBar *sb = view.verticalScrollBar();
+    sb->setValue(0);
+    const int lh = view.fontMetrics().height();
+    const int onScreen = view.viewport()->height() / lh;
+    QVERIFY(onScreen > 4);
+    const QPoint belowTheEdge(50, view.viewport()->height() + 4 * lh);
+
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(),
+                      QPoint(50, lh / 2));
+    QTest::mouseMove(view.viewport(), belowTheEdge);
+    QTest::qWait(300); // several autoscroll ticks
+
+    QVERIFY2(sb->value() > 0, "a drag held past the bottom edge must scroll");
+    const QVector<int> rows = selectedRows(view);
+    QVERIFY2(rows.size() > onScreen, "the selection must have grown past one screenful");
+    QCOMPARE(rows.first(), 0);                      // still anchored where the press was
+    QCOMPARE(rows.last(), rows.size() - 1);         // and contiguous throughout
+    QCOMPARE(view.currentRecord(), rows.last());
+
+    // The release stops it: a timer left running would go on scrolling a view nobody is
+    // dragging any more.
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(),
+                        belowTheEdge);
+    const int stopped = sb->value();
+    QTest::qWait(200);
+    QCOMPARE(sb->value(), stopped);
+
+    // So does a hide — a view whose tab is switched away mid-drag never sees a release.
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(),
+                      QPoint(50, lh / 2));
+    QTest::mouseMove(view.viewport(), belowTheEdge);
+    QTest::qWait(150);
+    QVERIFY(sb->value() > 0);
+    view.hide();
+    const int hidden = sb->value();
+    QTest::qWait(200);
+    QCOMPARE(sb->value(), hidden);
+}
+
+void TestLogView::aModelResetEndsADragInFlight()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    const int lh = view.fontMetrics().height();
+    const auto rowAt = [&](int row) { return QPoint(50, row * lh + lh / 2); };
+
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(1));
+    QTest::mouseMove(view.viewport(), rowAt(3));
+    QCOMPARE(selectedRows(view), QVector<int>({1, 2, 3}));
+
+    // A rotation rescan: the record space is replaced, so the anchor the drag extends
+    // from is gone with it.
+    model.beginFilterReset();
+    model.endFilterReset();
+    QCOMPARE(view.currentRecord(), -1);
+    QVERIFY(selectedRows(view).isEmpty());
+
+    dragMoveTo(view.viewport(), rowAt(6));
+    QVERIFY2(selectedRows(view).isEmpty(), "a drag must not survive the reset that dropped its anchor");
+    QCOMPARE(view.currentRecord(), -1);
+}
+
+// A right press must leave the selection alone, because the context menu that follows it
+// decides for itself: it moves the selection onto the record under the cursor ONLY when
+// that record is not already in it, which is what makes "these five records" survive
+// long enough to be acted on. The press used to collapse it first, which nothing could
+// observe while a multi-record selection took a Shift+click to build.
+void TestLogView::aRightPressLeavesAMultiRecordSelectionAlone()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    const int lh = view.fontMetrics().height();
+    const auto rowAt = [&](int row) { return QPoint(50, row * lh + lh / 2); };
+
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(1));
+    QTest::mouseMove(view.viewport(), rowAt(3));
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(3));
+    QCOMPARE(selectedRows(view), QVector<int>({1, 2, 3}));
+
+    QSignalSpy spy(&view, &LogView::recordMenuRequested);
+    QTest::mousePress(view.viewport(), Qt::RightButton, Qt::KeyboardModifiers(), rowAt(2));
+    QContextMenuEvent menu(QContextMenuEvent::Mouse, rowAt(2),
+                           view.viewport()->mapToGlobal(rowAt(2)));
+    QApplication::sendEvent(view.viewport(), &menu);
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.takeFirst().at(0).toInt(), 2);
+    QCOMPARE(selectedRows(view), QVector<int>({1, 2, 3}));
+
+    // Outside it, the menu still moves the selection onto what was clicked.
+    QTest::mousePress(view.viewport(), Qt::RightButton, Qt::KeyboardModifiers(), rowAt(8));
+    QContextMenuEvent elsewhere(QContextMenuEvent::Mouse, rowAt(8),
+                                view.viewport()->mapToGlobal(rowAt(8)));
+    QApplication::sendEvent(view.viewport(), &elsewhere);
+    QCOMPARE(selectedRows(view), QVector<int>({8}));
 }
 
 #include "tst_logview.moc"
