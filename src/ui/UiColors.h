@@ -81,6 +81,27 @@ QColor placeholderColor(const QPalette &palette);
 // state.
 QColor dividerColor(const QPalette &palette, QPalette::ColorGroup group = QPalette::Current);
 
+// --- The log table's alternating record band (SPEC.md §5) -------------------------
+
+// The fill for every other RECORD in the log view — the zebra that says where one
+// record ends and the next begins, which in "line wrap: always on" is the only thing
+// that does, since a record there occupies three or four lines and nothing else marks
+// the seam.
+//
+// Derived from the palette by a fixed step from Base toward Text, for the reason the
+// rest of this file exists: the band was `base.lighter(108)`, and lighter()/darker()
+// SCALE the HSV value rather than moving a fixed distance. On a near-black base that
+// scales almost nothing (#141618 -> #16181a, 1.02:1) and on a pure white one the value
+// is already at its maximum and cannot move at all — a stripe that was dead at both
+// ends of the range and visible only on the mid-tone themes nobody has.
+//
+// QPalette::AlternateBase is the role that ought to say this and is deliberately not
+// read: nothing obliges a theme to make it differ from Base, and a theme that leaves
+// them equal takes the band away again — silently, and on exactly the wrap mode that
+// needs it most. Blending toward Text also gets the direction right on both themes for
+// free, which a lightening factor never can.
+QColor alternateRowColor(const QPalette &palette);
+
 // --- Filter context rows (M15, SPEC.md §6) ---------------------------------------
 //
 // A record shown only because a neighbour matched the filter reads as recessed, so a

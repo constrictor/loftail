@@ -71,6 +71,19 @@ private:
         return p;
     }
 
+    // The theme from the zebra report: a near-black table base. It is the palette the
+    // old lighter(108) band did nothing on, and the pure-white Base above is the other
+    // end of the same failure, so between them they bracket every real theme.
+    static QPalette nearBlackDark()
+    {
+        QPalette p;
+        p.setColor(QPalette::Window, QColor(0x1a, 0x1c, 0x1e));
+        p.setColor(QPalette::WindowText, QColor(0xd0, 0xd3, 0xd6));
+        p.setColor(QPalette::Base, QColor(0x14, 0x16, 0x18));
+        p.setColor(QPalette::Text, QColor(0xd0, 0xd3, 0xd6));
+        return p;
+    }
+
 private slots:
     void darkThemeIsRecognised();
     void anUnsetPlaceholderRoleIsRepaired();
@@ -79,6 +92,7 @@ private slots:
     void theRemoteDialogsPlaceholdersAreReadable();
     void contextRowsRecedeWithoutBecomingUnreadable();
     void aSectionDividerIsVisibleWithoutBeingText();
+    void theAlternatingRecordBandIsVisibleOnEveryTheme();
 };
 
 void TestUiColors::darkThemeIsRecognised()
@@ -266,6 +280,44 @@ int main(int argc, char *argv[])
 
     TestUiColors tc;
     return QTest::qExec(&tc, argc, argv);
+}
+
+
+void TestUiColors::theAlternatingRecordBandIsVisibleOnEveryTheme()
+{
+    // The log table shades every other RECORD (SPEC.md §5). The band was
+    // base.lighter(108), which scales the HSV VALUE: on a near-black base that moves a
+    // couple of levels and on a white one the value is already maxed and it moves
+    // nothing at all — so the stripe was dead at both ends of the range and this test
+    // measures both ends before it measures the fix.
+    for (const QPalette &palette : {plainLight(), brokenDark(), nearBlackDark()}) {
+        const QColor base = palette.color(QPalette::Base);
+        const QColor text = palette.color(QPalette::Text);
+        const QColor band = alternateRowColor(palette);
+
+        QVERIFY2(contrast(base.lighter(108), base) < 1.05,
+                 "the failing case is not actually invisible — the test proves nothing");
+
+        QVERIFY(band.isValid());
+        QCOMPARE_NE(band, base);
+        // Visible: a band nobody can see separates nothing. Well under the WCAG text
+        // bounds on purpose — this is a surface, not a mark, and it is read by noticing
+        // where it changes rather than by looking at it.
+        QVERIFY2(contrast(band, base) > 1.08, "the band is invisible against the base");
+        // …and still a band rather than a second surface: a record is a paragraph three
+        // or four lines tall in wrap-always-on, and a heavy stripe over that much area
+        // competes with the highlight colours, which are the ones that mean something.
+        QVERIFY2(contrast(band, base) < 1.35, "the band shouts louder than a highlight");
+        // It moves TOWARD the text, so the direction is right on both themes with no
+        // per-theme constant: darker than a white base, lighter than a near-black one.
+        QVERIFY(relativeLuminance(band) > relativeLuminance(base)
+                    ? relativeLuminance(text) > relativeLuminance(base)
+                    : relativeLuminance(text) < relativeLuminance(base));
+    }
+
+    // Derived per theme, not a constant: the same call answers differently on a light
+    // and a dark palette, which is the whole reason it is a function of one.
+    QCOMPARE_NE(alternateRowColor(plainLight()), alternateRowColor(nearBlackDark()));
 }
 
 #include "tst_uicolors.moc"

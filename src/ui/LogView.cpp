@@ -620,7 +620,7 @@ void LogView::resolveRowColors(int row, bool selected, QColor &bg, QColor &fg) c
     // LogModel::data(), which hands back the matched rule's palette colors via the
     // Background/Foreground roles — or an empty variant meaning "leave this role at
     // the theme default". An invalid/absent background keeps the base fill with the
-    // subtle alternating-row zebra; an invalid foreground keeps the theme text color.
+    // alternating-record band; an invalid foreground keeps the theme text color.
     // One call, not two data() lookups: highlighting is per record, and a rule may
     // now match on message text, so resolving the roles separately would run the rule
     // list — and potentially the decode — twice per painted record (SPEC.md §7).
@@ -628,11 +628,15 @@ void LogView::resolveRowColors(int row, bool selected, QColor &bg, QColor &fg) c
     m_model->rowColors(row, ruleBg, ruleFg);
 
     if (ruleBg.isValid()) {
+        // A rule-coloured record wears its own colour, unbanded: the band is what a
+        // record wears when nothing else has claimed it, and tinting every other one
+        // of a rule's records would read as two rules.
         bg = ruleBg;
     } else {
-        bg = palette().base().color();
-        if (row % 2)
-            bg = bg.lighter(108);
+        // `row` is a RECORD, not a line (invariant #2), and the caller fills the whole
+        // record's rect with what comes back — so the band changes exactly at a record
+        // boundary, which in wrap-always-on is the only thing marking one.
+        bg = (row % 2) ? alternateRowColor(palette()) : palette().base().color();
     }
 
     fg = ruleFg.isValid() ? ruleFg : palette().text().color();

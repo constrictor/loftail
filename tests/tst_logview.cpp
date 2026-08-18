@@ -4,17 +4,23 @@
 #include <QContextMenuEvent>
 #include <QFontDatabase>
 #include <QHeaderView>
+#include <QImage>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QTemporaryFile>
 
 #include "Document.h"
 #include "Filter.h"
+#include "Highlight.h"
 #include "LogModel.h"
 #include "LogView.h"
+#include "Palette.h"
 #include "Priority.h"
 #include "Record.h"
 #include "RecordIndex.h"
+#include "UiColors.h"
+
+#include <utility>
 
 using namespace loftail;
 
@@ -63,6 +69,48 @@ private:
             bytes += "\n";
         }
         return bytes;
+    }
+
+    // Six records of alternating HEIGHT: the even ones one physical line, the odd ones
+    // three (a message plus two continuation lines, which do not match recordStartRe —
+    // invariant #2). Records 2 and 3 carry a word a highlight rule can key on, and they
+    // are deliberately one even and one odd so a rule spans a band boundary.
+    static QByteArray makeTallShortLog()
+    {
+        QByteArray bytes;
+        for (int i = 0; i < 6; ++i) {
+            bytes += "2026-07-21 10:00:0";
+            bytes += QByteArray::number(i);
+            bytes += ",000 [main] INFO  net.socket - record ";
+            bytes += QByteArray::number(i);
+            if (i == 2 || i == 3)
+                bytes += " special";
+            bytes += "\n";
+            if (i % 2)
+                bytes += "    continued\n    continued\n";
+        }
+        return bytes;
+    }
+
+    // Vertical runs of identical pixels down one column of a rendered viewport: the
+    // painted band boundaries, read back without knowing the font's line height.
+    static QVector<std::pair<QRgb, int>> columnRuns(const QImage &img, int x)
+    {
+        QVector<std::pair<QRgb, int>> runs;
+        for (int y = 0; y < img.height(); ++y) {
+            const QRgb px = img.pixel(x, y);
+            if (!runs.isEmpty() && runs.last().first == px)
+                ++runs.last().second;
+            else
+                runs.append({px, 1});
+        }
+        return runs;
+    }
+
+    static bool isColour(QRgb px, const QColor &c)
+    {
+        return qAbs(qRed(px) - c.red()) <= 1 && qAbs(qGreen(px) - c.green()) <= 1
+            && qAbs(qBlue(px) - c.blue()) <= 1;
     }
 
     // A log for the filter-anchor cases: `n` single-line records, every 4th of them
@@ -167,6 +215,7 @@ private slots:
     void anEmptyResultLandsAtZeroWithNothingSelected();
     void clearingAFilterPutsTheViewBackWhereItWas();
     void theWrappedSelectionIsFoldedInBeforeTheViewIsRepositioned();
+    void theAlternatingBandChangesAtRecordsAndNotAtLines();
 };
 
 void TestLogView::wrapOffMappingMatchesBase()
@@ -881,6 +930,89 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     TestLogView tc;
     return QTest::qExec(&tc, argc, argv);
+}
+
+
+// The log table shades every other RECORD (SPEC.md §5), and the unit of the band is
+// the record rather than the physical line (invariant #2) — which is the whole point
+// of it in wrap-always-on, where nothing else says where one record ends. Rendered and
+// read back off the pixels, because the band's unit and its visibility are both things
+// only the painted result can be asked about. Children are deliberately NOT drawn: the
+// follow-tail overlay sits in the bottom-right corner of this very column.
+void TestLogView::theAlternatingBandChangesAtRecordsAndNotAtLines()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, makeTallShortLog()));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 6);
+    QCOMPARE(int(doc.index().records.at(0).lineCount), 1);
+    QCOMPARE(int(doc.index().records.at(1).lineCount), 3);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    // The theme the band was reported invisible on: a near-black table.
+    QPalette pal = view.palette();
+    pal.setColor(QPalette::Base, QColor(0x14, 0x16, 0x18));
+    pal.setColor(QPalette::Text, QColor(0xd0, 0xd3, 0xd6));
+    view.setPalette(pal);
+    view.resize(700, 400);
+
+    const QColor base = view.palette().base().color();
+    const QColor band = alternateRowColor(view.palette());
+
+    auto render = [&view] {
+        QImage img(view.viewport()->size(), QImage::Format_ARGB32);
+        img.fill(Qt::transparent);
+        view.viewport()->render(&img, QPoint(), QRegion(), QWidget::DrawWindowBackground);
+        return img;
+    };
+
+    QImage img = render();
+    // The rightmost column of the viewport: past every field's text, so what is there
+    // is the row fill and nothing else.
+    QVector<std::pair<QRgb, int>> runs = columnRuns(img, img.width() - 1);
+    QVERIFY2(runs.size() >= 4, "nothing was painted");
+
+    const int lh = runs.at(0).second; // record 0 is one line tall, so this IS the pitch
+    QVERIFY(lh > 0);
+    QVERIFY2(isColour(runs.at(0).first, base), "the first record is not on the base fill");
+    QVERIFY2(isColour(runs.at(1).first, band), "the second record is not banded");
+    QVERIFY2(!isColour(runs.at(1).first, base), "the band is not distinguishable from the base");
+    QVERIFY2(isColour(runs.at(2).first, base), "the band did not alternate back");
+    QVERIFY2(isColour(runs.at(3).first, band), "the band did not alternate again");
+    // The three-line records are one band each, not three: per-line shading would make
+    // every run lh tall.
+    QCOMPARE(runs.at(1).second, 3 * lh);
+    QCOMPARE(runs.at(2).second, lh);
+    QCOMPARE(runs.at(3).second, 3 * lh);
+
+    // A record a highlight rule coloured keeps that colour (SPEC.md §7): the band is
+    // what a record wears when nothing else has claimed it, so records 2 and 3 — one
+    // even, one odd — paint as ONE unbroken block of the rule's colour rather than as
+    // two shades of it.
+    HighlightRule rule;
+    rule.match.text.enabled = true;
+    rule.match.text.matcher.set(QStringLiteral("special"), /*regex=*/false,
+                                Qt::CaseInsensitive);
+    rule.background = 0;
+    doc.highlighters().rules.append(rule);
+    doc.refreshHighlighting();
+
+    const QColor ruleBg = HighlightPalette::color(0, model.darkTheme());
+    QVERIFY(ruleBg.isValid());
+
+    img = render();
+    runs = columnRuns(img, img.width() - 1);
+    QVERIFY(runs.size() >= 4);
+    QVERIFY2(isColour(runs.at(0).first, base), "an unmatched record lost its fill");
+    QVERIFY2(isColour(runs.at(1).first, band), "an unmatched record lost its band");
+    QVERIFY2(isColour(runs.at(2).first, ruleBg), "a matched record is not wearing its rule");
+    QCOMPARE(runs.at(2).second, 4 * lh); // one block over both matched records
 }
 
 #include "tst_logview.moc"
