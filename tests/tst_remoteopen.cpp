@@ -85,6 +85,14 @@ private:
         return label ? label->text() : QString();
     }
 
+    // What an open that produced no tab says for itself: the strip above the document
+    // well, which the next ingest tick cannot rewrite (SPEC.md §3).
+    static QString noticeText(const MainWindow &w)
+    {
+        auto *label = w.findChild<QLabel *>(QStringLiteral("openNoticeText"));
+        return label ? label->text() : QString();
+    }
+
     // Let the queued work of an open settle (the scan runs on a worker thread).
     static void settle(int ms = 600) { QTest::qWait(ms); }
 
@@ -303,10 +311,12 @@ void TestRemoteOpen::refusedRemoteReportsWithoutOpeningATab()
     settle(200);
 
     // A failed open leaves the window exactly as it was — the same contract a bad
-    // local path has — and explains itself in the status bar rather than a dialog.
+    // local path has — and explains itself in the notice strip rather than a dialog.
+    // The strip and not the status bar because there is no tab for it to report into
+    // and updateStatus() rewrites that label on the next tick of any other open log.
     QCOMPARE(tabCount(window), 0);
-    QVERIFY(statusText(window).contains(QStringLiteral("Authentication")));
-    QVERIFY(statusText(window).contains(QStringLiteral("app.log (web1)")));
+    QVERIFY(noticeText(window).contains(QStringLiteral("Authentication")));
+    QVERIFY(noticeText(window).contains(QStringLiteral("app.log (web1)")));
 }
 
 void TestRemoteOpen::unreachableRemoteOpensAWaitingTab()

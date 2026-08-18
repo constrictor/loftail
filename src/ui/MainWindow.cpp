@@ -18,6 +18,8 @@
 #include "LogModel.h"
 #include "LogSource.h"
 #include "ManualFormatProvider.h"
+#include "MessageLabel.h"
+#include "UiColors.h"
 #include "HostBookmarkStore.h"
 #include "ArchiveLocation.h"
 #include "OpenArchiveDialog.h"
@@ -50,6 +52,7 @@
 #include <QFileDialog>
 #include <QDesktopServices>
 #include <QFileInfo>
+#include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -252,7 +255,52 @@ MainWindow::MainWindow(QWidget *parent)
     m_centre = new QStackedWidget(this);
     m_centre->addWidget(m_placeholder);
     m_centre->addWidget(m_tabs);
-    setCentralWidget(m_centre);
+
+    // ABOVE the well, spanning it: what an open that did not happen says for itself
+    // (SPEC.md §3). It is the one channel a refusal has — the tab it would have
+    // explained itself in is exactly what a no-I/O refusal does not get — so it must
+    // outlast the tick that follows it, which is what the status bar cannot do. Not
+    // modal either: restoreSession() runs in this constructor, BEFORE show(), so a box
+    // raised on a refusal there would be a dialog on top of no window, and a session of
+    // several unreachable logs a stack of them.
+    m_openNotice = new QFrame(this);
+    m_openNotice->setObjectName(QStringLiteral("openNotice")); // findChild, for tests
+    m_openNotice->setFrameShape(QFrame::StyledPanel);
+    auto *noticeLayout = new QHBoxLayout(m_openNotice);
+    noticeLayout->setContentsMargins(8, 4, 4, 4);
+    noticeLayout->setSpacing(6);
+    // A MessageLabel, because the message is a list of addresses with their reasons and
+    // wraps at any ordinary window width — a plain wrapped QLabel is sized from a hint
+    // its own text does not fit in (MessageLabel.h).
+    m_openNoticeText = new MessageLabel(m_openNotice);
+    m_openNoticeText->setObjectName(QStringLiteral("openNoticeText")); // findChild, for tests
+    // Selectable: the address and the transport's wording are what a reader takes to a
+    // colleague or a search box, and they are otherwise only retypable.
+    m_openNoticeText->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *dismiss = new QToolButton(m_openNotice);
+    dismiss->setObjectName(QStringLiteral("openNoticeDismiss")); // findChild, for tests
+    dismiss->setAutoRaise(true);
+    // The same close pixmap the scan's stop button uses, and the same reason: a "✕"
+    // typed as text is a blank wherever the font database is empty.
+    if (const QIcon closeIcon = style()->standardIcon(QStyle::SP_TitleBarCloseButton);
+        closeIcon.isNull())
+        dismiss->setText(QString::fromUtf8("✕"));
+    else
+        dismiss->setIcon(closeIcon);
+    dismiss->setToolTip(tr("Dismiss this message"));
+    dismiss->setAccessibleName(tr("Dismiss this message"));
+    connect(dismiss, &QToolButton::clicked, this, &MainWindow::clearOpenNotice);
+    noticeLayout->addWidget(m_openNoticeText, 1);
+    noticeLayout->addWidget(dismiss, 0, Qt::AlignTop);
+    m_openNotice->setVisible(false);
+
+    auto *centreBox = new QWidget(this);
+    auto *centreLayout = new QVBoxLayout(centreBox);
+    centreLayout->setContentsMargins(0, 0, 0, 0);
+    centreLayout->setSpacing(0);
+    centreLayout->addWidget(m_openNotice);
+    centreLayout->addWidget(m_centre, 1);
+    setCentralWidget(centreBox);
 
     // The side panes (SPEC.md §8): filters, highlighters, runs — and presets, which is a
     // build option and off by default, so a stock build has three. Each binds to the
@@ -1181,24 +1229,86 @@ void MainWindow::primeRemoteCredentials(const QString &path)
     // where the auth chain puts it, behind the agent (SshSession::authenticate).
 }
 
+void MainWindow::reportOpenRefusal(const QString &displayName, const QString &reason)
+{
+    m_openRefusals.append({displayName, reason});
+    // Outside any gesture — a single openFile() from a menu item or a recent-files
+    // entry — there is nothing to wait for, so say it now.
+    if (m_openBatchDepth == 0)
+        showOpenRefusals();
+}
+
+void MainWindow::beginOpenBatch()
+{
+    ++m_openBatchDepth;
+}
+
+void MainWindow::endOpenBatch()
+{
+    if (--m_openBatchDepth > 0)
+        return;
+    m_openBatchDepth = 0;
+    showOpenRefusals();
+}
+
+void MainWindow::showOpenRefusals()
+{
+    if (m_openRefusals.isEmpty())
+        return;
+
+    // Capped, because one gesture can name any number of logs — a drop of a directory's
+    // worth, a session of a hundred tabs — and a strip that grows with them would push
+    // the log off the screen to say the same thing a hundred ways.
+    constexpr int kMaxRefusalsShown = 8;
+
+    QString text;
+    if (m_openRefusals.size() == 1) {
+        text = tr("Cannot open %1: %2")
+                   .arg(m_openRefusals.first().first, m_openRefusals.first().second);
+    } else {
+        QStringList lines;
+        for (const auto &refusal : std::as_const(m_openRefusals)) {
+            if (lines.size() == kMaxRefusalsShown)
+                break;
+            // Not tr(): a name, a colon and a reason, both halves already translated.
+            lines.append(QStringLiteral("%1: %2").arg(refusal.first, refusal.second));
+        }
+        if (const int more = m_openRefusals.size() - lines.size(); more > 0)
+            lines.append(tr("… and %1 more").arg(more));
+        text = tr("Cannot open these logs:") + u'\n' + lines.join(u'\n');
+    }
+    m_openRefusals.clear();
+
+    m_openNoticeText->setText(text);
+    // Taken from the CURRENT palette every time rather than at construction, so the
+    // colour follows a theme changed under a running window (UiColors.h).
+    QPalette notice = m_openNoticeText->palette();
+    notice.setColor(QPalette::WindowText, errorColor(palette()));
+    m_openNoticeText->setPalette(notice);
+    m_openNotice->setVisible(true);
+}
+
+void MainWindow::clearOpenNotice()
+{
+    m_openRefusals.clear();
+    m_openNoticeText->clear();
+    m_openNotice->setVisible(false);
+}
+
 bool MainWindow::openFiles(const QStringList &rawPaths, const QString &pattern)
 {
+    // ONE message for the lot, and the bracket is what makes it one: each refusal
+    // inside the loop reports its own address and its own reason, and they are shown
+    // together when the gesture ends. Reported one at a time, only the last one's
+    // reason would be left on screen, with the earlier files silently missing from the
+    // tab bar and nothing anywhere saying they had been asked for.
+    beginOpenBatch();
     QStringList refused;
     for (const QString &raw : rawPaths) {
         if (!openFile(raw, pattern))
             refused.append(logSourceDisplayName(normalizeLogPath(raw)));
     }
-
-    // ONE message for the lot. Each refusal has already written its own reason into
-    // the status label, so a single one keeps it — that is the message with the detail
-    // in it. Two or more would otherwise leave only the last one's reason on screen,
-    // with the earlier files silently missing from the tab bar and nothing anywhere
-    // saying they had been asked for; naming them all is the same answer session
-    // restore gives for the same problem.
-    if (refused.size() > 1) {
-        m_statusLabel->setText(
-            tr("Cannot open these logs: %1").arg(refused.join(QStringLiteral(", "))));
-    }
+    endOpenBatch();
     return refused.isEmpty();
 }
 
@@ -1227,8 +1337,7 @@ bool MainWindow::openFile(const QString &rawPath, const QString &pattern)
         const QStringList members =
             OpenArchiveDialog::chooseMembers(archive->container, this, &error);
         if (!error.isEmpty()) {
-            m_statusLabel->setText(tr("Cannot open %1: %2")
-                                       .arg(logSourceDisplayName(path), error));
+            reportOpenRefusal(logSourceDisplayName(path), error);
             return false;
         }
         // Several picked logs open as several tabs, exactly as dropping several files
@@ -1274,8 +1383,7 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
         const bool prepared =
             doc->prepare(path, provider, settings.encoding, settings.sourceZone.toZone());
         if (!prepared) {
-            m_statusLabel->setText(tr("Cannot open %1: %2")
-                                       .arg(logSourceDisplayName(path), doc->lastError()));
+            reportOpenRefusal(logSourceDisplayName(path), doc->lastError());
             return false;
         }
     }
@@ -1307,8 +1415,7 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
         case FormatOutcome::Chosen: {
             ManualFormatProvider chosen(settings.pattern);
             if (!doc->prepare(path, chosen, settings.encoding, settings.sourceZone.toZone())) {
-                m_statusLabel->setText(tr("Cannot open %1: %2")
-                                           .arg(logSourceDisplayName(path), doc->lastError()));
+                reportOpenRefusal(logSourceDisplayName(path), doc->lastError());
                 return false;
             }
             doc->setTimeDisplay(settings.timeDisplay);
@@ -1463,7 +1570,7 @@ void MainWindow::newViewOfActiveDocument()
     showView(view);
 }
 
-DocumentContext *MainWindow::prepareContext(const SessionDocument &d)
+DocumentContext *MainWindow::prepareContext(const SessionDocument &d, QString *error)
 {
     // Resolved through the settings tree like any other open (M20), not carried in the
     // session: one home for a log's settings means a Preferences edit reaches a restored
@@ -1472,8 +1579,11 @@ DocumentContext *MainWindow::prepareContext(const SessionDocument &d)
 
     auto doc = std::make_unique<Document>();
     ManualFormatProvider provider(format.pattern);
-    if (!doc->prepare(d.path, provider, format.encoding, format.sourceZone.toZone()))
+    if (!doc->prepare(d.path, provider, format.encoding, format.sourceZone.toZone())) {
+        if (error)
+            *error = doc->lastError();
         return nullptr;
+    }
     doc->setTimeDisplay(format.timeDisplay);
 
     auto owned = std::make_unique<DocumentContext>();
@@ -3502,6 +3612,9 @@ void MainWindow::restoreSession()
     if (m_sshPrompter)
         m_sshPrompter->beginBulkRestore();
 
+    // Every refusal in the restore is one gesture's worth, exactly as a multi-file
+    // open is: reported together, once, when the loop is done.
+    beginOpenBatch();
     QStringList missing;
     QHash<int, DocumentContext *> byDocument;
     DocumentView *toActivate = nullptr;
@@ -3527,18 +3640,24 @@ void MainWindow::restoreSession()
             // the restore instead of asking again per file.
             if (RemoteLocation::isRemote(d->path) && m_sshPrompter
                 && m_sshPrompter->restoreCancelled()) {
-                if (!missing.contains(d->path))
+                if (!missing.contains(d->path)) {
                     missing.append(d->path);
+                    reportOpenRefusal(logSourceDisplayPath(d->path),
+                                      tr("Reopening remote logs was cancelled."));
+                }
                 continue;
             }
-            ctx = prepareContext(*d);
+            QString reason;
+            ctx = prepareContext(*d, &reason);
             if (!ctx) {
                 // Genuinely refused rather than merely absent — a changed host key, an
                 // archive naming no member, a dependency not built in. Listed rather
                 // than errored, exactly as before. This now covers LOCAL failures too:
                 // one used to vanish here without appearing in the list at all.
-                if (!missing.contains(d->path))
+                if (!missing.contains(d->path)) {
                     missing.append(d->path);
+                    reportOpenRefusal(logSourceDisplayPath(d->path), reason);
+                }
                 continue;
             }
             byDocument.insert(sv.documentIndex, ctx);
@@ -3583,9 +3702,11 @@ void MainWindow::restoreSession()
                                             ? tr("These logs could not be reopened:")
                                             : tr("These files could not be reopened:"),
                                         shown.join(u'\n')));
-        m_statusLabel->setText(
-            tr("%1 file(s) from the last session unavailable").arg(missing.size()));
+        // No status-bar line beside it: the strip above the well already names every
+        // one of them WITH its reason and stays there until dismissed, while this
+        // placeholder is only on screen while nothing else opened at all.
     }
+    endOpenBatch();
     updateEmptyState();
     if (m_contexts.empty())
         return;

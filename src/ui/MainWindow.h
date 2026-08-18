@@ -8,6 +8,7 @@
 
 #include <QElapsedTimer>
 #include <QMainWindow>
+#include <QPair>
 #include <QString>
 #include <QVector>
 
@@ -18,6 +19,7 @@
 QT_BEGIN_NAMESPACE
 class QAction;
 class QDockWidget;
+class QFrame;
 class QLabel;
 class QMenu;
 class QProgressBar;
@@ -214,6 +216,31 @@ private:
     void refreshRecentFilesMenu();
     void rememberRecentFile(const QString &path);
     void updateStatus();
+
+    // --- Reporting an open that did not happen (SPEC.md §3) -------------------------
+    //
+    // The no-I/O refusals (M17) are the only opens that leave no tab behind, so they
+    // are the only ones with nowhere of their own to explain themselves. The status bar
+    // cannot be that place: updateStatus() rewrites m_statusLabel on every ingest tick
+    // and every tab switch, so beside one live log the reason is gone within a second
+    // of being written and the reader is left with nothing having happened. They go to
+    // a strip above the document well instead, which only the user takes away.
+    //
+    // Every refusal reports through here, naming the address AND the reason — the
+    // reason being the part worth reading. Reports are collected while an open GESTURE
+    // is in flight and shown TOGETHER when it ends, so several logs asked for at once
+    // produce one message rather than N that overwrite each other.
+    void reportOpenRefusal(const QString &displayName, const QString &reason);
+    // Bracket one gesture. Nestable, because openFile() opens an archive's picked
+    // members through openFiles(); only the outermost bracket shows anything.
+    void beginOpenBatch();
+    void endOpenBatch();
+    // Render what was collected into the strip, REPLACING whatever it held: a gesture
+    // is a deliberate act, and the message it displaces was on screen until the user
+    // acted. This is also the whole of "does not accumulate" — nothing appends.
+    void showOpenRefusals();
+    void clearOpenNotice(); // the dismiss button, and nothing else
+
     void updateModelTheme(); // push the light/dark cue into the model (highlighting)
 
     // Retitle a file's tabs, folding in its indexing progress and its unseen-match
@@ -334,7 +361,9 @@ private:
     // Session restore's half of an open: build a context from a saved document with
     // NO views (the caller creates one per saved view) and no scan. Returns nullptr
     // if the file cannot be opened.
-    DocumentContext *prepareContext(const SessionDocument &d);
+    // `error`, when given, takes the reason a refusal gives — restore reports the
+    // logs it could not reopen with their reasons, exactly as an interactive open does.
+    DocumentContext *prepareContext(const SessionDocument &d, QString *error = nullptr);
     // Build one view onto `ctx`, wire it up, and add its tab. Used both for a file's
     // first view and for further views onto the same file.
     DocumentView *createView(DocumentContext *ctx);
@@ -487,6 +516,13 @@ private:
     QStackedWidget *m_centre = nullptr;
     QTabWidget     *m_tabs = nullptr;
     QLabel         *m_placeholder = nullptr;
+
+    // The open-refusal strip, above the well and across its whole width, and what is
+    // pending for it (see reportOpenRefusal). Hidden whenever there is nothing to say.
+    QFrame *m_openNotice = nullptr;
+    QLabel *m_openNoticeText = nullptr;
+    QVector<QPair<QString, QString>> m_openRefusals; // display name, reason
+    int m_openBatchDepth = 0;
 
     // True once a saved pane layout has been applied (or once first-run proportions
     // have been chosen), so the first-open sizing never overrides a restored layout.
