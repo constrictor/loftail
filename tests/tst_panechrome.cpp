@@ -1,5 +1,6 @@
 #include <QtTest>
 
+#include <QAction>
 #include <QApplication>
 #include <QDockWidget>
 #include <QLineEdit>
@@ -7,7 +8,9 @@
 #include <QFile>
 #include <QLabel>
 #include <QMainWindow>
+#include <QSpinBox>
 #include <QTabBar>
+#include <QTabWidget>
 #include <QTemporaryDir>
 
 #include "FilterPane.h"
@@ -70,6 +73,8 @@ private slots:
     void aPaneAloneKeepsItsTitleText();
     void titleBarCannotSimplyBeHidden();
     void theFiltersTabIsMarkedWhileFiltersAreInForce();
+    void theClearFiltersItemIsLiveOnlyWhileThereIsSomethingToClear();
+    void theClearFiltersItemFollowsTheTabInFront();
 };
 
 void TestPaneChrome::tabbedPanesSuppressTheirTitleText()
@@ -261,6 +266,130 @@ void TestPaneChrome::theFiltersTabIsMarkedWhileFiltersAreInForce()
     // And back, so the marker tracks the state rather than latching on the first filter.
     pane->clearAll();
     QTRY_COMPARE(filters->windowTitle(), plain);
+}
+
+// A log that is written in the application's default log4cplus pattern, so opening it
+// needs no format dialog.
+static bool writeDefaultLog(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly))
+        return false;
+    for (int i = 0; i < 8; ++i) {
+        f.write(QStringLiteral("2026-07-21 10:00:0%1,000 [main] INFO  sub.%2 - line\n")
+                    .arg(i).arg(i % 2).toUtf8());
+    }
+    return true;
+}
+
+// View ▸ Clear Filters is the ONLY way back to an unfiltered view, the pane having no
+// Clear button of its own — so whether it is live is the one signal the window gives
+// about it, and it has to mean something. It is asked of the same
+// FilterPane::hasActiveFilters() the Filters tab's marker is drawn from, which is why
+// the two are checked together here: a second definition of "filters are in force"
+// would let the menu item and the dot drift apart.
+void TestPaneChrome::theClearFiltersItemIsLiveOnlyWhileThereIsSomethingToClear()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("clearable.log"));
+    QVERIFY(writeDefaultLog(path));
+
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QTest::qWait(50);
+
+    auto *clear = w.findChild<QAction *>(QStringLiteral("clearFiltersAction"));
+    QVERIFY(clear);
+    // Nothing open: there is no view to unfilter, so the item says so.
+    QVERIFY(!clear->isEnabled());
+
+    w.openFile(path);
+    QTest::qWait(50);
+    // Open but unfiltered. Every axis's default excludes nothing — including the two
+    // that ship ticked — so an enabled item here would be an invitation to clear a
+    // filter the reader never set.
+    QVERIFY(!clear->isEnabled());
+
+    auto *pane = w.findChild<FilterPane *>();
+    QVERIFY(pane);
+    auto *messageGroup = pane->findChild<QGroupBox *>(QStringLiteral("messageGroup"));
+    auto *messageText = pane->findChild<QLineEdit *>(QStringLiteral("messageText"));
+    QVERIFY(messageGroup && messageText);
+    messageGroup->setChecked(true);
+    messageText->setText(QStringLiteral("line"));
+    // QTRY, not QCOMPARE: the pane coalesces an edit once a pass has proved slow enough
+    // to be worth deferring, so the item follows the DEBOUNCED signal and not the
+    // keystroke — which is the whole reason it hangs off activityChanged().
+    QTRY_VERIFY(clear->isEnabled());
+
+    // And the item does what being live promised, which is also how it goes out again.
+    clear->trigger();
+    QTRY_VERIFY(!clear->isEnabled());
+    QCOMPARE(messageText->text(), QString());
+
+    // Context alone counts. It is not part of the FilterSet — it is two ints on the
+    // Document — and with no text axis in force it hides nothing, so nothing on screen
+    // changes. It is still a setting the user made and still a setting clearAll() zeroes,
+    // so a grey item would be refusing to undo something it undoes.
+    auto *contextBefore = pane->findChild<QSpinBox *>(QStringLiteral("contextBefore"));
+    QVERIFY(contextBefore);
+    contextBefore->setValue(2);
+    QTRY_VERIFY(clear->isEnabled());
+    clear->trigger();
+    QTRY_VERIFY(!clear->isEnabled());
+    QCOMPARE(contextBefore->value(), 0);
+}
+
+// Filters belong to the FILE (invariant #7), so the item answers for whichever log is in
+// front — the case a check written only against one open document would miss entirely.
+void TestPaneChrome::theClearFiltersItemFollowsTheTabInFront()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString filtered = dir.filePath(QStringLiteral("filtered.log"));
+    const QString plain = dir.filePath(QStringLiteral("plain.log"));
+    QVERIFY(writeDefaultLog(filtered));
+    QVERIFY(writeDefaultLog(plain));
+
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    w.openFile(filtered);
+    QTest::qWait(50);
+
+    auto *clear = w.findChild<QAction *>(QStringLiteral("clearFiltersAction"));
+    auto *pane = w.findChild<FilterPane *>();
+    auto *tabs = w.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(clear && pane && tabs);
+
+    auto *messageGroup = pane->findChild<QGroupBox *>(QStringLiteral("messageGroup"));
+    auto *messageText = pane->findChild<QLineEdit *>(QStringLiteral("messageText"));
+    QVERIFY(messageGroup && messageText);
+    messageGroup->setChecked(true);
+    messageText->setText(QStringLiteral("line"));
+    QTRY_VERIFY(clear->isEnabled());
+
+    // The second log opens in front of the first and carries no filters of its own.
+    w.openFile(plain);
+    QTest::qWait(50);
+    QCOMPARE(tabs->count(), 2);
+    QVERIFY(!clear->isEnabled());
+
+    // Back to the filtered one and the item is live again, with the tab's marker
+    // agreeing — the pane's state travels with the file, and so does this.
+    tabs->setCurrentIndex(0);
+    QTest::qWait(50);
+    QVERIFY(clear->isEnabled());
+    QDockWidget *filtersDock = paneDock(w, "filtersDock");
+    QVERIFY(filtersDock);
+    QVERIFY(filtersDock->windowTitle().contains(QChar(0x2022)));
+
+    tabs->setCurrentIndex(1);
+    QTest::qWait(50);
+    QVERIFY(!clear->isEnabled());
+    QVERIFY(!filtersDock->windowTitle().contains(QChar(0x2022)));
 }
 
 int main(int argc, char *argv[])

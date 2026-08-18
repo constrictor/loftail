@@ -392,6 +392,14 @@ private:
     void setActiveView(DocumentView *view);
     // Reflect the active context's state in the status bar, progress and actions.
     void updateActionStates();
+    // Enable View ▸ Clear Filters exactly while there is something for it to clear.
+    // Its own function rather than a line in updateActionStates(), because the answer
+    // moves on two unrelated events — the active tab changing and the bound pane's
+    // filters changing — and the second of those does not run the rest of that
+    // function. The condition is asked of FilterPane::hasActiveFilters(), the very
+    // question the Filters tab's own marker is drawn from, so the menu item and the
+    // dot cannot drift apart.
+    void updateClearFiltersState();
 
     // Move the global panes' per-file widget state to/from a context as the active
     // document changes. See DocumentContext::filterState for why this is needed.
