@@ -144,6 +144,22 @@ private:
         // Every fixture record is a single line and a log opens with wrap off, so a view
         // row is one line tall and cellCentre()'s y is arithmetic.
         QCOMPARE(activeView(w)->logView()->wrapMode(), LogView::WrapMode::Off);
+
+        // Every cell aimed at below has to BE in the viewport, and a column opens at a
+        // width measured from the font (SPEC.md §5) — where no font resolves (Windows
+        // offscreen ships none) each character is charged the 8 px floor, which is wide
+        // enough to push the Subsystem column clean off the right edge of the document
+        // area. Narrowing every section to an equal share of the viewport puts the whole
+        // row on screen, so cellCentre() answers about the layout and not about the
+        // platform's metrics.
+        LogView *log = activeView(w)->logView();
+        QHeaderView *header = log->header();
+        header->setMinimumSectionSize(10); // the style's floor is font-derived too
+        const int columns = qMax(1, header->count());
+        const int share = qMax(10, (log->viewport()->width() - 8) / columns);
+        for (int c = 0; c < header->count(); ++c)
+            header->resizeSection(c, share);
+        QVERIFY(header->length() <= log->viewport()->width());
     }
 
     // The centre of one cell, in the log view's VIEWPORT coordinates — which is what
@@ -156,14 +172,15 @@ private:
         if (column < 0)
             return QPoint(-1, -1);
         QHeaderView *h = log->header();
-        // The Message column is wider than the window, so its midpoint is off screen:
-        // any x INSIDE the section and inside the viewport identifies the cell.
+        // Any x INSIDE the section and inside the viewport identifies the cell, which is
+        // what the clamp below picks — a section wider than what is left of the viewport
+        // has its midpoint off screen.
         const int lo = qMax(h->sectionViewportPosition(column), 0);
         const int hi = qMin(h->sectionViewportPosition(column) + h->sectionSize(column) - 1,
                             log->viewport()->width() - 1);
         if (lo > hi)
             return QPoint(-1, -1);
-        const int lh = log->fontMetrics().height();
+        const int lh = qMax(1, log->fontMetrics().height()); // LogView::lineHeight()'s floor
         return QPoint(qBound(lo, h->sectionViewportPosition(column) + h->sectionSize(column) / 2,
                              hi),
                       (viewRow - log->verticalScrollBar()->value()) * lh + lh / 2);
@@ -665,7 +682,7 @@ void TestRecordMenu::doubleClickingACellTheRecordCannotAnswerForDoesNothing()
     // The empty space below the last record answers "nothing" too, exactly as it does
     // for the menu: a gesture aimed there acts on no record.
     LogView *log = activeView(w)->logView();
-    const int lh = log->fontMetrics().height();
+    const int lh = qMax(1, log->fontMetrics().height());
     QTest::mouseDClick(log->viewport(), Qt::LeftButton, Qt::KeyboardModifiers(),
                        QPoint(cellCentre(w, 0, FieldRole::Logger).x(),
                               log->viewport()->height() - lh / 2));
