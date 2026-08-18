@@ -501,6 +501,15 @@ target_link_libraries(tst_reload PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_reload COMMAND tst_reload)
 set_tests_properties(tst_reload PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# File ▸ Open Recent (SPEC.md §3): what an entry is CALLED, the tooltip that makes a
+# short label safe, and the item that empties the list. Drives the real MainWindow —
+# the menu is built in its constructor and rebuilt on every open — and finds everything
+# by object name or by the address stashed on each action, never by visible text.
+qt_add_executable(tst_recentfiles tst_recentfiles.cpp)
+target_link_libraries(tst_recentfiles PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_recentfiles COMMAND tst_recentfiles)
+set_tests_properties(tst_recentfiles PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 qt_add_executable(tst_openflow tst_openflow.cpp)
 target_link_libraries(tst_openflow PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_openflow COMMAND tst_openflow)

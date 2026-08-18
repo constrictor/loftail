@@ -411,6 +411,10 @@ private:
     DocumentView *m_activeView = nullptr;
 
     QMenu   *m_recentMenu = nullptr;
+    // Owned by the WINDOW, not by the menu: triggering it rebuilds that menu, and
+    // QMenu::clear() deletes the actions the menu owns — which would be this one,
+    // mid-signal.
+    QAction *m_clearRecentAction = nullptr;
     QAction *m_openRemoteAction = nullptr;
     QMenu   *m_remoteHostsMenu = nullptr;
     // Answers the questions a remote open asks (host key, password). Owned here
