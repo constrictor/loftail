@@ -550,14 +550,24 @@ int LogView::viewportCols() const
 
 void LogView::ensureEstimatorBound()
 {
-    // Bind (or rebind) the estimator to the current index. Rebinds only when the
-    // index identity or its block count changed (e.g. records appended during the
-    // scan) — never on a plain width change, which the debounced resize owns.
+    // Bind (or rebind) the estimator to the current index, then fold in whatever
+    // the tail has grown since it last looked — never a width change, which the
+    // debounced resize owns.
+    //
+    // The tail sync is not an optimisation. This used to rebind on the index's
+    // BLOCK COUNT, which moves once every kBlockSize records, so up to 4095 appends
+    // into a partly-filled block changed nothing at all: the block stayed flagged
+    // measured with a per-record height vector of its old length, and every record
+    // past it was read out of that vector's end (bugs.md 1). A trailing record
+    // growing continuation lines in place moved the count not at all and went on
+    // being drawn at its stale height, with the scroll range never growing to reach
+    // the lines it had gained.
     const RecordIndex &idx = geom();
-    const int wantBlocks =
-        (idx.records.size() + RecordIndex::kBlockSize - 1) / RecordIndex::kBlockSize;
-    if (m_estimated.index() != &idx || m_estimated.blockCount() != wantBlocks)
+    if (m_estimated.index() != &idx) {
         m_estimated.reset(&idx, viewportCols());
+        return;
+    }
+    m_estimated.syncTail();
 }
 
 void LogView::measureBlock(int block)
@@ -572,11 +582,16 @@ void LogView::measureBlock(int block)
     const int start = block * RecordIndex::kBlockSize;
     const int n = recordCount();
     const int end = qMin(start + RecordIndex::kBlockSize, n);
+    // Records whose exact height is already cached are NOT decoded again. After a
+    // tail sync a measured block is short by only the records the growth touched —
+    // typically one — and re-decoding the other 4095 on every ingest tick is the
+    // cost that made keeping a partial measurement worth the machinery.
+    const int first = start + m_estimated.measuredRecordsInBlock(block);
 
     QVector<quint16> lines;
-    lines.reserve(end - start);
+    lines.reserve(qMax(0, end - first));
     QVector<int> lineChars;
-    for (int r = start; r < end; ++r) {
+    for (int r = first; r < end; ++r) {
         // Decoded message text via the model (invariant #8: split the decoded
         // string on '\n', never scan raw bytes). Only char counts are kept — no
         // parsed text is retained per record (invariant #1); the block cache
@@ -595,7 +610,7 @@ void LogView::measureBlock(int block)
         }
         lines.append(quint16(EstimatedGeometry::measuredRecordLines(lineChars, cols, cap)));
     }
-    m_estimated.measureBlock(block, lines);
+    m_estimated.measureBlock(block, lines, first - start);
 }
 
 void LogView::measureBlockOfRecord(int record)
@@ -881,11 +896,11 @@ void LogView::applyFontChange()
     layoutHeader();
     positionFollowButton();
     // THE ONE THAT IS EASY TO MISS. ensureEstimatorBound() rebinds on the index's
-    // ADDRESS and its block count, and a font change moves neither — so on its own it
-    // leaves the estimator holding wrapped heights measured at the old character
-    // advance, i.e. at a column count that no longer holds. setColumns() is what drops
-    // them, and it must come AFTER the re-seed above, which moves the message column's
-    // origin and therefore the count itself.
+    // ADDRESS and folds in what its TAIL has grown, and a font change moves neither —
+    // so on its own it leaves the estimator holding wrapped heights measured at the old
+    // character advance, i.e. at a column count that no longer holds. setColumns() is
+    // what drops them, and it must come AFTER the re-seed above, which moves the message
+    // column's origin and therefore the count itself.
     if (m_estimated.isBound())
         m_estimated.setColumns(viewportCols());
     recomputeGeometry();

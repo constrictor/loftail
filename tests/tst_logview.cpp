@@ -19,6 +19,7 @@
 #include "Document.h"
 #include "Filter.h"
 #include "Highlight.h"
+#include "LiveController.h"
 #include "LogFormat.h"
 #include "LogModel.h"
 #include "Fonts.h"
@@ -224,6 +225,8 @@ private slots:
     void switchingToExactKeepsEstimationCache();
     void alwaysOnUnreachableFromExactPath();
     void alwaysOnPaintRefinesWhileScrolling();
+    void anAppendIntoAMeasuredBlockIsMeasuredAndNotReadPastTheEndOfIt();
+    void aTrailingRecordThatGrowsInPlaceGrowsTheViewWithIt();
     void filterRestrictsVisibleSetAndGeometry();
     void followDetachesAndReattaches();
     void rightClickReportsTheRecordUnderIt();
@@ -589,6 +592,132 @@ void TestLogView::alwaysOnPaintRefinesWhileScrolling()
     QVERIFY(g.measuredBlockCount() >= 2);
     // Fully measured blocks make their portion of the mapping exact.
     QCOMPARE(g.totalLines(), g.firstLineOfRecord(doc.index().records.size()));
+}
+
+// THE ONE THAT USED TO READ PAST THE MEASURED BLOCK (bugs.md 1). A block is measured
+// as a whole and cached as a per-record vector of heights, but the index it was
+// measured from is LIVE (invariant #5) and grows under it — and the estimator used to
+// rebind only when the BLOCK COUNT moved, which is once every 4096 records. So the
+// first 4095 appends into a partly-filled block left a measured block answering out of
+// a vector one entry short per appended record: an abort in a debug build, and an
+// unchecked read into allocation slack in a release one.
+//
+// Driven through LiveController::checkNow(), which is the real ingest step, with a
+// paint either side of it because painting is what measures and what reads back.
+void TestLogView::anAppendIntoAMeasuredBlockIsMeasuredAndNotReadPastTheEndOfIt()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 60), qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 60);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    LiveController live(&doc, &model);
+
+    auto paint = [&view]() {
+        QPixmap pm(view.viewport()->size());
+        view.viewport()->render(&pm); // invokes LogView::paintEvent synchronously
+    };
+
+    const EstimatedGeometry &g = view.estimatedGeometry();
+    paint();
+    QVERIFY(g.isBlockMeasured(0));                 // one block, measured whole
+    QCOMPARE(g.measuredRecordsInBlock(0), 60);
+    QCOMPARE(g.blockCount(), 1);                   // 60 records is far short of kBlockSize
+
+    // One ordinary record appended: the block count does not move, and the block the
+    // estimator holds is now one record shorter than the block it describes.
+    file.write(makeLog(1));
+    file.flush();
+    live.checkNow();
+    QCOMPARE(doc.index().records.size(), 61);
+    QCOMPARE(g.blockCount(), 1);
+
+    // Before anything re-measures, the appended record is ESTIMATED rather than read
+    // out of the short vector — this is the read that used to go off the end.
+    const int newHeight = g.recordHeightLines(60);
+    QVERIFY2(newHeight >= 1 && newHeight <= int(RecordIndex::kDisplayLineCap),
+             qPrintable(QStringLiteral("record 60 answered %1 display lines").arg(newHeight)));
+    // The measured prefix kept the 59 records nothing can have touched, so the next
+    // paint decodes two records and not the whole block. Record 59 is given back with
+    // the new one because one tick may both grow the trailing record and append after
+    // it, and the estimator is told only what the index looks like now.
+    QCOMPARE(g.measuredRecordsInBlock(0), 59);
+    QVERIFY(!g.isBlockMeasured(0));
+
+    // And after the paint the block is whole again and the mapping is exact end to end.
+    paint();
+    QVERIFY(g.isBlockMeasured(0));
+    QCOMPARE(g.measuredRecordsInBlock(0), 61);
+    qint64 acc = 0;
+    for (int r = 0; r < 61; ++r) {
+        QCOMPARE(g.firstLineOfRecord(r), acc);
+        const int h = g.recordHeightLines(r);
+        QVERIFY(h >= 1 && h <= int(RecordIndex::kDisplayLineCap));
+        acc += h;
+    }
+    QCOMPARE(acc, g.totalLines());
+    QCOMPARE(g.totalLines(), g.firstLineOfRecord(61));
+}
+
+// The same seam, the other trigger. Continuation lines appended to the record already
+// at the end of the file grow it in place: no row is inserted, so the record COUNT does
+// not move either, and tracking only the count would leave this one exactly as broken.
+// The record went on being drawn at its stale height with the new lines clipped, and
+// the scroll range never grew far enough to reach them.
+void TestLogView::aTrailingRecordThatGrowsInPlaceGrowsTheViewWithIt()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    LiveController live(&doc, &model);
+
+    auto paint = [&view]() {
+        QPixmap pm(view.viewport()->size());
+        view.viewport()->render(&pm);
+    };
+
+    const EstimatedGeometry &g = view.estimatedGeometry();
+    paint();
+    QVERIFY(g.isBlockMeasured(0));
+    const int staleHeight = g.recordHeightLines(59);
+    const int staleMax = view.verticalScrollBar()->maximum();
+    QCOMPARE(doc.index().records.at(59).lineCount, quint16(1));
+
+    // Twenty lines that do NOT match recordStartRe, so they attach to record 59
+    // (invariant #2) rather than starting records of their own.
+    QByteArray grown;
+    for (int i = 0; i < 20; ++i)
+        grown += "    at some.frame(Source.java:1)\n";
+    file.write(grown);
+    file.flush();
+    live.checkNow();
+
+    QCOMPARE(doc.index().records.size(), 60);                    // no new row
+    QCOMPARE(doc.index().records.at(59).lineCount, quint16(21));  // twenty lines taller
+
+    // The height the view answers with follows the record, and the scroll range grows
+    // to hold it — both WITHOUT waiting for a paint, because handleTailChanged() is
+    // where a live append lands and it is the scrollbar it has to fix.
+    QVERIFY2(g.recordHeightLines(59) > staleHeight,
+             "the trailing record kept the height it was measured at");
+    QVERIFY2(view.verticalScrollBar()->maximum() > staleMax,
+             "the scroll range never grew to reach the appended lines");
+
+    // Re-measured, the last record is at least its twenty-one physical lines and the
+    // mapping is exact again.
+    paint();
+    QVERIFY(g.isBlockMeasured(0));
+    QVERIFY(g.recordHeightLines(59) >= 21);
+    QCOMPARE(g.totalLines(), g.firstLineOfRecord(60));
 }
 
 // A filter narrows the visible set: the model presents only visible rows and the
@@ -2271,8 +2400,8 @@ void TestLogView::aBiggerFontFitsFewerRecordsInTheSameViewport()
 // THE ONE THAT CATCHES A STALE ESTIMATOR. Under AlwaysOn every measured height is keyed
 // by the column count, which is the message column's width divided by the character
 // advance — so a font change invalidates every one of them. ensureEstimatorBound() will
-// not notice: it rebinds on the index's ADDRESS and its block count, and a font moves
-// neither.
+// not notice: it rebinds on the index's ADDRESS and folds in tail growth, and a font
+// moves neither.
 void TestLogView::aZoomDropsTheWrappedHeightsMeasuredAtTheOldFont()
 {
     if (QFontDatabase::families().isEmpty())
