@@ -9,11 +9,15 @@
 #include <QLabel>
 #include <QMainWindow>
 #include <QSpinBox>
+#include <QPushButton>
 #include <QTabBar>
+#include <QTableWidget>
 #include <QTabWidget>
 #include <QTemporaryDir>
 
 #include "FilterPane.h"
+#include "Highlight.h"
+#include "HighlighterPane.h"
 #include "MainWindow.h"
 #include "PaneTitleStyle.h"
 
@@ -75,6 +79,7 @@ private slots:
     void theFiltersTabIsMarkedWhileFiltersAreInForce();
     void theClearFiltersItemIsLiveOnlyWhileThereIsSomethingToClear();
     void theClearFiltersItemFollowsTheTabInFront();
+    void theHighlightersTabIsMarkedOnlyOnceTheRulesAreNotTheSeededOnes();
 };
 
 void TestPaneChrome::tabbedPanesSuppressTheirTitleText()
@@ -390,6 +395,87 @@ void TestPaneChrome::theClearFiltersItemFollowsTheTabInFront()
     QTest::qWait(50);
     QVERIFY(!clear->isEnabled());
     QVERIFY(!filtersDock->windowTitle().contains(QChar(0x2022)));
+}
+
+// The Highlighters tab's marker, which is NOT "are there rules". Every log opens with
+// the three seeded level colours (HighlighterSet::defaults), so a dot meaning "rules
+// exist" was on for every file from the moment it opened — truthful, and useless, a
+// marker being worth a glance only while it is sometimes absent. It now means "these
+// are not the rules loftail seeded", which is the whole list compared IN ORDER
+// (HighlighterPane::hasCustomRules).
+//
+// Driven through a real MainWindow because that is the only place the seeding, the
+// pane and the dock title meet: the pane alone would prove the comparison and none of
+// what the reader actually sees.
+void TestPaneChrome::theHighlightersTabIsMarkedOnlyOnceTheRulesAreNotTheSeededOnes()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("highlighted.log"));
+    QVERIFY(writeDefaultLog(path));
+
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    w.openFile(path);
+    QTest::qWait(50);
+
+    QDockWidget *highlighters = paneDock(w, "highlightersDock");
+    QVERIFY(highlighters);
+    auto *pane = w.findChild<HighlighterPane *>();
+    QVERIFY(pane);
+    auto *table = pane->findChild<QTableWidget *>(QStringLiteral("ruleTable"));
+    QVERIFY(table);
+    auto *newBtn = pane->findChild<QPushButton *>(QStringLiteral("ruleNew"));
+    auto *removeBtn = pane->findChild<QPushButton *>(QStringLiteral("ruleRemove"));
+    auto *downBtn = pane->findChild<QPushButton *>(QStringLiteral("ruleDown"));
+    auto *upBtn = pane->findChild<QPushButton *>(QStringLiteral("ruleUp"));
+    QVERIFY(newBtn && removeBtn && downBtn && upBtn);
+
+    const int seeded = HighlighterSet::defaults().rules.size();
+    QCOMPARE(table->rowCount(), seeded);
+
+    // The case the marker used to get wrong: three rules are colouring this log and
+    // nobody asked for them, so the tab says nothing.
+    const QString plain = highlighters->windowTitle();
+    QVERIFY2(!plain.contains(QChar(0x2022)), qPrintable(plain));
+
+    // A rule the reader added.
+    newBtn->click();
+    QCOMPARE(table->rowCount(), seeded + 1);
+    QTRY_VERIFY(highlighters->windowTitle().contains(QChar(0x2022)));
+
+    // ...and taking it away again leaves the seed, which is not a state to report.
+    removeBtn->click();
+    QCOMPARE(table->rowCount(), seeded);
+    QTRY_COMPARE(highlighters->windowTitle(), plain);
+
+    // A seeded rule SWITCHED OFF is a difference — the list is still three rules long,
+    // so a count could never see it, and the log has visibly stopped colouring FATAL.
+    QTableWidgetItem *tick = table->item(0, HighlighterPane::kColEnabled);
+    QVERIFY(tick);
+    tick->setCheckState(Qt::Unchecked);
+    QTRY_VERIFY(highlighters->windowTitle().contains(QChar(0x2022)));
+    tick->setCheckState(Qt::Checked);
+    QTRY_COMPARE(highlighters->windowTitle(), plain);
+
+    // A seeded rule MOVED is a difference too, and for a reason the reader can see:
+    // first-match-wins is per action, so FATAL under ERROR hands a FATAL record the
+    // ERROR colour. Same three rules, same ticks, same colours — only the order.
+    table->setCurrentCell(0, HighlighterPane::kColRule);
+    downBtn->click();
+    QTRY_VERIFY(highlighters->windowTitle().contains(QChar(0x2022)));
+
+    // Put back exactly, and the marker goes out: the answer is the list in front of the
+    // reader, never a latch on having once edited it.
+    upBtn->click();
+    QTRY_COMPARE(highlighters->windowTitle(), plain);
+
+    // Throughout which the Filters tab has stayed unmarked, its axes' defaults excluding
+    // nothing — the property the Highlighters tab had lost and has now got back.
+    QDockWidget *filters = paneDock(w, "filtersDock");
+    QVERIFY(filters);
+    QVERIFY(!filters->windowTitle().contains(QChar(0x2022)));
 }
 
 int main(int argc, char *argv[])

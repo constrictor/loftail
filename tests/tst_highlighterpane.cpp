@@ -271,7 +271,7 @@ private slots:
     void addedRuleIsInertUntilConfigured();
     void newCopiesTheSelectedRule();
     void tableRowsWearTheirRuleColours();
-    void clearRemovesEveryRuleAndMarksThePane();
+    void clearRemovesEveryRuleAndTheTabStaysMarked();
     void swatchMenuIsBandedAndFitsAShortScreen();
     void aSwatchPreviewsTheRulesPair();
     void theTwoPickersAreTellableApartAtTheSizeTheyAreDrawn();
@@ -574,11 +574,18 @@ void TestHighlighterPane::tableRowsWearTheirRuleColours()
     QCOMPARE(summary->background().color(), HighlightPalette::color(other, dark));
 }
 
-void TestHighlighterPane::clearRemovesEveryRuleAndMarksThePane()
+// Clear, and the dock marker beside it. The marker asks whether this log's rules are
+// still the ones loftail seeds (HighlighterPane::hasCustomRules) — NOT whether there
+// are any, which was true of every log from the moment it opened once a fresh log
+// started arriving with three default rules.
+void TestHighlighterPane::clearRemovesEveryRuleAndTheTabStaysMarked()
 {
     Document doc;
     QTemporaryFile file;
     QVERIFY(openLog(doc, file));
+    // A freshly opened log as MainWindow hands one over: the seeded rules, which are
+    // rules the reader has not set.
+    doc.highlighters() = HighlighterSet::defaults();
 
     HighlighterPane pane;
     QSignalSpy activity(&pane, &HighlighterPane::activityChanged);
@@ -586,17 +593,18 @@ void TestHighlighterPane::clearRemovesEveryRuleAndMarksThePane()
 
     QPushButton *clear = button(pane, QStringLiteral("ruleClear"));
     QVERIFY(clear);
-    // Nothing to clear yet, and nothing to mark: the dock wears its marker only while
-    // the pane holds rules, because it is usually tabbed behind three others.
-    QVERIFY(!clear->isEnabled());
-    QVERIFY(!pane.hasRules());
+    // Something to clear, and nothing to report: three rules are colouring the log and
+    // the tab says nothing, because nobody chose them.
+    QVERIFY(clear->isEnabled());
+    QVERIFY(!pane.hasCustomRules());
+    QCOMPARE(activity.count(), 0);
 
     MatchCriteria c;
     c.priorityEnabled = true;
     c.minPriority = Priority::Error;
     pane.addRule(c);
     pane.addRule(c);
-    QVERIFY(pane.hasRules());
+    QVERIFY(pane.hasCustomRules());
     QVERIFY(clear->isEnabled());
     QCOMPARE(activity.count(), 1);
     QCOMPARE(activity.takeFirst().at(0).toBool(), true);
@@ -604,16 +612,27 @@ void TestHighlighterPane::clearRemovesEveryRuleAndMarksThePane()
     // One action back to an uncoloured log, where before it was Remove per rule.
     clear->click();
     QVERIFY(doc.highlighters().rules.isEmpty());
-    QVERIFY(!pane.hasRules());
     QVERIFY(!clear->isEnabled());
-    QCOMPARE(activity.count(), 1);
-    QCOMPARE(activity.takeFirst().at(0).toBool(), false);
+    // And the tab stays marked, deliberately: an emptied list is as much a departure
+    // from the seed as an extra rule is, and it is the only thing on screen that
+    // explains a log whose ERRORs are not red when the next tab's are. So the marker
+    // never went out and nothing was emitted.
+    QVERIFY(pane.hasCustomRules());
+    QCOMPARE(activity.count(), 0);
 
-    // Edge-triggered: adding a second rule to a pane that already had one must not
+    // Edge-triggered: adding to a pane that is already reporting custom rules must not
     // rewrite the dock title, which is a QTabBar entry while the panes are tabbed.
     pane.addRule(c);
     pane.addRule(c);
+    QCOMPARE(activity.count(), 0);
+
+    // Putting the seed back exactly puts the marker out — the answer is the list, not
+    // a latch on having ever edited it.
+    doc.highlighters() = HighlighterSet::defaults();
+    pane.setDocument(&doc);
+    QVERIFY(!pane.hasCustomRules());
     QCOMPARE(activity.count(), 1);
+    QCOMPARE(activity.takeFirst().at(0).toBool(), false);
 }
 
 void TestHighlighterPane::swatchMenuIsBandedAndFitsAShortScreen()

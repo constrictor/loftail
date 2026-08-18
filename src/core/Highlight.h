@@ -98,6 +98,23 @@ struct HighlightRule
     //     before M19 serializes byte-identically.
     QJsonObject toJson() const;
     static HighlightRule fromJson(const QJsonObject &o);
+
+    // Every field of the rule: its tick, its five axes, what it does and the two
+    // colours it does it in. There is nothing else on a rule — no name, no label — so
+    // this IS the rule, and anything added to the struct belongs here in the same
+    // commit (MatchCriteria::operator== says why at length).
+    //
+    // What asks: the Highlighters tab's marker, which compares this log's whole rule
+    // list IN ORDER against HighlighterSet::defaults() (HighlighterPane::
+    // hasCustomRules, ARCHITECTURE.md §7.5). Order matters to it because order is
+    // meaning here — first-match-wins is per action (§7.5), so two rules swapped is a
+    // different set of colours on screen, not the same set differently listed.
+    bool operator==(const HighlightRule &o) const
+    {
+        return enabled == o.enabled && match == o.match && actions == o.actions
+            && background == o.background && foreground == o.foreground;
+    }
+    bool operator!=(const HighlightRule &o) const { return !(*this == o); }
 };
 
 Q_DECLARE_OPERATORS_FOR_FLAGS(HighlightActions)

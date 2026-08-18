@@ -88,10 +88,28 @@ public:
     QJsonObject saveState() const;
     void restoreState(const QJsonObject &state);
 
-    // True when the pane holds any rule at all, enabled or not. What the dock's
-    // marker reflects: unlike a filter axis, which can be switched on and still
-    // exclude nothing, a rule in the list is something the user put there.
-    bool hasRules() const { return !m_rules.isEmpty(); }
+    // Whether this log's rules are something OTHER than the ones loftail seeds — the
+    // whole list compared in order against HighlighterSet::defaults(). What the dock's
+    // marker reflects (SPEC.md §7, ARCHITECTURE.md §7.5).
+    //
+    // It used to be `!m_rules.isEmpty()`, which was true of every log from the moment
+    // it opened once a fresh log started arriving with three default rules: truthful,
+    // and useless, because a marker's value is entirely in its being sometimes absent.
+    // The question the dot answers is therefore not "are there rules" but "has anybody
+    // set rules on THIS log", and the name says so — a hasRules() returning false while
+    // three rules colour the log would be a trap for whoever reads it next.
+    //
+    // In ORDER, because order is meaning: first-match-wins is per action (§7.5), so a
+    // reorder changes what the log looks like. A seeded rule that has been unticked,
+    // recoloured, re-aimed or moved is a difference; one nobody has touched is not.
+    //
+    // Two edges worth stating. With no document there is nothing the rules could be
+    // about, so the answer is false — the marker is per file, like everything else in
+    // this pane (invariant #7). An EMPTY list, on the other hand, is a difference and
+    // is marked: deleting the seeded rules is a choice the reader made, and it is the
+    // one thing that explains why this log's ERRORs are not red when the log in the
+    // next tab's are.
+    bool hasCustomRules() const;
 
     // Add a rule built from the record under the cursor (the record menu, SPEC.md §5)
     // and select it, so the pane shows what was just added and it can be recolored or
@@ -107,10 +125,11 @@ signals:
     // model reset is needed since highlighting recolors rows without adding/removing.
     void highlightersChanged();
 
-    // Emitted only when hasRules() CHANGES, so MainWindow can mark the dock while the
-    // pane holds rules — it ships tabbed behind three others, so rules are usually in
-    // force with the pane out of sight. Edge-triggered for the same reason the Filters
-    // pane's is: the title rides a QTabBar entry, and re-setting it relays out the bar.
+    // Emitted only when hasCustomRules() CHANGES, so MainWindow can mark the dock while
+    // this log's rules are the reader's rather than the seeded ones — the pane ships
+    // tabbed behind two others, so rules are usually in force with it out of sight.
+    // Edge-triggered for the same reason the Filters pane's is: the title rides a
+    // QTabBar entry, and re-setting it relays out the bar.
     void activityChanged(bool active);
 
 protected:
@@ -131,7 +150,7 @@ private:
     void loadEditorFor(int row); // fill the axis editor from m_rules[row]
     void commit();               // push m_rules into the document + emit change
     void syncToDocument();
-    void updateActivity();       // emit activityChanged() when hasRules() flips
+    void updateActivity();       // emit activityChanged() when hasCustomRules() flips
     // Grey the four buttons that need something to act on. ONE writer for all of them,
     // called from the rebuild (where the rule count moves) and from the table's own
     // currentCellChanged (where the row does) — a setEnabled() at a third call site is
@@ -192,7 +211,7 @@ private:
     Document *m_document = nullptr;
     QVector<HighlightRule> m_rules;
     bool m_updating = false; // guards signal storms during (re)load
-    std::optional<bool> m_activeState; // last hasRules() reported by activityChanged()
+    std::optional<bool> m_activeState; // last hasCustomRules() reported by activityChanged()
 
     // The rule list, which is now a TABLE: a tick, what the rule matches, its two
     // colours and its three remaining actions, one rule per row.

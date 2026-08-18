@@ -1129,12 +1129,25 @@ void HighlighterPane::changeEvent(QEvent *event)
     setCurrentRow(row);
 }
 
+bool HighlighterPane::hasCustomRules() const
+{
+    if (!m_document)
+        return false;
+    // The seed is rebuilt rather than cached: it is three rules, this runs on an edit
+    // and not per record, and a cached copy is one more thing that can be stale after
+    // the defaults are changed. The comparison is the whole list in order, which is
+    // QList's own == over HighlightRule::operator== — so every field a rule carries is
+    // covered by construction, and a field added to the rule without being added to
+    // that operator is the one way this goes quietly wrong.
+    return m_rules != HighlighterSet::defaults().rules;
+}
+
 void HighlighterPane::updateActivity()
 {
     // Only on a CHANGE, for the reason FilterPane::updateActivity() spells out: the
     // marker rides the dock's window title, which is a QTabBar entry while the panes
     // are tabbed, and re-setting it relays out the whole bar.
-    const bool active = hasRules();
+    const bool active = hasCustomRules();
     if (m_activeState.has_value() && *m_activeState == active)
         return;
     m_activeState = active;
@@ -1226,6 +1239,12 @@ void HighlighterPane::syncToDocument()
 void HighlighterPane::commit()
 {
     syncToDocument();
+    // Every edit, not only the ones that add or remove a rule. While the marker was
+    // "are there any rules" the rebuild was the only place the answer could move;
+    // now that it is "are these still the seeded rules", unticking one, recolouring
+    // one or retyping its axes moves it too — and commit() is the single funnel all
+    // of those already go through.
+    updateActivity();
     emit highlightersChanged();
 }
 
