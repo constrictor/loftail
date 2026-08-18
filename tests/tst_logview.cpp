@@ -1192,6 +1192,18 @@ void TestLogView::theAlternatingBandChangesAtRecordsAndNotAtLines()
     view.setPalette(pal);
     view.resize(700, 400);
 
+    // The strip read below is the one past the right edge of the last column, and it
+    // has to be MADE: a section is filled by its own text, and where no font resolves
+    // (Windows offscreen ships none) every glyph is drawn as a box the full height of
+    // the line, so the message column's text reaches the last pixel of its section
+    // rather than stopping a few characters in. Narrowing every section leaves a strip
+    // of nothing but row fill, which is what the band is a property of — so the whole
+    // case below is asked in the same terms with a font and without one.
+    view.header()->setMinimumSectionSize(10); // the style's floor is font-derived too
+    for (int c = 0; c < view.header()->count(); ++c)
+        view.header()->resizeSection(c, 40);
+    QVERIFY(view.header()->length() < view.viewport()->width());
+
     const QColor base = view.palette().base().color();
     const QColor band = alternateRowColor(view.palette());
 
