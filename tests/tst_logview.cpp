@@ -1,6 +1,7 @@
 #include <QtTest>
 
 #include <QApplication>
+#include <QClipboard>
 #include <QContextMenuEvent>
 #include <QFontDatabase>
 #include <QHeaderView>
@@ -8,8 +9,10 @@
 #include <QScrollBar>
 #include <QHelpEvent>
 #include <QItemSelectionModel>
+#include <QProgressDialog>
 #include <QSignalSpy>
 #include <QTemporaryFile>
+#include <QTimer>
 #include <QToolTip>
 #include <QWheelEvent>
 
@@ -155,6 +158,13 @@ private:
                         Encoding::Utf8, QTimeZone::utc());
     }
 
+    // The records of makeMixedLog() as they stand in the FILE — the oracle a raw copy
+    // is judged against, since one record is one line here.
+    static QStringList rawLines(int n)
+    {
+        return QString::fromUtf8(makeMixedLog(n)).split(QLatin1Char('\n'));
+    }
+
     // The five calls MainWindow::applyFiltersFor() makes, in its order.
     static void refilter(LogView &view, LogModel &model, Document &doc, const FilterSet &fs)
     {
@@ -260,6 +270,12 @@ private slots:
     void aZoomLeavesTheReaderOnTheRecordTheyWereReading();
     void aZoomWidensTheSeededColumnsAndLeavesADraggedOneAlone();
     void ctrlWheelAsksForAZoomAndAPlainWheelStillScrolls();
+
+    // --- Copying a selection is bounded (SPEC.md §5, ARCHITECTURE.md §7.1.6) ------
+    void aSmallCopyYieldsTheSelectedRecordsAndNothingElse();
+    void aCtrlClickedSelectionCopiesEveryRangeItNamesExactlyOnce();
+    void aCopyBigEnoughToWaitForOffersToStopAndCopiesTheSameText();
+    void cancellingACopyLeavesTheClipboardAsItWas();
 };
 
 // --- what does not fit says so (SPEC.md §5) ----------------------------------
@@ -1490,8 +1506,8 @@ void TestLogView::doubleClickingASectionDividerFitsThatColumn()
 namespace {
 
 // Which view rows are selected, ascending. The selection MODEL, not the copy commands:
-// what a Ctrl+click has to be judged on is the set, and selectedRecordsSorted() falls
-// back to the focused record when the set is empty.
+// what a Ctrl+click has to be judged on is the set, and the copy path's own range walk
+// falls back to the focused record when the set is empty.
 QVector<int> selectedRows(const LogView &view)
 {
     QVector<int> rows;
@@ -2401,6 +2417,215 @@ void TestLogView::ctrlWheelAsksForAZoomAndAPlainWheelStillScrolls()
     wheel(Qt::NoModifier, -120);
     QCOMPARE(zoom.size(), 0);
     QVERIFY2(sb->value() != 200, "a plain wheel stopped scrolling the log");
+}
+
+
+// --- copying a selection is bounded (SPEC.md §5, ARCHITECTURE.md §7.1.6) ------------
+//
+// The copy path is the one place that spends the whole selection's text at once, and
+// Select All puts it one keystroke away on a file of any size. What is asserted here is
+// that the bound changed nothing about what an ordinary copy produces — the range walk
+// answers what selectedRows() answered, including for a Ctrl+clicked selection of
+// several ranges — and that above the threshold the copy says so, can be stopped, and
+// leaves the clipboard alone when it is.
+
+namespace {
+
+// The offscreen platform serves an in-process clipboard, which is what these read back.
+// A platform whose clipboard does not round-trip has nothing to say about this path.
+bool clipboardRoundTrips()
+{
+    QClipboard *cb = QApplication::clipboard();
+    cb->setText(QStringLiteral("loftail-clipboard-probe"));
+    return cb->text() == QStringLiteral("loftail-clipboard-probe");
+}
+
+// Copy-as-columns exactly as it was built BEFORE the bound: a grid of flattened cells
+// through the two public builders. The oracle for "the output did not move".
+QString expectedColumns(const LogView &view, const LogModel &model, const QVector<int> &rows)
+{
+    QVector<QVector<QString>> grid;
+    for (int r : rows) {
+        QVector<QString> cells;
+        for (int vi = 0; vi < model.columnCount(); ++vi) {
+            const int logical = view.header()->logicalIndex(vi);
+            if (logical < 0 || view.header()->isSectionHidden(logical))
+                continue;
+            cells << LogView::flattenCell(model.cellText(r, logical));
+        }
+        grid << cells;
+    }
+    return LogView::columnsToTsv(grid);
+}
+
+QString joinedRawLines(const QStringList &lines, const QVector<int> &rows)
+{
+    QStringList wanted;
+    for (int r : rows)
+        wanted << lines.at(r);
+    return wanted.join(QLatin1Char('\n'));
+}
+
+} // namespace
+
+void TestLogView::aSmallCopyYieldsTheSelectedRecordsAndNothingElse()
+{
+    if (!clipboardRoundTrips())
+        QSKIP("this platform's clipboard does not round-trip in process");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 10), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    // Well under the threshold, so this is the plain synchronous loop with no dialog
+    // and no event processing at all — the case every other test in the tree relies on.
+    QVERIFY(view.copyProgressThreshold() > 10);
+
+    view.setCurrentRecord(2);
+    view.setCurrentRecord(4, true);
+    QCOMPARE(selectedRows(view), QVector<int>({2, 3, 4}));
+
+    view.copySelectionRaw();
+    QCOMPARE(QApplication::clipboard()->text(),
+             joinedRawLines(rawLines(10), {2, 3, 4}));
+    QVERIFY(view.findChild<QProgressDialog *>(QStringLiteral("copyProgress")) == nullptr);
+
+    view.copySelectionAsColumns();
+    QCOMPARE(QApplication::clipboard()->text(), expectedColumns(view, model, {2, 3, 4}));
+
+    // Nothing selected copies the FOCUSED record, which is the fallback the per-row
+    // form carried and the range walk had to keep.
+    view.selectionModel()->clearSelection();
+    view.copySelectionRaw();
+    QCOMPARE(QApplication::clipboard()->text(), rawLines(10).at(4));
+}
+
+void TestLogView::aCtrlClickedSelectionCopiesEveryRangeItNamesExactlyOnce()
+{
+    if (!clipboardRoundTrips())
+        QSKIP("this platform's clipboard does not round-trip in process");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 12), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    const int lh = view.fontMetrics().height();
+    QVERIFY(view.viewport()->height() > lh * 9);
+    const auto rowAt = [&](int row) {
+        return QPoint(50, (row - view.verticalScrollBar()->value()) * lh + lh / 2);
+    };
+
+    // Three ranges, two of which touch: 1-2 built by a Shift+click, 3 added on its own
+    // so it abuts them, and 7 far away. A record named by two ranges must still be
+    // copied once, which answering in rows gave for free and merging is what keeps.
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(1));
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, rowAt(2));
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, rowAt(3));
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, rowAt(7));
+    const QVector<int> rows = selectedRows(view);
+    QCOMPARE(rows, QVector<int>({1, 2, 3, 7}));
+
+    // The selection MODEL is the oracle: what the copy walks must be what it reports.
+    view.copySelectionRaw();
+    QCOMPARE(QApplication::clipboard()->text(), joinedRawLines(rawLines(12), rows));
+
+    view.copySelectionAsColumns();
+    QCOMPARE(QApplication::clipboard()->text(), expectedColumns(view, model, rows));
+
+    // And a record taken back out is not copied.
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, rowAt(2));
+    QCOMPARE(selectedRows(view), QVector<int>({1, 3, 7}));
+    view.copySelectionRaw();
+    QCOMPARE(QApplication::clipboard()->text(), joinedRawLines(rawLines(12), {1, 3, 7}));
+}
+
+void TestLogView::aCopyBigEnoughToWaitForOffersToStopAndCopiesTheSameText()
+{
+    if (!clipboardRoundTrips())
+        QSKIP("this platform's clipboard does not round-trip in process");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 10), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    view.selectAllRecords();
+    view.copySelectionRaw();
+    const QString unbounded = QApplication::clipboard()->text();
+    QCOMPARE(unbounded, joinedRawLines(rawLines(10), {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}));
+
+    // The threshold is a record COUNT, so it can be driven at ten rather than at the
+    // four million it ships for. Above it the copy announces itself and can be stopped.
+    view.setCopyProgressThreshold(2);
+    QApplication::clipboard()->setText(QStringLiteral("untouched"));
+
+    bool sawDialog = false;
+    bool cancelWasOffered = false;
+    QTimer::singleShot(0, &view, [&]() {
+        if (QProgressDialog *dlg =
+                view.findChild<QProgressDialog *>(QStringLiteral("copyProgress"))) {
+            sawDialog = true;
+            cancelWasOffered = !dlg->wasCanceled();
+        }
+    });
+    view.copySelectionRaw();
+
+    QVERIFY2(sawDialog, "a copy above the threshold showed no progress dialog");
+    QVERIFY(cancelWasOffered);
+    // Same text, whichever side of the threshold it was copied on.
+    QCOMPARE(QApplication::clipboard()->text(), unbounded);
+    // And the dialog is gone with the copy, not left parented on the view.
+    QVERIFY(view.findChild<QProgressDialog *>(QStringLiteral("copyProgress")) == nullptr);
+}
+
+void TestLogView::cancellingACopyLeavesTheClipboardAsItWas()
+{
+    if (!clipboardRoundTrips())
+        QSKIP("this platform's clipboard does not round-trip in process");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 10), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+    view.setCopyProgressThreshold(0); // every copy takes the bounded path
+
+    view.selectAllRecords();
+
+    // Pressing Cancel is what this posts, one event pass into the copy. The clipboard
+    // is written once at the end, so a cancelled copy leaves it whole rather than half
+    // filled — including a cancel that lands after the last record was read.
+    const QString before = QStringLiteral("what was on the clipboard before");
+    for (int i = 0; i < 2; ++i) {
+        QApplication::clipboard()->setText(before);
+        QTimer::singleShot(0, &view, [&]() {
+            if (QProgressDialog *dlg =
+                    view.findChild<QProgressDialog *>(QStringLiteral("copyProgress")))
+                dlg->cancel();
+        });
+        if (i == 0)
+            view.copySelectionRaw();
+        else
+            view.copySelectionAsColumns();
+        QCOMPARE(QApplication::clipboard()->text(), before);
+    }
 }
 
 #include "tst_logview.moc"
