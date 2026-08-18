@@ -3,7 +3,10 @@ Type=Application
 Name=loftail
 GenericName=Log Viewer
 Comment=Desktop viewer for log4cplus logs — filters and follows live logs
-Exec=loftail %f
+# %F, not %f: loftail takes several files on one command line and opens each in its
+# own tab, so a multiple selection handed to it from a file manager becomes one window
+# with N tabs. %f would launch a separate copy per file.
+Exec=loftail %F
 Icon=loftail
 Terminal=false
 Categories=Development;Utility;TextTools;

@@ -912,8 +912,11 @@ void MainWindow::updateActionStates()
 
 void MainWindow::chooseFileToOpen()
 {
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("Open Log File"), QString(),
+    // getOpenFileNames, not getOpenFileName: several logs are open at once (SPEC.md
+    // §3), and dragging them onto the window used to be the only way to ask for more
+    // than one — which leaves out anyone without a file manager on screen.
+    const QStringList paths = QFileDialog::getOpenFileNames(
+        this, tr("Open Log Files"), QString(),
         // The archive filter is offered whether or not libarchive is compiled in, so
         // the two builds' dialogs look alike: a file that simply vanished from the list
         // would read as "loftail cannot see this", where trying it explains itself.
@@ -922,8 +925,7 @@ void MainWindow::chooseFileToOpen()
                        "(*.gz *.bz2 *.xz *.zst *.zip *.tar *.tgz *.tar.gz *.tar.bz2 "
                        "*.tar.xz *.txz *.tar.zst *.7z);;"
                        "All files (*)"));
-    if (!path.isEmpty())
-        openFile(path);
+    openFiles(paths);
 }
 
 void MainWindow::chooseRemoteToOpen()
@@ -1047,7 +1049,28 @@ void MainWindow::primeRemoteCredentials(const QString &path)
     // where the auth chain puts it, behind the agent (SshSession::authenticate).
 }
 
-void MainWindow::openFile(const QString &rawPath, const QString &pattern)
+bool MainWindow::openFiles(const QStringList &rawPaths, const QString &pattern)
+{
+    QStringList refused;
+    for (const QString &raw : rawPaths) {
+        if (!openFile(raw, pattern))
+            refused.append(logSourceDisplayName(normalizeLogPath(raw)));
+    }
+
+    // ONE message for the lot. Each refusal has already written its own reason into
+    // the status label, so a single one keeps it — that is the message with the detail
+    // in it. Two or more would otherwise leave only the last one's reason on screen,
+    // with the earlier files silently missing from the tab bar and nothing anywhere
+    // saying they had been asked for; naming them all is the same answer session
+    // restore gives for the same problem.
+    if (refused.size() > 1) {
+        m_statusLabel->setText(
+            tr("Cannot open these logs: %1").arg(refused.join(QStringLiteral(", "))));
+    }
+    return refused.isEmpty();
+}
+
+bool MainWindow::openFile(const QString &rawPath, const QString &pattern)
 {
     // Normalize a remote URL to its one spelling FIRST, before it becomes a Document
     // path (RemoteLocation.h). Everything downstream compares these strings —
@@ -1074,13 +1097,13 @@ void MainWindow::openFile(const QString &rawPath, const QString &pattern)
         if (!error.isEmpty()) {
             m_statusLabel->setText(tr("Cannot open %1: %2")
                                        .arg(logSourceDisplayName(path), error));
-            return;
+            return false;
         }
         // Several picked logs open as several tabs, exactly as dropping several files
-        // does (SPEC.md §3).
-        for (const QString &member : members)
-            openFile(member, pattern);
-        return;
+        // does (SPEC.md §3) — through the same funnel, so a member that will not open
+        // is reported the way one of several dropped files is. A CANCELLED pick lands
+        // here as an empty list and is a success: abandoning the open is silent.
+        return openFiles(members, pattern);
     }
 
     // THREE LEVELS, ONE ANSWER (SPEC.md §4). The deepest node that names this log wins
@@ -1101,7 +1124,7 @@ void MainWindow::openFile(const QString &rawPath, const QString &pattern)
     // explicitly-supplied pattern (command line) is taken as the user's intent instead,
     // which keeps headless and scripted opens free of a blocking dialog.
     const bool promptIfNoMatch = pattern.isEmpty();
-    openWithSettings(path, settings, promptIfNoMatch);
+    return openWithSettings(path, settings, promptIfNoMatch);
 }
 
 bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
@@ -3041,12 +3064,15 @@ void MainWindow::dropEvent(QDropEvent *event)
     // file manager's SSH mount arrives as an sftp:// (or ssh://) URL rather than a
     // local file, and opens as a remote log — openFile() normalizes the spelling.
     const QList<QUrl> urls = event->mimeData()->urls();
+    QStringList paths;
+    paths.reserve(urls.size());
     for (const QUrl &url : urls) {
         if (url.isLocalFile())
-            openFile(url.toLocalFile());
+            paths.append(url.toLocalFile());
         else if (RemoteLocation::isRemote(url.toString()))
-            openFile(url.toString());
+            paths.append(url.toString());
     }
+    openFiles(paths);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
