@@ -270,7 +270,17 @@ Time-range filter bounds (§6) are always entered as wall clock in the display t
   - **Selected record only** — the focused record wraps so it can be read in full; all others stay unwrapped.
   - **Always on** — every record wraps to the viewport width.
 
-  The mode a newly opened view starts in is remembered for the log (§4); changing it afterwards changes the view in front of you and is remembered for that view alone, so two views of one file can differ. Note that in *always on* mode the vertical scrollbar is an approximation that refines as you scroll, since exact total height cannot be known without measuring every record (see `ARCHITECTURE.md` §7.1). Scroll position and navigation stay accurate; only the thumb size and position are estimates.
+  The mode a newly opened view starts in is remembered for the log (§4); changing it afterwards changes the view in front of you and is remembered for that view alone, so two views of one file can differ.
+
+  **`Alt+Z` toggles between *off* and *always on*** — the two a reader flips between while reading, one to see the shape of the table and the other to read a long message. *Selected record only* is not on the way round: it is picked for a particular record from the menu, and a key that stopped there on the way would make its own effect depend on which mode happened to be in force. Pressed while in *selected record only*, the key wraps everything. It is the same command as the menu entry in every respect, the checkmark and what the log remembers included.
+
+  Note that in *always on* mode the vertical scrollbar is an approximation that refines as you scroll, since exact total height cannot be known without measuring every record (see `ARCHITECTURE.md` §7.1). Scroll position and navigation stay accurate; only the thumb size and position are estimates.
+
+- **Log text has a size, and it zooms.** `Ctrl` and the wheel over the table, or **View ▸ Text Size** — `Ctrl +` to enlarge, `Ctrl -` to shrink, `Ctrl 0` back to the size the desktop chose. Only the size changes: the face stays the fixed-pitch one the table is laid out in (§5), so columns go on lining up and a wrapped record goes on breaking where it is drawn to break. It stops at 6 pt and at 32 pt, so a key held down cannot zoom the view into uselessness in either direction.
+
+  - **One size for the whole application.** It is a statement about the reader's eyes and their screen, which does not change between two tabs — so every open log, every view of one, and the digest strip under each (§7) change together, and a log opened afterwards opens at it. It is remembered until changed, including across restarts, and it is not part of a log's own settings (§4): how a log is *read* belongs to the log, how big it is drawn belongs to the reader.
+  - **Zooming does not move the reader.** The record at the top of the view is still at the top of it afterwards, at whatever size; a view following the tail (§3) goes on following it.
+  - **Columns that were left to loftail grow and shrink with the text**, since what they are sized to is a number of characters. A column whose width the reader set — by dragging its divider, by fitting it to its contents, or by having it restored from the last session — stays exactly where it was put: a zoom says nothing about somebody's column layout.
 
 - **A selection is built with the pointer the way a table's is.** Clicking a record selects it; **dragging** from it extends the selection as the pointer moves, and a drag held past the top or bottom edge of the view scrolls and goes on extending, so a selection is not limited to what is on screen. **Shift+click** extends to the record clicked, and the arrow keys extend the same way while Shift is held. **Ctrl+click** (Cmd on macOS) takes a single record in or out of the selection without disturbing the rest, so a selection need not be contiguous. Right-clicking *inside* a selection leaves it alone — the menu below acts on it — and right-clicking outside one moves it to the record under the cursor.
 
@@ -431,8 +441,9 @@ On relaunch, loftail restores:
 - Every view: how many views each file had, each one's column layout and wrap mode, and which view was active
 - Saved presets, where the build has them (§9)
 - Window geometry, the order of the tabs, and the arrangement of the side panes (§5a, §8)
+- The log text size (§5)
 
-**Scoping:** active filters, active highlighters and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a second view showing wide messages and one showing just timestamps each keep their shape. Presets and the window/pane layout are global.
+**Scoping:** active filters, active highlighters and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a second view showing wide messages and one showing just timestamps each keep their shape. Presets, the log text size and the window/pane layout are global — and the text size is written the moment it changes rather than at close, so a second window started meanwhile comes up at it.
 
 The log format, the encoding, the source time zone, the timestamp display mode and the run-start pattern are **not** part of the session at all: they are settings (§4), resolved from the file's own entry, its file pattern or the defaults every time it is opened. That is what makes a change in Preferences reach a tab that was restored from a previous session rather than only a freshly opened one.
 

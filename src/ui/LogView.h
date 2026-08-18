@@ -133,10 +133,13 @@ public:
     // resolved. Applied ONLY to columns nobody has spoken for: a drag, a fit, or a
     // restored session claims its column, and no later seed may overwrite it.
     //
-    // Called twice per view: from the constructor, where the caption is all there is to
-    // measure, and again from MainWindow::onIndexFinished, where the intern tables are
-    // complete and the Subsystem/Thread columns can take the widest name in the file
-    // (invariant #4). Never on the paint path and never per ingest tick.
+    // Called from the constructor, where the caption is all there is to measure; from
+    // MainWindow::onIndexFinished, where the intern tables are complete and the
+    // Subsystem/Thread columns can take the widest name in the file (invariant #4); and
+    // on a FONT CHANGE, where every character it measured in has a different advance —
+    // which is how a zoom widens the columns nobody has spoken for while leaving a width
+    // somebody dragged exactly where they put it. Never on the paint path, never per
+    // ingest tick, and never anywhere a person did not just ask for something.
     void seedColumnWidths();
 
     // Forget every user width and seed the lot again — the header menu's "Reset Widths".
@@ -265,6 +268,15 @@ protected:
     // not acted on: which column means what is the window's business, exactly as it is
     // for the record menu.
     void mouseDoubleClickEvent(QMouseEvent *event) override;
+    // Ctrl+wheel asks for a bigger or smaller font (SPEC.md §5) and is reported rather
+    // than acted on (zoomStepRequested); a plain wheel scrolls, as it always did.
+    void wheelEvent(QWheelEvent *event) override;
+    // The one place a font change is noticed, whoever made it (ARCHITECTURE.md §7.1.5).
+    // Every cached quantity derived from the line height or the character advance is
+    // invalidated here — the selected record's wrapped height, the estimator's
+    // width-keyed measurements, the seeded column widths, the header band and the
+    // digest cap — and the reader is put back on the record they were reading.
+    void changeEvent(QEvent *event) override;
     void hideEvent(QHideEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
@@ -294,6 +306,12 @@ signals:
     // gesture must reach that same item rather than a second copy of it.
     void recordDoubleClicked(int viewRow, int column);
 
+    // The reader asked to zoom with Ctrl+wheel (SPEC.md §5). Reported, never acted on:
+    // the log text size is ONE application-wide setting, so a view that re-fonted itself
+    // would be a second path to it and the other open views would not follow. `steps` is
+    // wheel notches, positive to enlarge.
+    void zoomStepRequested(int steps);
+
 private slots:
     void handleRowsInserted();
     void handleRowsRemoved();
@@ -306,6 +324,11 @@ private slots:
     void autoScrollTick();
 
 private:
+    // The whole of what a font change costs. Separate from changeEvent() because the
+    // ORDER matters (widths, then the header, then the estimator's column count, then
+    // geometry) and because the re-anchor at the end is the point of it.
+    void applyFontChange();
+
     int lineHeight() const;
     int visibleLines() const;
 
@@ -478,6 +501,11 @@ private:
     // mouse move extends the range from m_anchor. m_autoScrollY is where the pointer was
     // last seen, in viewport pixels and deliberately unclamped — its distance OUTSIDE
     // the viewport is what sets the autoscroll speed.
+    // Ctrl+wheel notches not yet worth a zoom step (see wheelEvent): a trackpad sends
+    // many small deltas and a mouse one big one, and the remainder is what makes the two
+    // add up to the same gesture.
+    int     m_wheelZoomRemainder = 0;
+
     bool    m_dragging = false;
     QTimer *m_autoScrollTimer = nullptr;
     int     m_autoScrollY = 0;

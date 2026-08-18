@@ -29,6 +29,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
+#include <QWheelEvent>
 
 namespace loftail {
 
@@ -313,7 +314,9 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent, Rol
     // Every column, and the header, render in the same fixed-pitch font: cells
     // line up vertically, and the estimated-geometry path's character-count model
     // stays valid (invariant #6, ARCHITECTURE.md §7.1.1).
-    setFont(monospaceFont());
+    // At the application's current log-text size (Fonts.h), so a view opened after a
+    // zoom opens zoomed and nothing has to push a font into it afterwards.
+    setFont(logTextFont());
     setFocusPolicy(Qt::StrongFocus);
     viewport()->setFocusProxy(this);
 
@@ -790,6 +793,104 @@ void LogView::applyDebouncedResize()
         }
     }
     viewport()->update();
+}
+
+// ---------------------------------------------------------------------------
+// Zoom (SPEC.md §5, ARCHITECTURE.md §7.1.5)
+// ---------------------------------------------------------------------------
+
+void LogView::wheelEvent(QWheelEvent *event)
+{
+    if (!(event->modifiers() & Qt::ControlModifier)) {
+        QAbstractScrollArea::wheelEvent(event); // a plain wheel scrolls, as it always did
+        return;
+    }
+    // angleDelta is in eighths of a degree and a mouse notch is 120 of them, but a
+    // trackpad sends a stream of small deltas — so the remainder is ACCUMULATED rather
+    // than rounded away, or a two-finger pinch-ish scroll would zoom either wildly or
+    // not at all depending on the device.
+    m_wheelZoomRemainder += event->angleDelta().y();
+    constexpr int kNotch = 120;
+    const int steps = m_wheelZoomRemainder / kNotch;
+    if (steps != 0) {
+        m_wheelZoomRemainder -= steps * kNotch;
+        emit zoomStepRequested(steps);
+    }
+    event->accept();
+}
+
+void LogView::changeEvent(QEvent *event)
+{
+    QAbstractScrollArea::changeEvent(event);
+    if (event->type() == QEvent::FontChange)
+        applyFontChange();
+}
+
+void LogView::applyFontChange()
+{
+    // The constructor sets the font BEFORE it builds the header, and QAbstractScrollArea
+    // is already delivering events to this object by then — the same trap m_header's
+    // nullptr initializer records for eventFilter(). Nothing below survives running
+    // early, and nothing below is needed: the constructor does all of it anyway.
+    if (!m_header || !m_selection)
+        return;
+
+    // Where the reader is, in RECORDS, captured before anything moves. Deliberately NOT
+    // the filter-anchor bracket: that expresses the anchor in SOURCE ordinals because a
+    // refilter replaces the view's record space, and a font change replaces nothing —
+    // the same records in the same order, drawn at a different height. The precedent it
+    // does follow is applyDebouncedResize(), which re-anchors on the top record for
+    // exactly this reason.
+    const int n = recordCount();
+    int    topRecord = -1;
+    qint64 intoRecord = 0; // display lines scrolled INTO that record
+    if (n > 0) {
+        const qint64 top = verticalScrollBar()->value();
+        topRecord = mapRecordAtLine(top);
+        if (topRecord >= 0)
+            intoRecord = qMax<qint64>(0, top - mapLineOfRecord(topRecord));
+    }
+
+    // The exact path's one cached height: measured in PIXELS and divided by the line
+    // height, so both halves of it have just moved.
+    m_selWrapCache = -1;
+    // Columns nobody has spoken for are re-seeded in the new font's characters, so they
+    // grow and shrink with the text in them; a width that was dragged, fitted or
+    // restored is left exactly where it was put, because a zoom is a statement about
+    // text size and not about somebody's column layout.
+    seedColumnWidths();
+    // The header band is as tall as the header's own font asks for.
+    layoutHeader();
+    positionFollowButton();
+    // THE ONE THAT IS EASY TO MISS. ensureEstimatorBound() rebinds on the index's
+    // ADDRESS and its block count, and a font change moves neither — so on its own it
+    // leaves the estimator holding wrapped heights measured at the old character
+    // advance, i.e. at a column count that no longer holds. setColumns() is what drops
+    // them, and it must come AFTER the re-seed above, which moves the message column's
+    // origin and therefore the count itself.
+    if (m_estimated.isBound())
+        m_estimated.setColumns(viewportCols());
+    recomputeGeometry();
+    // Digest role only, a no-op in the others: the strip's height is a line count times
+    // the line height, and both ends of that just changed.
+    refreshDigestCap();
+
+    if (m_following) {
+        scrollToEnd(); // following the tail outranks the anchor (SPEC.md §3)
+        return;
+    }
+    if (topRecord >= 0 && topRecord < recordCount()) {
+        // A flag rather than a QSignalBlocker on the scrollbar: blocking it suppresses
+        // rangeChanged, whose connection to QAbstractScrollArea's own scrollbar
+        // show/hide handling is queued.
+        const bool wasFollowScroll = m_inFollowScroll;
+        m_inFollowScroll = true;
+        const qint64 height = qMax(1, mapRecordHeightLines(topRecord));
+        const qint64 target = mapLineOfRecord(topRecord) + qMin(intoRecord, height - 1);
+        verticalScrollBar()->setValue(
+            int(qBound<qint64>(0, target, qint64(verticalScrollBar()->maximum()))));
+        m_inFollowScroll = wasFollowScroll;
+    }
 }
 
 void LogView::scrollContentsBy(int dx, int dy)

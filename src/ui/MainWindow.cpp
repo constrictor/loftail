@@ -6,6 +6,7 @@
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
+#include "Fonts.h"
 #include "Filter.h"
 #include "FilterPane.h"
 #include "FindBar.h"
@@ -91,6 +92,10 @@ constexpr int  kMaxRecentFiles = 10;
 constexpr int  kBulkRestoreWatchMs = 500;
 constexpr int  kBulkRestoreCapMs = 60000;
 constexpr auto kRecentFilesKey = "recentFiles";
+// The log text size (SPEC.md §5). An application preference, deliberately NOT in the
+// session group: the session describes one window's tabs, and two windows would
+// otherwise disagree about how big the text is. Absent means "the platform's own size".
+constexpr auto kLogFontSizeKey = "logFontPointSize";
 
 // Longest parent prefix a recent entry carries before its middle is elided
 // (TabLabels.h). Wider than a tab's, because a menu is laid out to its widest item and
@@ -142,6 +147,14 @@ MainWindow::MainWindow(QWidget *parent)
         QSettings store;
         m_settingsStore.migrateLegacy(store);
         m_logSettings = m_settingsStore.load();
+
+        // The remembered log text size (SPEC.md §5). Read HERE, with the settings tree
+        // and before restoreSession(), because every LogView is constructed with
+        // logTextFont() — so a restored tab has to find the size already set rather than
+        // be re-fonted afterwards. An absent key leaves the platform's own size alone.
+        const int savedFontSize = store.value(QLatin1String(kLogFontSizeKey), 0).toInt();
+        if (savedFontSize > 0)
+            setLogFontPointSize(savedFontSize);
     }
 
     setWindowTitle(QStringLiteral("loftail"));
@@ -482,6 +495,11 @@ void MainWindow::buildMenus()
     QAction *wrapOff = wrapMenu->addAction(tr("&Off"));
     QAction *wrapSel = wrapMenu->addAction(tr("&Selected Record Only"));
     QAction *wrapAll = wrapMenu->addAction(tr("&Always On"));
+    // Object names, because a test that finds a menu entry by its visible text stops
+    // working the day the entry is translated or reworded (ARCHITECTURE.md §9.1).
+    wrapOff->setObjectName(QStringLiteral("wrapOffAction"));
+    wrapSel->setObjectName(QStringLiteral("wrapSelectedAction"));
+    wrapAll->setObjectName(QStringLiteral("wrapAlwaysOnAction"));
     wrapOff->setData(int(LogView::WrapMode::Off));
     wrapSel->setData(int(LogView::WrapMode::SelectedRecordOnly));
     wrapAll->setData(int(LogView::WrapMode::AlwaysOn));
@@ -512,6 +530,65 @@ void MainWindow::buildMenus()
             [setWrap]() { setWrap(LogView::WrapMode::SelectedRecordOnly); });
     connect(wrapAll, &QAction::triggered, this,
             [setWrap]() { setWrap(LogView::WrapMode::AlwaysOn); });
+
+    // The keyboard gesture (SPEC.md §5). It TOGGLES Off <-> Always On rather than cycling
+    // all three, and the third mode is deliberately not on the way: Selected Record Only
+    // is a reading aid picked for one record, not a state anybody wants to land in while
+    // reaching for the other one — a three-way cycle would make the key's effect depend
+    // on invisible state and would re-lay out the whole view on the way past. From
+    // Selected Record Only the key means "wrap it all", which is the useful reading of a
+    // toggle pressed from a third state.
+    //
+    // It sets nothing itself: it TRIGGERS one of the three actions above, so the mode,
+    // the checkmark and the write into this log's settings node all happen exactly once
+    // and in one place.
+    //
+    // Alt+Z is the editors' own binding for this and collides with nothing here: Ctrl+W
+    // is Close Tab, and no menu on the bar answers to Z.
+    wrapMenu->addSeparator();
+    m_toggleWrapAction = wrapMenu->addAction(tr("&Toggle Wrap"));
+    m_toggleWrapAction->setObjectName(QStringLiteral("toggleWrapAction")); // findChild, for tests
+    m_toggleWrapAction->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Z));
+    m_toggleWrapAction->setEnabled(false);
+    connect(m_toggleWrapAction, &QAction::triggered, this, [this, wrapOff, wrapAll]() {
+        LogView *v = activeLogView();
+        if (!v)
+            return;
+        (v->wrapMode() == LogView::WrapMode::AlwaysOn ? wrapOff : wrapAll)->trigger();
+    });
+
+    // Log text size (SPEC.md §5). One size for the whole application — see
+    // MainWindow::setLogFontSize — so these are enabled with no file open too: the size
+    // is a preference, and the next log opens at it.
+    QMenu *zoomMenu = viewMenu->addMenu(tr("Text &Size"));
+    QAction *zoomInAction = zoomMenu->addAction(tr("Zoom &In"));
+    zoomInAction->setObjectName(QStringLiteral("zoomInAction")); // findChild, for tests
+    // Ctrl+= as well as whatever the platform calls ZoomIn, because on most keyboards
+    // Ctrl++ is really Ctrl+Shift+= and the unshifted key is what people press.
+    QList<QKeySequence> zoomInKeys = QKeySequence::keyBindings(QKeySequence::ZoomIn);
+    const QKeySequence ctrlEquals(Qt::CTRL | Qt::Key_Equal);
+    if (!zoomInKeys.contains(ctrlEquals))
+        zoomInKeys.append(ctrlEquals);
+    zoomInAction->setShortcuts(zoomInKeys);
+    connect(zoomInAction, &QAction::triggered, this, [this]() { stepLogFontSize(1); });
+
+    QAction *zoomOutAction = zoomMenu->addAction(tr("Zoom &Out"));
+    zoomOutAction->setObjectName(QStringLiteral("zoomOutAction")); // findChild, for tests
+    zoomOutAction->setShortcuts(QKeySequence::keyBindings(QKeySequence::ZoomOut));
+    connect(zoomOutAction, &QAction::triggered, this, [this]() { stepLogFontSize(-1); });
+
+    // Explicit, not a QKeySequence role: Qt has no "zoom reset" binding, and Ctrl+0 is
+    // what every browser and editor uses for it.
+    QAction *zoomResetAction = zoomMenu->addAction(tr("&Reset Size"));
+    zoomResetAction->setObjectName(QStringLiteral("zoomResetAction")); // findChild, for tests
+    zoomResetAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+    connect(zoomResetAction, &QAction::triggered, this, [this]() {
+        if (resetLogFontPointSize()) {
+            applyLogFontToViews();
+            QSettings().remove(QLatin1String(kLogFontSizeKey));
+        }
+        announceLogFontSize();
+    });
 
     buildTimeDisplayMenu();
     buildColumnWidthActions();
@@ -911,6 +988,8 @@ void MainWindow::updateActionStates()
         // checkbox tracks that view's own follow state.
         m_followAction->setChecked(hasFile ? m_activeView->logView()->following() : true);
     }
+    if (m_toggleWrapAction)
+        m_toggleWrapAction->setEnabled(hasFile);
     if (m_wrapGroup) {
         // Wrap belongs to the view (invariant #7) and a log now opens in the mode its
         // settings name, so the checked entry has to follow whichever view is in front
@@ -1325,6 +1404,12 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
     // the window reads the DOCUMENT's when it resolves a view row.
     connect(logView, &LogView::recordDoubleClicked, this,
             [this, view](int row, int column) { activateRecordColumn(view, row, column); });
+    // Ctrl+wheel over either table asks for a size, and the WINDOW answers — one size
+    // for the application, so a view that re-fonted itself would leave every other tab
+    // behind. The strip is wired too: it is a log table under the pointer like any other.
+    connect(logView, &LogView::zoomStepRequested, this, &MainWindow::stepLogFontSize);
+    connect(view->digestView(), &LogView::zoomStepRequested, this,
+            &MainWindow::stepLogFontSize);
 
     // Into the bookkeeping BEFORE the tab bar: adding the first tab makes it current
     // at once, and the active-view handling that fires from it reads m_views.
@@ -3214,6 +3299,47 @@ void MainWindow::closeEvent(QCloseEvent *event)
     saveSession();
     closeAllDocuments();
     event->accept();
+}
+
+// --- Log text size (SPEC.md §5, ARCHITECTURE.md §7.1.5) --------------------
+
+void MainWindow::applyLogFontToViews()
+{
+    // Every open view at once, the DIGEST STRIPS INCLUDED: the strip's claim is that a
+    // row is rendered exactly as it is in the log above it, and a strip in a different
+    // size would read as a different kind of row rather than as a copy of one. Each view
+    // invalidates its own geometry from the font change (LogView::applyFontChange).
+    const QFont f = logTextFont();
+    for (DocumentView *view : std::as_const(m_views)) {
+        view->logView()->setFont(f);
+        view->digestView()->setFont(f);
+    }
+}
+
+void MainWindow::setLogFontSize(int points)
+{
+    if (!setLogFontPointSize(points)) {
+        announceLogFontSize(); // unmoved, at a bound or already there — still say where
+        return;
+    }
+    applyLogFontToViews();
+    // Written immediately rather than at closeEvent: this is not window state, and a
+    // second window opened meanwhile should come up at the size the reader just chose.
+    QSettings().setValue(QLatin1String(kLogFontSizeKey), logFontPointSize());
+    announceLogFontSize();
+}
+
+void MainWindow::stepLogFontSize(int steps)
+{
+    setLogFontSize(logFontPointSize() + steps);
+}
+
+void MainWindow::announceLogFontSize()
+{
+    // Through the status BAR rather than m_statusLabel: that label is rebuilt from the
+    // document on every tick by updateStatus(), so a size written into it would be gone
+    // by the next one. A transient message covers it and clears itself.
+    statusBar()->showMessage(tr("Log text size: %1 pt").arg(logFontPointSize()), 2000);
 }
 
 // --- Session persistence ---------------------------------------------------
