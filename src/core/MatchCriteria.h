@@ -77,8 +77,16 @@ struct MatchCriteria
     // the intern table: the table grows mid-scan and the list lags it, so asking the
     // table would make a subsystem discovered-but-not-yet-listed look excluded and
     // silently hide its records (ARCHITECTURE.md §7.2, "newly discovered values
-    // arrive selected"). Read only under NoOpAxes::Collapse; not persisted, because
-    // it is recomputed from the repopulated list on restore.
+    // arrive selected").
+    //
+    // Persisted — conditionally, see toJson — because it is the ONLY thing that tells
+    // "the user selected nothing" from "nothing had been offered yet", and the name
+    // list cannot: both are the empty list. A pane stashed before its log had been
+    // indexed lists nothing and covers everything, and reading that back as the None
+    // button's deliberate empty selection is what used to leave every tab but the last
+    // showing none of its records. AxisEditor::setCriteria() reads it to choose the
+    // rule the value lists are rebuilt under; resolve() reads it to collapse an axis
+    // that narrows nothing, under NoOpAxes::Collapse only.
     bool loggerCoversAll = true;
     bool threadCoversAll = true;
 
@@ -130,10 +138,13 @@ struct MatchCriteria
     // silently, in the direction of saying nothing. So a new axis — or a new flag on
     // an existing one — belongs in this comparison in the same commit that adds it.
     //
-    // coversAll is compared like the rest although it is derived and not persisted:
-    // it only ever moves as a consequence of an edit the user made in the axis
-    // editor, so treating it as part of the value costs nothing and leaving it out
-    // would be a second rule to remember.
+    // coversAll is compared like the rest although it is derived: it only ever moves
+    // as a consequence of an edit the user made in the axis editor, so treating it as
+    // part of the value costs nothing and leaving it out would be a second rule to
+    // remember. It is also why fromJson falls an absent key back on what the name list
+    // implies rather than on some third value — the seeded highlight rules name no
+    // subsystem and cover everything, and a default that read back differently would
+    // light the Highlighters tab's marker on every log written by an older build.
     bool operator==(const MatchCriteria &o) const
     {
         return priorityEnabled == o.priorityEnabled && minPriority == o.minPriority

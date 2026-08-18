@@ -158,10 +158,13 @@ public:
     // The axes as the user has them, in portable form.
     MatchCriteria criteria() const;
 
-    // Load `c` into the controls. Applies its subsystem/thread selection EXACTLY —
-    // unlike refreshDiscoveredLists(), which treats a never-listed name as checked —
-    // so switching between two highlight rules shows each rule's own selection rather
-    // than inheriting the other's. Does not emit changed().
+    // Load `c` into the controls. Applies a subsystem/thread selection that NARROWS
+    // exactly — unlike refreshDiscoveredLists(), which treats a never-listed name as
+    // checked — so switching between two highlight rules shows each rule's own
+    // selection rather than inheriting the other's. An axis that narrows nothing
+    // (MatchCriteria::loggerCoversAll, and not restrictive) is loaded as the statement
+    // it is instead: everything listed ticked, and the discovery rule left armed for
+    // whatever the scan has not reached. Does not emit changed().
     void setCriteria(const MatchCriteria &c);
 
     // False when the text axis holds a regex that failed to compile. The pattern edit
@@ -264,22 +267,45 @@ private:
     void updateAxisState();
     void updateTextValidity();
 
-    // Repopulate one checkable list. `exact` picks the check-state rule: false is
-    // discovery (a name never listed before arrives checked, so an enabled-by-default
-    // axis does not start dropping records mid-scan), true is loading a stored
-    // selection (checked means exactly the given names). `restrictive` turns the
-    // discovery rule off for this axis without turning it into a load — see
-    // MatchCriteria::loggerRestrictive.
+    // How one value list decides what arrives ticked when it is rebuilt.
+    enum class ListRule {
+        // A name never listed before arrives checked, so an enabled-by-default axis
+        // does not start dropping records mid-scan as the scan finds subsystems.
+        // `restrictive` turns that half off without turning the rule into a load —
+        // see MatchCriteria::loggerRestrictive.
+        Discover,
+        // Checked means exactly the given names: the caller is reproducing a stored
+        // selection, not discovering values.
+        Load,
+        // Everything listed arrives checked, whether it was in the stored selection or
+        // not, and Discover keeps ticking whatever turns up next. What an axis IN FORCE
+        // that excluded NOTHING means (MatchCriteria::loggerCoversAll) — which is not
+        // the same picture as its name list, because that list is only as long as the
+        // scan had got when it was written.
+        CoverAll,
+        // Load, except that an unticked name is not recorded as SEEN. What a switched-OFF
+        // axis that excluded nothing means: it has no selection to show, so nothing is
+        // ticked — and it excluded nothing, so nothing may be recorded as excluded
+        // either, which is what leaves the discovery rule armed for whenever the axis
+        // is switched on. Nothing arrives ticked, so nothing materialises into
+        // criteria() for a highlight rule that does not use this axis.
+        Unstated,
+    };
+
+    // Repopulate one checkable list under `rule`.
     void populateList(QListWidget *list, const QStringList &names,
                       const QSet<QString> &checked, const QSet<QString> &manual,
-                      QSet<QString> &seen, bool exact, bool restrictive);
+                      QSet<QString> &seen, ListRule rule, bool restrictive);
     static bool   allChecked(const QListWidget *list);
     QSet<QString> checkedNames(const QListWidget *list) const;
     void          setAllChecked(QListWidget *list, bool checked);
     void          invertChecked(QListWidget *list);
     void          narrowList(QListWidget *list, const QString &needle);
+    // Per axis, because the two are loaded under rules that need not agree: a stored
+    // state can cover every subsystem and name three threads.
     void          repopulate(const QSet<QString> &loggerChecked,
-                             const QSet<QString> &threadChecked, bool exact);
+                             const QSet<QString> &threadChecked, ListRule loggerRule,
+                             ListRule threadRule);
 
     // The widgets and per-axis state behind ValueAxis, so the record-menu edits are
     // written once rather than twice.

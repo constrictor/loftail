@@ -8,44 +8,15 @@ agents driving the real UI (Xvfb + xdotool, screenshots measured with PIL) over
 the record table, the panes and the window, and a fourth reading the code. Ranked
 by severity, not by area. The first entry — a narrowing conversion that MSVC
 refuses, which broke the Windows leg of CI at HEAD — has since been fixed and
-removed, and so has entry 1, the estimator reading past a measured block when a
-log grew under Line Wrap ▸ Always On. The numbers left behind are not reused: the
-entries below keep the ones they were given, so they can still be referred to by
-number.
+removed, and so have entry 1, the estimator reading past a measured block when a
+log grew under Line Wrap ▸ Always On, and entry 2, every tab but the last one
+showing none of its records after several logs were opened at once. The numbers
+left behind are not reused: the entries below keep the ones they were given, so
+they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 2. Opening several logs at once leaves every tab but the last showing none of its records
-
-`loftail svc-a/app.log svc-b/app.log other/server.log` from a clean config. The
-tab in front is fine. Click either of the others and the table is empty —
-`app.log | 0 of 1200 records shown` — with the Filters pane showing the Subsystem
-axis ticked, *Others* ticked, and every discovered subsystem unticked. Clicking
-*All*, or View ▸ Clear Filters, restores them.
-
-`buildViewAndIndex` calls `showView()` and *then* `controller->start()`, so
-opening file N+1 makes it active and `setActiveView` (`MainWindow.cpp:983`)
-stashes file N's pane state while file N's index is still empty:
-`loggerNames: []` with `loggerEnabled: true`. Returning to that tab hydrates that
-state, and `AxisEditor::setCriteria` (`AxisEditor.cpp:1268`) repopulates with
-`exact=true` — the load rule — so every value discovered in the meantime arrives
-unticked. `[]` means both "the user selected nothing" and "nothing had been
-discovered yet", and the load rule reads it as the first.
-
-The bad state is then written to the session, so the tab comes back empty after a
-relaunch, permanently, until the user works out what to clear. Reachable from all
-three of today's multi-open routes and from every restore of more than one tab.
-`tests/tst_multidoc.cpp` always waits for indexing and never asserts a record
-count after switching back, which is why nothing caught it.
-
-Fix: make "the axis is on and nothing is listed yet" distinguishable from "the
-user selected nothing" — stash lazily, recomputing from the document at switch
-time when the pane was never edited, or have `setCriteria` fall back to the
-discovery rule for an empty stored selection on an axis the user never touched.
-More than a one-liner because `MatchCriteria` is also the preset and session
-schema, so the ambiguity has to be resolved without a version bump.
 
 ### 3. Wrapped message text is clipped off the bottom of every wrapped record
 

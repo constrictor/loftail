@@ -138,6 +138,19 @@ QJsonObject MatchCriteria::toJson() const
     if (threadRestrictive)
         o.insert(QStringLiteral("threadRestrictive"), true);
 
+    // Coverage, written only where the name list alone would be read wrongly. A list
+    // already implies an answer — nothing listed excludes nothing, something listed is
+    // a narrowing — so the key goes in exactly when the truth differs from that
+    // implication, i.e. for an empty selection somebody chose (the None button) and
+    // for a full one that has to keep growing with the file. Every other state,
+    // including every default and every rule loftail seeds, serializes byte-for-byte
+    // as it did before the key existed, so neither store's version has to move. The
+    // same habit as loggerRestrictive above, on a field whose default is true.
+    if (loggerCoversAll != loggerNames.isEmpty())
+        o.insert(QStringLiteral("loggerCoversAll"), loggerCoversAll);
+    if (threadCoversAll != threadNames.isEmpty())
+        o.insert(QStringLiteral("threadCoversAll"), threadCoversAll);
+
     o.insert(QStringLiteral("textEnabled"), text.enabled);
     o.insert(QStringLiteral("text"), text.matcher.pattern());
     o.insert(QStringLiteral("textRegex"), text.matcher.isRegex());
@@ -171,6 +184,20 @@ MatchCriteria MatchCriteria::fromJson(const QJsonObject &o)
     // key existed meant: a hand-ticked list that widens with the file.
     c.loggerRestrictive = o.value(QStringLiteral("loggerRestrictive")).toBool(false);
     c.threadRestrictive = o.value(QStringLiteral("threadRestrictive")).toBool(false);
+
+    // contains(), never the value alone: an absent key is a state whose coverage the
+    // name list already implies — or one written before the key existed, where the two
+    // cannot be told apart at all. Falling back on the implication is what makes an
+    // older build's empty selection read as "nothing had been offered", which heals a
+    // stashed-too-early state that would otherwise come back empty for ever; an empty
+    // selection the user DID choose has carried the key since this version, so only
+    // states written before it lose that distinction, and only once.
+    c.loggerCoversAll = o.contains(QStringLiteral("loggerCoversAll"))
+                            ? o.value(QStringLiteral("loggerCoversAll")).toBool(true)
+                            : c.loggerNames.isEmpty();
+    c.threadCoversAll = o.contains(QStringLiteral("threadCoversAll"))
+                            ? o.value(QStringLiteral("threadCoversAll")).toBool(true)
+                            : c.threadNames.isEmpty();
 
     c.text.enabled = o.value(QStringLiteral("textEnabled")).toBool(false);
     c.text.negate = o.value(QStringLiteral("textNegate")).toBool(false);

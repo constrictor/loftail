@@ -1,6 +1,7 @@
 #include <QtTest>
 
 #include <QDateTime>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QTimeZone>
 
@@ -34,6 +35,7 @@ private slots:
     void jsonUsesTheOriginalFilterPaneKeys();
     void jsonRoundTrip();
     void jsonDefaultsMatchAFreshFilterPane();
+    void coverageIsWrittenOnlyWhereTheNameListWouldBeReadWrongly();
     void resolveDropsNamesTheFileHasNotProduced();
     void resolveConvertsWallClockInTheDisplayZone();
     void collapseIsPolicyNotBehavior();
@@ -142,6 +144,57 @@ void TestMatchCriteria::jsonDefaultsMatchAFreshFilterPane()
     QVERIFY(!c.threadEnabled);
     QVERIFY(!c.timeEnabled);
     QVERIFY(!c.text.enabled);
+}
+
+void TestMatchCriteria::coverageIsWrittenOnlyWhereTheNameListWouldBeReadWrongly()
+{
+    // coversAll is what tells "the user selected nothing" from "nothing had been
+    // offered yet" — the two states an empty name list collapses into, and the reason
+    // every tab but the last one used to open showing none of its records. It is
+    // persisted, but only where the name list alone implies the wrong answer, so
+    // nothing that predates the key changes shape and neither store's version moves.
+    const QString loggerKey = QStringLiteral("loggerCoversAll");
+    const QString threadKey = QStringLiteral("threadCoversAll");
+
+    // Nothing listed and nothing excluded — every default and every rule loftail seeds.
+    // The list already says it, so the key stays out.
+    QVERIFY(!MatchCriteria().toJson().contains(loggerKey));
+    QVERIFY(!MatchCriteria().toJson().contains(threadKey));
+
+    // A narrowing. Also implied — something is listed — so also unwritten.
+    MatchCriteria narrowed;
+    narrowed.loggerNames = {QStringLiteral("db.pool")};
+    narrowed.loggerCoversAll = false;
+    QVERIFY(!narrowed.toJson().contains(loggerKey));
+    QVERIFY(!MatchCriteria::fromJson(narrowed.toJson()).loggerCoversAll);
+
+    // The None button: an empty selection somebody CHOSE. Written, or it comes back
+    // as the empty list of a log that had not been indexed yet and quietly widens.
+    MatchCriteria none;
+    none.loggerEnabled = true;
+    none.loggerCoversAll = false;
+    QCOMPARE(none.toJson().value(loggerKey).toBool(true), false);
+    QVERIFY(!MatchCriteria::fromJson(none.toJson()).loggerCoversAll);
+
+    // A full selection, which must keep growing with the file rather than freeze at
+    // the names the scan had reached when it was stored.
+    MatchCriteria all;
+    all.loggerNames = {QStringLiteral("db.pool"), QStringLiteral("net.io")};
+    all.threadNames = {QStringLiteral("main")};
+    QCOMPARE(all.toJson().value(loggerKey).toBool(false), true);
+    QCOMPARE(all.toJson().value(threadKey).toBool(false), true);
+    QVERIFY(MatchCriteria::fromJson(all.toJson()).loggerCoversAll);
+    QVERIFY(MatchCriteria::fromJson(all.toJson()).threadCoversAll);
+
+    // And a state written before the key existed, where the two cannot be told apart
+    // at all: the name list is taken at its word. An empty one reads as "nothing was
+    // offered", which is what heals a session stashed before its log was indexed; a
+    // list with names in it reads as the narrowing it looks like.
+    QJsonObject legacy = MatchCriteria().toJson();
+    QVERIFY(!legacy.contains(loggerKey)); // as an older build wrote it
+    QVERIFY(MatchCriteria::fromJson(legacy).loggerCoversAll);
+    legacy.insert(QStringLiteral("loggerChecked"), QJsonArray{QStringLiteral("db.pool")});
+    QVERIFY(!MatchCriteria::fromJson(legacy).loggerCoversAll);
 }
 
 void TestMatchCriteria::resolveDropsNamesTheFileHasNotProduced()
