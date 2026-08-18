@@ -1152,6 +1152,21 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     ctx->pendingRunRestore = std::move(runRestore);
     // The prompt this open could not raise, deferred to the first resume that has bytes.
     ctx->pendingFormatPrompt = deferFormatPrompt;
+
+    // A log nothing has ever been saved for starts with the level colours (SPEC.md §7):
+    // ERROR and FATAL rendered exactly like TRACE otherwise, which is the one thing a
+    // reader opens a log to find. Here and in prepareContext(), which are the only two
+    // routes to a new Document, and NOT in Document itself — a seed belongs where "has
+    // anything been stored for this file?" can be asked, and putting it in core would
+    // colour every document every test builds. The rules are the user's from this moment
+    // on: deleting them all is saved as an empty list, and the restore route below reads
+    // an empty list as an answer rather than as silence.
+    //
+    // AFTER the format has settled, never before: a rule is resolved against a format,
+    // and the FormatOutcome::Chosen branch above re-prepares the document.
+    ctx->doc->highlighters() = HighlighterSet::defaults();
+    ctx->doc->resolveHighlighters();
+
     m_contexts.push_back(std::move(ctx));
 
     buildViewAndIndex(m_contexts.back().get());
@@ -1275,8 +1290,19 @@ DocumentContext *MainWindow::prepareContext(const SessionDocument &d)
     // Highlight rules go straight onto the Document rather than through the pane:
     // the pane holds one file's rules at a time, and every restored file needs its
     // own. HighlighterPane::setDocument reads them back out when this file is shown.
+    //
+    // contains(), NEVER the array's emptiness — the same rule HighlightRule::fromJson
+    // applies one level down to "actions" and LogSettingsStore to "pattern". A stored
+    // EMPTY list is the user having deleted every rule, which must stay deleted; only a
+    // session that says nothing about this file's rules at all gets the level colours
+    // seeded, exactly as a first open does. Read empty as absent and a deleted default
+    // comes back on every launch, which is the shape of a bug nobody can get rid of.
+    // saveSession() always writes the key, so the seeded case is a session written
+    // before this build — or none.
     ctx->doc->highlighters() =
-        HighlighterSet::fromJson(d.highlighters.value(QStringLiteral("rules")).toArray());
+        d.highlighters.contains(QStringLiteral("rules"))
+            ? HighlighterSet::fromJson(d.highlighters.value(QStringLiteral("rules")).toArray())
+            : HighlighterSet::defaults();
     // Rules match nothing until they have been resolved once. Indexing has not run
     // yet, so this binds only the format and display zone (and compiles each text
     // axis) — the intern-table pass follows when the scan reports names.

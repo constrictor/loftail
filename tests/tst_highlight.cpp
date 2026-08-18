@@ -83,6 +83,12 @@ private slots:
     void matchActionsDecodesOnceAcrossEveryWantedAction();
     void anyEnabledFiltersByAction();
     void aRuleWithNoActionsIsNeverACandidate();
+
+    // The rule list a log with nothing saved for it starts with (SPEC.md §7).
+    void theDefaultRulesColourTheThreeLevelsWorthFindingAndNothingBelow();
+    void everyDefaultRuleCarriesTheColourActionAndNothingElse();
+    void everyDefaultRuleNamesTheTextColourThatReadsOnItsBackground();
+    void theDefaultRulesAreInertWhereNoRecordCarriesALevel();
 };
 
 Record TestHighlight::rec(quint32 loggerId, Priority p, quint32 threadId, qint64 timestamp)
@@ -855,6 +861,72 @@ void TestHighlight::aRuleWithNoActionsIsNeverACandidate()
     // what follows it — the same rule as a digest-only rule above, in its limit case.
     QCOMPARE(set.match(rec(1, Priority::Info), HighlightAction::Color), 1);
     QVERIFY(!set.anyEnabled(HighlightAction::Digest));
+}
+
+void TestHighlight::theDefaultRulesColourTheThreeLevelsWorthFindingAndNothingBelow()
+{
+    HighlighterSet set = HighlighterSet::defaults();
+    resolve(set, makeIndex());
+
+    // ORDER IS THE WHOLE THING. The priority axis is a minimum, so the ERROR rule
+    // matches FATAL too; only the FATAL rule sitting above it stops first-match-wins
+    // handing a FATAL record the ERROR colour. Swap the two and this is the one
+    // assertion that fails.
+    QCOMPARE(colorRule(set, rec(1, Priority::Fatal)), 0);
+    QCOMPARE(colorRule(set, rec(1, Priority::Error)), 1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Warn)), 2);
+    QVERIFY(set.rules.at(0).background != set.rules.at(1).background);
+    QVERIFY(set.rules.at(1).background != set.rules.at(2).background);
+
+    // Nothing below WARN is coloured: colouring the noise spends the reader's attention
+    // on the records they were skipping.
+    QCOMPARE(colorRule(set, rec(1, Priority::Info)), -1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Debug)), -1);
+    QCOMPARE(colorRule(set, rec(1, Priority::Trace)), -1);
+}
+
+void TestHighlight::everyDefaultRuleCarriesTheColourActionAndNothingElse()
+{
+    const HighlighterSet set = HighlighterSet::defaults();
+    QVERIFY(!set.rules.isEmpty());
+    for (const HighlightRule &r : set.rules) {
+        QVERIFY(r.enabled);
+        // Colour ALONE. A default that marked tabs or raised desktop notifications
+        // would be loftail deciding, before the user has opened the pane, that every
+        // ERROR in every log is worth interrupting them for.
+        QCOMPARE(r.actions, HighlightActions(HighlightAction::Color));
+        // And the only axis is priority, so a default rule says nothing about a
+        // subsystem, a thread, a window of time or a word in the message.
+        QVERIFY(r.match.priorityEnabled);
+        QVERIFY(!r.match.loggerEnabled);
+        QVERIFY(!r.match.threadEnabled);
+        QVERIFY(!r.match.timeEnabled);
+        QVERIFY(!r.match.text.active());
+    }
+}
+
+void TestHighlight::everyDefaultRuleNamesTheTextColourThatReadsOnItsBackground()
+{
+    for (const HighlightRule &r : HighlighterSet::defaults().rules) {
+        // Palette slots, never RGB and never *default* on the background's partner:
+        // readableTextSlot() is the pairing paletteEveryBackgroundHasReadableText()
+        // measures at 4.5:1 in BOTH themes, so a default rule is legible by
+        // construction rather than by inspection.
+        QVERIFY(HighlightPalette::isSlot(r.background));
+        QCOMPARE(r.foreground, HighlightPalette::readableTextSlot(r.background));
+    }
+}
+
+void TestHighlight::theDefaultRulesAreInertWhereNoRecordCarriesALevel()
+{
+    HighlighterSet set = HighlighterSet::defaults();
+    resolve(set, makeIndex());
+    // A pattern with no %p leaves every record at Priority::Unknown, which
+    // AbsentField::DoesNotMatch already refuses to colour. So the defaults need no gate
+    // for a log whose format cannot fill the axis they key on — they simply match
+    // nothing, exactly as a hand-made priority rule does on such a log.
+    QCOMPARE(colorRule(set, rec(1, Priority::Unknown)), -1);
+    QCOMPARE(colorRule(set, rec(0, Priority::Unknown, 0, Record::kNoTimestamp)), -1);
 }
 
 QTEST_APPLESS_MAIN(TestHighlight)
