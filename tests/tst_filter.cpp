@@ -57,6 +57,7 @@ private slots:
     void aSubsetPublishedOutOfOrderStillAnswersExactly();
     void documentApplyFiltersEndToEnd();
     void findWalksAndWraps();
+    void theMatchTallyCountsWithinItsBoundAndSaysWhenItStoppedShort();
     void findChangesNoFilterState();
 };
 
@@ -476,6 +477,63 @@ void TestFilter::findWalksAndWraps()
     // No match anywhere.
     auto none = [](int) { return false; };
     QCOMPARE(Find::search(n, -1, true, true, none), -1);
+}
+
+void TestFilter::theMatchTallyCountsWithinItsBoundAndSaysWhenItStoppedShort()
+{
+    // Rows 2, 5, 8 match, as above.
+    const QVector<bool> hit = {false, false, true, false, false, true, false, false, true, false};
+    int asked = 0;
+    auto match = [&hit, &asked](int r) { ++asked; return hit.at(r); };
+    const int n = hit.size();
+
+    // Unbounded: the whole view is counted, so the total is a fact and the position of
+    // each match is its ordinal among them (SPEC.md §5).
+    Find::Tally t = Find::tally(n, 5, 0, 0, match);
+    QCOMPARE(t.total, 3);
+    QCOMPARE(t.index, 2); // row 5 is the second match
+    QVERIFY(t.complete);
+    QCOMPARE(asked, n); // every row, exactly once
+
+    QCOMPARE(Find::tally(n, 2, 0, 0, match).index, 1);
+    QCOMPARE(Find::tally(n, 8, 0, 0, match).index, 3);
+
+    // Bounded by rows, with the match inside the counted part: the position is still
+    // exact and the total is a floor.
+    t = Find::tally(n, 2, 6, 0, match);
+    QCOMPARE(t.total, 2); // rows 2 and 5
+    QCOMPARE(t.index, 1);
+    QVERIFY(!t.complete);
+
+    // Bounded by rows, with the match BEYOND them: there is no position to report.
+    t = Find::tally(n, 8, 6, 0, match);
+    QCOMPARE(t.total, 2);
+    QCOMPARE(t.index, 0);
+    QVERIFY(!t.complete);
+
+    // A bound at or past the end is no bound at all.
+    QVERIFY(Find::tally(n, 8, n, 0, match).complete);
+    QVERIFY(Find::tally(n, 8, n + 100, 0, match).complete);
+
+    // A row limit never makes the scan read past the view, and an empty view is answered
+    // without asking anything.
+    asked = 0;
+    t = Find::tally(0, -1, 0, 0, match);
+    QCOMPARE(asked, 0);
+    QCOMPARE(t.total, 0);
+    QVERIFY(!t.complete);
+
+    // The time bound stops a scan the row bound would have let run — which is the bound
+    // that actually holds when a record is expensive to decode rather than merely
+    // numerous. The clock is read every 256th row, so the view has to be longer than
+    // that for it to be read at all.
+    const int wide = 2000;
+    auto slow = [](int r) { QTest::qSleep(1); return r % 3 == 0; };
+    t = Find::tally(wide, wide - 1, 0, 1, slow);
+    QVERIFY(!t.complete);       // a millisecond does not buy two thousand slow rows
+    QVERIFY(t.total > 0);       // but what it did count, it counted
+    QVERIFY(t.total < wide / 3);
+    QCOMPARE(t.index, 0);       // the last row was never reached, so it has no position
 }
 
 void TestFilter::findChangesNoFilterState()

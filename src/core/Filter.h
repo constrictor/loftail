@@ -205,6 +205,26 @@ namespace Find {
 int search(int count, int from, bool forward, bool wrap,
            const std::function<bool(int)> &match);
 
+// Where the match that was landed on sits among the others, so the bar can say
+// "3 of 47" (SPEC.md §5). Counting them is a different question from finding one:
+// search() stops at the first hit, whereas a total means asking `match` about EVERY
+// visible row, and `match` decodes a record's text (invariant #1). Over a
+// multi-million-record log that is not something to do on a keystroke, so the count
+// is BOUNDED and says whether it finished (ARCHITECTURE.md §7.1.3).
+struct Tally
+{
+    int  total = 0;        // matches seen within the bound
+    int  index = 0;        // 1-based position of `hit` among them; 0 == never reached
+    bool complete = false; // the whole view was counted, so `total` is the real total
+};
+
+// Count matching rows over [0, count), giving up after `rowLimit` rows or `msLimit`
+// milliseconds, whichever comes first — either bound non-positive means "no bound".
+// `hit` is the row search() landed on; when the count stops short of it, `index`
+// stays 0 and there is no position to report. Mutates nothing.
+Tally tally(int count, int hit, int rowLimit, int msLimit,
+            const std::function<bool(int)> &match);
+
 } // namespace Find
 
 } // namespace loftail

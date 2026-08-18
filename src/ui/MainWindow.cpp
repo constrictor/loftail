@@ -91,6 +91,17 @@ constexpr int  kBulkRestoreWatchMs = 500;
 constexpr int  kBulkRestoreCapMs = 60000;
 constexpr auto kRecentFilesKey = "recentFiles";
 
+// How far Find will go to count the matches behind its "3 of 47" (SPEC.md §5).
+// Finding a match stops at the first one; counting them asks the text of EVERY visible
+// record, which on a four-million-record log is several seconds — per keystroke, since
+// typing in the bar re-searches. So the count is bounded twice over: by rows, which
+// keeps it predictable, and by wall clock, which is what actually holds when a record
+// is a hundred wrapped lines or the query is an expensive regex. Whichever bound bites
+// first, the total is reported as a floor rather than as a fact (ARCHITECTURE.md
+// §7.1.3).
+constexpr int kFindTallyRows = 200000;
+constexpr int kFindTallyMs = 30;
+
 // May a pane be torn off into a window of its own?
 //
 // Not under Wayland. Dragging a dock out is a two-part trick: keep receiving pointer
@@ -442,9 +453,11 @@ void MainWindow::buildMenus()
             m_activeView->activateFind();
     });
     QAction *findNextAction = editMenu->addAction(tr("Find &Next"));
+    findNextAction->setObjectName(QStringLiteral("findNextAction")); // findChild, for tests
     findNextAction->setShortcut(QKeySequence::FindNext); // F3
     connect(findNextAction, &QAction::triggered, this, [this]() { runFind(true, false); });
     QAction *findPrevAction = editMenu->addAction(tr("Find Pre&vious"));
+    findPrevAction->setObjectName(QStringLiteral("findPreviousAction"));
     findPrevAction->setShortcut(QKeySequence::FindPrevious); // Shift+F3
     connect(findPrevAction, &QAction::triggered, this, [this]() { runFind(false, false); });
 
@@ -2493,7 +2506,31 @@ void MainWindow::runFind(bool forward, bool fromStart)
         return;
     }
     logView->setCurrentRecord(hit);
-    findBar->setStatus(QString()); // keep focus in the bar for repeated Enter/F3
+
+    // The search wraps (SPEC.md §5), and a wrap that says nothing is a teleport: F3 at
+    // the last match jumps to the top and the reader has no way to tell it apart from
+    // an ordinary step. Forward, the walk starts one row PAST the cursor and backward
+    // one row before it, so landing at or behind it is exactly a wrap — and a search
+    // that started from the end (from < 0) never wrapped.
+    const bool wrapped = from >= 0 && (forward ? hit <= from : hit >= from);
+
+    // Where this match sits among the others. Bounded (ARCHITECTURE.md §7.1.3): the
+    // count decodes every visible record's text, so on a log too big to count in the
+    // moment the total is a floor ("47+") and, when the match itself lies past where
+    // counting stopped, there is no position to give and the bar just says it found one.
+    const Find::Tally t = Find::tally(count, hit, kFindTallyRows, kFindTallyMs, rowMatches);
+    QString status;
+    if (t.index <= 0)
+        status = tr("match"); // counting stopped short of this one: no position to give
+    else if (t.complete)
+        status = tr("%1 of %2").arg(t.index).arg(t.total);
+    else
+        status = tr("%1 of %2+").arg(t.index).arg(t.total); // at least that many
+    if (wrapped) {
+        status = forward ? tr("%1, wrapped to the top").arg(status)
+                         : tr("%1, wrapped to the bottom").arg(status);
+    }
+    findBar->setStatus(status); // the bar's own label: focus stays in it for the next F3
 }
 
 void MainWindow::updateStatus()
