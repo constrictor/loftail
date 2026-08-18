@@ -54,7 +54,7 @@ QVector<TextMatcher::Span> TextMatcher::spans(const QString &text, int limit) co
             const int length = m.capturedLength();
             if (length <= 0)
                 continue; // a zero-width match covers no glyph
-            out.append(Span{m.capturedStart(), length});
+            out.append(Span{int(m.capturedStart()), length});
             if (limit > 0 && out.size() >= limit)
                 break;
         }
