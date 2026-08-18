@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QDockWidget>
+#include <QFrame>
 #include <QHeaderView>
 #include <QFile>
 #include <QFontDatabase>
@@ -11,6 +12,7 @@
 #include <QSignalSpy>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QToolButton>
 #include <QLabel>
 
 #include "Document.h"
@@ -86,6 +88,18 @@ private:
         return t ? t->count() : -1;
     }
 
+    // The strip above the document well: what an open that made no tab says for itself
+    // (SPEC.md §3). By object name, never by its text — the text is what is asserted.
+    static QLabel *noticeLabel(const MainWindow &w)
+    {
+        return w.findChild<QLabel *>(QStringLiteral("openNoticeText"));
+    }
+    static QString noticeText(const MainWindow &w)
+    {
+        QLabel *label = noticeLabel(w);
+        return label ? label->text() : QString();
+    }
+
     static void trigger(const MainWindow &w, const char *actionName)
     {
         QAction *a = w.findChild<QAction *>(QLatin1String(actionName));
@@ -154,6 +168,7 @@ private slots:
     // so what happens to the tab bar and to a refusal is one answer, not three.
     void severalFilesOpenedAtOnceBecomeSeveralTabs();
     void aRefusedLogAmongSeveralLeavesTheOthersOpenAndIsNamedWithThem();
+    void aRefusalOutlivesTheTicksAndTabSwitchesThatFollowItUntilDismissed();
 
     // Tab labels (SPEC.md §3). What a log is called depends on which OTHER logs are
     // open, so the claims are about the set: two app.logs say which is which, closing
@@ -818,11 +833,10 @@ void TestMultiDoc::severalFilesOpenedAtOnceBecomeSeveralTabs()
 void TestMultiDoc::aRefusedLogAmongSeveralLeavesTheOthersOpenAndIsNamedWithThem()
 {
     // A refusal decided with no I/O — the one kind that still opens no tab at all
-    // (SPEC.md §3, M17). Two of them, deliberately: each writes its own reason into the
-    // status bar as it happens, so with one message per failure the reader would be
-    // left with the last one's reason and no hint that a second file had even been
-    // asked for. They are reported TOGETHER instead, the way session restore lists the
-    // logs it could not reopen.
+    // (SPEC.md §3, M17). Two of them, deliberately: reported one at a time the reader
+    // would be left with the last one's reason and no hint that a second file had even
+    // been asked for. They are reported TOGETHER instead, in the notice strip, each
+    // named WITH the reason it was refused for.
     FakeRemoteFarm farm;
     const QString bad1 = QStringLiteral("ssh://deploy@web1/var/log/one.log");
     const QString bad2 = QStringLiteral("ssh://deploy@web2/var/log/two.log");
@@ -839,12 +853,71 @@ void TestMultiDoc::aRefusedLogAmongSeveralLeavesTheOthersOpenAndIsNamedWithThem(
     QCOMPARE(tabCount(w), 1);
     QVERIFY(w.windowTitle().endsWith(QStringLiteral("a.log")));
 
+    const QString notice = noticeText(w);
+    QVERIFY2(notice.contains(QStringLiteral("one.log (web1)")), qPrintable(notice));
+    QVERIFY2(notice.contains(QStringLiteral("two.log (web2)")), qPrintable(notice));
+    // The reason is the half the reader actually needs, so it travels with each name
+    // rather than being dropped when several are listed.
+    QCOMPARE(notice.count(QStringLiteral("Authentication")), 2);
+}
+
+void TestMultiDoc::aRefusalOutlivesTheTicksAndTabSwitchesThatFollowItUntilDismissed()
+{
+    // The whole point of the strip. A refusal used to be written into the status
+    // label, which updateStatus() rewrites from the active document on every ingest
+    // tick and every tab switch — so beside one live log the reason for an open that
+    // did not happen was gone within a second, with no tab anywhere to ask.
+    FakeRemoteFarm farm;
+    const QString bad = QStringLiteral("ssh://deploy@web1/var/log/one.log");
+    farm.at(bad)->setStartFailure(QStringLiteral("Authentication to deploy@web1 failed."));
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    QVERIFY(!w.openFiles({m_a, bad, m_b}));
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
+    QVERIFY(noticeLabel(w));
+    QVERIFY(noticeLabel(w)->isVisible());
+    QVERIFY(noticeText(w).contains(QStringLiteral("one.log (web1)")));
+
+    // Let the two live logs tick, then switch tabs — both of which go through
+    // updateStatus(), which is what used to take the message away.
+    QTest::qWait(300);
+    tabs(w)->setCurrentIndex(0);
+    QTest::qWait(300);
+
     auto *status = w.findChild<QLabel *>(QStringLiteral("statusLabel"));
     QVERIFY(status);
-    QVERIFY2(status->text().contains(QStringLiteral("one.log (web1)")),
-             qPrintable(status->text()));
-    QVERIFY2(status->text().contains(QStringLiteral("two.log (web2)")),
-             qPrintable(status->text()));
+    QVERIFY2(status->text().contains(QStringLiteral("a.log")), qPrintable(status->text()));
+    QVERIFY2(!status->text().contains(QStringLiteral("Authentication")),
+             qPrintable(status->text())); // the label has indeed moved on
+
+    QVERIFY(noticeLabel(w)->isVisible());
+    QVERIFY2(noticeText(w).contains(QStringLiteral("one.log (web1)")),
+             qPrintable(noticeText(w)));
+    QVERIFY2(noticeText(w).contains(QStringLiteral("Authentication")),
+             qPrintable(noticeText(w)));
+
+    // It is laid out ABOVE the well and clear of its own dismiss button — the strip
+    // spans the window, so a text half drawn under the button would be unreadable in
+    // exactly the case it exists for (the precedent: tst_filterpane's context row).
+    auto *notice = w.findChild<QFrame *>(QStringLiteral("openNotice"));
+    QVERIFY(notice);
+    auto *dismissButton = w.findChild<QToolButton *>(QStringLiteral("openNoticeDismiss"));
+    QVERIFY(dismissButton);
+    QVERIFY(noticeLabel(w)->width() > 0);
+    QVERIFY(noticeLabel(w)->geometry().right() <= dismissButton->geometry().left());
+    QVERIFY(noticeLabel(w)->height() <= notice->height());
+    QVERIFY(notice->mapTo(&w, QPoint(0, notice->height())).y()
+            <= tabs(w)->mapTo(&w, QPoint(0, 0)).y());
+
+    // And the user is the only thing that takes it away.
+    auto *dismiss = w.findChild<QToolButton *>(QStringLiteral("openNoticeDismiss"));
+    QVERIFY(dismiss);
+    dismiss->click();
+    QVERIFY(!noticeLabel(w)->isVisible());
+    QVERIFY(noticeText(w).isEmpty());
 }
 
 void TestMultiDoc::theCommandLineTakesEveryFileNamedAndOnePatternForThemAll()
