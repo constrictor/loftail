@@ -219,7 +219,16 @@ protected:
 
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+
+    // Building a selection with the pointer (SPEC.md §5). A left press picks a record
+    // and arms a drag; a move while the button is down extends the range from the anchor
+    // that press set — the SAME anchor a Shift+click extends from, so the two gestures
+    // can never disagree; the release disarms it, and so does a hide, which is the only
+    // other way a view can stop seeing the pointer mid-drag.
     void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void scrollContentsBy(int dx, int dy) override;
@@ -248,6 +257,10 @@ private slots:
     void handleTailChanged(); // a trailing record grew in place (M6 live update)
     void handleModelReset();
     void applyDebouncedResize();
+    // One step of a drag that has left the viewport: scroll, then extend to whatever
+    // record the pointer is now over. Never a busy loop — a timer, stopped the moment
+    // the drag ends (autoScroll*).
+    void autoScrollTick();
 
 private:
     int lineHeight() const;
@@ -324,6 +337,23 @@ private:
     // themselves pointing at.
     int recordUnderPoint(int y) const;
     void selectRange(int anchor, int current);
+    // Add or remove ONE record, leaving the rest of the selection alone — Ctrl+click
+    // (Cmd on macOS, which Qt already maps to ControlModifier). Moves the focus and the
+    // anchor onto that record, so a Shift+click after it extends from where the pointer
+    // last was, exactly as it does after a plain click.
+    void toggleRecordSelection(int record);
+
+    // --- Drag-select (SPEC.md §5) --------------------------------------------------
+    // extendDragTo() is the whole of what a drag does: clamp the pointer into the
+    // viewport, hit-test it, and extend through setCurrentRecord()'s existing Shift
+    // path. A drag that leaves the viewport keeps going on a timer, a few lines a tick
+    // and faster the further out the pointer is; the timer is armed only while a drag is
+    // live, and stopped by the release, by a hide, and by a model reset — a drag whose
+    // record space has been replaced is over.
+    void extendDragTo(int viewportY);
+    void updateAutoScroll(int viewportY);
+    void stopAutoScroll();
+    void endDrag();
 
     // The full text of the cell / header section at a viewport position, but ONLY when
     // the column is too narrow to show it — empty otherwise, because a tooltip that
@@ -391,6 +421,15 @@ private:
     // widening the filter again brings it back (SPEC.md §6). Any model reset that is
     // not a filter re-apply forgets it — the record space itself changed.
     int m_stickySource = -1;
+
+    // Pointer-built selection (SPEC.md §5). Set by a left press that landed on a record,
+    // cleared by the release, by a hide, and by any model reset; while it is set every
+    // mouse move extends the range from m_anchor. m_autoScrollY is where the pointer was
+    // last seen, in viewport pixels and deliberately unclamped — its distance OUTSIDE
+    // the viewport is what sets the autoscroll speed.
+    bool    m_dragging = false;
+    QTimer *m_autoScrollTimer = nullptr;
+    int     m_autoScrollY = 0;
 
     // Estimated geometry for AlwaysOn (M2c). Only ever constructed/consulted in
     // AlwaysOn; switching to an exact mode leaves it untouched so its cache
