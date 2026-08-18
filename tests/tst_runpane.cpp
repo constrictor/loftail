@@ -2,6 +2,8 @@
 
 #include <QApplication>
 #include <QGroupBox>
+#include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QSignalSpy>
 #include <QTemporaryFile>
@@ -9,6 +11,7 @@
 #include "Document.h"
 #include "LogFormat.h"
 #include "RunPane.h"
+#include "UiColors.h"
 
 using namespace loftail;
 
@@ -59,6 +62,11 @@ private:
         return pane.findChild<QListWidget *>(QStringLiteral("runList"));
     }
 
+    static QLabel *label(RunPane &pane, const char *name)
+    {
+        return pane.findChild<QLabel *>(QString::fromLatin1(name));
+    }
+
 private slots:
     void theRunsAreAListWithTheSelectedRunOnIt();
     void theLastRunEntryIsFirstAndIsNotARun();
@@ -66,6 +74,9 @@ private slots:
     void theRunListTakesTheSpareHeight();
     void arrowingThroughTheListSelectsARun();
     void repopulatingTheListIsNotAChoice();
+    void thePaneSaysThatThePatternWaitsForApply();
+    void aTypedPatternMakesTheNoteAskForApply();
+    void withNoLogOpenTheListStillExplainsItself();
 };
 
 void TestRunPane::theRunsAreAListWithTheSelectedRunOnIt()
@@ -243,6 +254,80 @@ void TestRunPane::repopulatingTheListIsNotAChoice()
 
     pane.setDocument(nullptr);
     QCOMPARE(spy.size(), 0);
+}
+
+void TestRunPane::thePaneSaysThatThePatternWaitsForApply()
+{
+    // This is the one pane whose edits are not live — the Filters and Highlighters panes
+    // act as the user types — so the difference is stated next to the button that is it,
+    // rather than left for the reader to discover by pressing nothing and waiting.
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file), qPrintable(doc.lastError()));
+
+    RunPane pane;
+    pane.setDocument(&doc);
+
+    QLabel *note = label(pane, "runApplyNote");
+    QVERIFY(note);
+    QVERIFY(!note->text().isEmpty());
+    // Muted from the palette, so it reads on a dark theme as well as a light one, and
+    // reads as an aside rather than as something that has gone wrong.
+    QCOMPARE(note->styleSheet(),
+             QStringLiteral("color: %1;").arg(mutedColor(pane.palette()).name()));
+}
+
+void TestRunPane::aTypedPatternMakesTheNoteAskForApply()
+{
+    // A note that always says the same thing is read once and never again, so it is
+    // quiet until the field disagrees with the pattern actually in force — which is the
+    // only moment the pane owes the user an instruction.
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file), qPrintable(doc.lastError()));
+
+    RunPane pane;
+    pane.setDocument(&doc);
+
+    QLabel *note = label(pane, "runApplyNote");
+    auto *edit = pane.findChild<QLineEdit *>(QStringLiteral("runStartPattern"));
+    QVERIFY(note && edit);
+    const QString quiet = note->text();
+
+    edit->setText(QStringLiteral("RUN START o"));
+    const QString asking = note->text();
+    QVERIFY(asking != quiet);
+    QCOMPARE(note->styleSheet(),
+             QStringLiteral("color: %1;").arg(warningColor(pane.palette()).name()));
+
+    // Applying is MainWindow's: it reconfigures the document and refreshes the pane.
+    // The note goes quiet because the field and the matcher agree again, never because
+    // something remembered that a button was pressed.
+    doc.setRunStart(edit->text(), false, Qt::CaseInsensitive);
+    pane.refresh();
+    QCOMPARE(note->text(), quiet);
+
+    // ...and it is measured against the matcher, so a pattern that changes from under
+    // the pane — a rebind, a session restore — asks again with nothing typed.
+    doc.setRunStart(QStringLiteral("RUN START"), false, Qt::CaseInsensitive);
+    pane.refresh();
+    QCOMPARE(note->text(), asking);
+    // ...and the rebuild did not clobber what was typed, which is why it can disagree.
+    QCOMPARE(edit->text(), QStringLiteral("RUN START o"));
+}
+
+void TestRunPane::withNoLogOpenTheListStillExplainsItself()
+{
+    // The list keeps its two italic mode rows with no document bound, so it reads as
+    // something to act on; the status line under the pattern field is what says there is
+    // nothing behind them, and it must not be the one thing that falls silent here.
+    RunPane pane;
+    pane.setDocument(nullptr);
+
+    QLabel *info = label(pane, "runInfo");
+    QVERIFY(info);
+    QVERIFY(!info->text().isEmpty());
+    QCOMPARE(runList(pane)->count(), 2);
 }
 
 QTEST_MAIN(TestRunPane)
