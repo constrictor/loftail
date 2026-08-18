@@ -5,10 +5,13 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QFontDatabase>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSplitter>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -140,6 +143,10 @@ private slots:
     void noMessageFitsInLessRoomThanItsTextNeeds();
     void theDetectedEncodingIsReportedOnlyForTheLogItRead();
     void theTwoPanesKeepAGapBetweenThem();
+    void theTreePaneOpensWideEnoughForItsLongestRow();
+    void oneEnormousPatternDoesNotHandTheTreeTheDialog();
+    void aSplitAlreadySettledIsNotRecomputed();
+    void everyTreeRowSaysItsWholeSelfOnHover();
     void enterFinishesAFieldWithoutClosingTheDialog();
 };
 
@@ -919,6 +926,138 @@ void TestPreferences::theTwoPanesKeepAGapBetweenThem()
                                     .arg(width)));
         }
     }
+}
+
+// What a row needs to be readable in full: one indentation per level, plus one more for
+// the branch decoration the root rows also get, plus the label itself. The same sum
+// applyInitialSplit() derives the pane's width from, and the offset the delegate elides
+// the text within.
+static int rowWidthNeeded(QTreeWidget *tree, QTreeWidgetItem *item)
+{
+    int level = 1;
+    for (QTreeWidgetItem *p = item->parent(); p; p = p->parent())
+        ++level;
+    return level * tree->indentation()
+        + tree->fontMetrics().horizontalAdvance(item->text(0));
+}
+
+void TestPreferences::theTreePaneOpensWideEnoughForItsLongestRow()
+{
+    // Reported from the real dialog: at the split it opened with, "Logs with no matching
+    // pattern" was cut off, on a window with room to spare on the other side. A fraction
+    // of the dialog knows nothing about the labels, which is why this runs at TWO FONT
+    // SIZES: a fixed fraction happens to be enough for the offscreen default and is not
+    // enough for a desktop whose font is larger, which is the difference between this
+    // test and the eye that saw the bug. Both sizes stay under the pane's cap, so what
+    // fails here is a width that does not follow the labels rather than the cap biting.
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve here, so no width measured from them means anything");
+
+    for (const double scale : {1.0, 1.5}) {
+        PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+        QFont font = dlg.font();
+        if (font.pointSizeF() > 0)
+            font.setPointSizeF(font.pointSizeF() * scale);
+        else
+            font.setPixelSize(int(font.pixelSize() * scale));
+        dlg.setFont(font);
+
+        QTreeWidget *tree = treeOf(dlg);
+        QVERIFY(tree);
+        dlg.show();
+        QCoreApplication::processEvents();
+
+        for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+            const int needed = rowWidthNeeded(tree, *it);
+            QVERIFY2(needed <= tree->columnWidth(0),
+                     qPrintable(QStringLiteral("\"%1\" needs %2 px at font scale %3 and "
+                                               "the column is %4")
+                                    .arg((*it)->text(0))
+                                    .arg(needed)
+                                    .arg(scale)
+                                    .arg(tree->columnWidth(0))));
+        }
+    }
+}
+
+void TestPreferences::oneEnormousPatternDoesNotHandTheTreeTheDialog()
+{
+    // A pattern is a line the user types, so its length is unbounded — and the settings
+    // the tree exists to reach are on the other side of the handle.
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve here, so no width measured from them means anything");
+
+    LogSettingsTree t;
+    LogPatternNode n;
+    n.match = QString(400, QLatin1Char('x')) + QStringLiteral("*.log");
+    t.addPattern(n);
+
+    PreferencesDialog dlg(t, QString(), QByteArray());
+    QTreeWidget *tree = treeOf(dlg);
+    auto *splitter = dlg.findChild<QSplitter *>(QStringLiteral("settingsSplitter"));
+    QVERIFY(tree);
+    QVERIFY(splitter);
+    dlg.show();
+    QCoreApplication::processEvents();
+
+    QVERIFY2(tree->width() * 2 <= splitter->width(),
+             qPrintable(QStringLiteral("the tree took %1 px of %2")
+                            .arg(tree->width())
+                            .arg(splitter->width())));
+}
+
+void TestPreferences::aSplitAlreadySettledIsNotRecomputed()
+{
+    // The computed width is an opening position, not a policy: the moment anyone else
+    // has an opinion — the user dragging the handle, or the same dialog shown again —
+    // it stands. Nothing here recomputes on a rebuild either, which is what would take
+    // the handle back off the user every time they added a pattern.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    auto *splitter = dlg.findChild<QSplitter *>(QStringLiteral("settingsSplitter"));
+    QVERIFY(splitter);
+    dlg.show();
+    QCoreApplication::processEvents();
+
+    const QList<int> moved{140, splitter->width() - 140 - splitter->handleWidth()};
+    splitter->setSizes(moved);
+    QCoreApplication::processEvents();
+    const QList<int> settled = splitter->sizes();
+
+    // A rebuild, by adding a pattern, and then the dialog shown again.
+    dlg.findChild<QToolButton *>(QStringLiteral("addPatternButton"))->click();
+    QCoreApplication::processEvents();
+    dlg.hide();
+    dlg.show();
+    QCoreApplication::processEvents();
+
+    QCOMPARE(splitter->sizes(), settled);
+}
+
+void TestPreferences::everyTreeRowSaysItsWholeSelfOnHover()
+{
+    // A row the widget elides is readable only if the rest is one hover away, and the
+    // pane is narrow on purpose whenever the user drags it there. A log says the full
+    // ADDRESS its name is short for — the same thing the panel's heading says on hover.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    QTreeWidget *tree = treeOf(dlg);
+    QVERIFY(tree);
+
+    QTreeWidgetItem *root = tree->topLevelItem(0);
+    QTreeWidgetItem *pattern = rowNamed(tree, QStringLiteral("*.log"));
+    QTreeWidgetItem *log = rowNamed(tree, QStringLiteral("app.log"));
+    QTreeWidgetItem *orphan = virtualParentOf(tree, QStringLiteral("other.trace"));
+    QVERIFY(pattern);
+    QVERIFY(log);
+    QVERIFY(orphan);
+
+    // Its own full text, for the two rows a narrow pane cuts short.
+    QCOMPARE(pattern->toolTip(0), pattern->text(0));
+    QCOMPARE(orphan->toolTip(0), orphan->text(0));
+    // The address, not the name — a tooltip repeating the label says nothing.
+    QCOMPARE(log->toolTip(0), QStringLiteral("/var/log/app.log"));
+    // And the defaults, whose label is whole at any width, say what they cover instead.
+    QVERIFY(!root->toolTip(0).isEmpty());
+    QVERIFY(root->toolTip(0) != root->text(0));
 }
 
 void TestPreferences::enterFinishesAFieldWithoutClosingTheDialog()

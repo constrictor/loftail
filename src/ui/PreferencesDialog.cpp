@@ -8,6 +8,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -19,6 +20,7 @@
 #include <QRegularExpression>
 #include <QShowEvent>
 #include <QSplitter>
+#include <QStyle>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -35,6 +37,18 @@ constexpr int kRefRole = Qt::UserRole;
 // group-box border flush against a boundary otherwise makes look like a rendering
 // fault: the same reason AxisEditor carries kSideMargin.
 constexpr int kPanelGap = 8;
+
+// What the tree pane opens at. The width it ASKS for is its own longest row (see
+// treeContentWidth()) rather than a fraction of the dialog, because what it has to show
+// is labels and a fraction knows nothing about them — at the old 1:2 stretch the virtual
+// "Logs with no matching pattern" row was elided on a dialog with room to spare.
+//
+// Bounded at both ends, and the cap is the half that matters: a pattern is a line the
+// user types, so one long enough would otherwise hand the tree most of the dialog and
+// squeeze the settings it exists to reach. The floor keeps a tree of short rows from
+// opening narrower than its own toolbar reads well at.
+constexpr double kTreeMaxShare = 0.4;
+constexpr int kTreeMinWidth = 220;
 
 // What the node title keeps above and below itself. The top gap is the larger of the
 // two on purpose: it separates the heading from the dialog's edge, while below it the
@@ -171,8 +185,14 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     auto *outer = new QVBoxLayout(this);
 
     auto *splitter = new QSplitter(Qt::Horizontal, this);
+    m_splitter = splitter;
     splitter->setObjectName(QStringLiteral("settingsSplitter")); // findChild, for tests
     splitter->setChildrenCollapsible(false);
+    // A handle the user has dragged is an answer, and it outranks the computed one for
+    // good — which costs nothing here, since the computed one is applied at the first
+    // show and a drag cannot precede it.
+    connect(splitter, &QSplitter::splitterMoved, this,
+            [this](int, int) { m_splitSettled = true; });
 
     // --- left: the tree and what can be done to it -----------------------------------
     auto *left = new QWidget(splitter);
@@ -465,8 +485,16 @@ void PreferencesDialog::rebuildTree(const NodeRef &select)
         return item;
     };
 
+    // EVERY ROW CARRIES A TOOLTIP, because every row is elided by a pane narrow enough:
+    // the widget cutting a label short is fine only while the rest is one hover away.
+    // What each says is the row's own full text, except a log's, which says the full
+    // ADDRESS its name is short for — the same thing the panel's heading says on hover,
+    // for the same reason. The defaults are the one row whose text is already whole at
+    // any width, so theirs says instead what the level covers, as the panel does: a
+    // tooltip repeating the label it sits on says nothing.
     auto *root = new QTreeWidgetItem(m_treeWidget);
     root->setText(0, tr("Default settings"));
+    root->setToolTip(0, tr("Every log with nothing more specific"));
     root->setData(0, kRefRole, refToString(NodeRef{NodeKind::Root, QString()}));
 
     QVector<QTreeWidgetItem *> patternItems;
@@ -478,7 +506,9 @@ void PreferencesDialog::rebuildTree(const NodeRef &select)
             label += tr(" (regex)");
         if (n.matchFullPath)
             label += tr(" (whole path)");
-        patternItems.append(makeItem(root, label, NodeRef{NodeKind::Pattern, n.id}));
+        QTreeWidgetItem *item = makeItem(root, label, NodeRef{NodeKind::Pattern, n.id});
+        item->setToolTip(0, label);
+        patternItems.append(item);
     }
 
     // The virtual parent, created only when something actually needs one — otherwise it
@@ -493,6 +523,7 @@ void PreferencesDialog::rebuildTree(const NodeRef &select)
             if (!orphan) {
                 orphan = new QTreeWidgetItem(root);
                 orphan->setText(0, tr("Logs with no matching pattern"));
+                orphan->setToolTip(0, orphan->text(0));
                 orphan->setData(0, kRefRole,
                                 refToString(NodeRef{NodeKind::Orphan, QString()}));
                 // Nothing to edit and nothing to store: it is the ABSENCE of a match.
@@ -655,6 +686,49 @@ void PreferencesDialog::setIdentity(const QString &name, const QString &level,
     // heading is a tooltip that says nothing.
     m_nodeName->setToolTip(fullAddress);
     m_nodeLevel->setToolTip(fullAddress);
+}
+
+int PreferencesDialog::treeContentWidth() const
+{
+    // A row's text starts one indentation per LEVEL from the left, plus one more for the
+    // branch decoration the root items also get (rootIsDecorated is on) — which is the
+    // offset the delegate then elides the text within. So a label fits exactly when the
+    // column is that offset plus the label's own width, and that is what this returns
+    // for the widest row.
+    const QFontMetrics fm = m_treeWidget->fontMetrics();
+    const int indent = m_treeWidget->indentation();
+    int widest = 0;
+    for (QTreeWidgetItemIterator it(m_treeWidget); *it; ++it) {
+        int level = 1;
+        for (QTreeWidgetItem *p = (*it)->parent(); p; p = p->parent())
+            ++level;
+        widest = qMax(widest, level * indent + fm.horizontalAdvance((*it)->text(0)));
+    }
+    return widest;
+}
+
+void PreferencesDialog::applyInitialSplit()
+{
+    if (m_splitSettled)
+        return;
+    m_splitSettled = true;
+
+    // The splitter's own width, which needs the layout to have run — showEvent arrives
+    // before the posted layout request is processed, and a split computed against a
+    // zero-width splitter is redistributed from nothing by the stretch factors.
+    if (QLayout *l = layout())
+        l->activate();
+    const int total = m_splitter->width() > 0 ? m_splitter->width() : width();
+
+    // What the pane spends on things that are not the label: its frame both sides, the
+    // gap it keeps from the right panel, and room for the vertical scrollbar — which is
+    // there whenever the tree is longer than the pane, and takes its width off the
+    // column when it is.
+    const int chrome = 2 * m_treeWidget->frameWidth() + kPanelGap
+        + style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, m_treeWidget);
+    const int cap = qMax(kTreeMinWidth, int(total * kTreeMaxShare));
+    const int wanted = qBound(kTreeMinWidth, treeContentWidth() + chrome, cap);
+    m_splitter->setSizes({wanted, qMax(1, total - wanted)});
 }
 
 void PreferencesDialog::commitCurrent()
@@ -1049,6 +1123,9 @@ void PreferencesDialog::showEvent(QShowEvent *event)
         b->setAutoDefault(false);
         b->setDefault(false);
     }
+    // Once. Every later rebuild leaves the handle where it is, and so does a drag — see
+    // applyInitialSplit().
+    applyInitialSplit();
 }
 
 void PreferencesDialog::accept()
