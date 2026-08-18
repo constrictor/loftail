@@ -273,6 +273,23 @@ private:
     void saveSession();
     void restoreSession();
 
+    // --- Log text size (SPEC.md §5, ARCHITECTURE.md §7.1.5) ------------------------
+    // One size for the application, not per view and not per log: it answers a question
+    // about the reader's eyes, which does not change between two tabs, and a log's
+    // settings node (M20) holds how a log is READ, which a font size is no part of. So
+    // it lives in Fonts.h and is remembered in QSettings, not in the session — the
+    // session describes THIS window's tabs, and a second window would disagree with it.
+    //
+    // setLogFontSize() is the single funnel: the menu items, Ctrl+wheel and the restore
+    // all go through it, so nothing can change the size without every open view, digest
+    // strips included, being re-fonted and the setting written.
+    void setLogFontSize(int points);
+    void stepLogFontSize(int steps);
+    void applyLogFontToViews();
+    // Say what the size is now, transiently. The bounds clamp silently, and a key held
+    // down at 32 pt with no answer at all reads as a broken shortcut.
+    void announceLogFontSize();
+
     // Open `path` under `settings`. When `promptIfNoMatch` and the pattern matches
     // no sample record, Preferences is offered first (SPEC.md §4). Builds
     // the model/view, starts indexing, and persists the format on a good result.
@@ -486,6 +503,10 @@ private:
     // which matters now that the mode a log opens in is its own (M20) rather than one
     // window-wide choice: each action carries its WrapMode in QAction::data().
     QActionGroup *m_wrapGroup = nullptr;
+    // View ▸ Line Wrap ▸ Toggle. Off <-> Always On, and it TRIGGERS one of the three
+    // mode actions above rather than setting the mode itself — there is one path that
+    // sets wrap, and it is the one that also remembers the choice for the log.
+    QAction *m_toggleWrapAction = nullptr;
 
     // --- Notification surface (M19) ------------------------------------------------
     // Created only while some rule asks for one; see updateTrayPresence().

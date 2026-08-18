@@ -11,12 +11,14 @@
 #include <QSignalSpy>
 #include <QTemporaryFile>
 #include <QToolTip>
+#include <QWheelEvent>
 
 #include "Document.h"
 #include "Filter.h"
 #include "Highlight.h"
 #include "LogFormat.h"
 #include "LogModel.h"
+#include "Fonts.h"
 #include "LogView.h"
 #include "Palette.h"
 #include "Priority.h"
@@ -250,6 +252,14 @@ private slots:
     void whatFindMatchedIsMarkedInsideTheRecordsOnScreen();
     void aRuleColouredRecordShowsItsColourAndTheMarkTogether();
     void aMatchStraddlingAWrappedLineIsMarkedOnBothOfThem();
+
+    // --- Zoom (SPEC.md §5, ARCHITECTURE.md §7.1.5) ------------------------------
+    void theLogTextSizeStopsAtBothBoundsAndComesBackOnReset();
+    void aBiggerFontFitsFewerRecordsInTheSameViewport();
+    void aZoomDropsTheWrappedHeightsMeasuredAtTheOldFont();
+    void aZoomLeavesTheReaderOnTheRecordTheyWereReading();
+    void aZoomWidensTheSeededColumnsAndLeavesADraggedOneAlone();
+    void ctrlWheelAsksForAZoomAndAPlainWheelStillScrolls();
 };
 
 // --- what does not fit says so (SPEC.md §5) ----------------------------------
@@ -2134,6 +2144,263 @@ void TestLogView::aMatchStraddlingAWrappedLineIsMarkedOnBothOfThem()
             ++linesMarked;
     }
     QCOMPARE(linesMarked, 2);
+}
+
+// --- Zoom (SPEC.md §5, ARCHITECTURE.md §7.1.5) -------------------------------
+//
+// The log text size is ONE application-wide point size (Fonts.h), pushed into every
+// view as an ordinary QWidget font. What these pin is the half that is the view's: that
+// everything derived from the line height and the character advance is invalidated when
+// the font moves, and that the reader is left where they were reading.
+//
+// Each case puts the size back, because it is a process-wide setting and the cases below
+// it in this binary measure fonts.
+
+namespace {
+// Set the log text size and push it into `view`, exactly as MainWindow does — via the
+// widget's font, which is the only channel LogView notices (QEvent::FontChange).
+void zoomTo(LogView &view, int points)
+{
+    setLogFontPointSize(points);
+    view.setFont(logTextFont());
+}
+
+struct FontSizeGuard
+{
+    ~FontSizeGuard() { resetLogFontPointSize(); }
+};
+} // namespace
+
+void TestLogView::theLogTextSizeStopsAtBothBoundsAndComesBackOnReset()
+{
+    FontSizeGuard guard;
+
+    const int base = defaultLogFontPointSize();
+    QVERIFY(base >= kMinLogFontPointSize && base <= kMaxLogFontPointSize);
+
+    // Asking past either end lands ON it rather than being refused, so a held key walks
+    // to the bound and stops there...
+    QVERIFY(setLogFontPointSize(1000));
+    QCOMPARE(logFontPointSize(), kMaxLogFontPointSize);
+    // ...and the next press is a no-op, which is what tells the window not to re-font
+    // every view and not to rewrite the setting.
+    QVERIFY(!setLogFontPointSize(kMaxLogFontPointSize + 5));
+
+    QVERIFY(setLogFontPointSize(-20));
+    QCOMPARE(logFontPointSize(), kMinLogFontPointSize);
+    QVERIFY(!setLogFontPointSize(0));
+
+    // Reset is back to the platform's own size, in the platform's own unit: the font
+    // is monospaceFont() itself again, not that size rounded to a point.
+    QVERIFY(resetLogFontPointSize());
+    QCOMPARE(logFontPointSize(), base);
+    QCOMPARE(logTextFont(), monospaceFont());
+    QVERIFY(!resetLogFontPointSize()); // already there
+}
+
+// The line height is what a zoom is FOR, and the view's page step is that height read
+// back through the geometry: a viewport of a fixed pixel height holds fewer display
+// lines in a bigger font. Nothing else in the exact path moves — a record's line COUNT
+// is a property of the text, not of the font — which is why this is the assertion.
+void TestLogView::aBiggerFontFitsFewerRecordsInTheSameViewport()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; a point size buys no pixels here");
+    FontSizeGuard guard;
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 200), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+
+    zoomTo(view, 9);
+    renderViewport(view); // a resize on an unshown widget reaches the viewport when it paints
+    const int viewportHeight = view.viewport()->height();
+    const int smallPage = view.verticalScrollBar()->pageStep();
+    QVERIFY(smallPage > 0);
+
+    zoomTo(view, 20);
+    renderViewport(view);
+    const int bigPage = view.verticalScrollBar()->pageStep();
+    QVERIFY2(bigPage < smallPage,
+             "a bigger font drew the same number of lines in the same viewport");
+
+    // The header band grows with the font too — it renders in the same one — so the
+    // viewport itself is a little shorter at 20 pt, which only sharpens the claim.
+    QVERIFY(view.viewport()->height() <= viewportHeight);
+
+    // And back down again, to exactly what it was: every quantity here is recomputed
+    // from the font rather than adjusted, the header band included.
+    zoomTo(view, 9);
+    renderViewport(view);
+    QCOMPARE(view.viewport()->height(), viewportHeight);
+    QCOMPARE(view.verticalScrollBar()->pageStep(), smallPage);
+}
+
+// THE ONE THAT CATCHES A STALE ESTIMATOR. Under AlwaysOn every measured height is keyed
+// by the column count, which is the message column's width divided by the character
+// advance — so a font change invalidates every one of them. ensureEstimatorBound() will
+// not notice: it rebinds on the index's ADDRESS and its block count, and a font moves
+// neither.
+void TestLogView::aZoomDropsTheWrappedHeightsMeasuredAtTheOldFont()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; every point size has the same advance");
+    FontSizeGuard guard;
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 40), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+    zoomTo(view, 9);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+
+    const EstimatedGeometry &g = view.estimatedGeometry();
+    view.measureBlockOfRecord(0);
+    QVERIFY(g.isBlockMeasured(0));
+    const int smallCols = g.columns();
+    QVERIFY(smallCols > 0);
+
+    zoomTo(view, 20);
+    // Wider characters, so fewer of them across the same column...
+    QVERIFY2(g.columns() < smallCols, "the estimator kept the old character count");
+    // ...and every height measured at the old count is gone rather than being reported
+    // as fact at a width where it is wrong.
+    QVERIFY2(!g.isBlockMeasured(0), "the estimator kept heights measured at the old font");
+
+    // Measuring again at the new size gives taller records: the same characters over
+    // fewer columns is more visual lines.
+    const qint64 wideTotal = g.totalLines();
+    view.measureBlockOfRecord(0);
+    QVERIFY(g.isBlockMeasured(0));
+    QVERIFY(g.totalLines() >= wideTotal);
+}
+
+// A zoom is a change of size, not of place. In the exact path a record's first line does
+// not move at all, so the scroll position is simply kept; under AlwaysOn the whole line
+// space is re-scaled, and what is kept is the RECORD at the top of the viewport — the
+// same anchor the debounced resize uses, and deliberately not the filter bracket's
+// source ordinals, which exist because a refilter replaces the record space.
+void TestLogView::aZoomLeavesTheReaderOnTheRecordTheyWereReading()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; no size change reaches the geometry");
+    FontSizeGuard guard;
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 200), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+    zoomTo(view, 9);
+
+    // Detached from the tail and parked in the middle of the file: following the tail
+    // outranks the anchor, so a view still following would legitimately move.
+    QScrollBar *sb = view.verticalScrollBar();
+    sb->setValue(sb->maximum() / 2);
+    QVERIFY(!view.following());
+    const int exactLine = sb->value();
+
+    zoomTo(view, 20);
+    QCOMPARE(sb->value(), exactLine); // exact path: the line space did not move
+    QVERIFY(!view.following());       // and the re-anchor is not read as the reader scrolling
+
+    // AlwaysOn: the line space DOES move, so the assertion is about the record.
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    view.measureBlockOfRecord(0);
+    const EstimatedGeometry &g = view.estimatedGeometry();
+    sb->setValue(sb->maximum() / 2);
+    const int topRecord = g.recordAtLine(sb->value());
+    QVERIFY(topRecord > 0);
+
+    zoomTo(view, 12);
+    QCOMPARE(g.recordAtLine(sb->value()), topRecord);
+    QVERIFY(!view.following());
+}
+
+// A zoom re-seeds the columns nobody has spoken for — they hold text, and the text just
+// changed size — and leaves alone any width the user set, which is a statement about
+// their layout and not about the font (SPEC.md §5).
+void TestLogView::aZoomWidensTheSeededColumnsAndLeavesADraggedOneAlone()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; every seed lands on the same floor");
+    FontSizeGuard guard;
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 20), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(900, 400);
+    zoomTo(view, 9);
+
+    const int seeded = columnOfRole(doc, FieldRole::Priority);
+    const int dragged = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(seeded >= 0 && dragged >= 0);
+
+    const int seededWas = view.header()->sectionSize(seeded);
+    view.header()->resizeSection(dragged, 313); // the user, dragging a divider
+    QCOMPARE(view.header()->sectionSize(dragged), 313);
+
+    zoomTo(view, 20);
+    QVERIFY2(view.header()->sectionSize(seeded) > seededWas,
+             "a seeded column did not grow with the font");
+    QCOMPARE(view.header()->sectionSize(dragged), 313);
+}
+
+// Ctrl+wheel is REPORTED, never acted on: the size is one application-wide setting, so
+// a view that re-fonted itself would leave every other open view behind. A plain wheel
+// is untouched and still scrolls.
+void TestLogView::ctrlWheelAsksForAZoomAndAPlainWheelStillScrolls()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 200), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+    renderViewport(view);
+
+    QSignalSpy zoom(&view, &LogView::zoomStepRequested);
+    const QPointF pos(100, 100);
+    const auto wheel = [&](Qt::KeyboardModifiers mods, int delta) {
+        QWheelEvent e(pos, view.viewport()->mapToGlobal(pos.toPoint()), QPoint(),
+                      QPoint(0, delta), Qt::NoButton, mods, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(view.viewport(), &e);
+    };
+
+    // One mouse notch up is one step up. The font itself does not move — that is the
+    // window's answer to this signal, not the view's.
+    const QFont before = view.font();
+    wheel(Qt::ControlModifier, 120);
+    QCOMPARE(zoom.size(), 1);
+    QCOMPARE(zoom.takeFirst().at(0).toInt(), 1);
+    QCOMPARE(view.font(), before);
+
+    // A trackpad's stream of small deltas ADDS UP to the same gesture rather than being
+    // rounded away: four quarter-notches are one step, and the fifth is not a second one.
+    for (int i = 0; i < 4; ++i)
+        wheel(Qt::ControlModifier, 30);
+    QCOMPARE(zoom.size(), 1);
+    QCOMPARE(zoom.takeFirst().at(0).toInt(), 1);
+
+    // And with no Ctrl the wheel is the scroll it always was.
+    QScrollBar *sb = view.verticalScrollBar();
+    sb->setValue(200);
+    wheel(Qt::NoModifier, -120);
+    QCOMPARE(zoom.size(), 0);
+    QVERIFY2(sb->value() != 200, "a plain wheel stopped scrolling the log");
 }
 
 #include "tst_logview.moc"

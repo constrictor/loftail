@@ -21,6 +21,7 @@
 #include "LiveController.h"
 #include "LogFormat.h"
 #include "LogModel.h"
+#include "Fonts.h"
 #include "LogView.h"
 #include "MainWindow.h"
 #include "CommandLine.h"
@@ -161,6 +162,17 @@ private slots:
     void twoLogsWithOneBasenameEachShowTheirOwnDirectory();
     void closingOneOfThemShortensTheSurvivorBackToItsPlainName();
     void theViewNumberingComposesWithTheDirectoryLabel();
+
+    // --- The two high-frequency gestures (SPEC.md §5) ---------------------------
+    // Wrap has a key now, and log text has a size. Driven through the real window,
+    // because what both cases are about is that ONE path does the work: the wrap key
+    // triggers the menu's own mode action, and the size is the application's rather
+    // than any view's.
+    void theWrapKeyTogglesBetweenOffAndAlwaysOnThroughTheMenusOwnAction();
+    void theWrapKeyFromSelectedRecordOnlyWrapsEverything();
+    void zoomingResizesEveryOpenViewIncludingTheDigestStrip();
+    void theZoomStopsAtItsBoundsAndComesBackOnReset();
+    void theChosenTextSizeSurvivesARestart();
     void theCommandLineTakesEveryFileNamedAndOnePatternForThemAll();
 };
 
@@ -934,6 +946,170 @@ void TestMultiDoc::theViewNumberingComposesWithTheDirectoryLabel()
     QCOMPARE(t->tabText(0), QStringLiteral("svc-a/app.log [1]"));
     QCOMPARE(t->tabText(1), QStringLiteral("svc-a/app.log [2]"));
     QCOMPARE(t->tabText(2), QStringLiteral("svc-b/app.log"));
+}
+
+// --- Line wrap by keyboard, and log text size (SPEC.md §5) -------------------
+
+namespace {
+// The wrap mode of the tab in front.
+LogView::WrapMode activeWrap(const MainWindow &w)
+{
+    QTabWidget *t = w.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    return t->currentWidget()->findChild<LogView *>(QStringLiteral("logView"))->wrapMode();
+}
+
+bool actionChecked(const MainWindow &w, const char *name)
+{
+    QAction *a = w.findChild<QAction *>(QLatin1String(name));
+    return a && a->isChecked();
+}
+
+// Puts the application-wide log text size back, whatever a case did to it: it outlives
+// the window that changed it, and the cases below this one measure fonts.
+struct FontSizeGuard
+{
+    ~FontSizeGuard()
+    {
+        resetLogFontPointSize();
+        QSettings s;
+        s.remove(QStringLiteral("logFontPointSize"));
+        s.sync();
+    }
+};
+} // namespace
+
+void TestMultiDoc::theWrapKeyTogglesBetweenOffAndAlwaysOnThroughTheMenusOwnAction()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    QTRY_COMPARE(tabCount(w), 1);
+    QCOMPARE(activeWrap(w), LogView::WrapMode::Off);
+
+    // The key TRIGGERS the menu's Always On entry rather than setting the mode itself,
+    // which is why the checkmark follows with nothing else wired up: one path sets wrap,
+    // and it is the one that also remembers the choice for this log.
+    trigger(w, "toggleWrapAction");
+    QCOMPARE(activeWrap(w), LogView::WrapMode::AlwaysOn);
+    QVERIFY(actionChecked(w, "wrapAlwaysOnAction"));
+    QVERIFY(!actionChecked(w, "wrapOffAction"));
+
+    trigger(w, "toggleWrapAction");
+    QCOMPARE(activeWrap(w), LogView::WrapMode::Off);
+    QVERIFY(actionChecked(w, "wrapOffAction"));
+}
+
+void TestMultiDoc::theWrapKeyFromSelectedRecordOnlyWrapsEverything()
+{
+    // The third mode is not on the way round: from it the key means "wrap it all",
+    // which is the useful reading of a toggle pressed from a state it does not name.
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    QTRY_COMPARE(tabCount(w), 1);
+
+    trigger(w, "wrapSelectedAction");
+    QCOMPARE(activeWrap(w), LogView::WrapMode::SelectedRecordOnly);
+
+    trigger(w, "toggleWrapAction");
+    QCOMPARE(activeWrap(w), LogView::WrapMode::AlwaysOn);
+}
+
+void TestMultiDoc::zoomingResizesEveryOpenViewIncludingTheDigestStrip()
+{
+    FontSizeGuard guard;
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    w.openFile(m_b);
+    QTRY_COMPARE(tabCount(w), 2);
+
+    const int was = logFontPointSize();
+    trigger(w, "zoomInAction");
+    QCOMPARE(logFontPointSize(), was + 1);
+
+    // EVERY open view, not just the one in front — the size is the application's, so a
+    // background tab that kept the old one would be a second answer to the same
+    // question. The digest strip is in it too: its whole claim is that a row is
+    // rendered exactly as it is in the log above it.
+    const QList<LogView *> views = w.findChildren<LogView *>();
+    QVERIFY(views.size() >= 4); // two tables and two strips
+    for (LogView *v : views)
+        QCOMPARE(qRound(v->font().pointSizeF()), was + 1);
+
+    trigger(w, "zoomOutAction");
+    QCOMPARE(logFontPointSize(), was);
+
+    // A view opened AFTER a zoom opens at the size, with nobody pushing a font into it.
+    trigger(w, "zoomInAction");
+    trigger(w, "newViewAction");
+    QTRY_COMPARE(tabCount(w), 3);
+    for (LogView *v : w.findChildren<LogView *>())
+        QCOMPARE(qRound(v->font().pointSizeF()), was + 1);
+}
+
+void TestMultiDoc::theZoomStopsAtItsBoundsAndComesBackOnReset()
+{
+    FontSizeGuard guard;
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    QTRY_COMPARE(tabCount(w), 1);
+
+    const int base = defaultLogFontPointSize();
+
+    // Held down at either end it stops rather than running away, and the view stays
+    // usable at both — which is the whole reason the bounds are there.
+    for (int i = 0; i < 60; ++i)
+        trigger(w, "zoomInAction");
+    QCOMPARE(logFontPointSize(), kMaxLogFontPointSize);
+    for (int i = 0; i < 60; ++i)
+        trigger(w, "zoomOutAction");
+    QCOMPARE(logFontPointSize(), kMinLogFontPointSize);
+
+    trigger(w, "zoomResetAction");
+    QCOMPARE(logFontPointSize(), base);
+}
+
+void TestMultiDoc::theChosenTextSizeSurvivesARestart()
+{
+    FontSizeGuard guard;
+
+    int chosen = 0;
+    {
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        w.openFile(m_a);
+        QTRY_COMPARE(tabCount(w), 1);
+        trigger(w, "zoomInAction");
+        trigger(w, "zoomInAction");
+        chosen = logFontPointSize();
+    }
+
+    // A preference, not window state: it is written when it changes rather than at
+    // close, and it is read back before any view is built — so a restored tab is
+    // constructed at the size instead of being re-fonted afterwards.
+    resetLogFontPointSize();
+    QVERIFY(logFontPointSize() != chosen);
+
+    MainWindow again;
+    again.resize(900, 600);
+    again.show();
+    QCOMPARE(logFontPointSize(), chosen);
+    again.openFile(m_a);
+    QTRY_COMPARE(tabCount(again), 1);
+    QCOMPARE(qRound(tabs(again)->currentWidget()
+                        ->findChild<LogView *>(QStringLiteral("logView"))
+                        ->font()
+                        .pointSizeF()),
+             chosen);
 }
 
 #include "tst_multidoc.moc"

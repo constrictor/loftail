@@ -15,4 +15,41 @@ namespace loftail {
 // the platform designates as fixed-width instead, at the UI's own text size.
 QFont monospaceFont();
 
+// --- Zoom (SPEC.md §5, ARCHITECTURE.md §7.1.5) -------------------------------
+//
+// How big log text is drawn. ONE size for the whole application, not per view and not
+// per log: it answers a question about the reader's eyes and their screen, which does
+// not change between two tabs — and a log's own settings node (M20) holds how a log is
+// READ, which a font size is no part of. So it is an application preference, remembered
+// in QSettings by MainWindow and applied to every open view at once, the digest strip
+// included (a strip in a different size from the table it annotates would read as a
+// different kind of row).
+//
+// Only the SIZE moves. The family stays whatever the platform designates as fixed-width,
+// because everything above depends on it (see monospaceFont).
+//
+// The bounds are absolute rather than relative to the platform's own size: below 6 pt
+// nothing is legible and above 32 pt a viewport holds a handful of records, and both
+// ends are reachable by holding a key down.
+constexpr int kMinLogFontPointSize = 6;
+constexpr int kMaxLogFontPointSize = 32;
+
+// The size log text is shown at now, in points.
+int logFontPointSize();
+// The size it is shown at when nobody has zoomed — the platform's own text size,
+// converted to points where the desktop states it in pixels.
+int defaultLogFontPointSize();
+// Set it, clamped into [kMin, kMax]. True when it actually moved, which is what the
+// caller re-fonts its views and writes the setting on; false is a no-op, including at
+// either bound, so holding the key down at 32 pt costs nothing.
+bool setLogFontPointSize(int points);
+// Back to the platform's own size — and to its own UNIT: a desktop that sizes its text
+// in pixels gets exactly the font it got before any of this existed, rather than that
+// size rounded to the nearest point. True when it moved.
+bool resetLogFontPointSize();
+
+// monospaceFont() at the current size. What every LogView is constructed with, so a
+// view opened after a zoom opens zoomed with no one having to push the font into it.
+QFont logTextFont();
+
 } // namespace loftail
