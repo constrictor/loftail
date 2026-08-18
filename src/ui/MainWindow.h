@@ -220,6 +220,13 @@ private:
     // marker.
     void updateTabTitles(DocumentContext *ctx);
 
+    // Decide what every open log is CALLED (TabLabels.h) and retitle whatever moved.
+    // Called when the set of open logs changes — an open, a restore, a close — and
+    // never on the ingest path: a label is a statement about a log's neighbours, so it
+    // cannot change while they stand still, and rewriting a QTabBar entry relays the
+    // whole bar out.
+    void relabelTabs();
+
     // --- Highlight actions beyond colour (M19, SPEC.md §7) -------------------------
 
     // Recompute one file's digest subset and republish it to its model. A wholesale

@@ -80,6 +80,10 @@ add_library(loftail_ui STATIC
     # named on it. Here rather than in main.cpp so a test can drive it without a process
     CommandLine.cpp
     CommandLine.h
+    # What each open log is called on its tab, decided for the whole set at once so two
+    # logs with one basename say which is which
+    TabLabels.cpp
+    TabLabels.h
     # A disclosure triangle over a block of controls, for options with a good default
     CollapsibleSection.cpp
     CollapsibleSection.h

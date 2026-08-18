@@ -37,6 +37,7 @@
 #include "SshFetcher.h"
 #include "SshPromptDialogs.h"
 #include "SessionStore.h"
+#include "TabLabels.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -737,6 +738,10 @@ void MainWindow::onViewDestroyed(QObject *obj)
     if (m_contexts.size() != before)
         updateTrayPresence();
 
+    // A closed log takes its share of the ambiguity with it: the last two app.logs left
+    // standing say which is which, and the last one standing is app.log again.
+    relabelTabs();
+
     // A file down to its last view is a plain name again, not "name [1]".
     for (auto &ctx : m_contexts)
         updateTabTitles(ctx.get());
@@ -1221,6 +1226,9 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     ctx->doc->resolveHighlighters();
 
     m_contexts.push_back(std::move(ctx));
+    // Before the view exists, so the tab is titled right the first time — and so the
+    // logs already open grow a parent directory now if this one shares their name.
+    relabelTabs();
 
     buildViewAndIndex(m_contexts.back().get());
 
@@ -1345,6 +1353,10 @@ DocumentContext *MainWindow::prepareContext(const SessionDocument &d)
             RunRestore{d.runAll, d.selectedRunStartOffset, d.selectedRunStartTimestamp};
     }
     m_contexts.push_back(std::move(owned));
+    // Restore builds its contexts one at a time, so every one of them relabels the set:
+    // two same-named logs coming back from a session read exactly as they would if they
+    // had just been opened by hand.
+    relabelTabs();
 
     // Highlight rules go straight onto the Document rather than through the pane:
     // the pane holds one file's rules at a time, and every restored file needs its
@@ -1692,7 +1704,15 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
 {
     // A background file's scan has no claim on the status bar, so its progress shows
     // in its own tab title instead.
-    QString name = logSourceDisplayName(ctx->doc->path());
+    //
+    // The name comes from relabelTabs(), which decided it against every OTHER open log
+    // (TabLabels.h) — two logs called app.log each carry the nearest parent directory
+    // that differs. Read from the cache and never recomputed here: this runs on every
+    // ingest tick, and the answer cannot have moved unless a log opened or closed. The
+    // fallback keeps a context that has somehow not been labelled yet showing its own
+    // name rather than an empty tab.
+    QString name = ctx->tabLabel.isEmpty() ? logSourceDisplayName(ctx->doc->path())
+                                           : ctx->tabLabel;
     name.replace(u'&', QLatin1String("&&")); // the tab bar reads '&' as a mnemonic
     QString base = name;
     if (ctx->indexing)
@@ -1726,13 +1746,38 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
     std::sort(indices.begin(), indices.end());
     const bool numbered = indices.size() > 1;
     for (int i = 0; i < indices.size(); ++i) {
-        m_tabs->setTabText(indices.at(i),
-                           numbered ? QStringLiteral("%1 [%2]").arg(base).arg(i + 1) : base);
-        m_tabs->setTabToolTip(indices.at(i),
-                              ctx->doc->isWaiting()
-                                  ? QStringLiteral("%1\n%2").arg(ctx->doc->path(),
-                                                                 ctx->doc->waitReason())
-                                  : ctx->doc->path());
+        const QString title =
+            numbered ? QStringLiteral("%1 [%2]").arg(base).arg(i + 1) : base;
+        // Only on a real change. QTabBar::setTabText relays the whole bar out whether or
+        // not the text moved, and this runs on every ingest tick of every open log — the
+        // trap the Filters pane's dock title already guards against.
+        if (m_tabs->tabText(indices.at(i)) != title)
+            m_tabs->setTabText(indices.at(i), title);
+        // Unchanged by the labelling above: the tooltip is the FULL address, which is
+        // what makes shortening the label safe.
+        const QString tip = ctx->doc->isWaiting()
+            ? QStringLiteral("%1\n%2").arg(ctx->doc->path(), ctx->doc->waitReason())
+            : ctx->doc->path();
+        if (m_tabs->tabToolTip(indices.at(i)) != tip)
+            m_tabs->setTabToolTip(indices.at(i), tip);
+    }
+}
+
+void MainWindow::relabelTabs()
+{
+    QStringList addresses;
+    addresses.reserve(int(m_contexts.size()));
+    for (const auto &ctx : m_contexts)
+        addresses.append(ctx->doc->path());
+
+    // One pass over the whole set: what a log is called depends on which others are
+    // open, so closing one of two app.logs has to shorten the survivor back again.
+    const QStringList labels = tabLabelsFor(addresses);
+    for (int i = 0; i < labels.size(); ++i) {
+        if (m_contexts[i]->tabLabel == labels.at(i))
+            continue;
+        m_contexts[i]->tabLabel = labels.at(i);
+        updateTabTitles(m_contexts[i].get()); // a file with no view yet is a no-op
     }
 }
 

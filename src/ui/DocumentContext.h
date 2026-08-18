@@ -100,6 +100,15 @@ public:
     // its rules from the Document it binds to.
     QJsonObject filterState;
 
+    // What this log is called on its tab, before the indexing/waiting/match markers and
+    // the view number are folded in (TabLabels.h). Normally its own name; enough parent
+    // directories to tell it apart when another open log answers to the same name.
+    //
+    // CACHED, and that is the point: the label depends on the OTHER open logs, so it is
+    // recomputed for every file when one opens or closes — MainWindow::relabelTabs() —
+    // and merely read on the ingest path, which retitles a tab several times a second.
+    QString tabLabel;
+
     // Indexing progress, kept per file so a background file can keep scanning while
     // the status bar shows whichever file is active.
     bool indexing = false;
