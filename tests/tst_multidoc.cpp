@@ -2,6 +2,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QDir>
 #include <QDockWidget>
 #include <QHeaderView>
 #include <QFile>
@@ -51,6 +52,10 @@ private:
     QTemporaryDir m_dir;
     QString       m_a;
     QString       m_b;
+    // Two logs with ONE basename, in sibling directories — the case a tab bar cannot
+    // report by name alone.
+    QString       m_svcA;
+    QString       m_svcB;
 
     static void writeLog(const QString &path, const char *subsystem, int lines)
     {
@@ -148,6 +153,14 @@ private slots:
     // so what happens to the tab bar and to a refusal is one answer, not three.
     void severalFilesOpenedAtOnceBecomeSeveralTabs();
     void aRefusedLogAmongSeveralLeavesTheOthersOpenAndIsNamedWithThem();
+
+    // Tab labels (SPEC.md §3). What a log is called depends on which OTHER logs are
+    // open, so the claims are about the set: two app.logs say which is which, closing
+    // one shortens the survivor again, and the view numbering composes with both. The
+    // rule itself, over every shape of address, is tst_tablabels'.
+    void twoLogsWithOneBasenameEachShowTheirOwnDirectory();
+    void closingOneOfThemShortensTheSurvivorBackToItsPlainName();
+    void theViewNumberingComposesWithTheDirectoryLabel();
     void theCommandLineTakesEveryFileNamedAndOnePatternForThemAll();
 };
 
@@ -180,6 +193,14 @@ void TestMultiDoc::initTestCase()
     m_b = m_dir.filePath(QStringLiteral("b.log"));
     writeLog(m_a, "net.io", 30);
     writeLog(m_b, "db.pool", 20);
+
+    QDir d(m_dir.path());
+    QVERIFY(d.mkpath(QStringLiteral("svc-a")));
+    QVERIFY(d.mkpath(QStringLiteral("svc-b")));
+    m_svcA = m_dir.filePath(QStringLiteral("svc-a/app.log"));
+    m_svcB = m_dir.filePath(QStringLiteral("svc-b/app.log"));
+    writeLog(m_svcA, "net.io", 12);
+    writeLog(m_svcB, "net.io", 12);
 }
 
 void TestMultiDoc::init()
@@ -841,6 +862,78 @@ void TestMultiDoc::theCommandLineTakesEveryFileNamedAndOnePatternForThemAll()
     QVERIFY(bare.parse({QStringLiteral("loftail")}));
     QVERIFY(bare.files().isEmpty());
     QVERIFY(bare.pattern().isEmpty());
+}
+
+void TestMultiDoc::twoLogsWithOneBasenameEachShowTheirOwnDirectory()
+{
+    // Both tabs used to read "app.log", with only the tooltip telling them apart —
+    // which is the ordinary state of affairs for anyone tailing one service in two
+    // deployments.
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_svcA);
+    w.openFile(m_svcB);
+    QTRY_COMPARE(tabCount(w), 2);
+    waitUntilIndexed(w);
+
+    QTabWidget *t = tabs(w);
+    QCOMPARE(t->tabText(0), QStringLiteral("svc-a/app.log"));
+    QCOMPARE(t->tabText(1), QStringLiteral("svc-b/app.log"));
+
+    // The tooltip is untouched by any of this: it is the full address, which is what
+    // makes a shortened label safe. Asserted as a suffix rather than as the string the
+    // test wrote, since the address a window holds is the normalized one.
+    QVERIFY(t->tabToolTip(0).endsWith(QStringLiteral("svc-a/app.log")));
+    QVERIFY(t->tabToolTip(1).endsWith(QStringLiteral("svc-b/app.log")));
+    QVERIFY(t->tabToolTip(0).size() > t->tabText(0).size()); // the whole path, not the label
+
+    // And a log with a name of its own is unaffected by the pair beside it.
+    w.openFile(m_a);
+    QTRY_COMPARE(tabCount(w), 3);
+    waitUntilIndexed(w);
+    QCOMPARE(t->tabText(2), QStringLiteral("a.log"));
+    QCOMPARE(t->tabText(0), QStringLiteral("svc-a/app.log"));
+}
+
+void TestMultiDoc::closingOneOfThemShortensTheSurvivorBackToItsPlainName()
+{
+    // The ambiguity is gone with the log that caused it, so the directory goes too.
+    // This falls out only because the labels are decided for the whole set on every
+    // open and close, rather than fixed when a log opens.
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_svcA);
+    w.openFile(m_svcB);
+    QTRY_COMPARE(tabCount(w), 2);
+    waitUntilIndexed(w);
+    QCOMPARE(tabs(w)->tabText(0), QStringLiteral("svc-a/app.log"));
+
+    trigger(w, "closeTabAction"); // closes svc-b, the active tab
+    QTRY_COMPARE(tabCount(w), 1);
+    QCOMPARE(tabs(w)->tabText(0), QStringLiteral("app.log"));
+}
+
+void TestMultiDoc::theViewNumberingComposesWithTheDirectoryLabel()
+{
+    // Two mechanisms, two different questions: the directory says WHICH LOG, the
+    // number says which view of it. Both at once reads "svc-a/app.log [1]".
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_svcA);
+    QTRY_COMPARE(tabCount(w), 1);
+    trigger(w, "newViewAction");
+    QCOMPARE(tabCount(w), 2);
+    w.openFile(m_svcB);
+    QTRY_COMPARE(tabCount(w), 3);
+    waitUntilIndexed(w);
+
+    QTabWidget *t = tabs(w);
+    QCOMPARE(t->tabText(0), QStringLiteral("svc-a/app.log [1]"));
+    QCOMPARE(t->tabText(1), QStringLiteral("svc-a/app.log [2]"));
+    QCOMPARE(t->tabText(2), QStringLiteral("svc-b/app.log"));
 }
 
 #include "tst_multidoc.moc"

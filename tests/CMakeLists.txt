@@ -532,6 +532,16 @@ target_link_libraries(tst_multidoc PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_multidoc COMMAND tst_multidoc)
 set_tests_properties(tst_multidoc PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# What each open log is CALLED on its tab (SPEC.md §3). The rule is a statement about
+# the whole SET of open logs, so it is a free function over a list of addresses and is
+# driven here directly — every address shape at once, which a window test cannot do
+# without a server and an archive. That a real window applies it, and shortens the
+# survivors when a log closes, is tst_multidoc's.
+qt_add_executable(tst_tablabels tst_tablabels.cpp)
+target_link_libraries(tst_tablabels PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_tablabels COMMAND tst_tablabels)
+set_tests_properties(tst_tablabels PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # The record context menu (SPEC.md §5): what a record offers, and that triggering an
 # item reaches the same per-file state a click in the pane would. The pane-level half
 # — what each edit MEANS, including that "show only" must not widen as the scan finds
