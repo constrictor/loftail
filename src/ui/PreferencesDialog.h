@@ -108,6 +108,9 @@ private:
     void buildUi(const QString &sampleName, const QByteArray &sample);
     void rebuildTree(const NodeRef &select);
     void loadNode();
+    // Fill the identity block: the node's name, the level it sits at, and the full
+    // address a name that is only a name stands for (empty for the levels with none).
+    void setIdentity(const QString &name, const QString &level, const QString &fullAddress);
     void commitCurrent(); // the editors' contents back into m_settings
     void refreshPatternValidity();
     void updateButtons();
@@ -139,17 +142,22 @@ private:
     QToolButton      *m_moveDown = nullptr;
     QPushButton      *m_forgetFiles = nullptr;
     QLabel           *m_nodeTitle = nullptr;
+    // The identity block every node wears: its own NAME, and under that, muted, which of
+    // the three levels it sits at. ONE block filled three ways rather than a block per
+    // kind — that is what keeps the three panels one shape, and its absence is how the
+    // model's word for a per-log entry ("Concrete file") came to sit over an address, in
+    // the heading, with the thing it named underneath it.
+    QWidget          *m_identityGroup = nullptr;
+    QLabel           *m_nodeName = nullptr;
+    QLabel           *m_nodeLevel = nullptr;
     QWidget          *m_patternGroup = nullptr;
     QComboBox        *m_patternKind = nullptr;
     QLineEdit        *m_patternMatch = nullptr;
     QCheckBox        *m_patternCase = nullptr;
     QCheckBox        *m_patternFullPath = nullptr;
     QLabel           *m_patternError = nullptr;
-    // The log node's identity block: a caption and the address under it. The GROUP is
-    // what is shown and hidden, exactly as the pattern's is.
-    QWidget          *m_fileGroup = nullptr;
-    QLabel           *m_fileAddress = nullptr;
-    // The rule between what the node IS (the Matches box, or a log's address) and what
+    // The rule between what the node IS (its identity block and, for a pattern, the
+    // fields defining it) and what
     // it GIVES its logs. Shown only when there is something above it to cut off.
     QWidget          *m_nodeDivider = nullptr;
     LogProfileEditor *m_editor = nullptr;

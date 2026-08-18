@@ -79,9 +79,9 @@ protected:
     }
 };
 
-// A panel caption: centred, bold, and standing off whatever is above it. Both captions
-// in this dialog come from here, so "the same look" is one line of code rather than two
-// that agree today.
+// A panel caption: centred, bold, and standing off whatever is above it. Every caption
+// in this dialog comes from here, so "the same look" is one line of code rather than
+// several that agree today.
 //
 // Bold by setFont() and NOT by a style sheet, which is the opposite of what SectionBox
 // does for a group box's title — there a sheet is the only way in, since a QGroupBox's
@@ -101,6 +101,18 @@ QLabel *makeCaption(QWidget *parent, const QString &name, const QString &text = 
     label->setFont(font);
     label->setContentsMargins(0, kTitleTopGap, 0, kTitleBottomGap);
     return label;
+}
+
+// The name a pattern node wears — in its tree row and as the heading of its panel, from
+// one place so the two cannot come to disagree. Quoted, so it reads as the pattern it is
+// rather than as a file that happens to be spelt oddly: the rows under it are real names,
+// and `*.log` beside `app.log` at the same indentation is one glance away from looking
+// like one. The empty case stays unquoted — it is prose about a pattern that says nothing
+// yet, and a pair of quotes round nothing is a row wearing an empty name.
+QString patternDisplayName(const QString &match)
+{
+    return match.isEmpty() ? PreferencesDialog::tr("(empty pattern)")
+                           : QStringLiteral("\"%1\"").arg(match);
 }
 
 QToolButton *makeToolButton(QWidget *parent, const char *glyph, const QString &name,
@@ -232,22 +244,51 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     // looked like a stray sentence that had lost its control.
     m_nodeTitle = makeCaption(right, QStringLiteral("nodeTitleLabel"));
 
-    // "Matches" is the OTHER caption, not another section. It says which logs a pattern
-    // claims, which is not one of the settings those logs open with — and dressed as a
-    // section (flat frame, title divider, exactly like File format and Display) that is
-    // precisely what it read as. So: a plain container, captioned the same way the node
-    // title is, from the same helper so the two cannot drift apart.
+    // WHAT THIS NODE IS, IN THE READER'S WORDS. The node's own name in the heading, and
+    // under it, muted, which of the three levels it sits at: `app.log` over "This log
+    // only", `"*.audit.log"` over "File pattern", "Default settings" over what it covers.
+    // A name is what identifies a panel, and the level is what qualifies it — the other
+    // way round the panel is headed by the same three words whatever it is showing.
     //
-    // SectionBox::setHeading() looked like the answer and is not: its `font-weight: bold`
-    // lives in a QGroupBox::title style-sheet rule, and neither Breeze nor Fusion draws
-    // the title bold from it — measured on a render, the caption came out at normal
-    // weight in both while the same sheet's `subcontrol-position: top center` was obeyed.
+    // ONE block filled three ways, not a block per kind, which is what keeps the three
+    // panels the same shape. They were three shapes before: a caption over an address for
+    // a log, a caption over a form for a pattern, and nothing at all for the defaults —
+    // which is how the model's word for a per-log entry ("Concrete file", the name of a
+    // level in a comment in LogSettings.h) stayed on screen as a heading.
+    m_identityGroup = new QWidget(right);
+    m_identityGroup->setObjectName(QStringLiteral("nodeIdentityGroup")); // findChild, for tests
+    auto *identityBox = new QVBoxLayout(m_identityGroup);
+    identityBox->setContentsMargins(0, 0, 0, 0);
+    identityBox->setSpacing(0); // "under it" — the caption's own bottom margin is the gap
+
+    m_nodeName = makeCaption(m_identityGroup, QStringLiteral("nodeNameLabel"));
+    // Selectable, as the address it replaced was: a log's name is the one thing here
+    // somebody copies out, to paste into a terminal or another window.
+    m_nodeName->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    identityBox->addWidget(m_nodeName);
+
+    m_nodeLevel = new QLabel(m_identityGroup);
+    m_nodeLevel->setObjectName(QStringLiteral("nodeLevelLabel")); // findChild, for tests
+    m_nodeLevel->setWordWrap(true);
+    m_nodeLevel->setAlignment(Qt::AlignHCenter);
+    // Muted FROM THE PALETTE, so it lands on either theme rather than on the one it was
+    // picked against — the same mix every other aside in this dialog is drawn in.
+    m_nodeLevel->setStyleSheet(
+        QStringLiteral("color: %1;").arg(mutedColor(palette()).name()));
+    identityBox->addWidget(m_nodeLevel);
+    rightLayout->addWidget(m_identityGroup);
+
+    // The fields that DEFINE a pattern, under the identity block naming it. They used to
+    // carry a caption of their own — "Matches", which said which logs a pattern claims —
+    // and it is what the identity block now says at greater length and in the same place:
+    // a bold "Matches" between "File pattern" and "Logs named:" is a third heading for a
+    // form of three rows. It is NOT a section (flat frame, title divider, like File format
+    // and Display), because what a pattern matches on is not one of the settings its logs
+    // open with, and dressed as one that is precisely what it read as.
     m_patternGroup = new QWidget(right);
     m_patternGroup->setObjectName(QStringLiteral("patternGroup")); // findChild, for tests
     auto *patternBox = new QVBoxLayout(m_patternGroup);
     patternBox->setContentsMargins(0, 0, 0, 0);
-    patternBox->addWidget(makeCaption(m_patternGroup, QStringLiteral("patternCaption"),
-                                      tr("Matches")));
     auto *patternForm = new QFormLayout;
     patternBox->addLayout(patternForm);
 
@@ -292,9 +333,16 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     patternForm->addRow(m_patternError);
 
     // Live validity only; the value is committed when focus leaves or the node changes,
-    // because every commit rebuilds the tree (a pattern edit re-homes file nodes).
-    connect(m_patternMatch, &QLineEdit::textChanged, this,
-            &PreferencesDialog::refreshPatternValidity);
+    // because every commit rebuilds the tree (a pattern edit re-homes file nodes). The
+    // HEADING follows the field as it is typed, though — it names the node the reader is
+    // looking at, and a heading naming the pattern as it was three keystrokes ago names
+    // something that no longer exists. The tree row still waits for the commit, because
+    // that is what re-homes the logs under it.
+    connect(m_patternMatch, &QLineEdit::textChanged, this, [this] {
+        refreshPatternValidity();
+        if (currentRef().kind == NodeKind::Pattern)
+            m_nodeName->setText(patternDisplayName(m_patternMatch->text()));
+    });
     auto recommit = [this]() {
         if (m_updating)
             return;
@@ -308,39 +356,14 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     connect(m_patternFullPath, &QCheckBox::toggled, this, recommit);
     rightLayout->addWidget(m_patternGroup);
 
-    // A log node's identity block, built exactly as the pattern's is: the caption says
-    // what kind of node this is, and the one thing that identifies it — the address —
-    // sits directly under it. Loose at the panel's top edge the address was a path with
-    // nothing saying why it was there, and it had no gap above it either, which the
-    // caption's own margins now supply.
-    m_fileGroup = new QWidget(right);
-    m_fileGroup->setObjectName(QStringLiteral("fileGroup")); // findChild, for tests
-    auto *fileBox = new QVBoxLayout(m_fileGroup);
-    fileBox->setContentsMargins(0, 0, 0, 0);
-    fileBox->setSpacing(0); // "directly under it" — the caption's own bottom margin is the gap
-    fileBox->addWidget(makeCaption(m_fileGroup, QStringLiteral("fileCaption"),
-                                   tr("Concrete file")));
-
-    m_fileAddress = new QLabel(m_fileGroup);
-    m_fileAddress->setObjectName(QStringLiteral("fileAddressLabel")); // findChild, for tests
-    m_fileAddress->setWordWrap(true);
-    // Centred under the caption it belongs to, and still selectable: an address is the
-    // one thing here somebody copies out, to paste into a terminal or another window.
-    m_fileAddress->setAlignment(Qt::AlignHCenter);
-    m_fileAddress->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_fileAddress->setStyleSheet(
-        QStringLiteral("color: %1;").arg(mutedColor(palette()).name()));
-    fileBox->addWidget(m_fileAddress);
-    rightLayout->addWidget(m_fileGroup);
-
-    // WHICH logs, then WHAT they get. The "Matches" box says which logs a pattern node
-    // claims, and it is not a setting those logs open with — sitting under the heading
-    // and above the format it read as the first of them, which is exactly what it is
-    // not. So it goes first, the heading introduces what follows it rather than what is
+    // WHICH logs, then WHAT they get. A pattern's match fields say which logs it claims,
+    // and that is not a setting those logs open with — sitting under the heading and
+    // above the format they read as the first of them, which is exactly what they are
+    // not. So they go first, the heading introduces what follows it rather than what is
     // above it, and a full-width rule marks where the identity of the node stops and its
-    // settings begin. The line is drawn only when there is something above it to cut off
-    // — the defaults have no identity block, and a rule against the panel's top edge
-    // separates nothing.
+    // settings begin. The line is drawn only when there is a form above it to cut off —
+    // two lines of centred text could not be mistaken for a settings block, and a rule
+    // against the panel's top edge separates nothing.
     //
     // The same hairline colour SectionBox paints its title divider in, so the two kinds
     // of line in this panel are one thing at two lengths rather than two decisions.
@@ -429,13 +452,9 @@ void PreferencesDialog::rebuildTree(const NodeRef &select)
 
     QVector<QTreeWidgetItem *> patternItems;
     for (const LogPatternNode &n : m_settings.patterns()) {
-        // Quoted, so a row reads as the pattern it is rather than as a file that happens
-        // to be spelt oddly — the rows under it are real names, and `*.log` beside
-        // `app.log` at the same indentation is one glance away from looking like one. The
-        // empty case stays unquoted: it is prose about a pattern that says nothing yet,
-        // and a pair of quotes round nothing is a row wearing an empty name.
-        QString label = n.match.isEmpty() ? tr("(empty pattern)")
-                                          : QStringLiteral("\"%1\"").arg(n.match);
+        // The same name the panel on the right heads itself with — see
+        // patternDisplayName(), which is why the quoting rule is stated once.
+        QString label = patternDisplayName(n.match);
         if (n.kind == LogPatternNode::Kind::Regex)
             label += tr(" (regex)");
         if (n.matchFullPath)
@@ -503,10 +522,18 @@ void PreferencesDialog::loadNode()
     bool isPattern = false;
     bool haveProfile = true;
 
+    // Cleared first and filled by whichever branch has something to say, so a node that
+    // is not there any more (a pattern id that no longer resolves) heads its panel with
+    // nothing rather than with the last node's name.
+    setIdentity(QString(), QString(), QString());
+
     switch (ref.kind) {
     case NodeKind::Root:
-        m_nodeTitle->setText(
-            tr("Used by default when file name doesn't match any particular pattern."));
+        // The defaults ARE the level, so the name says so and the muted line says who
+        // that covers — the level naming itself twice would be the caption twice.
+        setIdentity(tr("Default settings"), tr("Every log with nothing more specific"),
+                    QString());
+        m_nodeTitle->clear();
         profile = m_settings.defaults();
         break;
     case NodeKind::Pattern: {
@@ -523,6 +550,7 @@ void PreferencesDialog::loadNode()
         // ↑ and ↓ tooltips are where it belongs: they are the only thing it governs,
         // and they are read exactly when the question arises.
         m_nodeTitle->setText(tr("What every log matching this pattern opens with."));
+        setIdentity(patternDisplayName(n.match), tr("File pattern"), QString());
         m_patternMatch->setText(n.match);
         m_patternKind->setCurrentIndex(m_patternKind->findData(int(n.kind)));
         m_patternCase->setChecked(n.caseSensitive);
@@ -536,14 +564,21 @@ void PreferencesDialog::loadNode()
             haveProfile = false;
             break;
         }
-        // No heading: "Concrete file" above the address already says which of the three
-        // levels this is, and a second bold line under the rule saying the same thing at
-        // greater length is the caption twice. The pattern and the defaults keep theirs,
-        // because "Matches" and "Default settings" name the node without saying what it
-        // then does for the logs it claims.
+        // The log's OWN NAME heads the panel — logSourceDisplayName(), which is what
+        // names it everywhere else in the application, so it is recognisable as the tab
+        // it belongs to rather than as an address to be read left to right. Its full
+        // address stays a hover away, which is where the identical basenames that make a
+        // name ambiguous are told apart; tabLabelsFor() is the other answer to that and
+        // is not this one's, because a tab label is a statement about the log's
+        // NEIGHBOURS in the tab bar and there are none here.
+        //
+        // No heading under the rule either — there is no rule on a log node, and the
+        // identity block above already says which of the three levels this is.
         m_nodeTitle->clear();
-        m_fileAddress->setText(logSourceDisplayPath(m_settings.files().at(i).path));
-        profile = m_settings.files().at(i).profile;
+        const LogFileNode &f = m_settings.files().at(i);
+        setIdentity(logSourceDisplayName(f.path), tr("This log only"),
+                    logSourceDisplayPath(f.path));
+        profile = f.profile;
         break;
     }
     case NodeKind::Orphan:
@@ -554,17 +589,19 @@ void PreferencesDialog::loadNode()
     }
 
     m_patternGroup->setVisible(isPattern);
-    m_fileGroup->setVisible(ref.kind == NodeKind::File);
+    // Empty on the virtual "no matching pattern" row, which is not a level and has no
+    // name of its own: what it is is the ABSENCE of a match, and that is prose, so it
+    // says it in the heading below where every other node says what its settings do.
+    m_identityGroup->setVisible(!m_nodeName->text().isEmpty());
     // A heading with no words is a blank line the width of the panel — its margins are
     // still 14 px whatever the text says.
     m_nodeTitle->setVisible(!m_nodeTitle->text().isEmpty());
-    // A PATTERN NODE ONLY. The rule earns its place there because "Matches" is a row of
-    // editable controls sitting above another row of editable controls, and without it
-    // the two blocks run together — which is the whole reason it exists. A log node's
-    // identity is two lines of centred text that could not be mistaken for a settings
-    // block, and with no heading under the rule either it was just a line cutting the
-    // panel in half. The defaults and the virtual "no matching pattern" row have no
-    // identity block at all, and a rule under nothing separates the panel from its edge.
+    // A PATTERN NODE ONLY. The rule earns its place there because the match fields are a
+    // row of editable controls sitting above another row of editable controls, and
+    // without it the two blocks run together — which is the whole reason it exists. The
+    // other levels' identity is two lines of centred text that could not be mistaken for
+    // a settings block, and with no heading under the rule either it was just a line
+    // cutting the panel in half.
     m_nodeDivider->setVisible(isPattern);
     m_editor->setVisible(haveProfile);
     // Whether what auto-detect made of the sample is a fact about THIS entry's log. Only
@@ -582,6 +619,20 @@ void PreferencesDialog::loadNode()
     refreshPatternValidity();
     updateButtons();
     m_updating = wasUpdating;
+}
+
+void PreferencesDialog::setIdentity(const QString &name, const QString &level,
+                                    const QString &fullAddress)
+{
+    m_nodeName->setText(name);
+    m_nodeLevel->setText(level);
+    // A muted line with no words is still a blank line the width of the panel.
+    m_nodeLevel->setVisible(!level.isEmpty());
+    // On BOTH labels, because either is what a pointer aimed at the heading lands on,
+    // and empty on the two levels that name no single log — a tooltip repeating the
+    // heading is a tooltip that says nothing.
+    m_nodeName->setToolTip(fullAddress);
+    m_nodeLevel->setToolTip(fullAddress);
 }
 
 void PreferencesDialog::commitCurrent()

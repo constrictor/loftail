@@ -129,6 +129,8 @@ private slots:
     void theMenuEntryHasAnAcceleratorOnEveryPlatform();
     void thePreviewKeepsTheFormatSectionsMargins();
     void aPatternRowIsQuotedAndALogRowIsNot();
+    void eachLevelIsHeadedByItsOwnNameWithTheLevelUnderIt();
+    void aPatternHeadingFollowsTheFieldAsItIsTyped();
     void whatTheNodeIsSitsAboveTheHeadingWithARuleBetweenThem();
     void bothCaptionsAreBoldAndCentred();
     void anEmptyPatternIsNotReportedAsAnErrorAndARealOneFitsItsRow();
@@ -191,27 +193,86 @@ void TestPreferences::thePatternEditorIsShownOnlyForAPattern()
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
     QTreeWidget *tree = treeOf(dlg);
     auto *group = dlg.findChild<QWidget *>(QStringLiteral("patternGroup"));
-    // The GROUP, not the address label inside it: what is shown and hidden per node is
-    // the whole identity block, caption included, and a child of a hidden parent is not
-    // itself "hidden" as Qt uses the word.
-    auto *address = dlg.findChild<QWidget *>(QStringLiteral("fileGroup"));
+    // The GROUP, not a field inside it: what is shown and hidden per node is the whole
+    // block, and a child of a hidden parent is not itself "hidden" as Qt uses the word.
+    auto *identity = dlg.findChild<QWidget *>(QStringLiteral("nodeIdentityGroup"));
+    auto *name = dlg.findChild<QLabel *>(QStringLiteral("nodeNameLabel"));
     QVERIFY(group);
-    QVERIFY(address);
+    QVERIFY(identity);
+    QVERIFY(name);
 
     tree->setCurrentItem(tree->topLevelItem(0)); // the root
     QVERIFY(group->isHidden());
-    QVERIFY(address->isHidden());
+    QVERIFY(!identity->isHidden()); // every level names itself, the defaults included
 
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
     QVERIFY(!group->isHidden());
-    QVERIFY(address->isHidden());
 
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
     QVERIFY(group->isHidden());
-    QVERIFY(!address->isHidden());
-    auto *addressText = dlg.findChild<QLabel *>(QStringLiteral("fileAddressLabel"));
-    QVERIFY(addressText);
-    QVERIFY(addressText->text().contains(QLatin1String("app.log")));
+    QVERIFY(!identity->isHidden());
+    QCOMPARE(name->text(), QStringLiteral("app.log"));
+}
+
+void TestPreferences::eachLevelIsHeadedByItsOwnNameWithTheLevelUnderIt()
+{
+    // "Concrete file" was the heading and the log's address was the muted line under it
+    // — the model's word for a level, in the one place the panel says which node it is
+    // showing, over the one thing that actually identifies it. So: the NAME heads the
+    // panel and the LEVEL is the muted line, on all three, because a heading that says
+    // the same three words whatever is selected identifies nothing.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    QTreeWidget *tree = treeOf(dlg);
+    auto *name = dlg.findChild<QLabel *>(QStringLiteral("nodeNameLabel"));
+    auto *level = dlg.findChild<QLabel *>(QStringLiteral("nodeLevelLabel"));
+    QVERIFY(name);
+    QVERIFY(level);
+
+    tree->setCurrentItem(tree->topLevelItem(0));
+    QCOMPARE(name->text(), QStringLiteral("Default settings"));
+    QVERIFY(!level->text().isEmpty());
+    QVERIFY2(!level->text().contains(name->text()), qPrintable(level->text()));
+
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+    QVERIFY2(name->text().contains(QLatin1String("*.log")),
+             qPrintable(QStringLiteral("a pattern node is headed %1").arg(name->text())));
+    QCOMPARE(level->text(), QStringLiteral("File pattern"));
+
+    // The log's readable name, not its address — and the address a hover away, on both
+    // lines, since either is what a pointer aimed at the heading lands on.
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    QCOMPARE(name->text(), QStringLiteral("app.log"));
+    QCOMPARE(level->text(), QStringLiteral("This log only"));
+    QCOMPARE(name->toolTip(), QStringLiteral("/var/log/app.log"));
+    QCOMPARE(level->toolTip(), QStringLiteral("/var/log/app.log"));
+
+    // And nothing to hover on the levels that name no single log: a tooltip repeating
+    // the heading is a tooltip that says nothing.
+    tree->setCurrentItem(tree->topLevelItem(0));
+    QVERIFY(name->toolTip().isEmpty());
+}
+
+void TestPreferences::aPatternHeadingFollowsTheFieldAsItIsTyped()
+{
+    // The heading names the node the reader is looking at. The tree row waits for the
+    // commit, because that is what re-homes the logs under it; the heading must not,
+    // or it names the pattern as it was three keystrokes ago.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    QTreeWidget *tree = treeOf(dlg);
+    auto *name = dlg.findChild<QLabel *>(QStringLiteral("nodeNameLabel"));
+    auto *match = dlg.findChild<QLineEdit *>(QStringLiteral("patternMatchEdit"));
+    QVERIFY(name);
+    QVERIFY(match);
+
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+    match->setText(QStringLiteral("*.audit.log"));
+    QVERIFY2(name->text().contains(QLatin1String("*.audit.log")), qPrintable(name->text()));
+
+    // An empty pattern is prose about a pattern that says nothing yet, in the heading
+    // exactly as in the row: a pair of quotes round nothing is a name that is not one.
+    match->setText(QString());
+    QVERIFY2(!name->text().contains(QLatin1Char('"')), qPrintable(name->text()));
+    QVERIFY(!name->text().isEmpty());
 }
 
 void TestPreferences::editingAPatternRehomesItsLogsAndKeepsTheSelection()
@@ -939,25 +1000,30 @@ void TestPreferences::whatTheNodeIsSitsAboveTheHeadingWithARuleBetweenThem()
              qPrintable(QStringLiteral("the heading ends at %1, the settings start at %2")
                             .arg(bottom(title)).arg(top(editor))));
 
-    // A log's address is the same kind of thing and goes in the same place — under its
-    // own caption, which then does the heading's job: a log node has NO heading under the
-    // rule, because "Concrete file" over the address already says which level this is and
-    // a second bold line saying so at greater length is the caption twice.
-    auto *address = dlg.findChild<QLabel *>(QStringLiteral("fileAddressLabel"));
-    QVERIFY(address);
+    // Identity first on every node: the block naming it sits above the fields defining
+    // it, which is why the pattern's own name is not one of those fields' labels.
+    auto *identity = dlg.findChild<QWidget *>(QStringLiteral("nodeIdentityGroup"));
+    QVERIFY(identity);
+    QVERIFY2(bottom(identity) <= top(group),
+             qPrintable(QStringLiteral("the heading ends at %1, Matches starts at %2")
+                            .arg(bottom(identity)).arg(top(group))));
+
+    // A log node has NO heading under the rule, because the block above already says
+    // which level this is and a second bold line saying so at greater length is the
+    // caption twice.
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
     QCoreApplication::processEvents();
-    QVERIFY2(!title->isVisible(), "a log node drew a heading as well as its caption");
-    // And no rule either. It earns its place on a pattern node, where "Matches" is a row
-    // of editable controls above another row of them; two lines of centred text could not
-    // be mistaken for a settings block, so there the line only cuts the panel in half.
-    QVERIFY2(!rule->isVisible(), "a log node drew a rule under its address");
-    QVERIFY2(bottom(address) <= top(editor),
-             qPrintable(QStringLiteral("the address ends at %1, the settings start at %2")
-                            .arg(bottom(address)).arg(top(editor))));
+    QVERIFY2(!title->isVisible(), "a log node drew a heading as well as its identity");
+    // And no rule either. It earns its place on a pattern node, where the match fields
+    // are a row of editable controls above another row of them; two lines of centred
+    // text could not be mistaken for a settings block, so there the line only cuts the
+    // panel in half.
+    QVERIFY2(!rule->isVisible(), "a log node drew a rule under its name");
+    QVERIFY2(bottom(identity) <= top(editor),
+             qPrintable(QStringLiteral("the heading ends at %1, the settings start at %2")
+                            .arg(bottom(identity)).arg(top(editor))));
 
-    // And on a node with no identity block there is nothing to cut off: a rule under
-    // nothing is a line across the top of the panel, separating it from its own edge.
+    // Same on the defaults, which have nothing between their name and their settings.
     tree->setCurrentItem(tree->topLevelItem(0)); // the defaults
     QCoreApplication::processEvents();
     QVERIFY2(!rule->isVisible(), "the defaults drew a rule with nothing above it");
@@ -968,10 +1034,11 @@ void TestPreferences::bothCaptionsAreBoldAndCentred()
     // "Matches" was a SectionBox heading, whose bold lives in a QGroupBox::title style
     // sheet — and neither Breeze nor Fusion draws the title bold from it, while obeying
     // the same sheet's centring. The caption came out at normal weight on a render with
-    // every other test still green, which is exactly what this asserts instead.
+    // every other test still green, which is exactly what this asserts instead. The
+    // caption it was is gone; the two left come from the same helper and are as exposed.
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
     for (const QString &name : {QStringLiteral("nodeTitleLabel"),
-                                QStringLiteral("patternCaption")}) {
+                                QStringLiteral("nodeNameLabel")}) {
         auto *caption = dlg.findChild<QLabel *>(name);
         QVERIFY2(caption, qPrintable(name));
         QVERIFY2(caption->font().bold(), qPrintable(name + QLatin1String(" is not bold")));
