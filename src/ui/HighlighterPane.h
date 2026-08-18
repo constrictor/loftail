@@ -11,6 +11,7 @@
 
 QT_BEGIN_NAMESPACE
 class QComboBox;
+class QLabel;
 class QPushButton;
 class QTableWidget;
 class QToolButton;
@@ -118,6 +119,11 @@ protected:
     // answer, and it keeps the selected rule.
     void changeEvent(QEvent *event) override;
 
+    // Only for the rule table's viewport, and only to keep the empty-table message
+    // spanning it — the viewport is not a layout, so nothing else would resize a child
+    // laid over it.
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     void buildUi();
     void reloadRuleTable();      // rebuild the rule table from m_rules
@@ -126,6 +132,13 @@ private:
     void commit();               // push m_rules into the document + emit change
     void syncToDocument();
     void updateActivity();       // emit activityChanged() when hasRules() flips
+    // Show, word and place the empty table's message. TWO empty states, and they do not
+    // say the same thing: no file open at all, versus a file whose rules the user has
+    // just cleared. Driven from reloadRuleTable(), the one funnel the table is built by.
+    void updatePlaceholder();
+    // Take the message's colour from the palette, so it reads as an aside on a light
+    // theme and on a dark one alike. Re-applied on a theme switch.
+    void applyPlaceholderColour();
 
     int currentRow() const;
     void setCurrentRow(int row);
@@ -184,6 +197,11 @@ private:
     int m_colourColumnWidth = 0;
     int m_actionColumnWidth = 0;
     int m_rowHeight = 0;
+    // What the table says when it holds nothing. A LABEL over the viewport, never a row
+    // in the table: a row would be a rule to everything that walks rows — the reorder
+    // buttons, the per-row "ruleRow" property, saveState() — and the one thing it must
+    // not be is countable.
+    QLabel *m_tablePlaceholder = nullptr;
 
     QPushButton *m_newBtn = nullptr;
     QPushButton *m_removeBtn = nullptr;

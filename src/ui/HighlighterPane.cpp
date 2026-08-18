@@ -17,6 +17,7 @@
 #include <QHeaderView>
 #include <QIcon>
 #include <QJsonArray>
+#include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -46,6 +47,9 @@ constexpr int kCellMargin = 2;
 // Between the two swatch pickers, which share one cell. Small, because they are one
 // answer in two halves.
 constexpr int kColourGap = 2;
+// How far the empty-table message is held off the table's frame, so a sentence that
+// wraps does not run into it.
+constexpr int kPlaceholderInset = 12;
 
 // The letter a text-colour swatch is drawn as, in three strokes inside `box`. Not a
 // character from a font: the offscreen QPA plugin on Windows resolves no font at all
@@ -685,6 +689,30 @@ void HighlighterPane::buildUi()
     }
     m_ruleTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     m_ruleTable->verticalHeader()->setDefaultSectionSize(m_rowHeight);
+
+    // What the table says when it has nothing to show. The main window's centre gets
+    // "No file open. Open a log file to begin." when there is no document; this table
+    // got nothing at all, so the one state in which the pane has least to say was the
+    // one it explained least — an empty framed void under five buttons, with the axis
+    // editor below it correctly greyed and equally unexplained.
+    //
+    // A label laid OVER the viewport, never a row in the table: a row would be a rule
+    // to everything that walks rows (the reorder buttons, the per-row "ruleRow"
+    // property, saveState()), and nothing in the table has a way to be uncountable.
+    // Transparent to the mouse so it cannot swallow a click on a table that will grow
+    // rows under it, and it carries an object name because that is the test contract
+    // (ARCHITECTURE.md §9.1) — never its wording, which is translated prose.
+    m_tablePlaceholder = new QLabel(m_ruleTable->viewport());
+    m_tablePlaceholder->setObjectName(QStringLiteral("ruleTablePlaceholder"));
+    m_tablePlaceholder->setAlignment(Qt::AlignCenter);
+    m_tablePlaceholder->setWordWrap(true);
+    m_tablePlaceholder->setTextInteractionFlags(Qt::NoTextInteraction);
+    m_tablePlaceholder->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_tablePlaceholder->hide();
+    applyPlaceholderColour();
+    // The viewport is not a layout, so nothing else would ever resize a child of it.
+    m_ruleTable->viewport()->installEventFilter(this);
+
     top->addWidget(m_ruleTable);
 
     auto *btnRow = new QHBoxLayout;
@@ -982,7 +1010,56 @@ void HighlighterPane::reloadRuleTable()
         setCurrentRow(0);
     else
         loadEditorFor(-1);
+    updatePlaceholder();
     updateActivity();
+}
+
+void HighlighterPane::updatePlaceholder()
+{
+    if (!m_tablePlaceholder)
+        return;
+    const bool empty = m_rules.isEmpty();
+    if (empty) {
+        // TWO empty states, and they want different words. With no document there is
+        // nothing a rule could be about, so the answer is the main window's own — open
+        // a log. With a document, the table is empty because the user emptied it, so the
+        // answer is how to put something back, and the record menu is named because it
+        // is the discoverable route in: nobody finds "New" and then five axes on their
+        // own, but everybody right-clicks a line they want to see again.
+        m_tablePlaceholder->setText(
+            m_document ? tr("No highlight rules. Press New, or right-click a record in "
+                            "the log and choose a Highlight command, to colour every "
+                            "record that matches.")
+                       : tr("No file open. Open a log file to add highlight rules."));
+        // The geometry a resize would have given it, in case none has arrived yet — the
+        // table may never have been laid out when the first document arrives.
+        m_tablePlaceholder->setGeometry(m_ruleTable->viewport()->rect().adjusted(
+            kPlaceholderInset, kPlaceholderInset, -kPlaceholderInset, -kPlaceholderInset));
+    }
+    m_tablePlaceholder->setVisible(empty);
+}
+
+void HighlighterPane::applyPlaceholderColour()
+{
+    if (!m_tablePlaceholder)
+        return;
+    // From the palette, never a constant: this pane is read on a light theme and a dark
+    // one, and a grey chosen for either is invisible on the other. PlaceholderText is
+    // the role Qt keeps for text that is not content, and a theme that does not define
+    // it still gets a muted default derived from its own text colour.
+    QPalette pal = m_tablePlaceholder->palette();
+    pal.setColor(QPalette::WindowText, palette().placeholderText().color());
+    m_tablePlaceholder->setPalette(pal);
+}
+
+bool HighlighterPane::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_tablePlaceholder && m_ruleTable && watched == m_ruleTable->viewport()
+        && event->type() == QEvent::Resize) {
+        m_tablePlaceholder->setGeometry(m_ruleTable->viewport()->rect().adjusted(
+            kPlaceholderInset, kPlaceholderInset, -kPlaceholderInset, -kPlaceholderInset));
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void HighlighterPane::changeEvent(QEvent *event)
@@ -995,6 +1072,9 @@ void HighlighterPane::changeEvent(QEvent *event)
     // under the cursor — the whole table's contents are derived from m_rules, so this
     // costs nothing but the widgets.
     const int row = currentRow();
+    // The empty-table message is muted by a colour taken from the OLD palette, so it
+    // has to be re-taken here or it stays legible only on the theme it was built under.
+    applyPlaceholderColour();
     reloadRuleTable();
     setCurrentRow(row);
 }
