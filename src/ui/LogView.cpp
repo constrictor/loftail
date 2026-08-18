@@ -14,6 +14,7 @@
 #include <QClipboard>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
+#include <QFontMetrics>
 #include <QHeaderView>
 #include <QHelpEvent>
 #include <QItemSelectionModel>
@@ -34,6 +35,7 @@
 #include <QToolButton>
 #include <QToolTip>
 #include <QWheelEvent>
+#include <QtMath>
 
 #include <limits>
 
@@ -438,7 +440,17 @@ LogView::~LogView() = default;
 // Basic metrics
 // ---------------------------------------------------------------------------
 
-int LogView::lineHeight() const { return qMax(1, fontMetrics().height()); }
+// The pitch a display line is drawn at, and it must be the number QT lays text out
+// at — not QFontMetrics::height(), which rounds ascent and descent SEPARATELY while
+// QTextLine::height() is ceil(ascentF + descentF). The two differ by a pixel at over
+// half the point sizes this font is offered at, and the whole height model is
+// ceil(chars / cols) lines of this size (§7.1.1): one pixel short per line clips the
+// bottom of a wrapped record and, past about thirteen lines, loses the last one
+// entirely. qCeil(QFontMetricsF::height()) is that number at every size measured.
+int LogView::lineHeight() const
+{
+    return qMax(1, qCeil(QFontMetricsF(fontMetrics()).height()));
+}
 int LogView::visibleLines() const { return qMax(1, viewport()->height() / lineHeight()); }
 // Both go through the MODEL, not the document (M19, ARCHITECTURE.md §7.5): which
 // subset a view shows is the model's question now that a second model can point at a

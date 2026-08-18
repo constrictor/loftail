@@ -4,6 +4,7 @@
 #include <QClipboard>
 #include <QContextMenuEvent>
 #include <QFontDatabase>
+#include <QFontMetrics>
 #include <QHeaderView>
 #include <QImage>
 #include <QScrollBar>
@@ -12,6 +13,7 @@
 #include <QProgressDialog>
 #include <QSignalSpy>
 #include <QTemporaryFile>
+#include <QTextLayout>
 #include <QTimer>
 #include <QToolTip>
 #include <QWheelEvent>
@@ -265,6 +267,10 @@ private slots:
     void whatFindMatchedIsMarkedInsideTheRecordsOnScreen();
     void aRuleColouredRecordShowsItsColourAndTheMarkTogether();
     void aMatchStraddlingAWrappedLineIsMarkedOnBothOfThem();
+
+    // --- the line pitch is the one Qt lays out at (ARCHITECTURE.md §7.1.1) ------
+    void everyWrappedLineOfARecordIsDrawnInsideTheRowItWasGiven();
+    void aSelectedRecordIsGivenExactlyTheLinesItsWrappedTextTakes();
 
     // --- Zoom (SPEC.md §5, ARCHITECTURE.md §7.1.5) ------------------------------
     void theLogTextSizeStopsAtBothBoundsAndComesBackOnReset();
@@ -2767,6 +2773,264 @@ void TestLogView::cancellingACopyLeavesTheClipboardAsItWas()
             view.copySelectionAsColumns();
         QCOMPARE(QApplication::clipboard()->text(), before);
     }
+}
+
+// --- the view's line pitch is the number Qt lays text out at -----------------
+//
+// §7.1.1's whole height model is `n` display lines of lineHeight() pixels, and the
+// painter is what places them: QPainter::drawText() steps a wrapped cell by
+// QTextLine::height(), which is ceil(ascentF + descentF). QFontMetrics::height() rounds
+// the two SEPARATELY and comes out a pixel short at over half the sizes this font is
+// offered at — so a wrapped record is given fewer pixels than its own text needs and the
+// bottom of it is clipped, silently: a wrapped message is deliberately not elided and
+// offers no tooltip (SPEC.md §5), so there is nothing on screen to say text is missing.
+//
+// Neither symptom is observable except in pixels, so both cases render the viewport and
+// read the ink back. Both need a resolved font — with an empty font database (Windows
+// offscreen, which ships none) there is no ascent to round — and both need a point size
+// at which the two metrics actually DISAGREE: the offscreen default is one of the sizes
+// where they happen to agree, which is exactly why nothing caught this.
+
+namespace {
+
+// The height Qt gives one laid-out line of `f` — the number drawWrappedCell's unmarked
+// drawText steps by, and the one its marked QTextLayout path positions on. Measured
+// rather than derived, so the case states the rule instead of restating the code.
+int laidOutLineHeight(const QFont &f)
+{
+    QTextLayout layout(QStringLiteral("Ag"), f);
+    layout.beginLayout();
+    QTextLine line = layout.createLine();
+    if (!line.isValid()) {
+        layout.endLayout();
+        return 0;
+    }
+    line.setLineWidth(10000);
+    layout.endLayout();
+    return int(line.height());
+}
+
+// A point size at which QFontMetrics::height() and the pitch Qt lays out at differ, or 0
+// where they agree everywhere in range. At a size where they agree the defect cannot
+// show, which is exactly why nothing caught it: the offscreen default is one of those.
+// Readable sizes are tried first — the cases below tell the painted lines apart by the
+// gap between them, and at 6 pt a glyph inks the whole pitch and leaves none.
+int aPointSizeWhereTheMetricsDisagree()
+{
+    const auto disagrees = [](int pt) {
+        QFont f = monospaceFont();
+        f.setPointSize(pt);
+        const int laid = laidOutLineHeight(f);
+        return laid > 0 && laid != QFontMetrics(f).height();
+    };
+    for (int pt = 9; pt <= 16; ++pt)
+        if (disagrees(pt))
+            return pt;
+    for (int pt = kMinLogFontPointSize; pt < 9; ++pt)
+        if (disagrees(pt))
+            return pt;
+    return 0;
+}
+
+// The rows of `area` that carry ink, as {firstRow, rowCount} runs — one run per painted
+// text line. Everything that is not the row's own fill counts, antialiased edges
+// included.
+QVector<std::pair<int, int>> inkRuns(const QImage &img, const QRect &area, const QColor &fill)
+{
+    QVector<std::pair<int, int>> runs;
+    for (int y = area.top(); y <= area.bottom(); ++y) {
+        bool ink = false;
+        for (int x = area.left(); x <= area.right() && !ink; ++x) {
+            const QRgb px = img.pixel(x, y);
+            ink = !(qAbs(qRed(px) - fill.red()) <= 1 && qAbs(qGreen(px) - fill.green()) <= 1
+                    && qAbs(qBlue(px) - fill.blue()) <= 1);
+        }
+        if (!ink)
+            continue;
+        if (!runs.isEmpty() && runs.last().first + runs.last().second == y)
+            ++runs.last().second;
+        else
+            runs.append({y, 1});
+    }
+    return runs;
+}
+
+// One record whose message is `chars` characters of ordinary words: long enough to wrap
+// to many lines, and with nothing tall enough to close the gap between two of them.
+QByteArray makeOneLongRecord(int chars)
+{
+    QByteArray msg;
+    while (msg.size() < chars)
+        msg += "connection reset by peer on socket ";
+    msg.truncate(chars);
+    return "2026-07-21 14:32:05,123 [main] INFO  net.socket - " + msg + "\n";
+}
+
+// Put the message column where a `chars`-character message wraps to about `targetLines`
+// of them, whatever the font resolved to: the wrap width is what decides the count, and
+// the count has to clear lineHeight() for the missing pixel to add up to a whole lost
+// line while staying under the 100-line display cap. The message column is last, so
+// everything before it shares what is left.
+void aimWrapWidth(LogView &view, int chars, int targetLines)
+{
+    const int cols = qMax(8, chars / qMax(1, targetLines));
+    const int vw = view.viewport()->width();
+    const int avail = qBound(60, cols * qMax(1, view.fontMetrics().averageCharWidth()), vw - 16);
+    const int lead = view.header()->count() - 1;
+    view.header()->setMinimumSectionSize(4);
+    for (int c = 0; c < lead; ++c)
+        view.header()->resizeSection(c, qMax(4, (vw - avail) / qMax(1, lead)));
+}
+
+// Where the message column's text starts: it is the last column, and in AlwaysOn it is
+// drawn from there to the right edge of the viewport whatever its section width.
+QRect messageBand(LogView &view, int lines)
+{
+    const int x = view.header()->sectionViewportPosition(view.header()->count() - 1);
+    return QRect(x, 0, view.viewport()->width() - x, lines * view.lineHeight());
+}
+
+} // namespace
+
+// Line Wrap ▸ Always On. The record is given recordHeightLines() rows of lineHeight()
+// pixels, and every one of those rows has to hold a drawn line. A pitch one pixel short
+// per line clips the bottom of every wrapped record, and from lineHeight() lines up —
+// about thirteen at the shipped size, an ordinary payload record — the last line is not
+// drawn at all.
+void TestLogView::everyWrappedLineOfARecordIsDrawnInsideTheRowItWasGiven()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; nothing has an ascent to round");
+    const int pt = aPointSizeWhereTheMetricsDisagree();
+    if (pt == 0)
+        QSKIP("QFontMetrics::height() is the layout pitch at every size here");
+    FontSizeGuard guard;
+
+    constexpr int kChars = 1200;
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, makeOneLongRecord(kChars)));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 1);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    // A near-black table, so what is fill and what is ink is not a matter of taste.
+    QPalette pal = view.palette();
+    pal.setColor(QPalette::Base, QColor(0x14, 0x16, 0x18));
+    pal.setColor(QPalette::Text, QColor(0xd0, 0xd3, 0xd6));
+    view.setPalette(pal);
+    view.resize(700, 400);
+    zoomTo(view, pt);
+
+    // The claim, before anything is painted: the view measures in the unit the painter
+    // draws in. Everything below is that same statement read off the pixels.
+    const int lh = view.lineHeight();
+    QCOMPARE(lh, laidOutLineHeight(view.font()));
+
+    aimWrapWidth(view, kChars, lh + 3);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    view.measureBlockOfRecord(0);
+    const int lines = view.estimatedGeometry().recordHeightLines(0);
+    QVERIFY2(lines > lh, "the record has to be tall enough for the deficit to lose a line");
+    QVERIFY(lines < RecordIndex::kDisplayLineCap);
+
+    // Tall enough that the whole record is on screen: what is counted is the lines the
+    // record was GIVEN, so the viewport must not be what cuts any of them off. Only the
+    // height moves, so the wrap width — and therefore `lines` — does not.
+    view.resize(view.width(), view.height() + (lines + 2) * lh);
+    QCOMPARE(view.estimatedGeometry().recordHeightLines(0), lines);
+    QVERIFY(view.viewport()->height() >= lines * lh);
+
+    QImage img(view.viewport()->size(), QImage::Format_ARGB32);
+    img.fill(Qt::transparent);
+    view.viewport()->render(&img, QPoint(), QRegion(), QWidget::DrawWindowBackground);
+
+    const QRect band = messageBand(view, lines);
+    const QVector<std::pair<int, int>> ink = inkRuns(img, band, pal.base().color());
+    QVERIFY2(ink.size() > 1, "this font's glyphs leave no gap between painted lines");
+
+    // The lines are spaced at the pitch the rows were measured in: a 16 px stride through
+    // 15 px rows is the whole of the defect, and it is stated here in pixels.
+    for (int i = 1; i < ink.size(); ++i)
+        QCOMPARE(ink.at(i).first - ink.at(i - 1).first, lh);
+    // Every drawn line has a row of its own. The count may be one under the model's
+    // ceil(chars / cols) estimate — that estimate is what AlwaysOn is, §7.1.1 — but it
+    // can never be over it, which is what "the text was given fewer pixels than it needs"
+    // looks like from here.
+    QVERIFY2(ink.size() <= lines, "the text takes more lines than the record was given");
+    // ...and the last of them ends INSIDE the band rather than against its edge, which is
+    // where clipping leaves it.
+    QVERIFY2(ink.last().first + ink.last().second < band.bottom(), "the last line is cut off");
+}
+
+// Line Wrap ▸ Selected record only — the mirror symptom, and the reason fixing one end
+// alone only moves the error. measureWrappedLines() divides a boundingRect height, which
+// is in Qt's pitch, by the view's: while the two differ the answer is a line too many and
+// the record wears a blank strip under its own text.
+void TestLogView::aSelectedRecordIsGivenExactlyTheLinesItsWrappedTextTakes()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; nothing has an ascent to round");
+    const int pt = aPointSizeWhereTheMetricsDisagree();
+    if (pt == 0)
+        QSKIP("QFontMetrics::height() is the layout pitch at every size here");
+    FontSizeGuard guard;
+
+    constexpr int kChars = 900;
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, makeOneLongRecord(kChars)));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    QPalette pal = view.palette();
+    pal.setColor(QPalette::Highlight, QColor(0x1e, 0x28, 0x3c));
+    pal.setColor(QPalette::HighlightedText, QColor(0xe8, 0xea, 0xec));
+    view.setPalette(pal);
+    view.resize(700, 400);
+    zoomTo(view, pt);
+
+    const int lh = view.lineHeight();
+    QCOMPARE(lh, laidOutLineHeight(view.font()));
+
+    aimWrapWidth(view, kChars, 8);
+    view.setWrapMode(LogView::WrapMode::SelectedRecordOnly);
+    view.setCurrentRecord(0);
+
+    // What measureWrappedLines() answered, which is what the record's rows are counted
+    // in and what its band is filled to.
+    const int claimed = view.selWrapLines();
+    QVERIFY(claimed > 2);
+    QVERIFY(claimed < RecordIndex::kDisplayLineCap);
+
+    view.resize(view.width(), view.height() + (claimed + 2) * lh);
+    QCOMPARE(view.selWrapLines(), claimed);
+    QVERIFY(view.viewport()->height() >= claimed * lh);
+
+    QImage img(view.viewport()->size(), QImage::Format_ARGB32);
+    img.fill(Qt::transparent);
+    view.viewport()->render(&img, QPoint(), QRegion(), QWidget::DrawWindowBackground);
+
+    // The record is selected, so its fill is the selection's rather than the band's.
+    const QRect band = messageBand(view, claimed);
+    const QVector<std::pair<int, int>> ink = inkRuns(img, band, pal.highlight().color());
+    QVERIFY2(ink.size() > 1, "this font's glyphs leave no gap between painted lines");
+
+    // Exactly as many painted lines as the record was given rows for: one more than the
+    // text takes is a blank strip under it, one fewer is text cut off.
+    QCOMPARE(ink.size(), claimed);
+    for (int i = 1; i < ink.size(); ++i)
+        QCOMPARE(ink.at(i).first - ink.at(i - 1).first, lh);
 }
 
 #include "tst_logview.moc"

@@ -248,6 +248,19 @@ public:
     // without a shown window. No-op outside AlwaysOn.
     void measureBlockOfRecord(int record);
 
+    // The selected record's wrapped height in display lines, or its unwrapped
+    // display height when it does not wrap. Drives the geometry statics below, and
+    // public for the same reason lineHeight() is: it is the number a SelectedRecordOnly
+    // record's rows are counted in, and the only thing the rendered ink can be held
+    // against.
+    int selWrapLines() const;
+
+    // The pitch one display line is drawn at, in pixels. Public because it is the
+    // number the whole height model is expressed in (ARCHITECTURE.md §7.1.1) and the
+    // one thing a test can hold the rendered ink against: it must be what QT lays text
+    // out at, not what QFontMetrics::height() rounds to.
+    int lineHeight() const;
+
     // --- Pure geometry mapping (public for unit tests; no widget state) ---------
     // These express the exact-mode line<->record mapping with the selected record's
     // measured wrapped height folded in. `selRecord` is -1 when nothing wraps;
@@ -347,7 +360,6 @@ private:
     // geometry) and because the re-anchor at the end is the point of it.
     void applyFontChange();
 
-    int lineHeight() const;
     int visibleLines() const;
 
     // Digest role only: how many display lines the strip will actually show, after the
@@ -402,9 +414,6 @@ private:
     // Height, in display lines, of record r as currently rendered (folds in the
     // selected-record wrap when applicable).
     int recordHeightLines(int r) const;
-    // The selected record's wrapped height in display lines, or its unwrapped
-    // display height when it does not wrap. Drives the geometry statics above.
-    int selWrapLines() const;
     // Measure how many visual lines the message text occupies at `width` px.
     int measureWrappedLines(const QString &text, int width) const;
     int messageColumn() const; // logical column of the Message field, or -1
