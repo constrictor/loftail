@@ -236,6 +236,9 @@ private slots:
     void aDragPastTheViewportEdgeScrollsAndGoesOnSelecting();
     void aModelResetEndsADragInFlight();
     void aRightPressLeavesAMultiRecordSelectionAlone();
+    void aDoubleClickReportsTheRecordAndColumnUnderThePointer();
+    void aDoubleClickBelowTheLastRecordReportsNothing();
+    void aDoubleClickLeavesNoDragArmedBehindIt();
     void selectAllTakesEveryRecordAndLeavesTheReaderWhereTheyAre();
     void selectAllStopsAtWhatTheFilterLeftVisible();
 };
@@ -1688,6 +1691,103 @@ void TestLogView::aRightPressLeavesAMultiRecordSelectionAlone()
                                 view.viewport()->mapToGlobal(rowAt(8)));
     QApplication::sendEvent(view.viewport(), &elsewhere);
     QCOMPARE(selectedRows(view), QVector<int>({8}));
+}
+
+// --- the double-click gesture (SPEC.md §5) -------------------------------------------
+//
+// The view decides nothing about what a double-click MEANS — that is the window's, and
+// tst_recordmenu drives it end to end. What is the view's is the report: which record,
+// which column, and the two cases where there is nothing to report.
+
+void TestLogView::aDoubleClickReportsTheRecordAndColumnUnderThePointer()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(900, 400);
+
+    const int logger = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+    QHeaderView *header = view.header();
+    const int x = header->sectionViewportPosition(logger) + header->sectionSize(logger) / 2;
+    const int lh = view.fontMetrics().height();
+    const QPoint pos(x, 3 * lh + lh / 2);
+
+    QSignalSpy spy(&view, &LogView::recordDoubleClicked);
+    QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), pos);
+    QCOMPARE(spy.count(), 1);
+    QList<QVariant> args = spy.takeFirst();
+    QCOMPARE(args.at(0).toInt(), 3);
+    QCOMPARE(args.at(1).toInt(), logger);
+    // The record double-clicked is the one focused afterwards, whatever the press that
+    // began the pair did with the selection.
+    QCOMPARE(view.currentRecord(), 3);
+
+    // A modifier already means something on the press that begins the pair, so a
+    // double-click carrying one is not this gesture.
+    QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, pos);
+    QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, pos);
+    QCOMPARE(spy.count(), 0);
+
+    // Nor is a right-button one, which is the context menu's gesture.
+    QTest::mouseDClick(view.viewport(), Qt::RightButton, Qt::KeyboardModifiers(), pos);
+    QCOMPARE(spy.count(), 0);
+}
+
+void TestLogView::aDoubleClickBelowTheLastRecordReportsNothing()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 3), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(900, 400);
+
+    const int lh = view.fontMetrics().height();
+    QVERIFY(view.viewport()->height() > 10 * lh); // there really is empty space below
+
+    QSignalSpy spy(&view, &LogView::recordDoubleClicked);
+    QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(),
+                       QPoint(50, view.viewport()->height() - lh / 2));
+    QCOMPARE(spy.count(), 0);
+}
+
+// A real double-click is a press, a release, and then this event — so the drag the press
+// armed is over by the time it arrives. It has to stay over: the gesture applies a
+// filter, which replaces the record space, and a drag still live across that would
+// extend from an anchor naming a record that has moved.
+void TestLogView::aDoubleClickLeavesNoDragArmedBehindIt()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(900, 400);
+
+    const int lh = view.fontMetrics().height();
+    const auto rowAt = [&](int row) { return QPoint(50, row * lh + lh / 2); };
+
+    // The real sequence: the press and release of the first click, then the second
+    // press arriving as a double-click.
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(2));
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(2));
+    QTest::mouseDClick(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(2));
+    QCOMPARE(selectedRows(view), QVector<int>({2}));
+
+    // A move with the button still down (which is where QTest::mouseDClick leaves it)
+    // must not extend anything.
+    dragMoveTo(view.viewport(), rowAt(7));
+    QCOMPARE(selectedRows(view), QVector<int>({2}));
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(2));
 }
 
 // --- Select All (SPEC.md §5) --------------------------------------------------------

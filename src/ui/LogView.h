@@ -237,6 +237,10 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    // Double-clicking a cell asks for what that column is FOR (SPEC.md §5). Reported,
+    // not acted on: which column means what is the window's business, exactly as it is
+    // for the record menu.
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     void hideEvent(QHideEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
@@ -259,6 +263,12 @@ signals:
     // record's fields and the panes the items edit. `column` is the logical column,
     // or -1 past the last one; it ranks the menu without changing its contents.
     void recordMenuRequested(int viewRow, int column, const QPoint &globalPos);
+
+    // A record was double-clicked (SPEC.md §5). Reported exactly as a right-click is —
+    // the view row and the logical column under the cursor, nothing else — because what
+    // a column's default action IS lives where the record menu's items live, and the
+    // gesture must reach that same item rather than a second copy of it.
+    void recordDoubleClicked(int viewRow, int column);
 
 private slots:
     void handleRowsInserted();
