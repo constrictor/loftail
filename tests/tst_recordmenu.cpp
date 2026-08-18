@@ -143,6 +143,7 @@ private slots:
     void aSelectionOfTwoRecordsOffersItsOwnRange();
     void highlightingAppendsARuleAndKeepsTheOthers();
     void copyActionsAreOnTheMenu();
+    void selectAllTakesTheActiveViewsVisibleRecordsAndNothingElse();
 
     // M15 — a context row is a real row: pointing at it must read ITS record, not the
     // match it was pulled in beside. Nothing in the menu changed for this, which is
@@ -467,6 +468,54 @@ void TestRecordMenu::copyActionsAreOnTheMenu()
     w.buildRecordMenu(&menu, activeView(w), kMain, -1);
     QVERIFY(menu.actions().contains(w.findChild<QAction *>(QStringLiteral("copyAction"))));
     QVERIFY(menu.actions().contains(w.findChild<QAction *>(QStringLiteral("copyColumnsAction"))));
+}
+
+// Edit ▸ Select All (SPEC.md §5). Driven through the real window because what the
+// action has to get right is which view it lands on and what "all" means there: the
+// records IN VIEW (invariant #6), which a filter narrows, on the ACTIVE view alone
+// (invariant #7). And it is dead while no log is open, like the copy actions beside it.
+void TestRecordMenu::selectAllTakesTheActiveViewsVisibleRecordsAndNothingElse()
+{
+    MainWindow w;
+    auto *selectAll = w.findChild<QAction *>(QStringLiteral("selectAllAction"));
+    QVERIFY(selectAll);
+    QVERIFY(!selectAll->isEnabled());
+
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+    QVERIFY(selectAll->isEnabled());
+
+    const auto selectedCount = [](DocumentView *v) {
+        return v->logView()->selectionModel()->selectedRows(0).size();
+    };
+
+    selectAll->trigger();
+    QCOMPARE(selectedCount(activeView(w)), 4);
+
+    // A second log in a second tab: the action speaks for the tab in front, and the one
+    // behind it keeps whatever selection it had.
+    DocumentView *first = activeView(w);
+    const auto firstBefore = selectedCount(first);
+    // With its pattern, so the open cannot stop on the format prompt.
+    w.openFile(m_noThread, QStringLiteral("%-5p %c - %m%n"));
+    waitUntilIndexed(w);
+    QVERIFY(activeView(w) != first);
+    selectAll->trigger();
+    QCOMPARE(selectedCount(activeView(w)), 2);
+    QCOMPARE(selectedCount(first), firstBefore);
+
+    // Filter that tab down to one record: "all" is what the filter left, not the file.
+    auto *pane = w.findChild<FilterPane *>();
+    QVERIFY(pane);
+    auto *messageGroup = pane->findChild<QGroupBox *>(QStringLiteral("messageGroup"));
+    auto *messageText = pane->findChild<QLineEdit *>(QStringLiteral("messageText"));
+    QVERIFY(messageGroup && messageText);
+    messageGroup->setChecked(true);
+    messageText->setText(QStringLiteral("two"));
+    QCOMPARE(visibleRecords(w), 1);
+
+    selectAll->trigger();
+    QCOMPARE(selectedCount(activeView(w)), 1);
 }
 
 int main(int argc, char *argv[])

@@ -149,6 +149,15 @@ public:
     void fitColumnsToContents();
     void fitColumnToContents(int logical);
 
+    // Select every record IN VIEW (SPEC.md §5) — the filtered subset while a filter is
+    // active, the whole index otherwise (invariant #6), which is what makes the command
+    // compose with the filters and what the two copy actions then act on.
+    //
+    // One QItemSelection range whatever the count, so a ten-million-record log costs one
+    // object here rather than ten million; and it deliberately does NOT scroll, because
+    // selecting everything says nothing about where the reader wants to be.
+    void selectAllRecords();
+
     // Clipboard actions (SPEC.md §5). Raw yields the records' original bytes; the
     // columns form is tab-separated fields for spreadsheet paste.
     void copySelectionRaw() const;
