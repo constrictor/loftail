@@ -417,6 +417,21 @@ void MainWindow::buildMenus()
             v->copySelectionAsColumns();
     });
 
+    // Select All (SPEC.md §5). It acts on the ACTIVE log view — the same activeLogView()
+    // the copy actions above resolve, so what is copied afterwards is what was selected,
+    // whatever happens to hold the keyboard focus (a window-scoped shortcut is dispatched
+    // before the key reaches a widget, so the digest strip cannot intercept it). "All" is
+    // every record IN VIEW, which is the filtered subset while a filter is active.
+    editMenu->addSeparator();
+    m_selectAllAction = editMenu->addAction(tr("Select &All"));
+    m_selectAllAction->setObjectName(QStringLiteral("selectAllAction")); // findChild, for tests
+    m_selectAllAction->setShortcut(QKeySequence::SelectAll);
+    m_selectAllAction->setEnabled(false);
+    connect(m_selectAllAction, &QAction::triggered, this, [this]() {
+        if (LogView *v = activeLogView())
+            v->selectAllRecords();
+    });
+
     // Find / Find Next / Find Previous (SPEC.md §5). Find opens the bar; F3 /
     // Shift+F3 navigate the current query over the visible rows.
     editMenu->addSeparator();
@@ -833,6 +848,8 @@ void MainWindow::updateActionStates()
         m_copyAction->setEnabled(hasFile);
     if (m_copyColumnsAction)
         m_copyColumnsAction->setEnabled(hasFile);
+    if (m_selectAllAction)
+        m_selectAllAction->setEnabled(hasFile);
     // Only a spooled log has a fetcher to poke; a local one is watched, not connected.
     if (m_reconnectAction) {
         m_reconnectAction->setEnabled(

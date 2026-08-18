@@ -904,6 +904,36 @@ void LogView::toggleRecordSelection(int record)
     ensureRecordVisible(record);
 }
 
+// Select All (SPEC.md §5). "All" is what is IN VIEW: recordCount() is the filtered
+// subset while a filter is active (invariant #6), so the command narrows with the
+// filters rather than reaching past them into the file.
+//
+// The whole thing is one QItemSelection range — a selection of four million records is
+// one object, not four million — and no part of it walks the index.
+void LogView::selectAllRecords()
+{
+    const int n = recordCount();
+    const int cols = m_model->columnCount();
+    if (n == 0 || cols == 0)
+        return;
+    // An explicit pick forgets a selection a filter had hidden, exactly as a click does
+    // (SPEC.md §6): everything visible has just been chosen here and now.
+    m_stickySource = -1;
+    const QItemSelection all(m_model->index(0, 0), m_model->index(n - 1, cols - 1));
+    m_selection->select(all, QItemSelectionModel::ClearAndSelect);
+    // No scrolling: every record the reader can see is now selected wherever they are,
+    // and jumping them to either end of the log would be the command's only visible
+    // effect on a screenful they were reading. The anchor moves to the top so a
+    // Shift+click afterwards narrows from there; the focus moves only if there was none,
+    // since in SelectedRecordOnly it is what wraps.
+    m_anchor = 0;
+    if (m_current < 0) {
+        m_current = 0;
+        m_selection->setCurrentIndex(m_model->index(0, 0), QItemSelectionModel::NoUpdate);
+    }
+    recomputeGeometry();
+}
+
 QVector<int> LogView::selectedRecordsSorted() const
 {
     QVector<int> rows;
@@ -1250,6 +1280,13 @@ void LogView::keyPressEvent(QKeyEvent *event)
     if (event->modifiers().testFlag(Qt::ControlModifier)
         && event->modifiers().testFlag(Qt::ShiftModifier) && event->key() == Qt::Key_C) {
         copySelectionAsColumns();
+        return;
+    }
+    // Ctrl+A, exactly as Copy above: under a MainWindow the Edit-menu action's
+    // window-scoped shortcut gets there first (and resolves to the ACTIVE view), so this
+    // is what a view standing on its own answers with.
+    if (event->matches(QKeySequence::SelectAll)) {
+        selectAllRecords();
         return;
     }
 

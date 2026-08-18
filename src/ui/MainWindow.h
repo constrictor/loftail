@@ -394,6 +394,7 @@ private:
     QAction *m_newViewAction = nullptr; // Window ▸ New View (a second view on one file)
     QAction *m_copyAction = nullptr;
     QAction *m_copyColumnsAction = nullptr;
+    QAction *m_selectAllAction = nullptr; // Edit ▸ Select All (every record IN VIEW)
     QAction *m_reconnectAction = nullptr;
     QAction *m_reloadAction = nullptr;
     QAction *m_followAction = nullptr; // View ▸ Follow Tail (return-to-bottom, M6)

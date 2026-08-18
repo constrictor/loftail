@@ -236,6 +236,8 @@ private slots:
     void aDragPastTheViewportEdgeScrollsAndGoesOnSelecting();
     void aModelResetEndsADragInFlight();
     void aRightPressLeavesAMultiRecordSelectionAlone();
+    void selectAllTakesEveryRecordAndLeavesTheReaderWhereTheyAre();
+    void selectAllStopsAtWhatTheFilterLeftVisible();
 };
 
 // --- what does not fit says so (SPEC.md §5) ----------------------------------
@@ -1686,6 +1688,81 @@ void TestLogView::aRightPressLeavesAMultiRecordSelectionAlone()
                                 view.viewport()->mapToGlobal(rowAt(8)));
     QApplication::sendEvent(view.viewport(), &elsewhere);
     QCOMPARE(selectedRows(view), QVector<int>({8}));
+}
+
+// --- Select All (SPEC.md §5) --------------------------------------------------------
+//
+// Two claims, and the second is the one that makes the command worth having: "all" is
+// what is IN VIEW (invariant #6), so it narrows with the filters instead of reaching
+// past them into the file. The first is that it costs one selection range whatever the
+// count, and that it does not move the reader.
+void TestLogView::selectAllTakesEveryRecordAndLeavesTheReaderWhereTheyAre()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    // Somewhere in the middle, with a focused record, so "did not move" can fail.
+    view.setCurrentRecord(45);
+    const int scrollBefore = view.verticalScrollBar()->value();
+    QVERIFY(scrollBefore > 0);
+
+    // Through the key, since Ctrl+A is the whole of how anyone will reach it.
+    QTest::keyClick(&view, Qt::Key_A, Qt::ControlModifier);
+
+    const QVector<int> rows = selectedRows(view);
+    QCOMPARE(rows.size(), 60);
+    QCOMPARE(rows.first(), 0);
+    QCOMPARE(rows.last(), 59);
+    // ONE range covering the lot — a four-million-record log must not build four
+    // million anything here.
+    QCOMPARE(view.selectionModel()->selection().size(), 1);
+    // Selecting everything says nothing about where the reader wants to be, so neither
+    // the scroll position nor the focused record moves.
+    QCOMPARE(view.verticalScrollBar()->value(), scrollBefore);
+    QCOMPARE(view.currentRecord(), 45);
+}
+
+void TestLogView::selectAllStopsAtWhatTheFilterLeftVisible()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 400);
+
+    // Priority >= WARN keeps every 4th record: 15 of the 60.
+    refilter(view, model, doc, everyFourth());
+    QCOMPARE(view.recordCount(), 15);
+
+    view.selectAllRecords();
+    const QVector<int> rows = selectedRows(view);
+    QCOMPARE(rows.size(), 15);
+    QCOMPARE(rows.last(), 14);
+    // View rows, and every one of them is a record the filter kept — which is what the
+    // copy commands then act on.
+    for (int r : rows)
+        QCOMPARE(doc.filtered().sourceRow(r) % 4, 0);
+
+    // A filter that matches nothing leaves nothing to select, and the command is inert
+    // rather than wrong.
+    refilter(view, model, doc, messageContaining(QStringLiteral("no record says this")));
+    QCOMPARE(view.recordCount(), 0);
+    view.selectAllRecords();
+    QVERIFY(selectedRows(view).isEmpty());
+
+    // Widening it again puts the whole file back within reach.
+    refilter(view, model, doc, FilterSet());
+    view.selectAllRecords();
+    QCOMPARE(selectedRows(view).size(), 60);
 }
 
 #include "tst_logview.moc"
