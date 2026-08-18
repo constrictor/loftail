@@ -241,6 +241,11 @@ private slots:
     void theEmptyTableSaysThereIsNoFileOpen();
     void theEmptyTableAsksForARuleWhileAFileIsOpen();
     void thePlaceholderGoesAsSoonAsThereIsARuleAndComesBackWithTheLast();
+
+    // A button under the table is live only while it has something to act on.
+    void theRuleButtonsAreDeadWhileThereIsNothingToActOn();
+    void upAndDownAreDeadAtTheEndsOfTheList();
+    void theButtonsFollowTheSelectionAcrossAReorder();
 };
 
 void TestHighlighterPane::everyAxisIsOfferedAndOptIn()
@@ -1577,6 +1582,131 @@ void TestHighlighterPane::thePlaceholderGoesAsSoonAsThereIsARuleAndComesBackWith
     QVERIFY(!note->isVisible());
     button(pane, QStringLiteral("ruleClear"))->click();
     QVERIFY(note->isVisible());
+}
+
+// Every button under the rule table needs something to act on, and for a long time only
+// Clear said so: with no rules, three live buttons sat beside one correctly greyed and
+// pressing any of them did nothing. Up and Down have the sharper version of the same
+// problem — they are live for a selected rule, but not at the end of the list they would
+// move it past. Found by object name, never by their labels, which are translated prose.
+
+void TestHighlighterPane::theRuleButtonsAreDeadWhileThereIsNothingToActOn()
+{
+    HighlighterPane pane;
+
+    QPushButton *newBtn = button(pane, QStringLiteral("ruleNew"));
+    QPushButton *remove = button(pane, QStringLiteral("ruleRemove"));
+    QPushButton *clear = button(pane, QStringLiteral("ruleClear"));
+    QPushButton *up = button(pane, QStringLiteral("ruleUp"));
+    QPushButton *down = button(pane, QStringLiteral("ruleDown"));
+    QVERIFY(newBtn && remove && clear && up && down);
+
+    // No document: the pane greys itself entire, which is what covers New. It is not
+    // tracked with the other four because a document is all it needs.
+    QVERIFY(!pane.isEnabled());
+    QVERIFY(!remove->isEnabled());
+    QVERIFY(!clear->isEnabled());
+    QVERIFY(!up->isEnabled());
+    QVERIFY(!down->isEnabled());
+
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+    pane.setDocument(&doc);
+
+    // A file with no rules. New is the one live button in the row — it is the way out
+    // of an empty table, and the placeholder over the table names it.
+    QVERIFY(pane.isEnabled());
+    QVERIFY(newBtn->isEnabled());
+    QVERIFY2(!remove->isEnabled(), "Remove is live with no rule to remove");
+    QVERIFY2(!clear->isEnabled(), "Clear is live with nothing to clear");
+    QVERIFY2(!up->isEnabled(), "Up is live with no rule to move");
+    QVERIFY2(!down->isEnabled(), "Down is live with no rule to move");
+
+    // One rule, selected by the New button itself: Remove and Clear have something to
+    // do, and Up and Down still do not — a single rule is both first and last.
+    newBtn->click();
+    QCOMPARE(ruleTable(pane)->currentRow(), 0);
+    QVERIFY(remove->isEnabled());
+    QVERIFY(clear->isEnabled());
+    QVERIFY2(!up->isEnabled(), "Up is live on the only rule there is");
+    QVERIFY2(!down->isEnabled(), "Down is live on the only rule there is");
+
+    // ...and back, when the last rule goes.
+    remove->click();
+    QCOMPARE(ruleTable(pane)->rowCount(), 0);
+    QVERIFY(!remove->isEnabled());
+    QVERIFY(!clear->isEnabled());
+    QVERIFY(newBtn->isEnabled());
+}
+
+void TestHighlighterPane::upAndDownAreDeadAtTheEndsOfTheList()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    for (int i = 0; i < 3; ++i)
+        button(pane, QStringLiteral("ruleNew"))->click();
+    QCOMPARE(ruleTable(pane)->rowCount(), 3);
+
+    QPushButton *remove = button(pane, QStringLiteral("ruleRemove"));
+    QPushButton *up = button(pane, QStringLiteral("ruleUp"));
+    QPushButton *down = button(pane, QStringLiteral("ruleDown"));
+
+    // First rule: nowhere above it to go. Rules are first-match-wins, so the ends of
+    // the list are meaningful positions and not merely where the scrolling stops.
+    selectRule(pane, 0);
+    QVERIFY(remove->isEnabled());
+    QVERIFY2(!up->isEnabled(), "Up is live on the first rule");
+    QVERIFY(down->isEnabled());
+
+    // In the middle, both.
+    selectRule(pane, 1);
+    QVERIFY(up->isEnabled());
+    QVERIFY(down->isEnabled());
+
+    // Last rule: nowhere below it.
+    selectRule(pane, 2);
+    QVERIFY(up->isEnabled());
+    QVERIFY2(!down->isEnabled(), "Down is live on the last rule");
+    QVERIFY(remove->isEnabled());
+}
+
+void TestHighlighterPane::theButtonsFollowTheSelectionAcrossAReorder()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    for (int i = 0; i < 3; ++i)
+        button(pane, QStringLiteral("ruleNew"))->click();
+
+    QPushButton *up = button(pane, QStringLiteral("ruleUp"));
+    QPushButton *down = button(pane, QStringLiteral("ruleDown"));
+
+    // A move rebuilds the whole table and puts the selection on the rule's NEW row, so
+    // the states have to be right the moment the click returns — the press that moves a
+    // rule to row 0 is the same press that must leave Up dead.
+    selectRule(pane, 1);
+    up->click();
+    QCOMPARE(ruleTable(pane)->currentRow(), 0);
+    QVERIFY2(!up->isEnabled(), "Up stayed live after moving its rule to the top");
+    QVERIFY(down->isEnabled());
+
+    down->click();
+    QCOMPARE(ruleTable(pane)->currentRow(), 1);
+    QVERIFY(up->isEnabled());
+    QVERIFY(down->isEnabled());
+
+    down->click();
+    QCOMPARE(ruleTable(pane)->currentRow(), 2);
+    QVERIFY(up->isEnabled());
+    QVERIFY2(!down->isEnabled(), "Down stayed live after moving its rule to the bottom");
 }
 
 QTEST_MAIN(TestHighlighterPane)
