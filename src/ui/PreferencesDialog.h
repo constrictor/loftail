@@ -20,6 +20,7 @@ QT_END_NAMESPACE
 namespace loftail {
 
 class LogProfileEditor;
+class MessageLabel;
 
 // The Preferences dialog (SPEC.md §4): the whole settings tree on the left, the selected
 // node's settings on the right.
@@ -46,6 +47,14 @@ class LogProfileEditor;
 // and the scratch node a mid-open invocation created, with no special case for any of
 // them. "Apply to current file" is no exception: it only records the request, because
 // applying reindexes and destroys the very Document this dialog is previewing.
+//
+// AND SO IT DOES NOT CLOSE THE DIALOG EITHER. It used to call accept(), which is how the
+// recorded request got carried out — but that made it the one button on a panel of
+// in-place edits whose press ended the session, standing next to Promote, which does not.
+// It is now a CHECKABLE button: pressing it arms the request, pressing it again disarms
+// it, and OK is what performs it along with every other edit. Deferring costs nothing,
+// because the caller only reads applyRequested() after Accepted — a request left armed
+// when the user cancels is discarded with the working copy, exactly like the rest.
 class PreferencesDialog : public QDialog
 {
     Q_OBJECT
@@ -71,8 +80,10 @@ public:
     // The edited tree. Read after exec() returns Accepted.
     const LogSettingsTree &tree() const { return m_settings; }
 
-    // Whether the user asked for the selected node's settings to be put on the current
-    // log, and what those settings are. Reported, never acted on.
+    // Whether the user asked for a node's settings to be put on the current log, and what
+    // those settings are. Reported, never acted on. The profile is re-read from the node
+    // the request named as accept() runs, so a request armed early and gone on editing
+    // afterwards carries what the node finally says rather than a snapshot of it.
     bool applyRequested() const { return m_applyRequested; }
     LogProfile applyProfile() const { return m_applyProfile; }
 
@@ -114,6 +125,16 @@ private:
     void commitCurrent(); // the editors' contents back into m_settings
     void refreshPatternValidity();
     void updateButtons();
+    // What is still to happen when OK is pressed, said out loud. A request that leaves no
+    // mark on screen is worse than one that closes the dialog: the press then has no
+    // observable effect at all until the log is re-read some seconds later.
+    void updateApplyNotice();
+
+    // A node's profile and its display name, read back from the tree — both false/empty
+    // when the node is no longer there, which an armed request can outlive (its pattern
+    // deleted, its entry pruned, a bulk forget).
+    bool profileOfNode(const NodeRef &ref, LogProfile *out) const;
+    QString nodeDisplayName(const NodeRef &ref) const;
 
     void addPattern();
     void deleteNode();
@@ -134,6 +155,14 @@ private:
     QString    m_applyTarget;
     bool       m_applyRequested = false;
     LogProfile m_applyProfile;
+    // WHICH node the armed request names, so accept() can read its settings again rather
+    // than trust the copy taken when the button was pressed. Held as a NodeRef and not as
+    // an index, for the reason the tree's selection is: a pattern edited or reordered
+    // moves rows about, and an index would then name a different node.
+    NodeRef    m_applyNode;
+    // What that node was called when the request was armed, so the notice can still say
+    // where the settings came from after the entry itself has gone.
+    QString    m_applyNodeName;
 
     QTreeWidget      *m_treeWidget = nullptr;
     QToolButton      *m_addPattern = nullptr;
@@ -163,6 +192,7 @@ private:
     LogProfileEditor *m_editor = nullptr;
     QPushButton      *m_applyButton = nullptr;
     QPushButton      *m_promoteButton = nullptr;
+    MessageLabel     *m_applyNotice = nullptr;
 
     // Saved and RESTORED, never forced false. rebuildTree() drops the current item,
     // which re-enters loadNode() through currentItemChanged, and forcing the flag down

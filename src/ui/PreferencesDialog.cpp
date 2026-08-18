@@ -390,6 +390,13 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     m_applyButton = new QPushButton(tr("&Apply to current file"), right);
     m_applyButton->setObjectName(QStringLiteral("applyToCurrentButton")); // findChild, for tests
     m_applyButton->hide();
+    // CHECKABLE, because what the press does is arm a request that OK carries out — and
+    // a state that lasts until OK is what a button that stays pressed says. It used to
+    // accept() the dialog instead, which made it the one control on a panel of in-place
+    // edits whose press ended the session, an inch from Promote, whose press does not.
+    // Pressing it again disarms the request, so a misfire costs a click rather than a
+    // Cancel — the only other way back, and one that would discard every other edit too.
+    m_applyButton->setCheckable(true);
     connect(m_applyButton, &QPushButton::clicked, this, &PreferencesDialog::applyToCurrent);
 
     // Text and tooltip are set by updateButtons(), which is the only thing that knows
@@ -402,6 +409,18 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     actionRow->addWidget(m_promoteButton);
     actionRow->addStretch();
     rightLayout->addLayout(actionRow);
+
+    // What an armed request is waiting for. The button going down is the acknowledgement
+    // that it was heard; this is the one that says WHEN it happens, which is the whole of
+    // what changed when the press stopped closing the dialog. Muted from the palette, as
+    // every other aside here is, and a MessageLabel because it names a log and a node and
+    // will wrap on a narrow panel.
+    m_applyNotice = new MessageLabel(right);
+    m_applyNotice->setObjectName(QStringLiteral("applyNoticeLabel")); // findChild, for tests
+    m_applyNotice->setStyleSheet(
+        QStringLiteral("color: %1;").arg(mutedColor(palette()).name()));
+    m_applyNotice->hide();
+    rightLayout->addWidget(m_applyNotice);
 
     splitter->addWidget(left);
     splitter->addWidget(right);
@@ -618,6 +637,9 @@ void PreferencesDialog::loadNode()
 
     refreshPatternValidity();
     updateButtons();
+    // A node deleted, renamed or re-homed can be the one an armed request names, so the
+    // notice is re-derived wherever the buttons are.
+    updateApplyNotice();
     m_updating = wasUpdating;
 }
 
@@ -729,6 +751,13 @@ void PreferencesDialog::updateButtons()
 
     m_applyButton->setVisible(!m_applyTarget.isEmpty());
     m_applyButton->setEnabled(!m_applyTarget.isEmpty() && ref.kind != NodeKind::Orphan);
+    // Down on the node the armed request names, and only there: the button says "these
+    // settings are the ones asked for", which is a claim about the node on screen. Moving
+    // to another node leaves it up, so pressing it there arms that one instead of reading
+    // as a second press on the first. setChecked emits toggled, never clicked, so this
+    // cannot re-enter applyToCurrent().
+    m_applyButton->setChecked(m_applyRequested
+                              && refToString(m_applyNode) == refToString(ref));
 
     m_forgetFiles->setEnabled(!m_settings.files().isEmpty());
 }
@@ -758,9 +787,11 @@ void PreferencesDialog::setApplyTarget(const QString &name)
     // tooltip also says what applying does to the TREE: settings equal to what the log
     // inherits leave it with nothing of its own to say, so its entry goes.
     m_applyButton->setToolTip(
-        tr("Put these settings on %1, the log that is open. If they match what it would "
-           "inherit anyway, its own entry is removed.").arg(name));
+        tr("Ask for %1, the log that is open, to be re-read with these settings when you "
+           "press OK. If they match what it would inherit anyway, its own entry is "
+           "removed.").arg(name));
     updateButtons();
+    updateApplyNotice(); // the notice names the target, which is what this just supplied
 }
 
 void PreferencesDialog::addPattern()
@@ -859,14 +890,115 @@ void PreferencesDialog::promoteToParent()
 
 void PreferencesDialog::applyToCurrent()
 {
-    if (!m_loadedValid)
+    if (!m_loadedValid) {
+        // Nothing to arm it from, so the button must not stay down saying otherwise.
+        updateButtons();
         return;
+    }
+    // Pressed while it was already down, on the node it names: the request is withdrawn.
+    // Pressed anywhere else it moves here, which is why this is not a plain toggle of the
+    // flag — one node's settings can be asked for while another's are on screen.
+    const bool sameNode = m_applyRequested && refToString(m_applyNode) == refToString(m_loaded);
+    if (sameNode && !m_applyButton->isChecked()) {
+        m_applyRequested = false;
+        updateButtons();
+        updateApplyNotice();
+        return;
+    }
+
     commitCurrent();
+    m_applyNode = m_loaded;
+    m_applyNodeName = nodeDisplayName(m_loaded);
+    // Taken now as well as at accept(), so the getter answers for the request the moment
+    // it is armed rather than only after OK.
     m_applyProfile = m_editor->profile();
     m_applyRequested = true;
-    // Recorded, not performed: applying reindexes the log and destroys the Document this
-    // dialog's preview is reading. MainWindow does it once exec() has returned.
-    accept();
+    // Recorded, not performed, and NOT closing: applying reindexes the log and destroys
+    // the Document this dialog's preview is reading, so it waits for OK along with every
+    // other edit. MainWindow does it once exec() has returned Accepted.
+    updateButtons();
+    updateApplyNotice();
+}
+
+bool PreferencesDialog::profileOfNode(const NodeRef &ref, LogProfile *out) const
+{
+    switch (ref.kind) {
+    case NodeKind::Root:
+        *out = m_settings.defaults();
+        return true;
+    case NodeKind::Pattern: {
+        const int i = m_settings.indexOfPatternId(ref.key);
+        if (i < 0)
+            return false;
+        *out = m_settings.patterns().at(i).profile;
+        return true;
+    }
+    case NodeKind::File: {
+        const int i = m_settings.indexOfFile(ref.key);
+        if (i < 0)
+            return false;
+        *out = m_settings.files().at(i).profile;
+        return true;
+    }
+    case NodeKind::Orphan:
+        break;
+    }
+    return false;
+}
+
+QString PreferencesDialog::nodeDisplayName(const NodeRef &ref) const
+{
+    switch (ref.kind) {
+    case NodeKind::Root:
+        return tr("Default settings");
+    case NodeKind::Pattern: {
+        const int i = m_settings.indexOfPatternId(ref.key);
+        // The same name the tree row wears, so the notice cannot come to call a pattern
+        // something no other part of the dialog calls it. It follows the COMMIT, as the
+        // row does, and not the keystroke the way the heading over the fields does: the
+        // heading names the node being edited, while this names one that may well be
+        // somewhere else in the tree.
+        return i < 0 ? QString() : patternDisplayName(m_settings.patterns().at(i).match);
+    }
+    case NodeKind::File:
+        return m_settings.indexOfFile(ref.key) < 0 ? QString() : logSourceDisplayName(ref.key);
+    case NodeKind::Orphan:
+        break;
+    }
+    return QString();
+}
+
+void PreferencesDialog::updateApplyNotice()
+{
+    if (!m_applyRequested || m_applyTarget.isEmpty()) {
+        m_applyNotice->clear();
+        m_applyNotice->hide();
+        return;
+    }
+
+    // WHICH settings, and the answer depends on what is on screen. "These settings" is
+    // true only while the entry the request names is the one being SHOWN — which is also
+    // exactly when the button beside this is down. Navigate away and the same words
+    // promise whatever panel is now in front of the reader, so the entry has to be named
+    // instead: its own, when the request is on the open log's entry, and otherwise the
+    // pattern or the defaults it came from. The name it wore when the request was armed
+    // is the fallback for an entry deleted or swept away since — it is still where the
+    // settings came from, and there is nothing left in the tree to read a name off.
+    const QString shown = nodeDisplayName(m_applyNode);
+    const QString from = shown.isEmpty() ? m_applyNodeName : shown;
+    const bool displayed = refToString(m_applyNode) == refToString(currentRef());
+    const bool ownEntry = m_applyNode.kind == NodeKind::File && m_applyNode.key == m_sampleAddress;
+    QString text;
+    if (displayed || from.isEmpty())
+        text = tr("%1 will be re-read with these settings when you press OK.").arg(m_applyTarget);
+    else if (ownEntry)
+        // Not "the settings for app.log" for the log named app.log two words earlier.
+        text = tr("%1 will be re-read with its own settings when you press OK.").arg(m_applyTarget);
+    else
+        text = tr("%1 will be re-read with the settings for %2 when you press OK.")
+                   .arg(m_applyTarget, from);
+    m_applyNotice->setText(text);
+    m_applyNotice->show();
 }
 
 void PreferencesDialog::forgetAllPerLogSettings()
@@ -922,6 +1054,15 @@ void PreferencesDialog::showEvent(QShowEvent *event)
 void PreferencesDialog::accept()
 {
     commitCurrent();
+
+    // The armed request names a NODE, so its settings are read again here rather than
+    // taken from the copy made when the button went down: the press no longer ends the
+    // session, so the node it named may have been edited half a dozen times since. Read
+    // BEFORE the prune, and left holding that copy when the node has gone — a pattern
+    // deleted or a bulk forget does not withdraw a request, it only removes the entry
+    // that would have been consulted for it.
+    if (m_applyRequested)
+        profileOfNode(m_applyNode, &m_applyProfile);
 
     // With NO exception this time, which is the only difference from the sweep every
     // rebuild runs: the scratch node a mid-open invocation created is spared while the

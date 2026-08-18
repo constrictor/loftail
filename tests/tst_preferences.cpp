@@ -123,6 +123,9 @@ private slots:
     void aLogEntryGoesWhenItsPatternCatchesUpWithIt();
     void aScratchNodeSayingNothingNewIsNotKept();
     void applyToCurrentIsReportedNeverApplied();
+    void askingToApplyLeavesTheDialogOpenAndSaysWhatIsStillToHappen();
+    void askingAgainOnTheSameEntryWithdrawsTheRequest();
+    void theSettingsAppliedAreWhatTheEntrySaysWhenOkIsPressed();
     void everyProfileFieldRoundTripsThroughTheEditor();
     void emptySampleIsHarmless();
     void theEmptyPreviewSaysSoOnTheTableAndTheMatchCountBelowIt();
@@ -562,6 +565,108 @@ void TestPreferences::applyToCurrentIsReportedNeverApplied()
     // this dialog's preview is reading.
     QVERIFY(dlg.applyRequested());
     QCOMPARE(dlg.applyProfile().format.pattern, QStringLiteral("PATTERN"));
+}
+
+void TestPreferences::askingToApplyLeavesTheDialogOpenAndSaysWhatIsStillToHappen()
+{
+    // The press used to accept() the dialog, which put a control that ENDS THE SESSION
+    // beside Promote, whose press edits in place and leaves everything on screen. Two
+    // adjacent buttons with opposite consequences. The request is now armed and waits for
+    // OK along with every other edit — so what has to be pinned is that the press is
+    // still unmistakable: the button stays down and a notice says when it happens.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    dlg.selectLog(QStringLiteral("/var/log/app.log"),
+                  LogProfile{}); // as MainWindow does before naming the target
+    dlg.setApplyTarget(QStringLiteral("app.log"));
+
+    auto *apply = dlg.findChild<QPushButton *>(QStringLiteral("applyToCurrentButton"));
+    auto *notice = dlg.findChild<QLabel *>(QStringLiteral("applyNoticeLabel"));
+    QVERIFY(apply);
+    QVERIFY(notice);
+    dlg.show();
+    QVERIFY(!notice->isVisible()); // nothing asked for yet
+
+    QSignalSpy accepted(&dlg, &QDialog::accepted);
+    apply->click();
+
+    QVERIFY2(accepted.isEmpty(), "asking to apply closed the dialog");
+    QVERIFY(dlg.isVisible());
+    QVERIFY2(apply->isChecked(), "the button did not stay down on an armed request");
+    QVERIFY(notice->isVisible());
+    // It names the LOG, because that is what a request is about. Only the name is
+    // asserted on — it is data this test supplied, while the sentence around it is prose
+    // that a translated build moves, which is why no test here matches on wording.
+    QVERIFY2(notice->text().contains(QStringLiteral("app.log")),
+             qPrintable(notice->text()));
+
+    // The button is a claim about the entry on screen, so it comes back up on another —
+    // pressing it there arms that one rather than reading as a second press on this one.
+    // The request itself stands, and the notice then names the entry it came from.
+    QTreeWidget *tree = treeOf(dlg);
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+    QVERIFY(!apply->isChecked());
+    QVERIFY(dlg.applyRequested());
+    QVERIFY(notice->isVisible());
+
+    // And OK still carries it out, along with the sweep and the commit that every OK does.
+    dlg.accept();
+    QCOMPARE(accepted.count(), 1);
+    QVERIFY(dlg.applyRequested());
+}
+
+void TestPreferences::askingAgainOnTheSameEntryWithdrawsTheRequest()
+{
+    // A button that no longer closes the dialog needs a way back that is not Cancel —
+    // which would discard every other edit made in the same visit.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    dlg.selectLog(QStringLiteral("/var/log/app.log"), LogProfile{});
+    dlg.setApplyTarget(QStringLiteral("app.log"));
+
+    auto *apply = dlg.findChild<QPushButton *>(QStringLiteral("applyToCurrentButton"));
+    auto *notice = dlg.findChild<QLabel *>(QStringLiteral("applyNoticeLabel"));
+    QVERIFY(apply);
+    QVERIFY(notice);
+    dlg.show();
+
+    apply->click();
+    QVERIFY(dlg.applyRequested());
+    apply->click();
+    QVERIFY2(!dlg.applyRequested(), "a second press did not withdraw the request");
+    QVERIFY(!apply->isChecked());
+    QVERIFY2(!notice->isVisible(), "the notice outlived the request it was about");
+
+    dlg.accept();
+    QVERIFY(!dlg.applyRequested());
+}
+
+void TestPreferences::theSettingsAppliedAreWhatTheEntrySaysWhenOkIsPressed()
+{
+    // The consequence of arming a request instead of performing it: the user goes on
+    // editing afterwards, and what reaches the log has to be what the entry FINALLY says.
+    // A profile snapshotted when the button went down would apply the settings as they
+    // were three keystrokes ago, silently, and only to the log — the tree would hold the
+    // other ones.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    dlg.selectLog(QStringLiteral("/var/log/app.log"), LogProfile{});
+    dlg.setApplyTarget(QStringLiteral("app.log"));
+
+    auto *apply = dlg.findChild<QPushButton *>(QStringLiteral("applyToCurrentButton"));
+    auto *pattern = dlg.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
+    QVERIFY(apply);
+    QVERIFY(pattern);
+
+    apply->click();
+    QCOMPARE(dlg.applyProfile().format.pattern, QStringLiteral("MINE"));
+
+    pattern->setText(QStringLiteral("EDITED AFTER ASKING"));
+    dlg.accept();
+
+    QVERIFY(dlg.applyRequested());
+    QCOMPARE(dlg.applyProfile().format.pattern, QStringLiteral("EDITED AFTER ASKING"));
+    // And the tree agrees with what was applied, which is the other half of the same
+    // claim: one gesture, not two answers.
+    QCOMPARE(dlg.tree().resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+             QStringLiteral("EDITED AFTER ASKING"));
 }
 
 void TestPreferences::everyProfileFieldRoundTripsThroughTheEditor()

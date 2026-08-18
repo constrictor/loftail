@@ -1,13 +1,19 @@
 #include <QtTest>
 
+#include <QAction>
 #include <QApplication>
 #include <QDialog>
 #include <QFile>
+#include <QLabel>
 #include <QLineEdit>
+#include <QPushButton>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
 
+#include "Document.h"
+#include "DocumentContext.h"
+#include "DocumentView.h"
 #include "LogSettingsStore.h"
 #include "PreferencesDialog.h"
 #include "LogView.h"
@@ -47,6 +53,12 @@ private:
         bool seen = false;
         QTimer timer;
     };
+    static Document *documentOf(MainWindow &w)
+    {
+        const auto views = w.findChildren<DocumentView *>();
+        return views.isEmpty() ? nullptr : views.first()->context()->doc.get();
+    }
+
     static void dismissWhenShown(Dismisser &d, Qt::Key key)
     {
         d.timer.setInterval(10);
@@ -80,6 +92,7 @@ private slots:
     void aDefaultThatDoesNotParseStillAsks();
     void aPatternMatchOpensWithoutADialog();
     void aPatternThatDoesNotParseStillAsks();
+    void applyingToTheCurrentFileWaitsForOkAndThenRereadsTheLog();
 };
 
 void TestOpenFlow::init()
@@ -360,6 +373,78 @@ void TestOpenFlow::aPatternThatDoesNotParseStillAsks()
     dismissWhenShown(d, Qt::Key_Escape);
     w.openFile(housed);
     QVERIFY2(d.seen, "a file pattern that cannot parse the log was applied without asking");
+    w.close();
+}
+
+void TestOpenFlow::applyingToTheCurrentFileWaitsForOkAndThenRereadsTheLog()
+{
+    // "Apply to current file" used to accept() the dialog, which is how the request it
+    // records got carried out at all — and made it the one button on a panel of in-place
+    // edits whose press ended the session, beside Promote, whose press does not. It now
+    // arms the request and OK performs it, so this drives the whole round trip: the press
+    // leaves the dialog standing, the user goes on editing, and OK re-reads the log with
+    // what the entry FINALLY says.
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_good);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTRY_COMPARE(documentOf(w)->index().records.size(), 2);
+
+    Document *doc = documentOf(w);
+    QVERIFY(doc->format().loggerGroup > 0);
+    QVERIFY(doc->index().loggers.names().contains(QStringLiteral("net.io")));
+
+    bool seen = false;
+    bool stayedOpen = false;
+    bool armedVisibly = false;
+    QTimer timer;
+    timer.setInterval(10);
+    connect(&timer, &QTimer::timeout, [&]() {
+        auto *dlg = qobject_cast<PreferencesDialog *>(QApplication::activeModalWidget());
+        if (!dlg)
+            return;
+        seen = true;
+        timer.stop();
+
+        // By object name, never by label: this dialog has several buttons and the label
+        // is prose that a translated build moves.
+        auto *apply = dlg->findChild<QPushButton *>(QStringLiteral("applyToCurrentButton"));
+        auto *notice = dlg->findChild<QLabel *>(QStringLiteral("applyNoticeLabel"));
+        auto *pattern = dlg->findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
+        QVERIFY(apply);
+        QVERIFY(notice);
+        QVERIFY(pattern);
+        QVERIFY2(!apply->isHidden(), "the open log was never named as a target");
+
+        apply->click();
+        stayedOpen = dlg->isVisible();
+        armedVisibly = apply->isChecked() && notice->isVisible();
+
+        // Asked for, and then edited further — the request names the ENTRY, not a copy of
+        // what it said when the button went down. Dropping the %c leaves the same lines
+        // parsing with nothing in them a subsystem.
+        pattern->setText(QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %m%n"));
+        dlg->accept();
+    });
+    timer.start();
+
+    auto *prefs = w.findChild<QAction *>(QStringLiteral("preferencesAction"));
+    QVERIFY(prefs);
+    prefs->trigger(); // modal: returns once the timer above has accepted the dialog
+
+    QVERIFY2(seen, "the Preferences dialog was never shown");
+    QVERIFY2(stayedOpen, "asking to apply closed the dialog");
+    QVERIFY2(armedVisibly, "the request left no mark on screen");
+
+    // The request reached the window and the log was re-read with the edited settings.
+    QTRY_VERIFY(documentOf(w)->format().loggerGroup <= 0); // absent is the -1 sentinel
+    QTRY_COMPARE(documentOf(w)->index().records.size(), 2);
+    // Re-read, not merely re-compiled: the intern tables come from the scan, so a stale
+    // one is proof the file was never read again.
+    QVERIFY2(!documentOf(w)->index().loggers.names().contains(QStringLiteral("net.io")),
+             "the pre-change intern table survived: the log was not re-read");
+    QCOMPARE(documentOf(w), doc); // re-read in place, not reopened
     w.close();
 }
 
