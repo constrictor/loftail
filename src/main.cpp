@@ -1,8 +1,8 @@
 #include <QApplication>
-#include <QCommandLineParser>
 #include <QCoreApplication>
 
 #include "AppStyle.h"
+#include "CommandLine.h"
 #include "DiagnosticLog.h"
 #include "MainWindow.h"
 #include "UiLanguage.h"
@@ -63,55 +63,11 @@ int main(int argc, char *argv[])
     // before MainWindow, which builds its entire menu bar in its constructor.
     loftail::installUiLanguage();
 
-    // Command-line contract (SPEC.md §3, PLAN.md M7):
-    //   loftail [options] [file]
-    //   --pattern <p>   log4cplus ConversionPattern for a never-seen file
-    //   --help, --version
-    //
-    // There is deliberately no --follow: every file opens at its end and follows,
-    // unconditionally (SPEC.md §3, §11). Following is not a mode, so it is not a flag.
-    //
-    // --help is user-facing prose, so it goes through translate() — with an explicit
-    // context, main() being a free function. What does NOT is the argument SYNTAX:
-    // "pattern" is the literal spelling of --pattern, and "file"/"[file]" are the
-    // placeholder names in the usage line. Translating those would rename the option
-    // and break every script that passes it.
-    QCommandLineParser parser;
-    parser.setApplicationDescription(QCoreApplication::translate(
-        "main",
-        "loftail — a desktop viewer for log4cplus logs.\n\n"
-        "Opens the given file at its end and follows it as it grows, "
-        "like tail -f. Filters and highlights by subsystem and priority."));
-    const QCommandLineOption helpOpt = parser.addHelpOption();
-    const QCommandLineOption versionOpt = parser.addVersionOption();
-
-    parser.addPositionalArgument(
-        QStringLiteral("file"),
-        QCoreApplication::translate(
-            "main",
-            "Log file to open (optional). Either a local path or a remote "
-            "log over SSH, spelled ssh://user@host/path/to/file.log. A "
-            "compressed log (app.log.gz) opens directly; a log inside an "
-            "archive is named by continuing the path through it, as "
-            "bundle.tar.gz/var/log/app.log. The two combine, so "
-            "ssh://host/var/log/app.log.1.gz works."),
-        QStringLiteral("[file]"));
-
-    QCommandLineOption patternOpt(
-        QStringLiteral("pattern"),
-        QCoreApplication::translate(
-            "main",
-            "log4cplus ConversionPattern for the format of <file>. "
-            "Used only for a file loftail has not seen before; a file "
-            "with a remembered format ignores it. A pattern that does "
-            "not match opens the file as plain text."),
-        QStringLiteral("pattern"));
-    parser.addOption(patternOpt);
-
-    // process() handles --help and --version itself (printing and exiting) and
-    // reports unknown options; it never throws, so a malformed invocation degrades
-    // to a usage message rather than a crash.
-    parser.process(app);
+    // Command-line contract (SPEC.md §3, PLAN.md M7), and its help text — both live
+    // in CommandLine.h, which is where the rule that EVERY file named opens is pinned
+    // by a test. main() is not reachable from one.
+    loftail::CommandLine cmdLine;
+    cmdLine.process(app);
 
     // The first line of loftail's own log, and the reason it is here rather than lazily
     // on the first interesting event: a diagnostic file whose top says which binary wrote
@@ -123,12 +79,17 @@ int main(int argc, char *argv[])
     loftail::MainWindow window;
     window.show();
 
-    // No file argument -> an empty window (SPEC.md §3; session restore may still
-    // reopen the last file inside MainWindow). A bad --pattern is taken as intent
-    // and opens the file as plain text without a blocking prompt (PLAN.md M3).
-    const QStringList positional = parser.positionalArguments();
-    if (!positional.isEmpty())
-        window.openFile(positional.first(), parser.value(patternOpt));
+    // EVERY file named opens, each in its own tab, in the order given — the same thing
+    // dropping several files on the window does (SPEC.md §3). No file argument -> an
+    // empty window (session restore may still reopen the last files inside MainWindow);
+    // the files named are ADDED to whatever the session brought back, never a
+    // replacement for it. A bad --pattern is taken as intent and opens the file as
+    // plain text without a blocking prompt (PLAN.md M3).
+    //
+    // None of this blocks: openFiles() is a loop over openFile(), which returns with a
+    // tab that says it is connecting rather than connecting (ARCHITECTURE.md §6.3.3),
+    // so ten unreachable hosts on one command line still show ten tabs at once.
+    window.openFiles(cmdLine.files(), cmdLine.pattern());
 
     return app.exec();
 }

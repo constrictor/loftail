@@ -62,7 +62,20 @@ public:
     // repeatedly; it adds a tab.
     // `rawPath` is a local path or an ssh:// URL in any accepted spelling; it is
     // normalized before it becomes a Document path (RemoteLocation.h).
-    void openFile(const QString &rawPath, const QString &pattern = QString());
+    // Returns false when the open was REFUSED and reported — a malformed address, a
+    // dependency not built in, a format dialog the user cancelled. A log that is
+    // merely not there yet opens a waiting tab and is a success (SPEC.md §3).
+    bool openFile(const QString &rawPath, const QString &pattern = QString());
+
+    // Open every one of them, in the order given, each in its own tab (SPEC.md §3).
+    // The one place several addresses are opened at once: the command line, File ▸ Open,
+    // a drop of several files, and several members picked out of one archive all come
+    // through here, so they agree on what happens when one of the set is refused —
+    // the rest still open, and the refusals are reported TOGETHER in one message
+    // rather than each overwriting the last. The last one that opened is the tab left
+    // in front, exactly as it is when they are opened one at a time.
+    // Returns true when every one of them opened.
+    bool openFiles(const QStringList &rawPaths, const QString &pattern = QString());
 
     // Fill `menu` with what the record at `viewRow` of `view` offers (SPEC.md §5).
     // Public, and split from showRecordMenu(), so a test can inspect and trigger the

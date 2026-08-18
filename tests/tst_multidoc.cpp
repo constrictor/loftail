@@ -10,6 +10,7 @@
 #include <QSignalSpy>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QLabel>
 
 #include "Document.h"
 #include "DocumentContext.h"
@@ -21,6 +22,9 @@
 #include "LogModel.h"
 #include "LogView.h"
 #include "MainWindow.h"
+#include "CommandLine.h"
+
+#include "FakeFetcher.h"
 #include "MatchCriteria.h"
 
 using namespace loftail;
@@ -137,6 +141,14 @@ private slots:
     // the two header-menu commands are actions on that window like any other.
     void theSubsystemColumnWidensOnceTheScanHasSeenEveryName();
     void theHeaderMenuFitsAndResetsTheColumnWidths();
+
+    // SEVERAL logs asked for in ONE gesture (SPEC.md §3). Dropping files on the window
+    // had always opened all of them; the command line took the first and dropped the
+    // rest, and File ▸ Open could name only one. All three now go through openFiles(),
+    // so what happens to the tab bar and to a refusal is one answer, not three.
+    void severalFilesOpenedAtOnceBecomeSeveralTabs();
+    void aRefusedLogAmongSeveralLeavesTheOthersOpenAndIsNamedWithThem();
+    void theCommandLineTakesEveryFileNamedAndOnePatternForThemAll();
 };
 
 namespace {
@@ -745,6 +757,90 @@ void TestMultiDoc::theHeaderMenuFitsAndResetsTheColumnWidths()
     // Reset forgets the fit along with every dragged width and seeds the lot again.
     trigger(w, "resetColumnWidthsAction");
     QCOMPARE(view->header()->sectionSize(logger), seeded);
+}
+
+// --- Several logs in one gesture (SPEC.md §3) ------------------------------
+
+void TestMultiDoc::severalFilesOpenedAtOnceBecomeSeveralTabs()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    // One call, two tabs — what `loftail a.log b.log` and a multi-select in File ▸ Open
+    // both reach. Neither used to: the command line took the first file and dropped the
+    // rest without a word, and the dialog could not name a second one.
+    QVERIFY(w.openFiles({m_a, m_b}));
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
+    QCOMPARE(tabCount(w), 2);
+
+    // In the order given, and the LAST one is the tab left in front — the same answer
+    // opening them one at a time gives, and the same one a drop of both gives.
+    QTabWidget *t = tabs(w);
+    QVERIFY(t->tabText(0).contains(QStringLiteral("a.log")));
+    QVERIFY(t->tabText(1).contains(QStringLiteral("b.log")));
+    QVERIFY(w.windowTitle().endsWith(QStringLiteral("b.log")));
+}
+
+void TestMultiDoc::aRefusedLogAmongSeveralLeavesTheOthersOpenAndIsNamedWithThem()
+{
+    // A refusal decided with no I/O — the one kind that still opens no tab at all
+    // (SPEC.md §3, M17). Two of them, deliberately: each writes its own reason into the
+    // status bar as it happens, so with one message per failure the reader would be
+    // left with the last one's reason and no hint that a second file had even been
+    // asked for. They are reported TOGETHER instead, the way session restore lists the
+    // logs it could not reopen.
+    FakeRemoteFarm farm;
+    const QString bad1 = QStringLiteral("ssh://deploy@web1/var/log/one.log");
+    const QString bad2 = QStringLiteral("ssh://deploy@web2/var/log/two.log");
+    farm.at(bad1)->setStartFailure(QStringLiteral("Authentication to deploy@web1 failed."));
+    farm.at(bad2)->setStartFailure(QStringLiteral("Authentication to deploy@web2 failed."));
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    QVERIFY(!w.openFiles({m_a, bad1, bad2}));
+    // The one that could open did, and is the tab in front.
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QCOMPARE(tabCount(w), 1);
+    QVERIFY(w.windowTitle().endsWith(QStringLiteral("a.log")));
+
+    auto *status = w.findChild<QLabel *>(QStringLiteral("statusLabel"));
+    QVERIFY(status);
+    QVERIFY2(status->text().contains(QStringLiteral("one.log (web1)")),
+             qPrintable(status->text()));
+    QVERIFY2(status->text().contains(QStringLiteral("two.log (web2)")),
+             qPrintable(status->text()));
+}
+
+void TestMultiDoc::theCommandLineTakesEveryFileNamedAndOnePatternForThemAll()
+{
+    // The parsing half, without a process: main() hands openFiles() exactly what
+    // files() returns, so this is where "only the first argument opened" would come
+    // back. --pattern stays one value covering the lot; it says how a log is written,
+    // and files named on one command line are files written alike.
+    CommandLine cmd;
+    QVERIFY(cmd.parse({QStringLiteral("loftail"), QStringLiteral("--pattern"),
+                       QStringLiteral("%d %m%n"), m_a, m_b}));
+    QCOMPARE(cmd.files(), QStringList({m_a, m_b}));
+    QCOMPARE(cmd.pattern(), QStringLiteral("%d %m%n"));
+
+    // An address is not a path, and this layer must not decide it is one: an ssh:// URL
+    // and an in-archive address travel through as written, for openFile() to normalize.
+    CommandLine addresses;
+    QVERIFY(addresses.parse({QStringLiteral("loftail"),
+                             QStringLiteral("ssh://deploy@web1/var/log/app.log"),
+                             QStringLiteral("bundle.tar.gz/var/log/app.log")}));
+    QCOMPARE(addresses.files().size(), 2);
+    QCOMPARE(addresses.files().at(0), QStringLiteral("ssh://deploy@web1/var/log/app.log"));
+    QCOMPARE(addresses.files().at(1), QStringLiteral("bundle.tar.gz/var/log/app.log"));
+
+    // A bare launch names nothing, and openFiles() on it is a no-op window.
+    CommandLine bare;
+    QVERIFY(bare.parse({QStringLiteral("loftail")}));
+    QVERIFY(bare.files().isEmpty());
+    QVERIFY(bare.pattern().isEmpty());
 }
 
 #include "tst_multidoc.moc"

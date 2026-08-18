@@ -76,6 +76,10 @@ add_library(loftail_ui STATIC
     # Which language the interface is in, and keeping Qt's own strings in the same one
     UiLanguage.cpp
     UiLanguage.h
+    # The command line main() is handed: the options, the help text, and every file
+    # named on it. Here rather than in main.cpp so a test can drive it without a process
+    CommandLine.cpp
+    CommandLine.h
     # A disclosure triangle over a block of controls, for options with a good default
     CollapsibleSection.cpp
     CollapsibleSection.h

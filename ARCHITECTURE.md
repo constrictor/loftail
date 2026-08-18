@@ -954,6 +954,12 @@ The cost is deliberate: **logs no longer split, tear off, or float.** Two views 
 
 **The Filters pane needs an explicit hand-off.** `HighlighterPane` hydrates from the `Document` it binds to (and syncs rules back on every edit), so it needs nothing. `FilterPane`'s widget state is *not* derivable from a `FilterSet`, so the window stashes it into the outgoing `DocumentContext` and restores it into the pane on the way in; an empty stash means "the defaults", which is what a newly opened file gets.
 
+**Several addresses at once go through one funnel, `MainWindow::openFiles()`.** Four gestures ask for more than one log — the command line, File ▸ Open's multi-select, a drop of several files, and several members picked out of one archive — and they used not to agree: only the drop opened them all. `openFiles()` is a loop over `openFile()` plus the one thing a loop cannot be trusted to get right by repetition, which is the **reporting**: `openFile()` writes its own reason into the status label as each refusal happens, so N of them leave only the last one's reason on screen and no trace that the earlier files were ever asked for. Two or more are therefore collected and named together in one message, the same answer `restoreSession()` gives for the logs it could not reopen; a single refusal keeps its own detailed message, which is the one with the reason in it. `openFile()` returns `bool` for this and for nothing else — false means *refused and reported*, never *not there yet*, which is a waiting tab and a success (§6.5).
+
+Two properties of the loop are load-bearing. It must stay **non-blocking per address**: `openFile()` returns with a tab that says it is connecting rather than one that has connected (§6.3.3), so N unreachable hosts on one command line still put N tabs up at once instead of serialising into N connect timeouts before the window is usable. And **the last one opened is the tab left in front**, because each open calls `showView()` — an emergent property of opening them one at a time, kept rather than overridden, so a set of files behaves like the same files typed one after another.
+
+The command line itself lives in `src/ui/CommandLine.h` rather than in `main()`, for one reason: `main()` is not reachable from a test, and "every file named opens" is exactly the kind of claim that regresses to `positional.first()` unnoticed. `process()` is main's route (it prints `--help`/`--version` and exits); `parse()` is the test's.
+
 ### 12.3 Session schema v3, and the restore ordering
 
 ```json
