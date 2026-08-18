@@ -12,6 +12,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QSplitter;
 class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -123,6 +124,13 @@ private:
     // address a name that is only a name stands for (empty for the levels with none).
     void setIdentity(const QString &name, const QString &level, const QString &fullAddress);
     void commitCurrent(); // the editors' contents back into m_settings
+    // The width the tree's own longest row asks for, indentation included — what the
+    // initial split is derived from, so the pane opens wide enough to say what it has
+    // to say rather than at a fraction somebody guessed.
+    int treeContentWidth() const;
+    // Give the tree that width, ONCE, and never again: the first show is the last moment
+    // at which nobody has an opinion about where the handle goes. See m_splitSettled.
+    void applyInitialSplit();
     void refreshPatternValidity();
     void updateButtons();
     // What is still to happen when OK is pressed, said out loud. A request that leaves no
@@ -164,6 +172,12 @@ private:
     // where the settings came from after the entry itself has gone.
     QString    m_applyNodeName;
 
+    QSplitter        *m_splitter = nullptr;
+    // Whether the split has been settled — by the first show, or by the user dragging the
+    // handle. Either way nothing computes it again: a pane that re-derived its width on
+    // every rebuild would take the handle back off the user the next time they added a
+    // pattern, and one that re-derived it on a long pattern would jump as it was typed.
+    bool              m_splitSettled = false;
     QTreeWidget      *m_treeWidget = nullptr;
     QToolButton      *m_addPattern = nullptr;
     QToolButton      *m_deleteNode = nullptr;
