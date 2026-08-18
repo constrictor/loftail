@@ -6,6 +6,7 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QString>
+#include <QVector>
 #include <Qt>
 
 #include <functional>
@@ -46,6 +47,24 @@ public:
     // True when `text` matches the query. An empty pattern matches everything (the
     // axis is treated as inactive upstream); an invalid regex matches nothing.
     bool matches(const QString &text) const;
+
+    // Where inside `text` the query matched, as character spans — the SAME decision
+    // matches() makes, reported positionally so a view can mark on screen what the
+    // search found (SPEC.md §5, ARCHITECTURE.md §7.1.4). Not a second matcher: regex
+    // vs substring and the case option are read from this one object, which is what
+    // stops a mark and a hit ever disagreeing.
+    //
+    // Spans never overlap and are in ascending order. A zero-width regex match yields
+    // no span — there is nothing on screen to mark. `limit` caps how many are
+    // returned (non-positive means no bound), because the caller is a paint path and
+    // a one-character query over a hundred-thousand-character message would otherwise
+    // hand back one span per character.
+    struct Span
+    {
+        int start = 0;
+        int length = 0;
+    };
+    QVector<Span> spans(const QString &text, int limit = -1) const;
 
 private:
     QString             m_pattern;

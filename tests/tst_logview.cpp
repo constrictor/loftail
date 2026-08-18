@@ -111,6 +111,12 @@ private:
         return runs;
     }
 
+    // How many columns of `band` are painted in `c` over at least `minShare` of its
+    // height — how a filled MARK is told apart from the glyphs around it, which are
+    // drawn in that same colour (see the find-mark cases at the bottom of this file).
+    static int markedColumns(const QImage &img, const QRect &band, const QColor &c,
+                             double minShare = 0.5);
+
     static bool isColour(QRgb px, const QColor &c)
     {
         return qAbs(qRed(px) - c.red()) <= 1 && qAbs(qGreen(px) - c.green()) <= 1
@@ -241,6 +247,9 @@ private slots:
     void aDoubleClickLeavesNoDragArmedBehindIt();
     void selectAllTakesEveryRecordAndLeavesTheReaderWhereTheyAre();
     void selectAllStopsAtWhatTheFilterLeftVisible();
+    void whatFindMatchedIsMarkedInsideTheRecordsOnScreen();
+    void aRuleColouredRecordShowsItsColourAndTheMarkTogether();
+    void aMatchStraddlingAWrappedLineIsMarkedOnBothOfThem();
 };
 
 // --- what does not fit says so (SPEC.md §5) ----------------------------------
@@ -1863,6 +1872,268 @@ void TestLogView::selectAllStopsAtWhatTheFilterLeftVisible()
     refilter(view, model, doc, FilterSet());
     view.selectAllRecords();
     QCOMPARE(selectedRows(view).size(), 60);
+}
+
+// --- the matched substring is marked (SPEC.md §5, ARCHITECTURE.md §7.1.4) -----
+//
+// Find selects a RECORD; on a long message that still leaves the reader hunting for the
+// words that matched. The mark is the matched run painted in the record's own two
+// colours SWAPPED, so it is read off the rendered viewport and nowhere else — every
+// widget involved holds the same value marked or not, and only the pixels differ.
+//
+// Every case here needs a resolved font: the whole question is where a character landed,
+// and with no font at all (Windows offscreen, which ships none) nothing measures.
+
+namespace {
+
+// Render a view's viewport, the way the banding case does.
+QImage renderViewport(LogView &view)
+{
+    QImage img(view.viewport()->size(), QImage::Format_ARGB32);
+    img.fill(Qt::transparent);
+    view.viewport()->render(&img, QPoint(), QRegion(), QWidget::DrawWindowBackground);
+    return img;
+}
+
+} // namespace
+
+// How many columns of `band` are painted in `c` over at least `minShare` of the band's
+// height. A mark FILLS its run with the colour the text is otherwise drawn IN, so what
+// tells the two apart is coverage down the line box rather than the colour itself: a
+// glyph inks part of the height, a mark inks all of it but for the glyphs it inverts.
+int TestLogView::markedColumns(const QImage &img, const QRect &band, const QColor &c,
+                               double minShare)
+{
+    int columns = 0;
+    const int height = band.height();
+    if (height <= 0)
+        return 0;
+    for (int x = qMax(0, band.left()); x <= band.right() && x < img.width(); ++x) {
+        int inked = 0;
+        for (int y = qMax(0, band.top()); y <= band.bottom() && y < img.height(); ++y)
+            if (isColour(img.pixel(x, y), c))
+                ++inked;
+        if (double(inked) >= minShare * height)
+            ++columns;
+    }
+    return columns;
+}
+
+void TestLogView::whatFindMatchedIsMarkedInsideTheRecordsOnScreen()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
+
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+                     "2026-07-21 10:00:00,000 [main] INFO  net.socket - opened the socket\n"
+                     "2026-07-21 10:00:01,000 [main] INFO  net.socket - found a needle here\n"
+                     "2026-07-21 10:00:02,000 [main] INFO  net.socket - closed the socket\n"
+                     "2026-07-21 10:00:03,000 [main] INFO  net.socket - another needle now\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 4);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(900, 400);
+
+    const QColor text = view.palette().text().color();
+    const int lh = view.fontMetrics().height();
+    const int cw = qMax(1, view.fontMetrics().averageCharWidth());
+    const int msgCol = columnOfRole(doc, FieldRole::Message);
+    QVERIFY(msgCol >= 0);
+    const int msgX = view.header()->sectionViewportPosition(msgCol);
+    // One physical line per record and wrap off, so view row r owns exactly one line box.
+    auto rowBand = [&](int r) {
+        return QRect(msgX, r * lh, view.viewport()->width() - msgX - 1, lh);
+    };
+
+    // Nothing is being searched for, so nothing is marked: every column of every row is
+    // glyphs on the row's fill, and no column is inked top to bottom.
+    QImage img = renderViewport(view);
+
+    TextMatcher matcher;
+    matcher.set(QStringLiteral("needle"), /*regex=*/false, Qt::CaseInsensitive);
+    view.setFindMatcher(matcher);
+
+    img = renderViewport(view);
+    // The two records carrying the word wear a filled run; the two that do not are
+    // untouched — the mark is per match, not per row.
+    QVERIFY2(markedColumns(img, rowBand(1), text) >= 2 * cw, "the match was not marked");
+    QVERIFY2(markedColumns(img, rowBand(3), text) >= 2 * cw,
+             "only the first matching record was marked");
+    QVERIFY2(markedColumns(img, rowBand(0), text) < cw, "a record with no match was marked");
+    QVERIFY2(markedColumns(img, rowBand(2), text) < cw, "a record with no match was marked");
+
+    // A scroll repaints, and the marks are re-derived from the query rather than stored,
+    // so they come back on whatever is now on screen.
+    view.verticalScrollBar()->setValue(2);
+    img = renderViewport(view);
+    QVERIFY2(markedColumns(img, rowBand(1), text) >= 2 * cw,
+             "the mark did not survive a scroll"); // record 3, now the second row shown
+    QVERIFY(markedColumns(img, rowBand(0), text) < cw);
+    view.verticalScrollBar()->setValue(0);
+
+    // A query nobody typed marks nothing, and the previous one leaves nothing behind.
+    view.clearFindMatcher();
+    img = renderViewport(view);
+    for (int r = 0; r < 4; ++r)
+        QVERIFY2(markedColumns(img, rowBand(r), text) < cw, "a cleared query left its marks");
+
+    // The case option is the SEARCH's, read off the one matcher: a case-sensitive
+    // query for the capitalised form marks nothing here.
+    matcher.set(QStringLiteral("NEEDLE"), /*regex=*/false, Qt::CaseSensitive);
+    view.setFindMatcher(matcher);
+    img = renderViewport(view);
+    for (int r = 0; r < 4; ++r)
+        QVERIFY2(markedColumns(img, rowBand(r), text) < cw, "the case option was not the search's");
+
+    // And the regex option likewise — the same query, matched the other way.
+    matcher.set(QStringLiteral("n[e]+dle"), /*regex=*/true, Qt::CaseInsensitive);
+    view.setFindMatcher(matcher);
+    img = renderViewport(view);
+    QVERIFY(markedColumns(img, rowBand(1), text) >= 2 * cw);
+
+    // The record that WRAPS under SelectedRecordOnly is drawn by the other half of the
+    // paint path, and it marks too — in the selection's own pair swapped, since those
+    // are the two colours that record is wearing.
+    view.setWrapMode(LogView::WrapMode::SelectedRecordOnly);
+    view.setCurrentRecord(1);
+    img = renderViewport(view);
+    const QColor selected = view.palette().highlightedText().color();
+    QVERIFY2(markedColumns(img, rowBand(1), selected) >= 2 * cw,
+             "the selected, wrapping record did not show the mark");
+}
+
+void TestLogView::aRuleColouredRecordShowsItsColourAndTheMarkTogether()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
+
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+                     "2026-07-21 10:00:00,000 [main] INFO  net.socket - quiet line\n"
+                     "2026-07-21 10:00:01,000 [main] INFO  net.socket - special needle line\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(900, 300);
+
+    HighlightRule rule;
+    rule.match.text.enabled = true;
+    rule.match.text.matcher.set(QStringLiteral("special"), /*regex=*/false, Qt::CaseInsensitive);
+    rule.background = 0;
+    rule.foreground = HighlightPalette::readableTextSlot(0);
+    doc.highlighters().rules.append(rule);
+    doc.refreshHighlighting();
+
+    const QColor ruleBg = HighlightPalette::color(rule.background, model.darkTheme());
+    const QColor ruleFg = HighlightPalette::color(rule.foreground, model.darkTheme());
+    QVERIFY(ruleBg.isValid() && ruleFg.isValid());
+
+    TextMatcher matcher;
+    matcher.set(QStringLiteral("needle"), /*regex=*/false, Qt::CaseInsensitive);
+    view.setFindMatcher(matcher);
+
+    const QImage img = renderViewport(view);
+    const int lh = view.fontMetrics().height();
+    const int cw = qMax(1, view.fontMetrics().averageCharWidth());
+    const int msgCol = columnOfRole(doc, FieldRole::Message);
+    const QRect band(view.header()->sectionViewportPosition(msgCol), lh,
+                     view.viewport()->width() - view.header()->sectionViewportPosition(msgCol) - 1,
+                     lh);
+
+    // The rule still colours the whole record — the rightmost column is past every
+    // field's text, so what is there is the row fill and nothing else.
+    QVERIFY2(isColour(img.pixel(img.width() - 1, lh + lh / 2), ruleBg),
+             "the rule's colour was lost under the mark");
+    // And the mark inside it is the rule's own PAIR swapped, so it is as readable as the
+    // rule made the record and can never be a colour of its own choosing.
+    QVERIFY2(markedColumns(img, band, ruleFg) >= 2 * cw,
+             "a rule-coloured record did not show the mark");
+}
+
+void TestLogView::aMatchStraddlingAWrappedLineIsMarkedOnBothOfThem()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
+
+    // Two passes, because the crafted message has to be positioned against a column
+    // layout that only exists once a view does: the first view is opened only to be
+    // asked where the message column starts and how wide a character is.
+    QTemporaryFile probeFile;
+    QVERIFY(writeLog(probeFile,
+                     "2026-07-21 10:00:00,000 [main] INFO  net.socket - filler\n"));
+    Document probeDoc;
+    const QString pattern =
+        QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n");
+    QVERIFY(probeDoc.open(probeFile.fileName(), pattern, Encoding::Utf8, QTimeZone::utc()));
+    LogModel probeModel(&probeDoc);
+    LogView probe(&probeDoc, &probeModel);
+    probe.resize(900, 400);
+    renderViewport(probe); // a resize on an unshown widget reaches the viewport when it paints
+    const int msgCol = columnOfRole(probeDoc, FieldRole::Message);
+    QVERIFY(msgCol >= 0);
+    const int msgX = probe.header()->sectionViewportPosition(msgCol);
+    // The advance of the character the filler is made of, not averageCharWidth: the
+    // question here is where the PAINTED line breaks, and that is decided by the
+    // advance of the glyphs actually on it.
+    const int cw = qMax(1, probe.fontMetrics().horizontalAdvance(QStringLiteral("x")));
+    const int cols = qMax(1, (probe.viewport()->width() - msgX) / cw);
+    QVERIFY(cols > 30);
+
+    // One record whose message carries the token exactly once, straddling the wrap: it
+    // starts seven characters before the break and runs fifteen, so a break anywhere
+    // within seven characters of where the model puts it still falls inside the token.
+    const QByteArray token = "ZEBRACROSSINGXX"; // 15 characters, once in the file
+    QByteArray message = QByteArray("x").repeated(cols - 7) + token
+                       + QByteArray("x").repeated(30);
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, "2026-07-21 10:00:00,000 [main] INFO  net.socket - " + message + "\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), pattern, Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 1);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(900, 400);
+    renderViewport(view); // as for the probe: the resize reaches the viewport when it paints
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    view.measureBlockOfRecord(0);
+    // The same column layout and the same width the token was positioned against.
+    QCOMPARE(view.header()->sectionViewportPosition(msgCol), msgX);
+    QCOMPARE(view.viewport()->width(), probe.viewport()->width());
+
+    TextMatcher matcher;
+    matcher.set(QString::fromLatin1(token), /*regex=*/false, Qt::CaseSensitive);
+    view.setFindMatcher(matcher);
+
+    const QImage img = renderViewport(view);
+    const QColor text = view.palette().text().color();
+    const int lh = view.fontMetrics().height();
+    const QRect area(msgX, 0, view.viewport()->width() - msgX - 1, lh);
+
+    // The one occurrence is marked on TWO display lines: the end of the first and the
+    // start of the second. A mark drawn from a single rectangle would show on one.
+    int linesMarked = 0;
+    for (int line = 0; line * lh + lh <= view.viewport()->height(); ++line) {
+        if (markedColumns(img, area.translated(0, line * lh), text) >= cw)
+            ++linesMarked;
+    }
+    QCOMPARE(linesMarked, 2);
 }
 
 #include "tst_logview.moc"

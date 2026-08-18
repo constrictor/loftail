@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EstimatedGeometry.h"
+#include "Filter.h"
 #include "WrapMode.h"
 
 #include <QAbstractScrollArea>
@@ -157,6 +158,29 @@ public:
     // object here rather than ten million; and it deliberately does NOT scroll, because
     // selecting everything says nothing about where the reader wants to be.
     void selectAllRecords();
+
+    // --- Marking what Find matched (SPEC.md §5, ARCHITECTURE.md §7.1.4) -----------
+    //
+    // A search selects a RECORD, which on a 200-character message still leaves the
+    // reader hunting for the words that matched. So the view keeps the QUERY — never a
+    // list of positions — and re-runs it over the text of the cells it is painting
+    // anyway. Two things fall out of that and both are the point: nothing is held for a
+    // record that is not on screen (invariant #1), and every repaint remarks from
+    // scratch, so a scroll, a resize under wrap, a filter re-apply, a tab switch and an
+    // ingest tick all keep the marks with no invalidation to get wrong.
+    //
+    // It is the SAME TextMatcher MainWindow::runFind() searched with, handed over
+    // rather than rebuilt, so a mark and a hit can never disagree about the regex or
+    // the case option. An empty or invalid matcher — the default — marks nothing;
+    // MainWindow clears it when the query empties, when the regex will not compile and
+    // when nothing matched, and DocumentView clears it when the bar closes.
+    //
+    // Per VIEW (invariant #7): two views of one log may be searching for different
+    // things. The digest strip is deliberately never armed — Find walks the table's
+    // rows, and a mark in the strip would claim the search had landed there.
+    void setFindMatcher(const TextMatcher &matcher);
+    void clearFindMatcher();
+    const TextMatcher &findMatcher() const { return m_findMatcher; }
 
     // Clipboard actions (SPEC.md §5). Raw yields the records' original bytes; the
     // columns form is tab-separated fields for spreadsheet paste.
@@ -336,6 +360,10 @@ private:
     // alternating band per RECORD (UiColors::alternateRowColor) when no rule applies.
     void resolveRowColors(int row, bool selected, QColor &bg, QColor &fg) const;
 
+    // Whether anything is being marked at all — an empty query marks everything, which
+    // is not a mark, and a regex that will not compile matched nothing to begin with.
+    bool marking() const;
+
     void setFollowingState(bool following); // update state + control + emit signal
     void updateFollowFromScrollPosition();  // detach/re-attach from the scrollbar
     void positionFollowButton();            // place the return-to-bottom overlay
@@ -416,6 +444,10 @@ private:
     // Set while this class is doing the resizing, so the QHeaderView::sectionResized it
     // provokes is not read back as the user dragging a divider.
     bool m_applyingColumnWidths = false;
+
+    // The query Find is marking, or empty. The QUERY, not its results: see
+    // setFindMatcher(). Costs one small object per view and nothing per record.
+    TextMatcher m_findMatcher;
 
     WrapMode m_wrapMode = WrapMode::Off;
     QString  m_placeholderText; // drawn centred when there are no records at all

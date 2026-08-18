@@ -2,14 +2,17 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QFile>
 #include <QLabel>
 #include <QLineEdit>
 #include <QSettings>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QToolButton>
 
 #include "DocumentView.h"
+#include "Filter.h"
 #include "FindBar.h"
 #include "LogView.h"
 #include "MainWindow.h"
@@ -93,6 +96,18 @@ private:
         return label ? label->text() : QStringLiteral("<no label>");
     }
 
+    // The query the table is MARKING, or a null string when it is marking nothing. The
+    // view holds the matcher itself rather than a list of positions, so this is the whole
+    // of the state the marking has (ARCHITECTURE.md §7.1.4).
+    static QString marked(const MainWindow &w)
+    {
+        DocumentView *view = activeView(w);
+        if (!view)
+            return QStringLiteral("<no view>");
+        const TextMatcher &m = view->logView()->findMatcher();
+        return m.isEmpty() ? QString() : m.pattern();
+    }
+
     static int cursorRow(const MainWindow &w)
     {
         DocumentView *view = activeView(w);
@@ -132,6 +147,10 @@ private slots:
     void theKeypadsEnterMeansWhatTheKeyboardsDoes();
     void emptyingTheQueryClearsWhatTheBarSaid();
     void reopeningTheBarDoesNotLeaveTheLastResultBehind();
+    void theQueryThatFoundAMatchIsHandedToTheTableToMark();
+    void changingTheQueryChangesWhatIsMarkedWithIt();
+    void aQueryThatMatchesNothingLeavesNothingMarked();
+    void closingTheBarTakesTheMarksWithIt();
 };
 
 void TestFind::initTestCase()
@@ -386,6 +405,115 @@ int main(int argc, char *argv[])
 
     TestFind tc;
     return QTest::qExec(&tc, argc, argv);
+}
+
+// --- what was found is marked where it was found (SPEC.md §5) ----------------
+//
+// Find selects a record; the mark says WHERE in it. The view is handed the matcher the
+// search itself ran with — never a list of positions — so these cases turn on that one
+// piece of state: which query the table is marking, and when it is marking none.
+// Whether the marks are actually PAINTED, and where, is tst_logview's question.
+
+void TestFind::theQueryThatFoundAMatchIsHandedToTheTableToMark()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    QVERIFY2(marked(w).isNull(), "something was marked before anything was searched for");
+
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QCOMPARE(reported(w), QStringLiteral("1 of 3"));
+    QCOMPARE(marked(w), QStringLiteral("alpha"));
+
+    // Stepping to the next match leaves the same query marked: what is marked is the
+    // search, not the record it happens to be sitting on.
+    findNext(w);
+    QCOMPARE(cursorRow(w), int(kAlphaTwo));
+    QCOMPARE(marked(w), QStringLiteral("alpha"));
+
+    // The digest strip is deliberately never armed: Find walks the table's rows, and a
+    // mark down there would say the search had landed in it.
+    QVERIFY(activeView(w)->digestView()->findMatcher().isEmpty());
+
+    w.close();
+}
+
+void TestFind::changingTheQueryChangesWhatIsMarkedWithIt()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QCOMPARE(marked(w), QStringLiteral("alpha"));
+
+    // A second query replaces the first — a mark left over from a query nobody is
+    // searching for any more points at nothing.
+    queryField(w)->setText(QStringLiteral("bravo"));
+    QCOMPARE(marked(w), QStringLiteral("bravo"));
+
+    // Emptying the box marks nothing, exactly as it reports nothing: an empty query
+    // matches every record, and marking everything is not a mark.
+    queryField(w)->setText(QString());
+    QVERIFY(marked(w).isNull());
+
+    // A regex that will not compile has nothing to mark either.
+    w.findChild<QCheckBox *>(QStringLiteral("findRegex"))->setChecked(true);
+    queryField(w)->setText(QStringLiteral("alpha("));
+    QCOMPARE(reported(w), QStringLiteral("bad regex"));
+    QVERIFY(marked(w).isNull());
+
+    w.close();
+}
+
+void TestFind::aQueryThatMatchesNothingLeavesNothingMarked()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QCOMPARE(marked(w), QStringLiteral("alpha"));
+
+    // Typing on past the last match: nothing matches, so nothing is marked — the marks
+    // from the query's shorter, matching prefix must not survive it.
+    queryField(w)->setText(QStringLiteral("alphabet"));
+    QCOMPARE(reported(w), QStringLiteral("no match"));
+    QVERIFY(marked(w).isNull());
+
+    w.close();
+}
+
+void TestFind::closingTheBarTakesTheMarksWithIt()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QCOMPARE(marked(w), QStringLiteral("alpha"));
+
+    // The bar is gone from the screen, so a mark still in the table would be a claim
+    // about a search the reader can no longer see.
+    activeView(w)->findBar()->findChild<QToolButton *>(QStringLiteral("findClose"))->click();
+    QVERIFY(marked(w).isNull());
+
+    // And reopening it does not bring them back on its own; the next search does.
+    activeView(w)->activateFind();
+    QVERIFY(marked(w).isNull());
+    findNext(w);
+    QCOMPARE(marked(w), QStringLiteral("alpha"));
+
+    w.close();
 }
 
 #include "tst_find.moc"

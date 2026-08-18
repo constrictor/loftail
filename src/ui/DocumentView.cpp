@@ -50,6 +50,11 @@ DocumentView::DocumentView(DocumentContext *context, QWidget *parent)
     m_findBar = new FindBar(this);
     m_layout->addWidget(m_findBar);
     connect(m_findBar, &FindBar::findRequested, this, &DocumentView::findRequested);
+    // Closing the bar takes the marks with it (SPEC.md §5): the query is gone from the
+    // screen, so what is still marked in the table would be a claim about a search the
+    // reader can no longer see. Here rather than in MainWindow because the bar and the
+    // table it searched are both this view's (invariant #7).
+    connect(m_findBar, &FindBar::closed, m_logView, &LogView::clearFindMatcher);
 
     // The strip appears and disappears with its content, so the model's own reset is
     // the signal — not a separate flag the window would have to remember to set.
