@@ -288,6 +288,11 @@ Time-range filter bounds (§6) are always entered as wall clock in the display t
 
 - **Find / Find Next.** Text search over record content, with next/previous navigation, case-sensitivity and regular-expression options, and wrap-around at the end. Distinct from filtering: find moves the cursor and leaves every record visible; filtering removes non-matching records. Find operates on what is currently visible — if a filter is active, find searches the filtered subset.
 
+  - **The bar says what the search did**, in its own status area rather than the window's status bar — which reports the file and is rewritten as records arrive. Landing on a match reads `2 of 7`: the match's place among the matches in the current view, and how many there are. Nothing matching reads `no match`; a view with no records at all reads `no records`; a query the regex option cannot compile reads `bad regex`; emptying the box clears the report, as does reopening the bar for a new search.
+  - **A wrap says so.** Find Next at the last match still goes back round to the first, and now reads `1 of 7, wrapped to the top`; Find Previous at the first match reads `wrapped to the bottom`. The next ordinary step drops the note again.
+  - **The total is bounded, and says when it is a floor.** Counting matches means reading every visible record, which on a very large log is not something to do between keystrokes — so counting gives up after a fixed effort. When it does, the total is shown with a trailing `+` (`2 of 7+` — seven counted before counting gave up, and there may be more), and when the match landed on lies past the point counting reached, there is no place to report and the bar says only `match`. What is on the left of `of` is always exact; what is on the right is exact only without the `+`.
+  - The report describes the search that was run. It is not kept up to date as new records arrive — the next Find Next re-counts.
+
 - A status area shows total record count, the count after filtering, the current file, and whether it is currently receiving new records. It describes the **active** view; a file being scanned in another tab shows its progress in that tab's own label instead.
 
 ## 5a. Tabs and the document area

@@ -542,6 +542,16 @@ target_link_libraries(tst_recordmenu PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_recordmenu COMMAND tst_recordmenu)
 set_tests_properties(tst_recordmenu PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# What the Find bar REPORTS (SPEC.md §5): which match of how many, that a search wrapped
+# round to the other end, and that a query matched nothing. A successful find used to
+# report nothing at all, so a wrap read as a teleport. Drives a real MainWindow and finds
+# the label by object name; the bounded half of the count is Find::tally's own contract
+# and lives in tst_filter, where the bound can be made small rather than the log huge.
+qt_add_executable(tst_find tst_find.cpp)
+target_link_libraries(tst_find PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_find COMMAND tst_find)
+set_tests_properties(tst_find PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # Changing a filter must not move the reader (SPEC.md §6): the selected record keeps its
 # place on screen if it survives, the viewport still shows the same part of the file if it
 # does not, and follow is neither attached nor detached by the change. The mechanism is

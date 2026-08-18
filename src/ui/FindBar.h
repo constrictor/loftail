@@ -30,7 +30,10 @@ public:
 
     // Show the bar and focus the text field (Ctrl+F).
     void activate();
-    // Report the outcome of the last search in the bar's status label.
+    // Report the outcome of the last search in the bar's own status label (SPEC.md §5):
+    // which match of how many, whether the search wrapped, or why there was nothing to
+    // go to. The bar's label rather than the window's status bar, because that one is
+    // rewritten on every ingest tick and tab switch. An empty string clears it.
     void setStatus(const QString &text);
 
 signals:

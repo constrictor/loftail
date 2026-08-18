@@ -1,5 +1,7 @@
 #include "Filter.h"
 
+#include <QElapsedTimer>
+
 namespace loftail {
 
 void TextMatcher::set(const QString &pattern, bool regex, Qt::CaseSensitivity cs)
@@ -65,6 +67,36 @@ int Find::search(int count, int from, bool forward, bool wrap,
             return r;
     }
     return -1;
+}
+
+Find::Tally Find::tally(int count, int hit, int rowLimit, int msLimit,
+                        const std::function<bool(int)> &match)
+{
+    Tally t;
+    if (count <= 0 || !match)
+        return t;
+
+    const int last = (rowLimit > 0) ? qMin(count, rowLimit) : count;
+    QElapsedTimer clock;
+    clock.start();
+
+    int r = 0;
+    for (; r < last; ++r) {
+        if (match(r)) {
+            ++t.total;
+            if (r == hit)
+                t.index = t.total; // 1-based: the first match is "1 of n"
+        }
+        // The clock is read every 256th row rather than every row: elapsed() is cheap
+        // but not free, and the budget only has to be roughly honoured — what it
+        // protects against is a scan of millions of records, not a few hundred.
+        if (msLimit > 0 && (r & 0xFF) == 0xFF && clock.elapsed() >= msLimit) {
+            ++r; // this row WAS counted
+            break;
+        }
+    }
+    t.complete = (r >= count);
+    return t;
 }
 
 } // namespace loftail
