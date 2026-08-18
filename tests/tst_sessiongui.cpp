@@ -32,6 +32,27 @@ class TestSessionGui : public QObject
 private:
     QTemporaryDir m_logDir;
     QString       m_sample;
+    // A second log, for the seeded-rules pair below. Its own file, because those two
+    // cases hand a session to each other and must not disturb the ones above.
+    QTemporaryDir m_seedDir;
+    QString       m_seedLog;
+
+    // Drop whatever the constructor restored, so a case that opens its own file leaves
+    // a session naming only that file. The preceding cases' logs live in temporary
+    // directories that are gone by now, so what they restore is a waiting tab.
+    static void closeEverything(MainWindow &w)
+    {
+        auto *closeAll = w.findChild<QAction *>(QStringLiteral("closeAllAction"));
+        QVERIFY(closeAll);
+        closeAll->trigger();
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 0);
+    }
+
+    static QJsonArray paneRules(MainWindow &w)
+    {
+        auto *hp = w.findChild<HighlighterPane *>();
+        return hp ? hp->saveState().value(QStringLiteral("rules")).toArray() : QJsonArray();
+    }
 
     static QJsonObject highlightRulesJson()
     {
@@ -70,11 +91,25 @@ private slots:
     void roundTripRestoresFileFiltersHighlighters();
     void missingLastFileRestoresAsWaiting();
     void runSelectionThroughUiAndPersists();
+
+    // The level colours a log with nothing saved for it starts with (SPEC.md §7), and
+    // the half of that promise that is easy to break: they are a SEED, not a floor.
+    void aFreshlyOpenedLogArrivesWithTheLevelColours();
+    void aDeletedDefaultRuleStaysDeletedAcrossARelaunch();
 };
 
 void TestSessionGui::initTestCase()
 {
     QVERIFY(m_logDir.isValid());
+    QVERIFY(m_seedDir.isValid());
+    m_seedLog = m_seedDir.filePath(QStringLiteral("seeded.log"));
+    {
+        QFile f(m_seedLog);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("2026-07-21 11:00:00,000 [main] INFO  net.io - fine\n");
+        f.write("2026-07-21 11:00:01,000 [main] ERROR net.io - broken\n");
+        f.close();
+    }
     m_sample = m_logDir.filePath(QStringLiteral("app.log"));
     QFile f(m_sample);
     QVERIFY(f.open(QIODevice::WriteOnly));
@@ -237,6 +272,78 @@ void TestSessionGui::runSelectionThroughUiAndPersists()
         // last time: saving that run would restore the session pinned to a run the
         // application has since finished, which is the one thing it exists not to do.
         QCOMPARE(runs->currentRow(), RunPane::kLastRunRow);
+        w.close();
+    }
+}
+
+void TestSessionGui::aFreshlyOpenedLogArrivesWithTheLevelColours()
+{
+    // A log loftail has never been told anything about opens with FATAL, ERROR and WARN
+    // already coloured — the three a reader opens a log to find, which rendered exactly
+    // like TRACE before (SPEC.md §7). Driven through the real MainWindow because that is
+    // where the seed is applied: it is the one place that can ask whether anything has
+    // ever been stored for this file.
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    closeEverything(w);
+    w.openFile(m_seedLog);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTest::qWait(300);
+
+    const QJsonArray rules = paneRules(w);
+    QCOMPARE(rules.size(), 3);
+    for (const QJsonValue &v : rules) {
+        const QJsonObject rule = v.toObject();
+        QVERIFY(rule.value(QStringLiteral("enabled")).toBool());
+        // Colour alone, which serializes as NO "actions" key at all — the same shape a
+        // rule written before actions existed has, and the reason no schema version
+        // moves to ship these.
+        QVERIFY(!rule.contains(QStringLiteral("actions")));
+        QVERIFY(rule.value(QStringLiteral("match")).toObject()
+                    .value(QStringLiteral("priorityEnabled"))
+                    .toBool());
+    }
+
+    w.close(); // saves a session naming m_seedLog, which the next case relaunches into
+}
+
+void TestSessionGui::aDeletedDefaultRuleStaysDeletedAcrossARelaunch()
+{
+    // THE ONE THAT MATTERS. A default that comes back after being deleted is a bug the
+    // user cannot get rid of, so once the rules have been touched — including emptied —
+    // the user's answer is what persists. It works because the seed asks whether the
+    // session said ANYTHING about this file's rules, never whether what it said was
+    // empty (the contains()-not-isEmpty() rule, three stores deep now).
+    {
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+        QTest::qWait(300);
+        // Restored, not re-seeded — a saved rule list comes back as itself.
+        QCOMPARE(paneRules(w).size(), 3);
+
+        auto *hp = w.findChild<HighlighterPane *>();
+        QVERIFY(hp);
+        auto *clear = hp->findChild<QPushButton *>(QStringLiteral("ruleClear"));
+        QVERIFY(clear);
+        clear->click(); // the user's own gesture: Clear removes every rule
+        QCOMPARE(paneRules(w).size(), 0);
+
+        w.close();
+    }
+
+    {
+        MainWindow w;
+        w.show();
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+        QTest::qWait(300);
+        QCOMPARE(paneRules(w).size(), 0);
+
+        // Leave no file in the session: the log below this one lives in a QTemporaryDir
+        // that dies with this object.
+        closeEverything(w);
         w.close();
     }
 }

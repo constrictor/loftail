@@ -134,6 +134,40 @@ HighlightRule HighlightRule::fromJson(const QJsonObject &o)
     return r;
 }
 
+HighlighterSet HighlighterSet::defaults()
+{
+    // Palette SLOTS, never RGB (ARCHITECTURE.md §8), so a default rule follows the
+    // theme exactly as a hand-made one does. A slot is `band * kSlotsPerBand + hue`
+    // over Palette.cpp's table, where hue 0 is Red and hue 2 Amber — spelled out that
+    // way rather than as 0/9/20, because the number means nothing and the band does.
+    // One rule per band, in the order the bands are loud: FATAL screams (Vivid), ERROR
+    // is a strong fill (Deep), WARN is a quiet tint (Soft).
+    constexpr int kDeepRed = 0 * HighlightPalette::kSlotsPerBand + 0;
+    constexpr int kVividRed = 1 * HighlightPalette::kSlotsPerBand + 0;
+    constexpr int kSoftAmber = 2 * HighlightPalette::kSlotsPerBand + 2;
+
+    HighlighterSet set;
+    auto level = [&set](Priority minimum, int background) {
+        HighlightRule r;
+        r.match.priorityEnabled = true;
+        r.match.minPriority = minimum;
+        // Explicit although it is also the member's default: what a default rule does
+        // is the half of it that has to be read at a glance, and Colour ALONE is the
+        // claim being made.
+        r.actions = HighlightAction::Color;
+        r.background = background;
+        // The partner the palette names, never a second choice: that pairing is the one
+        // thing guaranteed to clear 4.5:1 in BOTH themes (Palette.h), so a default rule
+        // is readable by construction rather than by inspection.
+        r.foreground = HighlightPalette::readableTextSlot(background);
+        set.rules.append(r);
+    };
+    level(Priority::Fatal, kVividRed);
+    level(Priority::Error, kDeepRed);
+    level(Priority::Warn, kSoftAmber);
+    return set;
+}
+
 void HighlighterSet::resolve(const RecordIndex &idx, const LogFormat &format,
                              const QTimeZone &displayZone)
 {

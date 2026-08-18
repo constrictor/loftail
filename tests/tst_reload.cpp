@@ -179,6 +179,9 @@ void TestReload::itKeepsTheTabTheFiltersAndTheHighlightRules()
     rule.enabled = true;
     rule.match.text.enabled = true;
     rule.match.text.matcher.set(QStringLiteral("and me"), false, Qt::CaseInsensitive);
+    // Counted from the level colours a fresh open seeds (SPEC.md §7): what survives a
+    // reload is the whole list, and the rule this test cares about is the one it added.
+    const int seeded = doc->highlighters().rules.size();
     doc->highlighters().rules.append(rule);
     doc->resolveHighlighters();
 
@@ -192,8 +195,8 @@ void TestReload::itKeepsTheTabTheFiltersAndTheHighlightRules()
     // merely remembered — the intern ids it compares against were rebuilt from scratch.
     QVERIFY(doc->filters().anyActive());
     QCOMPARE(doc->filtered().recordCount(), 1);
-    QCOMPARE(doc->highlighters().rules.size(), 1);
-    QVERIFY(doc->highlighters().rules.first().enabled);
+    QCOMPARE(doc->highlighters().rules.size(), seeded + 1);
+    QVERIFY(doc->highlighters().rules.last().enabled);
     w.close();
 }
 
@@ -327,6 +330,7 @@ void TestReload::changingThePatternKeepsTheDocumentAndItsHighlightRules()
     rule.enabled = true;
     rule.match.text.enabled = true;
     rule.match.text.matcher.set(QStringLiteral("beta"), false, Qt::CaseInsensitive);
+    const int seeded = doc->highlighters().rules.size(); // the seeded level colours
     doc->highlighters().rules.append(rule);
     doc->resolveHighlighters();
 
@@ -338,8 +342,8 @@ void TestReload::changingThePatternKeepsTheDocumentAndItsHighlightRules()
     // the thing openWithSettings() could never have delivered even had it worked, since
     // it builds a new Document and a new context.
     QCOMPARE(documentOf(w), doc);
-    QCOMPARE(doc->highlighters().rules.size(), 1);
-    QVERIFY(doc->highlighters().rules.first().enabled);
+    QCOMPARE(doc->highlighters().rules.size(), seeded + 1);
+    QVERIFY(doc->highlighters().rules.last().enabled);
     QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
     w.close();
 }

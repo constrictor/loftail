@@ -392,24 +392,30 @@ void TestRecordMenu::highlightingAppendsARuleAndKeepsTheOthers()
     waitUntilIndexed(w);
     Document *doc = activeView(w)->context()->doc.get();
 
+    // A freshly opened log arrives with the level colours already in the list (SPEC.md
+    // §7), and "keeps the others" is exactly the claim here — so the menu's rules are
+    // counted from the end of the seed rather than from zero.
+    const int seeded = doc->highlighters().rules.size();
+    QVERIFY(seeded > 0);
+
     QMenu first;
     w.buildRecordMenu(&first, activeView(w), kMain, -1);
     item(first, "recordHighlightSubsystem")->trigger();
-    QCOMPARE(doc->highlighters().rules.size(), 1);
-    QCOMPARE(doc->highlighters().rules.at(0).match.loggerNames,
+    QCOMPARE(doc->highlighters().rules.size(), seeded + 1);
+    QCOMPARE(doc->highlighters().rules.at(seeded).match.loggerNames,
              QStringList{QStringLiteral("net.io")});
-    QVERIFY(doc->highlighters().rules.at(0).match.loggerEnabled);
+    QVERIFY(doc->highlighters().rules.at(seeded).match.loggerEnabled);
 
     QMenu second;
     w.buildRecordMenu(&second, activeView(w), kWorker, -1);
     item(second, "recordHighlightThread")->trigger();
-    QCOMPARE(doc->highlighters().rules.size(), 2);
+    QCOMPARE(doc->highlighters().rules.size(), seeded + 2);
     // Appended, so the rule that was there keeps its first-match-wins precedence...
-    QCOMPARE(doc->highlighters().rules.at(0).match.loggerNames,
+    QCOMPARE(doc->highlighters().rules.at(seeded).match.loggerNames,
              QStringList{QStringLiteral("net.io")});
     // ...and the two are told apart by color rather than both landing on slot 0.
-    QVERIFY(doc->highlighters().rules.at(0).background
-            != doc->highlighters().rules.at(1).background);
+    QVERIFY(doc->highlighters().rules.at(seeded).background
+            != doc->highlighters().rules.at(seeded + 1).background);
 
     // Highlighting removes nothing: every record is still there (SPEC.md §7).
     QCOMPARE(visibleRecords(w), 4);

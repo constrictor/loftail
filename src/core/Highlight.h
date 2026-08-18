@@ -134,6 +134,30 @@ class HighlighterSet
 public:
     QVector<HighlightRule> rules;
 
+    // The rule list a log starts with when nothing has ever been saved for it
+    // (SPEC.md §7, ARCHITECTURE.md §7.5.4). ERROR and FATAL are what a reader opens a
+    // log to find, and out of the box they rendered exactly like TRACE; three rules is
+    // what that costs, and the whole of what shipping them needs.
+    //
+    // A SEED, never a floor: the caller applies it only where nothing was stored, so a
+    // user who deletes every rule keeps an empty list. The distinction is the caller's
+    // — MainWindow asks whether the session said anything about this file's rules at
+    // all, not whether what it said was empty (the contains()-not-isEmpty() rule
+    // fromJson records above, one level up).
+    //
+    // Ordered high-severity-first, because the priority axis is a MINIMUM: the ERROR
+    // rule also matches FATAL, so the FATAL rule has to sit above it or first-match-wins
+    // hands a FATAL record the ERROR colour. Nothing below WARN is coloured — colouring
+    // the noise spends the reader's attention on the records they were skipping — and
+    // every rule carries the COLOUR ACTION ALONE: a default that marked tabs or raised
+    // desktop notifications would be loftail deciding, before the user has opened the
+    // pane, that every ERROR in every log is worth interrupting them for.
+    //
+    // A format with no %p leaves every record at Priority::Unknown, which
+    // AbsentField::DoesNotMatch already refuses to colour, so these rules are inert on
+    // a log that carries no level with no gate anywhere.
+    static HighlighterSet defaults();
+
     // Resolve every rule's criteria against `idx` (which owns the intern tables),
     // `format` (which gates the thread and time axes) and `displayZone` (which
     // interprets the typed time bounds). Must be re-run whenever the intern tables
