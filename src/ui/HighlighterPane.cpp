@@ -47,6 +47,13 @@ constexpr int kCellMargin = 2;
 // Between the two swatch pickers, which share one cell. Small, because they are one
 // answer in two halves.
 constexpr int kColourGap = 2;
+// How far the background picker's tile is held off the edge of its icon, and how far its
+// corners are rounded. This margin is the whole of what tells the two pickers apart, so
+// it is a measurement rather than a taste: 2 px a side takes a 14 px swatch down to a
+// 10 px chip, which is about half its area — and unlike the bar under the text picker's
+// letter it is there whatever the rule's two colours are.
+constexpr qreal kChipInset = 2.0;
+constexpr qreal kChipRadius = 2.0;
 // How far the empty-table message is held off the table's frame, so a sentence that
 // wraps does not run into it.
 constexpr int kPlaceholderInset = 12;
@@ -74,54 +81,88 @@ void drawLetterA(QPainter &p, const QColor &c, qreal weight, const QRectF &box)
 // the other role's colour, already resolved (see HighlighterPane::roleColour), because
 // what the preview must show is what the record gets, not what the rule stores.
 //
-// That makes the two pickers' *closed* swatches identical, both being the rule's own
-// pair, so what says which role a picker sets is the BAR under the text picker's letter,
-// in the letter's own colour — the one long-standing idiom for a text-colour control,
-// and the only mark that survives at 14 px. The tile's shape used to carry it (a fill
-// for the background, a letterform for the text), which a preview of both colours has
-// nothing left to spend.
+// Which leaves both pickers previewing the same pair, so what says which role a picker
+// sets cannot be a colour: it is the tile's GEOMETRY, the one thing the preview leaves
+// free.
+//
+//   Text colour       the tile fills the icon edge to edge — there the field is only
+//                     context — and the answer is the letter with a BAR under it, the
+//                     long-standing mark for a text-colour control.
+//   Background        the tile is an inset, rounded CHIP with a margin round it: the
+//                     discrete block of colour that is what this picker chooses.
+//
+// The margin is what makes the cue independent of the rule: the bar alone is drawn in the
+// text colour, so on a rule whose text and background are the same tone it disappeared
+// and the two icons came out pixel-identical (0 of 196 differing at 14 px, measured).
+// A shape cue survives that, and `tst_highlighterpane` pins it at the same size the row
+// draws at. The `kDefault` entry takes the same two shapes, so a picker says which role
+// it sets even at the one entry that has no colour to show.
 QIcon swatchIcon(const QColor &c, HighlighterPane::ColourRole role, const QColor &ink,
                  const QColor &counterpart)
 {
+    const bool foreground = (role == HighlighterPane::ColourRole::Foreground);
     QPixmap pm(kGlyphPx, kGlyphPx);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
     QColor line = ink;
-    const QRectF tile(0.5, 0.5, kGlyphPx - 1.5, kGlyphPx - 1.5);
+    // The role's shape, in two rects: what is filled, and where the hairline round it is
+    // stroked (half a pixel in, so a 1 px pen lands on whole pixels).
+    const QRectF chip = foreground
+                            ? QRectF(0, 0, kGlyphPx, kGlyphPx)
+                            : QRectF(kChipInset, kChipInset, kGlyphPx - 2 * kChipInset,
+                                     kGlyphPx - 2 * kChipInset);
+    const QRectF edge = chip.adjusted(0.5, 0.5, -0.5, -0.5);
+    const qreal radius = foreground ? 0.0 : kChipRadius;
+    const auto outline = [&p, &edge, radius] {
+        if (radius > 0.0)
+            p.drawRoundedRect(edge, radius, radius);
+        else
+            p.drawRect(edge);
+    };
 
     if (!c.isValid()) {
         // *default* is a choice like any other and has to be visible as one, in either
         // role. A blank 14 px square reads as a missing icon, and in an icon-only picker
         // there is no word beside it to say otherwise — so the empty slot is drawn as an
-        // empty slot: an outline with a stroke through it. Deliberately NOT previewed
-        // like the rest: previewed, the theme's own text on the theme's own base is what
-        // Ink-on-Paper already looks like, and the one thing this item has to say is
-        // that it names no colour at all.
+        // empty slot: the role's own outline with a stroke through it. Deliberately NOT
+        // previewed like the rest: previewed, the theme's own text on the theme's own
+        // base is what Ink-on-Paper already looks like, and the one thing this item has
+        // to say is that it names no colour at all. Nothing here is painted solid, which
+        // is what keeps "no colour" true whatever the theme is.
         line.setAlpha(140);
         p.setPen(QPen(line, 1.0));
-        p.drawRect(tile);
-        p.drawLine(QPointF(2.5, kGlyphPx - 2.5), QPointF(kGlyphPx - 2.5, 2.5));
+        p.setBrush(Qt::NoBrush);
+        outline();
+        const qreal in = foreground ? 2.0 : 1.5;
+        p.drawLine(QPointF(edge.left() + in, edge.bottom() - in),
+                   QPointF(edge.right() - in, edge.top() + in));
         return QIcon(pm);
     }
 
-    const bool foreground = (role == HighlighterPane::ColourRole::Foreground);
     const QColor text = foreground ? c : counterpart;
-    p.fillRect(pm.rect(), foreground ? counterpart : c);
     if (foreground) {
+        p.fillRect(chip, counterpart);
         // The letter sits in what is left above the bar, so the two together are centred
         // rather than the letter alone being pushed off-centre by it.
-        drawLetterA(p, text, 1.6, QRectF(3.0, 2.4, 8.0, 6.6));
-        p.fillRect(QRectF(2.8, 10.6, kGlyphPx - 5.6, 2.0), text);
+        drawLetterA(p, text, 1.6, QRectF(3.0, 2.0, 8.0, 6.6));
+        p.fillRect(QRectF(2.4, 9.8, kGlyphPx - 4.8, 2.4), text);
     } else {
-        drawLetterA(p, text, 1.6, QRectF(3.0, 3.2, 8.0, 7.8));
+        QPainterPath fill;
+        fill.addRoundedRect(chip, kChipRadius, kChipRadius);
+        p.fillPath(fill, c);
+        // Smaller, because the chip is: the letter is what makes the entry a preview of
+        // the pair rather than a colour on its own, and the chip is what makes it this
+        // picker's.
+        drawLetterA(p, text, 1.4, QRectF(3.9, 3.2, 6.2, 6.6));
     }
     // ...inside an outline, which is not decoration: Paper is a near-white and Ink a
     // near-black, so on the theme that matches one of them a swatch with no edge is an
     // empty cell — and the *default* swatch above is exactly what an empty cell means.
     line.setAlpha(90);
     p.setPen(QPen(line, 1.0));
-    p.drawRect(tile);
+    p.setBrush(Qt::NoBrush);
+    outline();
     return QIcon(pm);
 }
 
