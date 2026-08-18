@@ -6,35 +6,15 @@ are missing. Gaps and rough edges belong in `improvements.md`.
 Found on 2026-08-18 by a review pass over the 26 commits of that day: three
 agents driving the real UI (Xvfb + xdotool, screenshots measured with PIL) over
 the record table, the panes and the window, and a fourth reading the code. Ranked
-by severity, not by area.
+by severity, not by area. The first entry — a narrowing conversion that MSVC
+refuses, which broke the Windows leg of CI at HEAD — has since been fixed and
+removed.
 
-Nothing here has been fixed. Line numbers are as of commit 35e8cb9.
+The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
 
-### 1. The Windows build cannot compile, because a `qsizetype` is narrowed inside a braced initialiser
-
-`TextMatcher::spans()` (`Filter.cpp:57`) does
-`out.append(Span{m.capturedStart(), length})`. `QRegularExpressionMatch::capturedStart()`
-returns `qsizetype`; `Span::start` is `int`. Narrowing in list-initialisation is
-ill-formed — GCC downgrades it to `-Wnarrowing` and builds, MSVC does not: it is
-error C2397. `loftail_core` is linked by every target, so the whole Windows leg
-fails to compile.
-
-It is the only new warning in a full rebuild of the tree, and the sibling
-substring branch four lines below is written correctly (`const int at = …` is
-copy-initialisation, and `patternLength` carries an explicit cast), so this is a
-slip rather than a pattern. Introduced by `60b4aa5`.
-
-This is the one that matters most in practice, because Windows CI is the only
-cross-platform check this project has, and it will not even reach the tests.
-
-Fix: `Span{int(m.capturedStart()), length}` — the spelling already used four
-lines down and in `LogView.cpp`'s `base += int(paragraph.size())`. Worth grepping
-for other new brace-initialised aggregates fed from a `qsizetype`; this is the
-only one the compiler flagged.
-
-### 2. Appending to a log while Line Wrap is Always On reads past the end of the measured block
+### 1. Appending to a log while Line Wrap is Always On reads past the end of the measured block
 
 `LogView::ensureEstimatorBound()` (`LogView.cpp:551`) rebinds the estimator when
 the index address or its **block count** changes. `RecordIndex::kBlockSize` is
@@ -62,7 +42,7 @@ the next `measureBlock()` re-measures it. Belt and braces:
 `recordHeightLines()` should bounds-check `r - blockStartRecord(block)` against
 `lines.size()` and fall through to the estimate rather than `at()`.
 
-### 3. Opening several logs at once leaves every tab but the last showing none of its records
+### 2. Opening several logs at once leaves every tab but the last showing none of its records
 
 `loftail svc-a/app.log svc-b/app.log other/server.log` from a clean config. The
 tab in front is fine. Click either of the others and the table is empty —
@@ -92,7 +72,7 @@ discovery rule for an empty stored selection on an axis the user never touched.
 More than a one-liner because `MatchCriteria` is also the preset and session
 schema, so the ambiguity has to be resolved without a version bump.
 
-### 4. Wrapped message text is clipped off the bottom of every wrapped record
+### 3. Wrapped message text is clipped off the bottom of every wrapped record
 
 `LogView::lineHeight()` (`LogView.cpp:441`) is `fontMetrics().height()`, but
 `QPainter::drawText()` lays wrapped text out at `qt_format_text`'s own pitch,
@@ -123,7 +103,7 @@ positions lines on `lh` explicitly, and renders correctly), or derive
 `measureWrappedLines()` divides one by the other — so fixing one alone just moves
 the error.
 
-### 5. A wrapped record re-flows to different line breaks the moment Find is armed
+### 4. A wrapped record re-flows to different line breaks the moment Find is armed
 
 `drawWrappedCell()` has two paths: an unmarked `p.drawText(rect, flags, text)`
 (`LogView.cpp:184`) and a marked `QTextLayout` one (`:196`). `ARCHITECTURE.md`
@@ -146,7 +126,7 @@ translation, and draw both through `QTextLayout`. That is also the fix for the
 previous entry. Either way `measureWrappedLines()` has to be measuring the same
 wrapping the paint performs, or the height and the text disagree again.
 
-### 6. Selecting a run rewrites the log's seeded highlight rules and saves them
+### 5. Selecting a run rewrites the log's seeded highlight rules and saves them
 
 `HighlighterPane::refreshTimeBounds()` (`HighlighterPane.cpp:1278`) does
 `m_rules[row].match = m_axes->criteria(); commit();` unconditionally, even though
@@ -175,7 +155,7 @@ one-liner because a rule with `timeEnabled` set whose bounds genuinely were
 re-rendered must still write back, and `commit()` is also what emits
 `highlightersChanged()`.
 
-### 7. The Runs pane's Regex and Case boxes apply a pattern the user has not pressed Apply for
+### 6. The Runs pane's Regex and Case boxes apply a pattern the user has not pressed Apply for
 
 `RunPane::buildUi()` (`RunPane.cpp:95`) connects both checkboxes' `toggled` to
 `emitPattern`. Type a run-start pattern — the note under Apply correctly turns
@@ -195,7 +175,7 @@ only route, keeping the `updateApplyNote` connections so ticking a box still
 turns the note amber. `tst_runpane` has no case for it; one belongs beside
 `aTypedPatternMakesTheNoteAskForApply`.
 
-### 8. A log that turns up is read the instant it exists, so its format is judged against an empty file
+### 7. A log that turns up is read the instant it exists, so its format is judged against an empty file
 
 `LiveController::checkWhileWaiting()` (`LiveController.cpp:260`) resumes a local
 waiting document on `logSourceAvailable(path)` — existence. For a real logging
@@ -218,7 +198,7 @@ equivalent of `notReadyYet()`. Mind the M17 note that `resume()` cannot be undon
 and that a log which genuinely stays empty must still open as an ordinary empty
 tab rather than waiting for ever.
 
-### 9. The Priority column opens too narrow to say "Priority" — the exact failure SPEC says was fixed
+### 8. The Priority column opens too narrow to say "Priority" — the exact failure SPEC says was fixed
 
 `LogView::seedWidthOf()` (`LogView.cpp:2046`) adds a flat `kColumnPadding` of
 10 px to the caption width, but a header section spends `PM_HeaderMargin` on each
@@ -246,7 +226,7 @@ comment explaining why — take its `QStyleOptionHeader` / `SE_HeaderLabel` inse
 and add it to the caption term of `seedWidthOf()` and `contentWidthOf()`. For the
 rounding, measure a representative string rather than multiplying one glyph.
 
-### 10. Moving a column while Line Wrap is Always On leaves every row measured against the old width
+### 9. Moving a column while Line Wrap is Always On leaves every row measured against the old width
 
 `LogView.cpp:385`, the `QHeaderView::sectionMoved` connection, does only
 `viewport()->update(); emit columnLayoutChanged();`. But `viewportCols()` is
@@ -265,7 +245,7 @@ Fix: have the `sectionMoved` lambda call `recomputeGeometry()` as `sectionResize
 does. It already routes to the debounce in estimating mode and is a no-op
 elsewhere.
 
-### 11. The Find bar's buttons slide under the pointer when the status text changes
+### 10. The Find bar's buttons slide under the pointer when the status text changes
 
 `FindBar.cpp:29` and `:55` put the query box and the status label in one
 stretchable row with the four controls. The label's width therefore moves
@@ -289,7 +269,7 @@ to the left of the query box. A size policy on the label alone is not enough: it
 must not be able to take width from the query box, which is what shifts
 everything between them.
 
-### 12. One record fills the whole viewport when the Message column is narrow and wrap is on
+### 11. One record fills the whole viewport when the Message column is narrow and wrap is on
 
 With Line Wrap ▸ Always On and the document area about 640 px wide (a 1100 px
 window with the side pane docked), the table draws exactly one record per screen
@@ -305,7 +285,7 @@ contemplate a record taller than the viewport for want of one.
 Fix: clamp the wrap width used for the estimated line count to a sensible
 minimum, and check the same clamp on the exact path's `measureWrappedLines()`.
 
-### 13. A marked wrapped cell redraws the whole record layout once per match
+### 12. A marked wrapped cell redraws the whole record layout once per match
 
 `drawWrappedCell()`'s `drawLayout` (`LogView.cpp:227`) is
 `layout.draw(&p, rect.topLeft())` — every line of the paragraph — and `paintMark`
@@ -331,7 +311,7 @@ layout. The glyphs still come from the same layout at the same position, so the
 becomes O(spans). `drawElidedCell` has the same shape one order down and deserves
 the same treatment, though its string is bounded by the column width.
 
-### 14. A refused archive member says "connecting…" in the view for ever
+### 13. A refused archive member says "connecting…" in the view for ever
 
 `MainWindow.cpp:2201` writes the view's placeholder on a waiting *transition*
 only, while `LiveController::checkWhileWaiting()` (`LiveController.cpp:264`)
@@ -352,7 +332,7 @@ the last published one, and update `Document::m_waitReason` so a new view and th
 tab tooltip agree. Guard against re-emitting every tick by comparing against the
 last text, as `publishSourceStatus` already does.
 
-### 15. A refusal whose address has no file-name part is reported as "Cannot open : …"
+### 14. A refusal whose address has no file-name part is reported as "Cannot open : …"
 
 `loftail ssh://` puts `Cannot open : Not a valid remote log address: ssh://` in
 the strip above the tabs — nothing before the colon.
@@ -368,7 +348,7 @@ Fix: fall back to the raw address when the computed display name is empty. The
 same function names tab labels and recent-file entries, so one fallback covers
 all three.
 
-### 16. `--pattern` overrides a remembered format, contradicting both `--help` and SPEC
+### 15. `--pattern` overrides a remembered format, contradicting both `--help` and SPEC
 
 `MainWindow::openFile()` (`MainWindow.cpp:1382`) applies the switch
 unconditionally: `if (!pattern.isEmpty()) settings.pattern = pattern;`. With a
@@ -388,7 +368,7 @@ that command line. Note the same `pattern.isEmpty()` also decides
 `promptIfNoMatch`, so the "no blocking dialog for a scripted open" property has
 to survive either way.
 
-### 17. F3 with the Find bar closed answers into a bar nobody can see
+### 16. F3 with the Find bar closed answers into a bar nobody can see
 
 `MainWindow::runFind()` (`MainWindow.cpp:2791`) reports `no search text` through
 `findBar->setStatus()` (`:2807`) when a deliberate navigation is made on an empty
