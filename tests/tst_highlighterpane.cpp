@@ -12,6 +12,7 @@
 #include <QGroupBox>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLabel>
 #include <QLineEdit>
 #include <QHeaderView>
 #include <QListWidget>
@@ -152,6 +153,13 @@ private:
             ->setCheckState(on ? Qt::Checked : Qt::Unchecked);
     }
 
+    // What an empty table says for itself. By object name, never by its wording — the
+    // wording is translated prose and the two empty states differ in exactly that.
+    static QLabel *placeholder(QWidget &w)
+    {
+        return w.findChild<QLabel *>(QStringLiteral("ruleTablePlaceholder"));
+    }
+
     static bool ruleIsEnabled(QWidget &w, int row)
     {
         return ruleTable(w)->item(row, HighlighterPane::kColEnabled)->checkState() == Qt::Checked;
@@ -228,6 +236,11 @@ private slots:
     void theValueListsTakeTheSpareHeight();
     void noSectionClipsItsOwnTitle();
     void theAxesSitWhereTheFiltersPanesDo();
+
+    // The empty table is not a void: it says which of the two empty states it is in.
+    void theEmptyTableSaysThereIsNoFileOpen();
+    void theEmptyTableAsksForARuleWhileAFileIsOpen();
+    void thePlaceholderGoesAsSoonAsThereIsARuleAndComesBackWithTheLast();
 };
 
 void TestHighlighterPane::everyAxisIsOfferedAndOptIn()
@@ -1474,6 +1487,96 @@ void TestHighlighterPane::theAxesSitWhereTheFiltersPanesDo()
     // column rather than as a table with a differently indented editor under it.
     QCOMPARE(ruleTable(highlighters)->mapTo(&highlighters, QPoint(0, 0)).x(),
              inset(highlighters, "subsystemGroup").first);
+}
+
+// --- The empty table, which used to say nothing at all -----------------------
+//
+// The main window's centre explains itself when it has no file ("No file open. Open a
+// log file to begin."); the rule table got an unexplained framed void, with the axis
+// editor below it correctly greyed and equally silent. There are TWO empty states and
+// they do not want the same words, which is the whole of what these three pin.
+
+void TestHighlighterPane::theEmptyTableSaysThereIsNoFileOpen()
+{
+    HighlighterPane pane;
+    pane.resize(320, 600);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+
+    QLabel *note = placeholder(pane);
+    QVERIFY(note);
+    QVERIFY(note->isVisible());
+    QVERIFY(!note->text().isEmpty());
+
+    // Muted, and from the PALETTE rather than from a constant: the pane is read on a
+    // light theme and a dark one, and a grey picked for either is invisible on the other.
+    QCOMPARE(note->palette().color(QPalette::WindowText),
+             pane.palette().placeholderText().color());
+
+    // It is a label over the viewport, NEVER a row: a row would be a rule to everything
+    // that walks rows — the reorder buttons, the per-row "ruleRow" property, saveState().
+    QTableWidget *table = ruleTable(pane);
+    QCOMPARE(table->rowCount(), 0);
+    QCOMPARE(pane.saveState().value(QStringLiteral("rules")).toArray().size(), 0);
+    QVERIFY(table->viewport()->rect().contains(note->geometry()));
+}
+
+void TestHighlighterPane::theEmptyTableAsksForARuleWhileAFileIsOpen()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.resize(320, 600);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+
+    QLabel *note = placeholder(pane);
+    QVERIFY(note);
+    const QString withNoFile = note->text();
+
+    pane.setDocument(&doc);
+    QVERIFY(note->isVisible());
+    QVERIFY(!note->text().isEmpty());
+    // A file IS open here, so "open a log file" would be an instruction the user has
+    // already carried out. What is missing is a rule, and the words have to differ.
+    QVERIFY2(note->text() != withNoFile, qPrintable(note->text()));
+}
+
+void TestHighlighterPane::thePlaceholderGoesAsSoonAsThereIsARuleAndComesBackWithTheLast()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.resize(320, 600);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    pane.setDocument(&doc);
+
+    QLabel *note = placeholder(pane);
+    QVERIFY(note);
+    QVERIFY(note->isVisible());
+
+    button(pane, QStringLiteral("ruleNew"))->click();
+    QCOMPARE(ruleTable(pane)->rowCount(), 1);
+    QVERIFY2(!note->isVisible(), "the message is still over a table that has a rule in it");
+
+    // And back when the last one goes — the state a user reaches by emptying the table,
+    // which is now the only way to see it with a file open (a fresh log arrives with
+    // rules of its own).
+    button(pane, QStringLiteral("ruleRemove"))->click();
+    QCOMPARE(ruleTable(pane)->rowCount(), 0);
+    QVERIFY(note->isVisible());
+
+    // Clear takes the same route, several rules at a time.
+    button(pane, QStringLiteral("ruleNew"))->click();
+    button(pane, QStringLiteral("ruleNew"))->click();
+    QVERIFY(!note->isVisible());
+    button(pane, QStringLiteral("ruleClear"))->click();
+    QVERIFY(note->isVisible());
 }
 
 QTEST_MAIN(TestHighlighterPane)
