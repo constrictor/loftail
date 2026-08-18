@@ -9,45 +9,15 @@ the record table, the panes and the window, and a fourth reading the code. Ranke
 by severity, not by area. The first entry — a narrowing conversion that MSVC
 refuses, which broke the Windows leg of CI at HEAD — has since been fixed and
 removed, and so have entry 1, the estimator reading past a measured block when a
-log grew under Line Wrap ▸ Always On, and entry 2, every tab but the last one
-showing none of its records after several logs were opened at once. The numbers
+log grew under Line Wrap ▸ Always On, entry 2, every tab but the last one
+showing none of its records after several logs were opened at once, and entry 3,
+wrapped message text clipped off the bottom of every wrapped record. The numbers
 left behind are not reused: the entries below keep the ones they were given, so
 they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 3. Wrapped message text is clipped off the bottom of every wrapped record
-
-`LogView::lineHeight()` (`LogView.cpp:441`) is `fontMetrics().height()`, but
-`QPainter::drawText()` lays wrapped text out at `qt_format_text`'s own pitch,
-which is one pixel more at the shipped font. Measured on a wrapped 10-line
-record: the row's background band is 150 px (10 × 15), while the painted text
-lines sit at a 16 px pitch and need 160 — so 10 px of text is drawn outside the
-row and clipped.
-
-Reproduced standalone with the app's font: `QFontMetrics::height()` and
-`lineSpacing()` are both 15, while `boundingRect(…, TextWordWrap|TextWrapAnywhere)`
-returns 64 for four lines and the painted ink bands sit 16 px apart. The deficit
-is 1 px per line, so from about 13 wrapped lines the whole last line is gone.
-
-Selected-Record-Only shows the mirror symptom: `measureWrappedLines()`
-(`LogView.cpp:466`) divides a `boundingRect` height (Qt's pitch) by
-`lineHeight()` (the view's), so `ceil(64/15) = 5` gives a four-line record 75 px
-and an 11 px blank strip under its text.
-
-`SPEC.md` §5 says a wrapped message "is on screen in full, in as many lines as it
-takes, so it offers nothing to hover" — and `truncatedCellText()` returns nothing
-for a wrapped message on exactly that reasoning, so the loss is silent: no
-ellipsis, no tooltip, nothing to recover it with.
-
-Fix: the view's line pitch and Qt's layout pitch have to be the same number.
-Either draw the wrapped cell through the `QTextLayout` branch always (it already
-positions lines on `lh` explicitly, and renders correctly), or derive
-`lineHeight()` from what `qt_format_text` uses. The two ends are entangled —
-`measureWrappedLines()` divides one by the other — so fixing one alone just moves
-the error.
 
 ### 4. A wrapped record re-flows to different line breaks the moment Find is armed
 
