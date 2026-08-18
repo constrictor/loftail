@@ -246,6 +246,8 @@ Time-range filter bounds (§6) are always entered as wall clock in the display t
 
 - **Multi-line records are shown in full, in place.** A record whose message spans several lines occupies a correspondingly taller row in the table — the entire text is visible without expanding, selecting, or opening a detail pane. Row heights therefore vary throughout the table.
 
+- **Every other record is shaded.** Records alternate between the view's background and a faintly tinted band, and the band covers the whole **record** rather than a line of it — so in *always on* wrapping, where one record occupies three or four lines, the shading is what says where one record ends and the next begins instead of the reader tracking it by the timestamp column. The tint is derived from the theme, so it is equally present on a light and on a dark one. A record a highlight rule has coloured (§7) keeps its own colour, unshaded: the band is what a record wears when nothing else has claimed it.
+
 - **Oversized records are capped.** A record longer than 100 lines (a large stack dump, a serialized payload) displays truncated with an indicator and expands on request, so no single record can fill the viewport. Copying always yields the full text regardless of display truncation.
 
 - **Line wrapping is a user setting with three modes:**

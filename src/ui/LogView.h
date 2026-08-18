@@ -267,8 +267,8 @@ private:
 
     // Resolve one row's background and text color for painting (M5). Selection wins;
     // otherwise the highlight rules speak through the model's Background/Foreground
-    // roles (SPEC.md §7), each falling back to the theme color (with a subtle zebra
-    // on the background when no rule applies).
+    // roles (SPEC.md §7), each falling back to the theme color — the background to an
+    // alternating band per RECORD (UiColors::alternateRowColor) when no rule applies.
     void resolveRowColors(int row, bool selected, QColor &bg, QColor &fg) const;
 
     void setFollowingState(bool following); // update state + control + emit signal

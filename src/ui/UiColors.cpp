@@ -21,6 +21,14 @@ constexpr qreal kPlaceholderMix = 0.45;
 constexpr qreal kContextTextMix = 0.35;
 constexpr qreal kContextFillMix = 0.55;
 
+// How far the log table's alternating band sits from the view's base toward its text.
+// Small enough to read as a band rather than as a second surface — a record is not a
+// row in a spreadsheet, it is a paragraph three or four lines tall in wrap-always-on,
+// and a heavy stripe over that much area competes with the highlight colours that mean
+// something. It lands near 1.13:1 on both a white base and a near-black one, where the
+// lighter(108) it replaces measured 1.00:1 and 1.02:1 respectively.
+constexpr qreal kAlternateRowMix = 0.06;
+
 // How far a section divider sits from the text colour toward the surface behind it.
 // Further than anything else here, because this is not text: it is a line whose whole
 // job is to be noticed without being read, and the full text colour draws a rule across
@@ -119,6 +127,11 @@ QColor dividerColor(const QPalette &palette, QPalette::ColorGroup group)
 {
     return mix(palette.color(group, QPalette::WindowText),
                palette.color(group, QPalette::Window), kDividerMix);
+}
+
+QColor alternateRowColor(const QPalette &palette)
+{
+    return mix(palette.color(QPalette::Base), palette.color(QPalette::Text), kAlternateRowMix);
 }
 
 QColor contextTextColor(const QColor &fg, const QColor &bg)
