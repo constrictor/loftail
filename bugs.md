@@ -8,39 +8,14 @@ agents driving the real UI (Xvfb + xdotool, screenshots measured with PIL) over
 the record table, the panes and the window, and a fourth reading the code. Ranked
 by severity, not by area. The first entry — a narrowing conversion that MSVC
 refuses, which broke the Windows leg of CI at HEAD — has since been fixed and
-removed.
+removed, and so has entry 1, the estimator reading past a measured block when a
+log grew under Line Wrap ▸ Always On. The numbers left behind are not reused: the
+entries below keep the ones they were given, so they can still be referred to by
+number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 1. Appending to a log while Line Wrap is Always On reads past the end of the measured block
-
-`LogView::ensureEstimatorBound()` (`LogView.cpp:551`) rebinds the estimator when
-the index address or its **block count** changes. `RecordIndex::kBlockSize` is
-4096, so appending anything up to 4095 records into the last partial block
-changes neither. The block stays flagged measured with a `QVector<quint16>` of
-its old length, and `EstimatedGeometry::recordHeightLines()`
-(`EstimatedGeometry.cpp:280`) does `lines.at(r - blockStartRecord(block))` for
-every appended record.
-
-Reproduced in five steps on a 60-record log: open it, `Alt+Z`, `End`, append one
-ordinary line, and within one watch tick the process aborts —
-`ASSERT failure in QList::at: "index out of range"`, `recordHeightLines(r=60)`
-from `paintEvent`. No filter, no Find, no selection needed. In a release build
-`Q_ASSERT_X` is compiled out and `QList::at` becomes an unchecked out-of-bounds
-read: a garbage row height and undefined behaviour instead of an abort.
-
-The estimator bug predates today — `ensureEstimatorBound()` dates to M4 — but
-`0817395` put Always On one keystroke away, so a log being written to and a
-single `Alt+Z` now reach it. It contradicts the most basic promise in `SPEC.md`
-§3: every file is watched, and a live log is not a mode.
-
-Fix: track the record count the estimator was bound at as well as the block
-count, and when it has grown inside the last block, mark that block unmeasured so
-the next `measureBlock()` re-measures it. Belt and braces:
-`recordHeightLines()` should bounds-check `r - blockStartRecord(block)` against
-`lines.size()` and fall through to the estimate rather than `at()`.
 
 ### 2. Opening several logs at once leaves every tab but the last showing none of its records
 
