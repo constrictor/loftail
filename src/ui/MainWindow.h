@@ -120,6 +120,14 @@ private slots:
     // Pop up the record menu where the click was (SPEC.md §5). Built per invocation
     // on the stack, exactly as the column menu is.
     void showRecordMenu(DocumentView *view, int viewRow, int column, const QPoint &globalPos);
+    // What double-clicking a cell does (SPEC.md §5): the record menu's own *Show Only*
+    // item for the column that was clicked — Subsystem and Thread, the two axes a cell
+    // names a value of — and nothing at all for every other column. It goes through
+    // buildRecordMenu() and triggers the item by object name rather than editing a
+    // filter itself, so the gesture cannot acquire behaviour the menu lacks, and a
+    // record or a format that cannot speak for the axis (which offers no item) makes it
+    // do nothing with no second gate to keep in step.
+    void activateRecordColumn(DocumentView *view, int viewRow, int column);
     // Recompute the visible subset from the active document's filters and refresh
     // its views + status counts (M4). Wrapped in a model reset.
     void applyActiveFilters();

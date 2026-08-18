@@ -4,8 +4,10 @@
 #include <QApplication>
 #include <QFile>
 #include <QGroupBox>
+#include <QHeaderView>
 #include <QLineEdit>
 #include <QMenu>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -128,6 +130,69 @@ private:
         return view ? view->logView()->recordCount() : -1;
     }
 
+    // A window big enough for four records and a header, shown, with the log open and
+    // indexed. Shown because the double-click cases below aim at real coordinates, and
+    // a viewport that was never laid out has none.
+    static void openShown(MainWindow &w, const QString &path,
+                          const QString &pattern = QString())
+    {
+        w.resize(1200, 800);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        w.openFile(path, pattern);
+        waitUntilIndexed(w);
+        // Every fixture record is a single line and a log opens with wrap off, so a view
+        // row is one line tall and cellCentre()'s y is arithmetic.
+        QCOMPARE(activeView(w)->logView()->wrapMode(), LogView::WrapMode::Off);
+    }
+
+    // The centre of one cell, in the log view's VIEWPORT coordinates — which is what
+    // QTest::mouseDClick on the viewport takes, and the space the header's own section
+    // positions are in (LogView::layoutHeader aligns the two).
+    static QPoint cellCentre(const MainWindow &w, int viewRow, FieldRole role)
+    {
+        LogView *log = activeView(w)->logView();
+        const int column = columnOf(w, role);
+        if (column < 0)
+            return QPoint(-1, -1);
+        QHeaderView *h = log->header();
+        // The Message column is wider than the window, so its midpoint is off screen:
+        // any x INSIDE the section and inside the viewport identifies the cell.
+        const int lo = qMax(h->sectionViewportPosition(column), 0);
+        const int hi = qMin(h->sectionViewportPosition(column) + h->sectionSize(column) - 1,
+                            log->viewport()->width() - 1);
+        if (lo > hi)
+            return QPoint(-1, -1);
+        const int lh = log->fontMetrics().height();
+        return QPoint(qBound(lo, h->sectionViewportPosition(column) + h->sectionSize(column) / 2,
+                             hi),
+                      (viewRow - log->verticalScrollBar()->value()) * lh + lh / 2);
+    }
+
+    static void doubleClickCell(const MainWindow &w, int viewRow, FieldRole role)
+    {
+        LogView *log = activeView(w)->logView();
+        const QPoint pos = cellCentre(w, viewRow, role);
+        QVERIFY(pos.x() >= 0 && pos.y() >= 0);
+        QVERIFY(log->viewport()->rect().contains(pos));
+        QTest::mouseDClick(log->viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), pos);
+    }
+
+    // The interned ids an axis is narrowed to, as names, so a case can say what the
+    // filter came out as rather than what its bit pattern is (invariant #4).
+    static QStringList filteredNames(const MainWindow &w, bool logger)
+    {
+        const Document *doc = activeView(w)->context()->doc.get();
+        const InternTable &table = logger ? doc->index().loggers : doc->index().threads;
+        const QSet<quint32> &ids =
+            logger ? doc->filters().loggerIds : doc->filters().threadIds;
+        QStringList out;
+        for (quint32 id : ids)
+            out << table.name(id);
+        out.sort();
+        return out;
+    }
+
 private slots:
     void initTestCase();
     void init();
@@ -149,6 +214,15 @@ private slots:
     // match it was pulled in beside. Nothing in the menu changed for this, which is
     // exactly why it is worth pinning.
     void aContextRowOffersItsOwnRecord();
+
+    // The one double-click gesture (SPEC.md §5). Driven with real mouse events at the
+    // viewport, because the gesture is the whole of what was added: every case here
+    // passes against activateRecordColumn() called directly.
+    void doubleClickingASubsystemCellShowsOnlyThatSubsystem();
+    void doubleClickingAThreadCellShowsOnlyThatThread();
+    void doubleClickingAnyOtherColumnDoesNothingAtAll();
+    void doubleClickingACellTheRecordCannotAnswerForDoesNothing();
+    void doubleClickingTheSameCellAgainLeavesTheFilterWhereItIs();
 };
 
 void TestRecordMenu::initTestCase()
@@ -516,6 +590,105 @@ void TestRecordMenu::selectAllTakesTheActiveViewsVisibleRecordsAndNothingElse()
 
     selectAll->trigger();
     QCOMPARE(selectedCount(activeView(w)), 1);
+}
+
+// --- double-clicking a cell (SPEC.md §5) --------------------------------------
+//
+// The gesture is the record menu's own *Show Only …*, reached without the menu, so what
+// these pin is that it lands on the SAME per-file filter state — and that it is offered
+// exactly where the menu offers the item and nowhere else.
+
+void TestRecordMenu::doubleClickingASubsystemCellShowsOnlyThatSubsystem()
+{
+    MainWindow w;
+    openShown(w, m_log);
+    QCOMPARE(visibleRecords(w), 4);
+
+    // kWorker is db.pool, and it is NOT the record the view opened on — the gesture has
+    // to read the record under the pointer, not the selection.
+    doubleClickCell(w, kWorker, FieldRole::Logger);
+
+    const Document *doc = activeView(w)->context()->doc.get();
+    QVERIFY(doc->filters().loggerEnabled);
+    QCOMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("db.pool")});
+    QVERIFY(!doc->filters().threadEnabled);
+    // db.pool's one record, plus the unparsed line no subsystem filter may hide (§6).
+    QCOMPARE(visibleRecords(w), 2);
+    // And the record acted on is the one that was double-clicked — it is still the
+    // focused one afterwards, at whatever view row the narrowed subset gives it.
+    QCOMPARE(doc->filtered().sourceRow(activeView(w)->logView()->currentRecord()),
+             int(kWorker));
+}
+
+void TestRecordMenu::doubleClickingAThreadCellShowsOnlyThatThread()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    doubleClickCell(w, kWorker, FieldRole::Thread);
+
+    const Document *doc = activeView(w)->context()->doc.get();
+    QVERIFY(doc->filters().threadEnabled);
+    QCOMPARE(filteredNames(w, /*logger=*/false), QStringList{QStringLiteral("worker")});
+    QVERIFY(!doc->filters().loggerEnabled);
+    QCOMPARE(visibleRecords(w), 2);
+}
+
+// The item asks for ONE gesture. A Message, Time or Priority cell names no value a
+// value axis holds — the priority axis is a minimum, not a set — so a double-click there
+// does nothing rather than something invented.
+void TestRecordMenu::doubleClickingAnyOtherColumnDoesNothingAtAll()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    for (FieldRole role : {FieldRole::Message, FieldRole::Date, FieldRole::Priority}) {
+        doubleClickCell(w, kWorker, role);
+        QVERIFY2(!activeView(w)->context()->doc->filters().anyActive(),
+                 "a double-click outside the two value columns filtered something");
+        QCOMPARE(visibleRecords(w), 4);
+    }
+}
+
+// Nothing that cannot be answered: an unparsed plain-text line has no subsystem, so
+// the menu offers no item and the double-click on its Subsystem cell is inert — with no
+// gate of its own to fall out of step with the menu's.
+void TestRecordMenu::doubleClickingACellTheRecordCannotAnswerForDoesNothing()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    doubleClickCell(w, kPlain, FieldRole::Logger);
+    QVERIFY(!activeView(w)->context()->doc->filters().loggerEnabled);
+    QCOMPARE(visibleRecords(w), 4);
+
+    // The empty space below the last record answers "nothing" too, exactly as it does
+    // for the menu: a gesture aimed there acts on no record.
+    LogView *log = activeView(w)->logView();
+    const int lh = log->fontMetrics().height();
+    QTest::mouseDClick(log->viewport(), Qt::LeftButton, Qt::KeyboardModifiers(),
+                       QPoint(cellCentre(w, 0, FieldRole::Logger).x(),
+                              log->viewport()->height() - lh / 2));
+    QVERIFY(!activeView(w)->context()->doc->filters().loggerEnabled);
+    QCOMPARE(visibleRecords(w), 4);
+}
+
+// Deliberately not a toggle: the second double-click re-applies the same "show only",
+// which the pane already treats as idempotent. Taking a filter back is the pane's job,
+// and it is where the user can see what there is to take back.
+void TestRecordMenu::doubleClickingTheSameCellAgainLeavesTheFilterWhereItIs()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    doubleClickCell(w, kMain, FieldRole::Logger); // net.io
+    QCOMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("net.io")});
+    QCOMPARE(visibleRecords(w), 3); // two net.io records + the unparsed line
+
+    // The filtered view still holds that record at row 1, and it is still net.io's.
+    doubleClickCell(w, 1, FieldRole::Logger);
+    QCOMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("net.io")});
+    QCOMPARE(visibleRecords(w), 3);
 }
 
 int main(int argc, char *argv[])

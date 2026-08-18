@@ -1227,6 +1227,12 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
             [this, view](int row, int column, const QPoint &globalPos) {
                 showRecordMenu(view, row, column, globalPos);
             });
+    // Double-clicking a Subsystem or Thread cell shows only that value (SPEC.md §5) —
+    // the same menu item, reached without the menu. Connected on the table only, for the
+    // reason recordMenuRequested is: the digest strip's rows are its own index's, and
+    // the window reads the DOCUMENT's when it resolves a view row.
+    connect(logView, &LogView::recordDoubleClicked, this,
+            [this, view](int row, int column) { activateRecordColumn(view, row, column); });
 
     // Into the bookkeeping BEFORE the tab bar: adding the first tab makes it current
     // at once, and the active-view handling that fires from it reads m_views.
@@ -2901,6 +2907,46 @@ void MainWindow::showRecordMenu(DocumentView *view, int viewRow, int column,
     buildRecordMenu(&menu, view, viewRow, column);
     if (!menu.isEmpty())
         menu.exec(globalPos);
+}
+
+// The one double-click gesture (SPEC.md §5). A Subsystem or a Thread cell is the only
+// place in the table where a cell names a VALUE of an axis the filters have, so it is
+// the only place a double-click has something obvious to mean: show only this one. Every
+// other column does nothing, deliberately — a gesture invented for the Message or the
+// Time column would be a second thing to learn and a second thing to undo.
+//
+// It builds the record menu and triggers the item by object name, and never touches a
+// pane itself. That is the whole design: the gating is the menu's (an unparsed line, or
+// a format with no %t, offers no item and the double-click is inert), the edit is the
+// pane's, and the filter is applied by the same applyFiltersFor() the menu reaches — so
+// the reader keeps their place (SPEC.md §6) with nothing here knowing that they do.
+//
+// Deliberately NOT a toggle. A second double-click on the same cell re-applies the same
+// "show only", which is idempotent; undoing it would mean recognising the pane's current
+// state as "exactly what my last double-click set" — untrue as soon as the user has
+// touched the pane — and the pane is where the menu's edits are taken back.
+void MainWindow::activateRecordColumn(DocumentView *view, int viewRow, int column)
+{
+    if (!view || !view->context() || !view->context()->doc)
+        return;
+    const QVector<Field> &fields = view->context()->doc->format().fields;
+    if (column < 0 || column >= fields.size())
+        return;
+    const char *wanted = nullptr;
+    switch (fields.at(column).role) {
+    case FieldRole::Logger: wanted = "recordShowOnlySubsystem"; break;
+    case FieldRole::Thread: wanted = "recordShowOnlyThread"; break;
+    default: return;
+    }
+
+    QMenu menu(this);
+    buildRecordMenu(&menu, view, viewRow, column);
+    for (QAction *a : menu.actions()) {
+        if (a->objectName() == QLatin1String(wanted)) {
+            a->trigger();
+            return;
+        }
+    }
 }
 
 // --- Recent files ----------------------------------------------------------

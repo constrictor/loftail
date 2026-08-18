@@ -1049,6 +1049,43 @@ void LogView::mouseReleaseEvent(QMouseEvent *event)
     event->accept(); // the press was this view's to take, and so is the release ending it
 }
 
+// A double-click on a cell means "do what this column is for" (SPEC.md §5). The view
+// decides nothing about that: it reports the record and the column and lets the window
+// reach the record menu's own item, which is what keeps the gesture and the menu one
+// thing rather than two that can drift.
+//
+// PLAIN left button only. Shift and Ctrl already mean something on the press that begins
+// the pair — extend, and take one record in or out — and a double-click carrying one is
+// a gesture nobody aimed.
+void LogView::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || event->modifiers() != Qt::NoModifier) {
+        QAbstractScrollArea::mouseDoubleClickEvent(event);
+        return;
+    }
+    // recordUnderPoint, not recordAtViewportY: the empty space below the last record
+    // answers "nothing" here for the reason it does for the menu — a gesture aimed at a
+    // record the cursor is not on acts on a record the user cannot see themselves
+    // pointing at. The press that came first clamps instead, and selected the last
+    // record; that is a click, and this is not.
+    const int record = recordUnderPoint(int(event->position().y()));
+    if (record < 0) {
+        QAbstractScrollArea::mouseDoubleClickEvent(event);
+        return;
+    }
+    // Whatever the press before it armed, a double-click is not the beginning of a drag:
+    // what follows it is a release, and the filter this is about to apply replaces the
+    // record space under the pointer in between.
+    endDrag();
+    // Act on the record under the pointer, not on whatever the selection happens to be —
+    // the press already put it here, and saying so costs nothing and cannot be wrong.
+    if (m_current != record)
+        setCurrentRecord(record);
+    setFocus();
+    emit recordDoubleClicked(record, m_header->logicalIndexAt(int(event->position().x())));
+    event->accept();
+}
+
 void LogView::hideEvent(QHideEvent *event)
 {
     // A view hidden mid-drag — its tab switched away, its window closed — never sees the
