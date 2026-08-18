@@ -6,12 +6,15 @@
 #include <QHeaderView>
 #include <QImage>
 #include <QScrollBar>
+#include <QHelpEvent>
 #include <QSignalSpy>
 #include <QTemporaryFile>
+#include <QToolTip>
 
 #include "Document.h"
 #include "Filter.h"
 #include "Highlight.h"
+#include "LogFormat.h"
 #include "LogModel.h"
 #include "LogView.h"
 #include "Palette.h"
@@ -216,7 +219,54 @@ private slots:
     void clearingAFilterPutsTheViewBackWhereItWas();
     void theWrappedSelectionIsFoldedInBeforeTheViewIsRepositioned();
     void theAlternatingBandChangesAtRecordsAndNotAtLines();
+    void aValueTooWideForItsColumnNamesItselfInFullOnHover();
+    void aValueThatFitsItsColumnOffersNoTooltip();
+    void aWrappedMessageOffersNoTooltipAndAnUnwrappedOneDoes();
+    void aHeaderCaptionTooNarrowToReadNamesItselfOnHover();
 };
+
+// --- what does not fit says so (SPEC.md §5) ----------------------------------
+//
+// The columns elide and hovering a cut-short value shows it in full; a value that fits
+// says nothing, which is what makes the tooltip mean "there is more here". These drive
+// the real QEvent::ToolTip rather than a seam of their own — the decision is the view's
+// answer to that event and to nothing else.
+//
+// Every case needs a resolved font: the whole question is whether text fits a width, and
+// with no font at all (Windows offscreen, which ships none) nothing measures.
+
+namespace {
+
+// Hover a viewport point and report the tooltip it produced, or a null string.
+//
+// QToolTip hides on a timer rather than at once, so the previous case's tip has to be
+// waited out before this one is asked — otherwise every answer is the last one's and a
+// "nothing is offered here" assertion can never fail. Showing, by contrast, is
+// immediate, so what is on screen straight after the event is this hover's answer.
+QString tooltipAt(QWidget *target, const QPoint &pos)
+{
+    QToolTip::hideText();
+    QElapsedTimer waited;
+    waited.start();
+    while (QToolTip::isVisible() && waited.elapsed() < 2000)
+        QTest::qWait(20);
+
+    QHelpEvent event(QEvent::ToolTip, pos, target->mapToGlobal(pos));
+    QApplication::sendEvent(target, &event);
+    return QToolTip::isVisible() ? QToolTip::text() : QString();
+}
+
+// Which column carries a field, since the format decides the order.
+int columnOfRole(const Document &doc, FieldRole role)
+{
+    const QVector<Field> &fields = doc.format().fields;
+    for (int c = 0; c < fields.size(); ++c)
+        if (fields.at(c).role == role)
+            return c;
+    return -1;
+}
+
+} // namespace
 
 void TestLogView::wrapOffMappingMatchesBase()
 {
@@ -922,6 +972,132 @@ void TestLogView::theWrappedSelectionIsFoldedInBeforeTheViewIsRepositioned()
     if (doc.filtered().sourceRow(topRow) == topBefore)
         expected += topOffset;
     QCOMPARE(qint64(sb->value()), expected);
+}
+
+// The Logger column carries "net.socket" in every record of this log. Squeezed to a
+// width no font can fit it in, the cell is painted with an ellipsis and the tooltip
+// hands back the whole name — the value is not otherwise recoverable without resizing
+// the column, which is exactly the complaint.
+void TestLogView::aValueTooWideForItsColumnNamesItselfInFullOnHover()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 5), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(600, 300);
+
+    const int logger = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+    view.header()->resizeSection(logger, 20); // narrower than any rendering of the name
+
+    const QPoint at(view.header()->sectionViewportPosition(logger) + 2,
+                    view.fontMetrics().height() / 2); // the first record
+    QCOMPARE(tooltipAt(view.viewport(), at), model.cellText(0, logger));
+    QCOMPARE(QToolTip::text(), QStringLiteral("net.socket"));
+    QToolTip::hideText();
+}
+
+// The other half of the rule, and the half that is easy to lose: a tooltip repeating a
+// value that is already fully on screen tells the reader nothing and trains them to
+// ignore the ones that do.
+void TestLogView::aValueThatFitsItsColumnOffersNoTooltip()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 5), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(600, 300);
+
+    const int logger = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+    view.header()->resizeSection(logger, 400); // room to spare
+
+    const QPoint at(view.header()->sectionViewportPosition(logger) + 2,
+                    view.fontMetrics().height() / 2);
+    QVERIFY(tooltipAt(view.viewport(), at).isNull());
+
+    // And nothing at all below the last record: five records occupy five lines, so the
+    // bottom of a 300 px viewport is empty space that is not a cell.
+    QVERIFY(tooltipAt(view.viewport(), QPoint(at.x(), 295)).isNull());
+    QToolTip::hideText();
+}
+
+// The message column is the one that interacts with wrapping, so it answers by the same
+// rule rather than by a rule of its own: with wrap off it is clipped exactly like the
+// others and elides and tooltips like them, and with wrapping on every character is
+// already on screen and there is nothing a tooltip could add.
+void TestLogView::aWrappedMessageOffersNoTooltipAndAnUnwrappedOneDoes()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 5), qPrintable(doc.lastError())); // ~200-char messages
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(600, 300);
+
+    const int message = columnOfRole(doc, FieldRole::Message);
+    QVERIFY(message >= 0);
+    view.header()->resizeSection(message, 120);
+
+    const QPoint at(view.header()->sectionViewportPosition(message) + 2,
+                    view.fontMetrics().height() / 2);
+    QCOMPARE(tooltipAt(view.viewport(), at), model.cellText(0, message));
+
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    QVERIFY(tooltipAt(view.viewport(), at).isNull());
+    QToolTip::hideText();
+}
+
+// The first complaint was the HEADER, which read "Priorit" with no way to tell that from
+// a field genuinely called that. It elides through the header's own elide mode and names
+// itself on hover, measured against the rect the style puts the label in rather than the
+// raw section — the margin either side is what turns a name that fits into one that does
+// not.
+void TestLogView::aHeaderCaptionTooNarrowToReadNamesItselfOnHover()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 5), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(600, 300);
+
+    QCOMPARE(view.header()->textElideMode(), Qt::ElideRight);
+
+    const int logger = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+    const QString caption = model.headerData(logger, Qt::Horizontal, Qt::DisplayRole).toString();
+    QVERIFY(!caption.isEmpty());
+
+    view.header()->resizeSection(logger, 20);
+    const QPoint at(view.header()->sectionViewportPosition(logger) + 2,
+                    view.header()->height() / 2);
+    QCOMPARE(tooltipAt(view.header()->viewport(), at), caption);
+
+    view.header()->resizeSection(logger, 400);
+    QVERIFY(tooltipAt(view.header()->viewport(), at).isNull());
+    QToolTip::hideText();
 }
 
 int main(int argc, char *argv[])

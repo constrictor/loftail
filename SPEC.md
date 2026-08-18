@@ -244,6 +244,11 @@ Time-range filter bounds (§6) are always entered as wall clock in the display t
 
 - **The table renders in a fixed-width font — every column, and the header.** Logs are column-aligned text written by machines; a proportional font destroys the alignment inside a message and makes timestamps and levels ragged from row to row. The font is the one the desktop designates as fixed-width, at the usual UI text size.
 
+- **A value too wide for its column ends in an ellipsis, and hovering it shows it in full.** A thread named `http-nio-8080-exec-3` does not fit a thread column at any sensible width, and a name cut off mid-character is indistinguishable from a name that genuinely ends there — so a value that does not fit is drawn with a trailing `…`, and its whole text is available as a tooltip. Column **headings** behave the same way, so a column headed *Priorit* names itself on hover rather than leaving the reader to guess.
+
+  - **A value that already fits offers no tooltip.** The tooltip says "there is more here" and nothing else; one that repeated what is already on screen would train the reader to ignore the ones that do not.
+  - A **message** shown wrapped is on screen in full, in as many lines as it takes, so it offers nothing to hover. With wrapping off it is clipped at its column like every other field, and elides and answers exactly like one — line by line, since a multi-line record's lines are clipped one by one.
+
 - **Multi-line records are shown in full, in place.** A record whose message spans several lines occupies a correspondingly taller row in the table — the entire text is visible without expanding, selecting, or opening a detail pane. Row heights therefore vary throughout the table.
 
 - **Every other record is shaded.** Records alternate between the view's background and a faintly tinted band, and the band covers the whole **record** rather than a line of it — so in *always on* wrapping, where one record occupies three or four lines, the shading is what says where one record ends and the next begins instead of the reader tracking it by the timestamp column. The tint is derived from the theme, so it is equally present on a light and on a dark one. A record a highlight rule has coloured (§7) keeps its own colour, unshaded: the band is what a record wears when nothing else has claimed it.
