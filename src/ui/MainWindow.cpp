@@ -520,22 +520,28 @@ void MainWindow::buildMenus()
     });
 
     // Find / Find Next / Find Previous (SPEC.md §5). Find opens the bar; F3 /
-    // Shift+F3 navigate the current query over the visible rows.
+    // Shift+F3 navigate the current query over the visible rows. All three need a view
+    // to act on — the bar is a DocumentView child — so all three start disabled and are
+    // tracked in updateActionStates() beside Copy and Select All.
     editMenu->addSeparator();
-    QAction *findAction = editMenu->addAction(tr("&Find..."));
-    findAction->setShortcut(QKeySequence::Find);
-    connect(findAction, &QAction::triggered, this, [this]() {
+    m_findAction = editMenu->addAction(tr("&Find..."));
+    m_findAction->setObjectName(QStringLiteral("findAction")); // findChild, for tests
+    m_findAction->setShortcut(QKeySequence::Find);
+    m_findAction->setEnabled(false);
+    connect(m_findAction, &QAction::triggered, this, [this]() {
         if (m_activeView)
             m_activeView->activateFind();
     });
-    QAction *findNextAction = editMenu->addAction(tr("Find &Next"));
-    findNextAction->setObjectName(QStringLiteral("findNextAction")); // findChild, for tests
-    findNextAction->setShortcut(QKeySequence::FindNext); // F3
-    connect(findNextAction, &QAction::triggered, this, [this]() { runFind(true, false); });
-    QAction *findPrevAction = editMenu->addAction(tr("Find Pre&vious"));
-    findPrevAction->setObjectName(QStringLiteral("findPreviousAction"));
-    findPrevAction->setShortcut(QKeySequence::FindPrevious); // Shift+F3
-    connect(findPrevAction, &QAction::triggered, this, [this]() { runFind(false, false); });
+    m_findNextAction = editMenu->addAction(tr("Find &Next"));
+    m_findNextAction->setObjectName(QStringLiteral("findNextAction")); // findChild, for tests
+    m_findNextAction->setShortcut(QKeySequence::FindNext); // F3
+    m_findNextAction->setEnabled(false);
+    connect(m_findNextAction, &QAction::triggered, this, [this]() { runFind(true, false); });
+    m_findPreviousAction = editMenu->addAction(tr("Find Pre&vious"));
+    m_findPreviousAction->setObjectName(QStringLiteral("findPreviousAction"));
+    m_findPreviousAction->setShortcut(QKeySequence::FindPrevious); // Shift+F3
+    m_findPreviousAction->setEnabled(false);
+    connect(m_findPreviousAction, &QAction::triggered, this, [this]() { runFind(false, false); });
 
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
     QMenu *wrapMenu = viewMenu->addMenu(tr("Line &Wrap"));
@@ -1014,6 +1020,20 @@ void MainWindow::updateActionStates()
         m_copyColumnsAction->setEnabled(hasFile);
     if (m_selectAllAction)
         m_selectAllAction->setEnabled(hasFile);
+    // Find and its two navigations, on hasFile and nothing else. NOT on the query being
+    // non-empty: these two carry F3 and Shift+F3, and a disabled QAction swallows its
+    // shortcut with no feedback at all — so gating on the query would delete the only
+    // place that can answer somebody who pressed F3 with an empty box. That answer is
+    // runFind()'s empty-pattern branch instead. The query is also per VIEW (the bar is a
+    // DocumentView child) and changes per keystroke, so it would put a window-wide menu
+    // state on the typing path to tell the reader something the empty box in front of
+    // them already says.
+    if (m_findAction)
+        m_findAction->setEnabled(hasFile);
+    if (m_findNextAction)
+        m_findNextAction->setEnabled(hasFile);
+    if (m_findPreviousAction)
+        m_findPreviousAction->setEnabled(hasFile);
     // Only a spooled log has a fetcher to poke; a local one is watched, not connected.
     if (m_reconnectAction) {
         m_reconnectAction->setEnabled(
@@ -2777,7 +2797,12 @@ void MainWindow::runFind(bool forward, bool fromStart)
         return;
     const QString pattern = findBar->pattern();
     if (pattern.isEmpty()) {
-        findBar->setStatus(QString());
+        // Which of the two empty-query cases this is, is exactly `fromStart`. It is true
+        // only when the query itself changed (typing, or a Regex/Case toggle), where the
+        // reader has just deleted their own text and being told about it is a nag; it is
+        // false for every deliberate navigation — F3, Shift+F3, Enter in the box, the two
+        // arrow buttons — where the gesture asked a question and used to get silence.
+        findBar->setStatus(fromStart ? QString() : tr("no search text"));
         logView->clearFindMatcher(); // an empty query marks everything, which marks nothing
         return;
     }

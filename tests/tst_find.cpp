@@ -124,6 +124,17 @@ private:
         w.findChild<QAction *>(QStringLiteral("findPreviousAction"))->trigger();
     }
 
+    // The three Edit-menu entries, by object name. Their enabled state is the subject of
+    // the three cases at the bottom of this file.
+    static void checkFindItemsEnabled(const MainWindow &w, bool expected)
+    {
+        for (const char *name : {"findAction", "findNextAction", "findPreviousAction"}) {
+            QAction *a = w.findChild<QAction *>(QLatin1String(name));
+            QVERIFY2(a, name);
+            QVERIFY2(a->isEnabled() == expected, name);
+        }
+    }
+
     // The gesture itself: a real key press at the query field, found by object name.
     // `key` is Qt::Key_Return (the main keyboard's) or Qt::Key_Enter (the keypad's) —
     // both reach the same field and both must mean the same thing.
@@ -151,6 +162,9 @@ private slots:
     void changingTheQueryChangesWhatIsMarkedWithIt();
     void aQueryThatMatchesNothingLeavesNothingMarked();
     void closingTheBarTakesTheMarksWithIt();
+    void theFindItemsAreDeadUntilThereIsALogToSearch();
+    void theFindItemsFollowTheTabInFrontAndDieWithTheLastOne();
+    void anExplicitFindOnAnEmptyQuerySaysThereIsNothingToFind();
 };
 
 void TestFind::initTestCase()
@@ -517,3 +531,92 @@ void TestFind::closingTheBarTakesTheMarksWithIt()
 }
 
 #include "tst_find.moc"
+
+// --- when the three Edit-menu items are live (bugs.md) -----------------------
+//
+// Find, Find Next and Find Previous were the only Edit-menu entries updateActionStates()
+// had never been told about, so all three were offered with no file open — where Find
+// opened nothing, because its handler tests m_activeView and returns. They now track the
+// active tab exactly as Copy, Copy as Columns and Select All beside them do.
+//
+// They track NOTHING ELSE, and the query in particular: F3 and Shift+F3 are shortcuts, a
+// disabled QAction swallows its shortcut without a word, and the answer for an empty
+// query belongs in the bar that holds it. The third case is that answer.
+
+void TestFind::theFindItemsAreDeadUntilThereIsALogToSearch()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    checkFindItemsEnabled(w, false); // nothing open: nothing to search
+
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+    checkFindItemsEnabled(w, true);
+
+    w.close();
+}
+
+void TestFind::theFindItemsFollowTheTabInFrontAndDieWithTheLastOne()
+{
+    const QString other = m_dir.filePath(QStringLiteral("find-other.log"));
+    writeLog(other);
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    w.openFile(other);
+    waitUntilIndexed(w);
+    QCOMPARE(tabs(w)->count(), 2);
+    checkFindItemsEnabled(w, true);
+
+    // Switching between two logs leaves them live — the condition is read from the
+    // INCOMING view, and setActiveView() has already set it before it calls
+    // updateActionStates() (the ordering trap 3bacaca recorded for the panes).
+    tabs(w)->setCurrentIndex(0);
+    checkFindItemsEnabled(w, true);
+
+    // Closing one of two leaves a log to search; closing the last one does not.
+    QAction *closeTab = w.findChild<QAction *>(QStringLiteral("closeTabAction"));
+    QVERIFY(closeTab);
+    closeTab->trigger();
+    QCOMPARE(tabs(w)->count(), 1);
+    checkFindItemsEnabled(w, true);
+
+    closeTab->trigger();
+    QCOMPARE(tabs(w)->count(), 0);
+    checkFindItemsEnabled(w, false);
+
+    w.close();
+}
+
+void TestFind::anExplicitFindOnAnEmptyQuerySaysThereIsNothingToFind()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    // F3 before anything has been typed used to report nothing whatsoever, which is
+    // indistinguishable from a search that ran and had nothing to say.
+    findNext(w);
+    QCOMPARE(reported(w), QStringLiteral("no search text"));
+    findPrevious(w);
+    QCOMPARE(reported(w), QStringLiteral("no search text"));
+
+    // Deleting the query is the other empty-query case and stays quiet: the reader just
+    // removed their own text, and telling them so is a nag rather than an answer.
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QCOMPARE(reported(w), QStringLiteral("1 of 3"));
+    queryField(w)->clear();
+    QCOMPARE(reported(w), QString());
+
+    // But asking again, deliberately, still gets an answer.
+    findNext(w);
+    QCOMPARE(reported(w), QStringLiteral("no search text"));
+
+    w.close();
+}
