@@ -109,6 +109,16 @@ private:
         w.findChild<QAction *>(QStringLiteral("findPreviousAction"))->trigger();
     }
 
+    // The gesture itself: a real key press at the query field, found by object name.
+    // `key` is Qt::Key_Return (the main keyboard's) or Qt::Key_Enter (the keypad's) —
+    // both reach the same field and both must mean the same thing.
+    static void pressAtQueryField(const MainWindow &w, int key, Qt::KeyboardModifiers mods)
+    {
+        QLineEdit *query = queryField(w);
+        QVERIFY(query);
+        QTest::keyClick(query, Qt::Key(key), mods);
+    }
+
 private slots:
     void initTestCase();
     void init();
@@ -116,6 +126,10 @@ private slots:
     void findNextPastTheLastMatchSaysItWrappedToTheTop();
     void findPreviousPastTheFirstMatchSaysItWrappedToTheBottom();
     void aQueryThatMatchesNothingSaysSo();
+    void enterInTheQueryFieldSearchesForwards();
+    void shiftEnterInTheQueryFieldSearchesBackwards();
+    void shiftEnterPastTheFirstMatchWrapsToTheBottomAndSaysSo();
+    void theKeypadsEnterMeansWhatTheKeyboardsDoes();
     void emptyingTheQueryClearsWhatTheBarSaid();
     void reopeningTheBarDoesNotLeaveTheLastResultBehind();
 };
@@ -223,6 +237,101 @@ void TestFind::aQueryThatMatchesNothingSaysSo()
     // back to silence.
     findNext(w);
     QCOMPARE(reported(w), QStringLiteral("no match"));
+
+    w.close();
+}
+
+// Enter in the box is Find Next and Shift+Enter is Find Previous (SPEC.md §5). Enter was
+// hardwired forward: QLineEdit emits returnPressed() whatever modifiers are held, so
+// Shift+Enter searched forward like a plain one. The direction each gesture actually took
+// is what these three cases assert — through the cursor, not through the bar's wording.
+void TestFind::enterInTheQueryFieldSearchesForwards()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QCOMPARE(cursorRow(w), int(kAlphaOne));
+
+    pressAtQueryField(w, Qt::Key_Return, Qt::NoModifier);
+    QCOMPARE(cursorRow(w), int(kAlphaTwo));
+    QCOMPARE(reported(w), QStringLiteral("2 of 3"));
+
+    pressAtQueryField(w, Qt::Key_Return, Qt::NoModifier);
+    QCOMPARE(cursorRow(w), int(kAlphaThree));
+    QCOMPARE(reported(w), QStringLiteral("3 of 3"));
+
+    w.close();
+}
+
+void TestFind::shiftEnterInTheQueryFieldSearchesBackwards()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    queryField(w)->setText(QStringLiteral("alpha"));
+    findNext(w);
+    findNext(w);
+    QCOMPARE(cursorRow(w), int(kAlphaThree)); // on the last match, so backwards has room
+
+    pressAtQueryField(w, Qt::Key_Return, Qt::ShiftModifier);
+    QCOMPARE(cursorRow(w), int(kAlphaTwo));
+    QCOMPARE(reported(w), QStringLiteral("2 of 3"));
+
+    pressAtQueryField(w, Qt::Key_Return, Qt::ShiftModifier);
+    QCOMPARE(cursorRow(w), int(kAlphaOne));
+    QCOMPARE(reported(w), QStringLiteral("1 of 3"));
+
+    // And the gesture next to it still goes the other way.
+    pressAtQueryField(w, Qt::Key_Return, Qt::NoModifier);
+    QCOMPARE(cursorRow(w), int(kAlphaTwo));
+
+    w.close();
+}
+
+void TestFind::shiftEnterPastTheFirstMatchWrapsToTheBottomAndSaysSo()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QCOMPARE(cursorRow(w), int(kAlphaOne)); // on the first match
+
+    // Same walk Find Previous performs, so the wrap note is produced for the gesture too.
+    pressAtQueryField(w, Qt::Key_Return, Qt::ShiftModifier);
+    QCOMPARE(cursorRow(w), int(kAlphaThree));
+    QCOMPARE(reported(w), QStringLiteral("3 of 3, wrapped to the bottom"));
+
+    w.close();
+}
+
+void TestFind::theKeypadsEnterMeansWhatTheKeyboardsDoes()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QCOMPARE(cursorRow(w), int(kAlphaOne));
+
+    // Key_Enter carries Qt::KeypadModifier on a real keyboard, which says nothing about
+    // direction and must not defeat the Shift test.
+    pressAtQueryField(w, Qt::Key_Enter, Qt::ShiftModifier | Qt::KeypadModifier);
+    QCOMPARE(cursorRow(w), int(kAlphaThree)); // backwards, wrapping
+
+    pressAtQueryField(w, Qt::Key_Enter, Qt::KeypadModifier);
+    QCOMPARE(cursorRow(w), int(kAlphaOne)); // forwards, wrapping
 
     w.close();
 }

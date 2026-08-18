@@ -45,6 +45,8 @@ signals:
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
+    // Watches the query field so Shift+Enter can mean "search backwards" (SPEC.md §5).
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     QLineEdit *m_edit = nullptr;

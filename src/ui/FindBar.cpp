@@ -23,16 +23,19 @@ FindBar::FindBar(QWidget *parent) : QWidget(parent)
     m_edit->setClearButtonEnabled(true);
     m_edit->setPlaceholderText(tr("Search visible records..."));
     ensureReadablePlaceholder(m_edit);
+    // Shift+Enter has to be taken off the field before QLineEdit sees it — see
+    // eventFilter() below, which is where the backwards gesture lives.
+    m_edit->installEventFilter(this);
     row->addWidget(m_edit, 1);
 
     auto *prev = new QToolButton(this);
     prev->setObjectName(QStringLiteral("findPrevious"));
     prev->setText(QStringLiteral("▲")); // up
-    prev->setToolTip(tr("Find Previous (Shift+F3)"));
+    prev->setToolTip(tr("Find Previous (Shift+F3, or Shift+Enter in the box)"));
     auto *next = new QToolButton(this);
     next->setObjectName(QStringLiteral("findNext"));
     next->setText(QStringLiteral("▼")); // down
-    next->setToolTip(tr("Find Next (F3)"));
+    next->setToolTip(tr("Find Next (F3, or Enter in the box)"));
     row->addWidget(prev);
     row->addWidget(next);
 
@@ -97,6 +100,32 @@ void FindBar::keyPressEvent(QKeyEvent *event)
         return;
     }
     QWidget::keyPressEvent(event);
+}
+
+bool FindBar::eventFilter(QObject *watched, QEvent *event)
+{
+    // Enter searches forward and Shift+Enter searches backwards (SPEC.md §5) — the
+    // gesture every find box has, and the one the ▲ button and Shift+F3 already did.
+    //
+    // It cannot be done on returnPressed(), which is what the forward search is bound
+    // to: QLineEdit emits that signal for Return and Enter whatever modifiers are held,
+    // so the backwards gesture would arrive as a forward one AND, if both were bound,
+    // as both at once. Catching the key before the field sees it is what keeps the two
+    // apart. Every other key is passed through untouched — Escape included, which
+    // QLineEdit ignores and which therefore still reaches keyPressEvent() above.
+    if (watched == m_edit && event->type() == QEvent::KeyPress) {
+        auto *key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+            // Qt::KeypadModifier rides along on the numeric keypad's Enter and says
+            // nothing about intent; any other modifier belongs to somebody else's
+            // gesture and is not this one.
+            if ((key->modifiers() & ~Qt::KeypadModifier) == Qt::ShiftModifier) {
+                emit findRequested(false, false);
+                return true; // consumed, so no returnPressed() and no forward search
+            }
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 } // namespace loftail
