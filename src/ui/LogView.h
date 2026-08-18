@@ -7,6 +7,8 @@
 #include <QAbstractScrollArea>
 #include <QVector>
 
+#include <functional>
+
 QT_BEGIN_NAMESPACE
 class QContextMenuEvent;
 class QHeaderView;
@@ -187,8 +189,24 @@ public:
 
     // Clipboard actions (SPEC.md §5). Raw yields the records' original bytes; the
     // columns form is tab-separated fields for spreadsheet paste.
+    //
+    // Both are BOUNDED (ARCHITECTURE.md §7.1.6). The selection is walked as RANGES,
+    // never as one QModelIndex per record; the text is built into ONE reserved QString
+    // rather than a list that is then joined; and above copyProgressThreshold() records
+    // the walk runs in chunks behind a cancellable progress dialog. A copy that is
+    // cancelled — or abandoned because the row space was replaced under it — leaves the
+    // clipboard exactly as it was, because the clipboard is written once at the end.
     void copySelectionRaw() const;
     void copySelectionAsColumns() const;
+
+    // How many selected records a copy may take before it says so and offers to stop
+    // (SPEC.md §5). BELOW it a copy is a plain synchronous loop that processes no
+    // events at all — no dialog, no re-entrancy, byte-for-byte what it always
+    // produced. Settable per view so the bounded path can be driven without a
+    // four-million-record log; the default is what ships.
+    static constexpr int kDefaultCopyProgressThreshold = 100000;
+    void setCopyProgressThreshold(int records) { m_copyProgressThreshold = qMax(0, records); }
+    int copyProgressThreshold() const { return m_copyProgressThreshold; }
 
     // Move to a record and scroll it into view. Used by the model-reset handling
     // and by callers that open at the file's end (SPEC.md §3).
@@ -365,7 +383,21 @@ private:
     // The record whose height varies under the current wrap mode, or -1 when
     // nothing wraps (wrap off, or no selection). Drives the geometry statics.
     int selRecordForGeometry() const;
-    QVector<int> selectedRecordsSorted() const;
+
+    // --- What a copy walks (ARCHITECTURE.md §7.1.6) --------------------------------
+    // The selection as merged, ascending, inclusive VIEW-row ranges. QItemSelectionModel
+    // already holds ranges and Select All is exactly ONE of them, so this costs a pair of
+    // ints per range where selectedRows(0) cost a QModelIndex per record. Falls back to
+    // the focused record when nothing is selected, exactly as the per-row form did.
+    QVector<QPair<int, int>> selectedRecordRanges() const;
+    static qint64 rangeTotal(const QVector<QPair<int, int>> &ranges);
+    // The selected records' byte lengths, straight off the 32-byte index entries — what
+    // the one output string is reserved from, so nothing is decoded twice to measure it.
+    qint64 selectedByteLength(const QVector<QPair<int, int>> &ranges) const;
+    // Call `emitRow` for every selected view row in ascending order. Returns false when
+    // the copy was abandoned, which is the caller's signal to leave the clipboard alone.
+    bool walkSelection(const QVector<QPair<int, int>> &ranges, qint64 total,
+                       const std::function<void(int viewRow)> &emitRow) const;
 
     // Height, in display lines, of record r as currently rendered (folds in the
     // selected-record wrap when applicable).
@@ -471,6 +503,10 @@ private:
     // The query Find is marking, or empty. The QUERY, not its results: see
     // setFindMatcher(). Costs one small object per view and nothing per record.
     TextMatcher m_findMatcher;
+
+    // Above this many selected records a copy shows progress and offers to cancel
+    // (SPEC.md §5, ARCHITECTURE.md §7.1.6).
+    int m_copyProgressThreshold = kDefaultCopyProgressThreshold;
 
     WrapMode m_wrapMode = WrapMode::Off;
     QString  m_placeholderText; // drawn centred when there are no records at all

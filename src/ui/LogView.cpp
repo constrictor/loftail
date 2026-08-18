@@ -13,13 +13,17 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
+#include <QCoreApplication>
 #include <QHeaderView>
 #include <QHelpEvent>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QPointer>
+#include <QProgressDialog>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStyle>
@@ -31,9 +35,23 @@
 #include <QToolTip>
 #include <QWheelEvent>
 
+#include <limits>
+
 namespace loftail {
 
 namespace {
+
+// Records copied between two progress updates. Large enough that the update and the
+// event pass are noise beside the decoding, small enough that Cancel answers within a
+// frame on any machine (ARCHITECTURE.md §7.1.6).
+constexpr int kCopyChunk = 2000;
+
+// Reserve `chars` on a string being built record by record, bounded by what a QString
+// can hold at all so an absurd estimate cannot throw before a single record is copied.
+void reserveFor(QString &s, qint64 chars)
+{
+    s.reserve(qsizetype(qBound<qint64>(0, chars, qint64(std::numeric_limits<int>::max()))));
+}
 
 // A column's seed width in CHARACTERS of the fixed-pitch font rather than in pixels
 // (SPEC.md §5, ARCHITECTURE.md §7.1). Every column renders in monospaceFont(), so a
@@ -1212,17 +1230,173 @@ void LogView::selectAllRecords()
     recomputeGeometry();
 }
 
-QVector<int> LogView::selectedRecordsSorted() const
+// The selection as RANGES (ARCHITECTURE.md §7.1.6). QItemSelectionModel holds ranges,
+// and Select All over four million records is exactly one of them; asking it for
+// selectedRows(0) instead materialised four million QModelIndexes and copied their rows
+// into a vector of the same length before a single character had been decoded.
+//
+// Merged and ascending, because a record must be copied once however many ranges name
+// it — which is what answering in rows gave for free. Every selection this view builds
+// spans the whole row (selectRange, toggleRecordSelection, selectAllRecords), so a range
+// is a run of records and the full-row test selectedRows() applied is kept explicitly.
+QVector<QPair<int, int>> LogView::selectedRecordRanges() const
 {
-    QVector<int> rows;
-    const QModelIndexList sel = m_selection->selectedRows(0);
-    rows.reserve(sel.size());
-    for (const QModelIndex &i : sel)
-        rows.push_back(i.row());
-    if (rows.isEmpty() && m_current >= 0)
-        rows.push_back(m_current);
-    std::sort(rows.begin(), rows.end());
-    return rows;
+    const int n = m_model->rowCount();
+    const int cols = m_model->columnCount();
+    QVector<QPair<int, int>> ranges;
+    const QItemSelection sel = m_selection->selection();
+    ranges.reserve(sel.size());
+    for (const QItemSelectionRange &r : sel) {
+        if (!r.isValid() || cols == 0 || r.left() > 0 || r.right() < cols - 1)
+            continue;
+        const int top = qMax(0, r.top());
+        const int bottom = qMin(n - 1, r.bottom());
+        if (top <= bottom)
+            ranges.push_back({top, bottom});
+    }
+    // Nothing selected: the focused record, exactly as the per-row form fell back.
+    if (ranges.isEmpty() && m_current >= 0 && m_current < n)
+        ranges.push_back({m_current, m_current});
+
+    std::sort(ranges.begin(), ranges.end());
+    QVector<QPair<int, int>> merged;
+    merged.reserve(ranges.size());
+    for (const QPair<int, int> &r : ranges) {
+        // `<= last.second + 1` also fuses two ranges that merely touch, so a Ctrl+click
+        // that rebuilt a contiguous run out of pieces still costs one range to walk.
+        if (!merged.isEmpty() && r.first <= merged.last().second + 1)
+            merged.last().second = qMax(merged.last().second, r.second);
+        else
+            merged.push_back(r);
+    }
+    return merged;
+}
+
+qint64 LogView::rangeTotal(const QVector<QPair<int, int>> &ranges)
+{
+    qint64 total = 0;
+    for (const QPair<int, int> &r : ranges)
+        total += qint64(r.second) - r.first + 1;
+    return total;
+}
+
+// What to reserve the output string at, from the 32-byte index entries and nothing else
+// (invariant #1): the alternative is decoding every record twice, once to measure and
+// once to keep. Integer work over the same ranges, so it costs nanoseconds per record
+// against microseconds for the decode it sizes.
+qint64 LogView::selectedByteLength(const QVector<QPair<int, int>> &ranges) const
+{
+    const RecordIndex &idx = m_document->index();
+    qint64 bytes = 0;
+    for (const QPair<int, int> &range : ranges) {
+        for (int row = range.first; row <= range.second; ++row) {
+            const int r = m_model->sourceRow(row);
+            if (r >= 0 && r < idx.records.size())
+                bytes += idx.records.at(r).length;
+        }
+    }
+    return bytes;
+}
+
+// The walk both copy commands share (ARCHITECTURE.md §7.1.6).
+//
+// Below the threshold it is the loop it always was: no dialog, no event processing,
+// nothing that can re-enter — which is what makes an ordinary copy inert.
+//
+// Above it the copy is worth waiting for, so it says so and offers to stop. That means
+// re-entering the event loop, and the four things that can then happen to the row space
+// under the walk are answered as follows:
+//   * an APPEND adds rows past the end of what was selected, and every row is resolved
+//     through m_model->sourceRow() at the moment it is read, bounds-checked exactly as
+//     before, so a row that has gone is skipped rather than read from stale bytes;
+//   * a TAIL REMOVAL (the provisional record re-evaluated under a filter, which happens
+//     on a live log every tick) is the same case, and deliberately does NOT abandon the
+//     copy — the ingest handler runs to completion inside processEvents(), so what the
+//     walk sees between two chunks is always a consistent index;
+//   * a MODEL RESET is the one event that makes a view row mean a different record, so
+//     the prefix already collected and the remainder would come from two different
+//     mappings. That is abandoned, and reported, because a silently spliced copy is
+//     worse than none;
+//   * DESTRUCTION of the view or the model cannot happen while an APPLICATION-MODAL
+//     dialog is up — Qt drops a close event on a modally blocked window and no tab can
+//     be clicked shut — which is why the dialog is shown before the first
+//     processEvents() rather than after QProgressDialog's own minimumDuration. The
+//     QPointers are the belt to that braces, and the reason nothing below the loop
+//     touches a member without checking them.
+bool LogView::walkSelection(const QVector<QPair<int, int>> &ranges, qint64 total,
+                            const std::function<void(int viewRow)> &emitRow) const
+{
+    if (ranges.isEmpty())
+        return false;
+
+    if (total <= m_copyProgressThreshold) {
+        for (const QPair<int, int> &range : ranges) {
+            for (int row = range.first; row <= range.second; ++row)
+                emitRow(row);
+        }
+        return true;
+    }
+
+    const int totalRows = int(qMin<qint64>(total, std::numeric_limits<int>::max()));
+    QPointer<LogView> self(const_cast<LogView *>(this));
+    QPointer<LogModel> model(m_model);
+    bool replaced = false;
+
+    QPointer<QProgressDialog> dlg(new QProgressDialog(
+        tr("Copying %n record(s)…", nullptr, totalRows), tr("Cancel"), 0, totalRows,
+        const_cast<LogView *>(this)));
+    dlg->setObjectName(QStringLiteral("copyProgress")); // findChild, for tests
+    dlg->setWindowTitle(tr("Copy"));
+    dlg->setWindowModality(Qt::ApplicationModal);
+    dlg->setMinimumDuration(0);
+    // Neither auto-close nor auto-reset: reset() clears the very flag wasCanceled()
+    // answers, and reaching the maximum would therefore forget a Cancel pressed on the
+    // last chunk. The dialog is closed by being deleted, below, on every path.
+    dlg->setAutoClose(false);
+    dlg->setAutoReset(false);
+    dlg->setValue(0);
+    dlg->show();
+
+    // Scoped to the dialog, so the connection cannot outlive the local it writes to.
+    connect(m_model, &QAbstractItemModel::modelAboutToBeReset, dlg.data(),
+            [&replaced]() { replaced = true; });
+
+    bool ok = true;
+    qint64 done = 0;
+    for (const QPair<int, int> &range : ranges) {
+        for (int row = range.first; row <= range.second; ++row) {
+            emitRow(row);
+            if (++done % kCopyChunk != 0)
+                continue;
+            dlg->setValue(int(done));
+            QCoreApplication::processEvents();
+            // self FIRST: the dialog is a child of this view, so testing it after a
+            // destruction would be the dangling read this guard exists to prevent.
+            if (!self || !model || replaced || !dlg || dlg->wasCanceled()) {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok)
+            break;
+    }
+    if (ok) {
+        // The last chance to cancel, which the final partial chunk would otherwise not
+        // offer. A Cancel that arrives after the work is done still copies nothing:
+        // "cancelled" means the clipboard is untouched, whenever it lands.
+        dlg->setValue(totalRows);
+        QCoreApplication::processEvents();
+        ok = self && model && !replaced && dlg && !dlg->wasCanceled();
+    }
+
+    const bool abandoned = replaced;
+    delete dlg.data();
+    if (abandoned && self) {
+        QMessageBox::information(self, tr("Copy"),
+                                 tr("The log changed while the selection was being "
+                                    "copied, so nothing was copied."));
+    }
+    return ok;
 }
 
 void LogView::selectRecordSilently(int record)
@@ -1629,54 +1803,88 @@ void LogView::keyPressEvent(QKeyEvent *event)
 // Clipboard
 // ---------------------------------------------------------------------------
 
+// ONE string, reserved once and appended into (ARCHITECTURE.md §7.1.6). The QStringList
+// this used to build and then join() held the whole selection's text TWICE at the moment
+// of the join — on a four-million-record log, gigabytes, and a real hang if the second
+// allocation failed. The output is byte-for-byte what it was.
 void LogView::copySelectionRaw() const
 {
-    const QVector<int> rows = selectedRecordsSorted();
-    if (rows.isEmpty())
+    const QVector<QPair<int, int>> ranges = selectedRecordRanges();
+    if (ranges.isEmpty())
         return;
+    const qint64 total = rangeTotal(ranges);
     const RecordIndex &idx = m_document->index();
-    LogSource *src = m_document->source();
     const Decoder &dec = m_document->decoder();
-    QStringList parts;
-    parts.reserve(rows.size());
-    for (int viewRow : rows) {
+
+    QString out;
+    // Bytes, in the encoding's own code units, plus one separator per record. An
+    // over-estimate is a reserve and nothing worse; an under-estimate costs a realloc,
+    // which is why the separators are counted.
+    reserveFor(out, selectedByteLength(ranges) / qMax(1, dec.unitSize()) + total);
+
+    bool first = true;
+    const bool ok = walkSelection(ranges, total, [&](int viewRow) {
         // Selection rows are VIEW rows; copy must read the SOURCE record's true byte
         // range (invariant #6 mapping, and the full text regardless of display cap).
         // Through the model, so a digest strip copies the record its own row names.
         const int r = m_model->sourceRow(viewRow);
         if (r < 0 || r >= idx.records.size())
-            continue;
+            return;
         const Record &rec = idx.records.at(r);
+        // Re-read per record rather than hoisted: a rotation replaces the source, and
+        // the walk above can re-enter the event loop between two records.
+        LogSource *src = m_document->source();
         // The true byte range — copy yields full text regardless of display cap (§5).
         QString text = src ? dec.decode(src->bytes(rec.offset, rec.length)) : QString();
         while (text.endsWith(QLatin1Char('\n')) || text.endsWith(QLatin1Char('\r')))
             text.chop(1);
-        parts << text;
-    }
-    QApplication::clipboard()->setText(parts.join(QLatin1Char('\n')));
+        if (!first)
+            out += QLatin1Char('\n');
+        first = false;
+        out += text;
+    });
+    if (!ok)
+        return; // cancelled or abandoned: the clipboard is left exactly as it was
+    QApplication::clipboard()->setText(out);
 }
 
 void LogView::copySelectionAsColumns() const
 {
-    const QVector<int> rows = selectedRecordsSorted();
-    if (rows.isEmpty())
+    const QVector<QPair<int, int>> ranges = selectedRecordRanges();
+    if (ranges.isEmpty())
         return;
+    const qint64 total = rangeTotal(ranges);
+
+    // Visual order, skipping hidden columns, so the copy matches what is shown. Resolved
+    // ONCE: the header cannot move under an application-modal dialog, and asking it per
+    // record walked the whole header per selected record.
+    QVector<int> columns;
     const int fieldCount = m_model->columnCount();
-    QVector<QVector<QString>> grid;
-    grid.reserve(rows.size());
-    for (int r : rows) {
-        QVector<QString> cells;
-        cells.reserve(fieldCount);
-        // Visual order, skipping hidden columns, so the copy matches what is shown.
-        for (int vi = 0; vi < fieldCount; ++vi) {
-            const int logical = m_header->logicalIndex(vi);
-            if (logical < 0 || m_header->isSectionHidden(logical))
-                continue;
-            cells << flattenCell(m_model->cellText(r, logical));
-        }
-        grid << cells;
+    columns.reserve(fieldCount);
+    for (int vi = 0; vi < fieldCount; ++vi) {
+        const int logical = m_header->logicalIndex(vi);
+        if (logical < 0 || m_header->isSectionHidden(logical))
+            continue;
+        columns.push_back(logical);
     }
-    QApplication::clipboard()->setText(columnsToTsv(grid));
+
+    QString out;
+    reserveFor(out, selectedByteLength(ranges) + total);
+
+    bool first = true;
+    const bool ok = walkSelection(ranges, total, [&](int viewRow) {
+        if (!first)
+            out += QLatin1Char('\n');
+        first = false;
+        for (int i = 0; i < columns.size(); ++i) {
+            if (i > 0)
+                out += QLatin1Char('\t');
+            out += flattenCell(m_model->cellText(viewRow, columns.at(i)));
+        }
+    });
+    if (!ok)
+        return; // as above: nothing reaches the clipboard unless the whole copy did
+    QApplication::clipboard()->setText(out);
 }
 
 // ---------------------------------------------------------------------------
