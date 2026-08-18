@@ -174,6 +174,69 @@ private:
             swatch(w, row, role)->setCurrentIndex(0);
     }
 
+    // One entry of one picker, rendered at the size the table actually draws it. The
+    // icons are what the two pickers are *made* of — the closed combo clears its text —
+    // so a claim about what a reader can tell apart is a claim about these pixels.
+    static QImage swatchEntry(QWidget &w, int row, HighlighterPane::ColourRole role, int slot)
+    {
+        QComboBox *combo = swatch(w, row, role);
+        if (!combo)
+            return QImage();
+        const int item = slot == HighlightPalette::kDefault ? 0 : combo->findData(slot);
+        return combo->itemIcon(item)
+            .pixmap(combo->iconSize())
+            .toImage()
+            .convertToFormat(QImage::Format_ARGB32);
+    }
+
+    // What a picker shows while it is closed: the entry it is sitting on.
+    static QImage swatchShown(QWidget &w, int row, HighlighterPane::ColourRole role)
+    {
+        QComboBox *combo = swatch(w, row, role);
+        if (!combo)
+            return QImage();
+        return combo->itemIcon(combo->currentIndex())
+            .pixmap(combo->iconSize())
+            .toImage()
+            .convertToFormat(QImage::Format_ARGB32);
+    }
+
+    // How many pixels of two icons a reader could tell apart. Antialiased strokes make
+    // "different" a distance rather than an inequality, and the ALPHA channel counts as
+    // much as the colour: one picker's tile is painted where the other's margin is not.
+    static int differingPixels(const QImage &a, const QImage &b)
+    {
+        if (a.isNull() || a.size() != b.size())
+            return -1;
+        int n = 0;
+        for (int y = 0; y < a.height(); ++y) {
+            for (int x = 0; x < a.width(); ++x) {
+                const QColor p = a.pixelColor(x, y);
+                const QColor q = b.pixelColor(x, y);
+                if (qAbs(p.red() - q.red()) + qAbs(p.green() - q.green())
+                            + qAbs(p.blue() - q.blue()) + qAbs(p.alpha() - q.alpha())
+                    > 40)
+                    ++n;
+            }
+        }
+        return n;
+    }
+
+    // Whether a colour was painted anywhere solid enough to be seen as itself.
+    static bool carriesColour(const QImage &image, const QColor &c, int minAlpha)
+    {
+        for (int y = 0; y < image.height(); ++y) {
+            for (int x = 0; x < image.width(); ++x) {
+                const QColor px = image.pixelColor(x, y);
+                if (px.alpha() >= minAlpha
+                    && qAbs(px.red() - c.red()) + qAbs(px.green() - c.green())
+                            + qAbs(px.blue() - c.blue()) <= 12)
+                    return true;
+            }
+        }
+        return false;
+    }
+
     static QListWidget *listContaining(QWidget &w, const QString &name)
     {
         const QList<QListWidget *> lists = w.findChildren<QListWidget *>();
@@ -211,6 +274,8 @@ private slots:
     void clearRemovesEveryRuleAndMarksThePane();
     void swatchMenuIsBandedAndFitsAShortScreen();
     void aSwatchPreviewsTheRulesPair();
+    void theTwoPickersAreTellableApartAtTheSizeTheyAreDrawn();
+    void aDefaultEntryStillNamesNoColourInEitherPicker();
     void oneClickRuleSetsBothColours();
     void reloadingTheListKeepsRulesEnabled();
 
@@ -665,6 +730,128 @@ void TestHighlighterPane::aSwatchPreviewsTheRulesPair()
     text->setCurrentIndex(text->findData(HighlightPalette::kInk));
     QVERIFY2(iconOf(back, 9) != backBefore,
              "choosing a text colour left the background picker previewing the old one");
+}
+
+// Both pickers preview the same pair — that is what makes an entry show what a matching
+// record will look like — so whatever tells the two apart cannot be a colour. It is the
+// tile's GEOMETRY, which the preview leaves free: the text picker fills its icon edge to
+// edge (there the field is context, and the answer is the letter and the bar under it),
+// while the background picker draws the colour as an inset chip, which is the discrete
+// block of colour it is what chooses. Painted, never lettered, and neither mark depends
+// on the theme.
+//
+// The claim is quantitative because the complaint was: a bar 2 px tall moved about a
+// tenth of a 14 px icon, and a mark that small is one a reader has to go looking for.
+void TestHighlighterPane::theTwoPickersAreTellableApartAtTheSizeTheyAreDrawn()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
+
+    QComboBox *text = swatch(pane, 0, HighlighterPane::ColourRole::Foreground);
+    QComboBox *back = swatch(pane, 0, HighlighterPane::ColourRole::Background);
+    QVERIFY(text && back);
+    text->setCurrentIndex(text->findData(HighlightPalette::kPaper));
+    back->setCurrentIndex(back->findData(0)); // Deep Red
+
+    const QImage textIcon = swatchShown(pane, 0, HighlighterPane::ColourRole::Foreground);
+    const QImage backIcon = swatchShown(pane, 0, HighlighterPane::ColourRole::Background);
+    QCOMPARE(textIcon.size(), text->iconSize());
+    QCOMPARE(backIcon.size(), back->iconSize());
+
+    const int total = textIcon.width() * textIcon.height();
+    const int differ = differingPixels(textIcon, backIcon);
+    qInfo("the two pickers differ in %d of %d pixels at %d px", differ, total,
+          textIcon.width());
+    // A third of the icon — the chip's whole margin, plus the bar, plus where the two
+    // letters sit — at the size the row is actually drawn at.
+    QVERIFY2(differ * 3 >= total,
+             qPrintable(QStringLiteral("only %1 of %2 pixels tell the pickers apart")
+                            .arg(differ)
+                            .arg(total)));
+
+    // And the distinction is not bought by giving up the preview: choosing a background
+    // still repaints BOTH pickers, because it is the ground either one previews on.
+    back->setCurrentIndex(back->findData(HighlightPalette::kPaper));
+    const QImage textAfter = swatchShown(pane, 0, HighlighterPane::ColourRole::Foreground);
+    const QImage backAfter = swatchShown(pane, 0, HighlighterPane::ColourRole::Background);
+    QVERIFY2(differingPixels(textAfter, textIcon) > 0,
+             "choosing a background left the text picker previewing the old one");
+    QVERIFY2(differingPixels(backAfter, backIcon) > 0,
+             "choosing a background left the background picker where it was");
+    // Still tellable apart on the new pair, which is what "does not depend on the
+    // colours" means: Paper on Paper is the worst case there is.
+    // And this is the case that matters, because it is the one the mark has to survive:
+    // Paper text on a Paper background hides the letter and the bar alike, both being
+    // drawn in the text colour. That used to leave the two icons PIXEL-IDENTICAL — 0 of
+    // 196 — which is the complaint in its sharpest form. The chip's margin is a shape and
+    // owes the pair nothing.
+    const int flat = differingPixels(textAfter, backAfter);
+    qInfo("with no contrast in the pair they differ in %d of %d", flat, total);
+    QVERIFY2(flat * 3 >= total,
+             qPrintable(QStringLiteral("only %1 of %2 pixels tell the pickers apart once "
+                                       "the pair stops contrasting")
+                            .arg(flat)
+                            .arg(total)));
+}
+
+// *Default* is the one entry that is NOT previewed: previewed, the theme's own text on
+// the theme's own base is what Ink-on-Paper already looks like, and the one thing this
+// entry has to say is that it names no colour at all. The role mark applies to it like
+// any other entry — the outline is the role's own shape — so the two pickers stay
+// tellable apart at the entry where they have the least to draw.
+void TestHighlighterPane::aDefaultEntryStillNamesNoColourInEitherPicker()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    button(pane, QStringLiteral("ruleNew"))->click();
+
+    QComboBox *text = swatch(pane, 0, HighlighterPane::ColourRole::Foreground);
+    QComboBox *back = swatch(pane, 0, HighlighterPane::ColourRole::Background);
+    QVERIFY(text && back);
+    text->setCurrentIndex(text->findData(HighlightPalette::kPaper));
+    back->setCurrentIndex(back->findData(0)); // Deep Red
+
+    const bool dark = pane.palette().base().color().lightness()
+                      < pane.palette().text().color().lightness();
+    const QColor fg = HighlightPalette::color(HighlightPalette::kPaper, dark);
+    const QColor bg = HighlightPalette::color(0, dark);
+
+    for (HighlighterPane::ColourRole role : {HighlighterPane::ColourRole::Foreground,
+                                             HighlighterPane::ColourRole::Background}) {
+        const QImage empty = swatchEntry(pane, 0, role, HighlightPalette::kDefault);
+        QVERIFY(!empty.isNull());
+        // Nothing in it is painted solid: it is an outline with a stroke through it, at
+        // partial alpha, so no part of it can be read as a colour the record would get.
+        int solid = 0;
+        for (int y = 0; y < empty.height(); ++y)
+            for (int x = 0; x < empty.width(); ++x)
+                if (empty.pixelColor(x, y).alpha() > 200)
+                    ++solid;
+        QCOMPARE(solid, 0);
+        QVERIFY2(!carriesColour(empty, bg, 100), "the *default* entry shows a colour");
+        QVERIFY2(!carriesColour(empty, fg, 100), "the *default* entry shows a colour");
+    }
+
+    // Which leaves the role mark as the only thing in them, and it still has to say
+    // which picker this is.
+    const QImage textEmpty =
+        swatchEntry(pane, 0, HighlighterPane::ColourRole::Foreground, HighlightPalette::kDefault);
+    const QImage backEmpty =
+        swatchEntry(pane, 0, HighlighterPane::ColourRole::Background, HighlightPalette::kDefault);
+    const int differ = differingPixels(textEmpty, backEmpty);
+    qInfo("the two *default* entries differ in %d pixels", differ);
+    QVERIFY2(differ >= 24,
+             qPrintable(QStringLiteral("the two roles' *default* entries differ in %1 pixels")
+                            .arg(differ)));
 }
 
 void TestHighlighterPane::oneClickRuleSetsBothColours()
