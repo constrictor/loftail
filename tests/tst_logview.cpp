@@ -223,6 +223,13 @@ private slots:
     void aValueThatFitsItsColumnOffersNoTooltip();
     void aWrappedMessageOffersNoTooltipAndAnUnwrappedOneDoes();
     void aHeaderCaptionTooNarrowToReadNamesItselfOnHover();
+    void everyColumnStartsWideEnoughForItsOwnHeading();
+    void aColumnSeedsFromTheWidestInternedName();
+    void aWidthTheUserDraggedSurvivesEverySeed();
+    void aRestoredColumnLayoutIsNeverReseeded();
+    void fittingAColumnShowsItsWidestValueAndKeepsIt();
+    void aFitIsBoundedHoweverWideTheValueIs();
+    void doubleClickingASectionDividerFitsThatColumn();
 };
 
 // --- what does not fit says so (SPEC.md §5) ----------------------------------
@@ -1189,6 +1196,254 @@ void TestLogView::theAlternatingBandChangesAtRecordsAndNotAtLines()
     QVERIFY2(isColour(runs.at(1).first, band), "an unmatched record lost its band");
     QVERIFY2(isColour(runs.at(2).first, ruleBg), "a matched record is not wearing its rule");
     QCOMPARE(runs.at(2).second, 4 * lh); // one block over both matched records
+}
+
+// --- columns start at a width that fits (SPEC.md §5) -------------------------
+//
+// The widths are measured from the font, so every case here needs one resolved — with
+// an empty font database (Windows offscreen, which ships none) every advance is zero
+// and the whole question is meaningless.
+
+namespace {
+
+// A log whose subsystem name is far longer than any typical-value allowance, so the
+// seed taken from the intern table is tellable apart from the seed taken without one.
+QByteArray makeLongNameLog(const QByteArray &logger, int n, int messageChars = 20)
+{
+    QByteArray bytes;
+    for (int i = 0; i < n; ++i) {
+        bytes += "2026-07-21 14:32:0";
+        bytes += QByteArray::number(i % 10);
+        bytes += ",123 [main] INFO  " + logger + " - ";
+        bytes += QByteArray("m").repeated(messageChars);
+        bytes += "\n";
+    }
+    return bytes;
+}
+
+bool openBytes(Document &doc, QTemporaryFile &file, const QByteArray &bytes)
+{
+    if (!file.open())
+        return false;
+    file.write(bytes);
+    file.flush();
+    return doc.open(file.fileName(),
+                    QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                    Encoding::Utf8, QTimeZone::utc());
+}
+
+int captionWidth(const LogView &view, const LogModel &model, int column)
+{
+    return view.fontMetrics().horizontalAdvance(
+        model.headerData(column, Qt::Horizontal, Qt::DisplayRole).toString());
+}
+
+} // namespace
+
+// The complaint that started this: Priority shipped at 60 px, which cannot fit the word
+// "Priority" in any font. A column that cannot say what it is is worse than a wide one.
+void TestLogView::everyColumnStartsWideEnoughForItsOwnHeading()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 3), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+
+    for (int c = 0; c < model.columnCount(); ++c) {
+        const int caption = captionWidth(view, model, c);
+        QVERIFY2(view.header()->sectionSize(c) >= caption,
+                 qPrintable(QStringLiteral("column %1 (%2) starts at %3 px, narrower than "
+                                           "its own heading at %4 px")
+                                .arg(c)
+                                .arg(model.headerData(c, Qt::Horizontal).toString())
+                                .arg(view.header()->sectionSize(c))
+                                .arg(caption)));
+    }
+}
+
+// The second seed, the one that runs when the scan finishes: the intern table holds
+// every subsystem name in the file exactly once (invariant #4), so the Subsystem column
+// can be opened to the widest of them without touching a record.
+void TestLogView::aColumnSeedsFromTheWidestInternedName()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    const QByteArray longName = "com.example.deeply.nested.subsystem";
+
+    QTemporaryFile shortFile;
+    Document shortDoc;
+    QVERIFY2(openBytes(shortDoc, shortFile, makeLongNameLog("db", 5)),
+             qPrintable(shortDoc.lastError()));
+    LogModel shortModel(&shortDoc);
+    LogView shortView(&shortDoc, &shortModel);
+    shortView.seedColumnWidths();
+
+    QTemporaryFile longFile;
+    Document longDoc;
+    QVERIFY2(openBytes(longDoc, longFile, makeLongNameLog(longName, 5)),
+             qPrintable(longDoc.lastError()));
+    LogModel longModel(&longDoc);
+    LogView longView(&longDoc, &longModel);
+    longView.seedColumnWidths(); // what MainWindow::onIndexFinished calls
+
+    const int logger = columnOfRole(longDoc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+    QVERIFY(longView.header()->sectionSize(logger)
+            >= longView.fontMetrics().horizontalAdvance(QString::fromLatin1(longName)));
+    // And it is the NAME doing it, not the format: the same column over a log whose
+    // subsystem is "db" stays at its typical-value allowance.
+    QVERIFY(shortView.header()->sectionSize(logger) < longView.header()->sectionSize(logger));
+}
+
+// The trap in the whole feature: a seed arrives after the user has already dragged a
+// divider, and must leave it exactly where they put it. Reset Widths is the way back.
+void TestLogView::aWidthTheUserDraggedSurvivesEverySeed()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openBytes(doc, file, makeLongNameLog("com.example.deeply.nested.subsystem", 5)),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    const int logger = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+    const int seeded = view.header()->sectionSize(logger);
+
+    view.header()->resizeSection(logger, 37); // the user drags it narrow
+    view.seedColumnWidths();
+    QCOMPARE(view.header()->sectionSize(logger), 37);
+    view.seedColumnWidths(); // and a second scan does not get a second chance either
+    QCOMPARE(view.header()->sectionSize(logger), 37);
+
+    // Reset Widths forgets every user width, which is what makes the drag undoable —
+    // and re-seeds, so the column comes back at least as wide as it opened.
+    view.resetColumnWidths();
+    QVERIFY(view.header()->sectionSize(logger) >= seeded);
+}
+
+// Session restore runs BEFORE indexing starts (MainWindow::restoreSession), so the seed
+// that fires at the end of the scan is the one thing that could quietly widen a column
+// the user had narrowed in the last session.
+void TestLogView::aRestoredColumnLayoutIsNeverReseeded()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openBytes(doc, file, makeLongNameLog("com.example.deeply.nested.subsystem", 5)),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    const int logger = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+
+    LogView saved(&doc, &model);
+    saved.header()->resizeSection(logger, 45);
+    const QByteArray state = saved.saveColumnState();
+
+    LogView restored(&doc, &model);
+    QVERIFY(restored.restoreColumnState(state));
+    QCOMPARE(restored.header()->sectionSize(logger), 45);
+    restored.seedColumnWidths();
+    QCOMPARE(restored.header()->sectionSize(logger), 45);
+}
+
+// "Fit to Contents" is the other question: not what a typical value takes but what the
+// widest one does. Over the metadata columns that answer comes from the intern table.
+void TestLogView::fittingAColumnShowsItsWidestValueAndKeepsIt()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    const QByteArray longName = "com.example.a.name.longer.than.any.seed.allowance.at.all";
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openBytes(doc, file, makeLongNameLog(longName, 5)), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(800, 400);
+    const int logger = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+
+    const int full = view.fontMetrics().horizontalAdvance(QString::fromLatin1(longName));
+    QVERIFY(view.header()->sectionSize(logger) < full); // the seed clamps; a fit does not
+    view.fitColumnsToContents();
+    QVERIFY(view.header()->sectionSize(logger) >= full);
+
+    // A fit is the user's choice as much as a drag is, so the next seed leaves it alone.
+    const int fitted = view.header()->sectionSize(logger);
+    view.seedColumnWidths();
+    QCOMPARE(view.header()->sectionSize(logger), fitted);
+
+    // And the message column fits its message rather than the 200-character allowance
+    // it opened with — fitting is allowed to make a column NARROWER.
+    const int message = columnOfRole(doc, FieldRole::Message);
+    QVERIFY(message >= 0);
+    QVERIFY(view.header()->sectionSize(message)
+            >= view.fontMetrics().horizontalAdvance(model.cellText(0, message)));
+    QVERIFY(view.header()->sectionSize(message) < 400);
+}
+
+// A fit measures real values, and a log may hold one that is 20,000 characters wide. The
+// resulting column is bounded, or "fit to contents" hands the user a header they cannot
+// scroll to the end of.
+void TestLogView::aFitIsBoundedHoweverWideTheValueIs()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openBytes(doc, file, makeLongNameLog("db", 3, /*messageChars=*/20000)),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(800, 400);
+    const int message = columnOfRole(doc, FieldRole::Message);
+    QVERIFY(message >= 0);
+
+    view.fitColumnToContents(message);
+    QVERIFY2(view.header()->sectionSize(message) <= 2400,
+             qPrintable(QStringLiteral("a fit produced %1 px")
+                            .arg(view.header()->sectionSize(message))));
+}
+
+// Double-clicking a divider fits the column to its left. QHeaderView emits the signal
+// and does nothing with it on its own, so before this it was a gesture with no effect.
+void TestLogView::doubleClickingASectionDividerFitsThatColumn()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    const QByteArray longName = "com.example.a.name.longer.than.any.seed.allowance.at.all";
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openBytes(doc, file, makeLongNameLog(longName, 5)), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(900, 400);
+    view.show();
+
+    const int logger = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+    QHeaderView *header = view.header();
+    const int before = header->sectionSize(logger);
+
+    // The right-hand grip of the Subsystem section, which is the handle that resizes it.
+    const int x = header->sectionViewportPosition(logger) + header->sectionSize(logger) - 1;
+    QTest::mouseDClick(header->viewport(), Qt::LeftButton, Qt::KeyboardModifiers(),
+                       QPoint(x, qMax(2, header->viewport()->height() / 2)));
+
+    QVERIFY2(header->sectionSize(logger) > before, "the divider double-click did nothing");
+    QVERIFY(header->sectionSize(logger)
+            >= view.fontMetrics().horizontalAdvance(QString::fromLatin1(longName)));
 }
 
 #include "tst_logview.moc"

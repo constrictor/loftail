@@ -120,8 +120,34 @@ public:
     // Column layout persistence (SPEC.md §5): the QHeaderView's own state carries
     // section order, sizes, and hidden flags. M5 folds this into full session
     // restore; the round-trip itself lives here.
+    //
+    // A restore speaks for EVERY column's width from then on — see seedColumnWidths().
     QByteArray saveColumnState() const;
     bool restoreColumnState(const QByteArray &state);
+
+    // --- Column widths that fit (SPEC.md §5, ARCHITECTURE.md §7.1) ----------------
+    //
+    // Seeded from the FONT — the header caption and a per-role allowance of characters
+    // — never in raw pixels, since nothing knows how wide a pixel is until the font is
+    // resolved. Applied ONLY to columns nobody has spoken for: a drag, a fit, or a
+    // restored session claims its column, and no later seed may overwrite it.
+    //
+    // Called twice per view: from the constructor, where the caption is all there is to
+    // measure, and again from MainWindow::onIndexFinished, where the intern tables are
+    // complete and the Subsystem/Thread columns can take the widest name in the file
+    // (invariant #4). Never on the paint path and never per ingest tick.
+    void seedColumnWidths();
+
+    // Forget every user width and seed the lot again — the header menu's "Reset Widths".
+    void resetColumnWidths();
+
+    // "Fit to Contents": the column's widest value rather than a typical one. BOUNDED —
+    // the metadata columns read the intern table, everything else a few hundred sampled
+    // records — because a log has ten million of them and a menu item may not walk them
+    // all (ARCHITECTURE.md §7.1). Also what double-clicking a section divider does.
+    // A fit is an explicit choice, so it claims its column exactly as a drag does.
+    void fitColumnsToContents();
+    void fitColumnToContents(int logical);
 
     // Clipboard actions (SPEC.md §5). Raw yields the records' original bytes; the
     // columns form is tab-separated fields for spreadsheet paste.
@@ -307,6 +333,24 @@ private:
     QString truncatedCellText(const QPoint &pos) const;
     QString truncatedHeaderText(int x) const;
 
+    // --- Column width measurement (see seedColumnWidths) ---------------------------
+    // Everything here measures through the view's own QFontMetrics and survives a font
+    // that resolves to nothing at all — the Windows offscreen plugin ships no fonts, so
+    // horizontalAdvance() answers 0 there and a width computed from it would collapse
+    // every column to its floor.
+    int charWidth() const;
+    int textWidth(const QString &text) const;
+    int seedWidthOf(int logical) const;    // a typical value + the caption
+    int contentWidthOf(int logical) const; // the widest value, bounded
+    // The widest interned logger/thread name, optionally clamped to `maxChars` — the
+    // clamp is for the SEED, so one pathological name cannot open a column half a
+    // window wide before the user has asked for anything.
+    int widestInternedWidth(int logical, int maxChars) const;
+    int sampledContentWidth(int logical) const;
+    // Resize without the resize being read back as the user's own choice.
+    void applyColumnWidth(int logical, int width);
+    void markUserSized(int logical);
+
     const Document *m_document;
     LogModel       *m_model;
     Role            m_role = Role::Main;
@@ -315,6 +359,14 @@ private:
     // scrollbars, so eventFilter() is called during construction — before this exists.
     QHeaderView    *m_header = nullptr;
     QItemSelectionModel *m_selection;
+
+    // Which columns the user has spoken for — dragged, fitted, or brought back by a
+    // restored session — indexed by LOGICAL column. A seed skips every one of them, so
+    // the scan-completion seed can never overwrite a width somebody chose.
+    QVector<bool> m_userSizedColumns;
+    // Set while this class is doing the resizing, so the QHeaderView::sectionResized it
+    // provokes is not read back as the user dragging a divider.
+    bool m_applyingColumnWidths = false;
 
     WrapMode m_wrapMode = WrapMode::Off;
     QString  m_placeholderText; // drawn centred when there are no records at all

@@ -179,6 +179,11 @@ private:
     // (SPEC.md §4). Built once and owned by the window; showColumnMenu borrows it,
     // because that menu is stack-allocated per invocation.
     void buildTimeDisplayMenu();
+    // "Fit to Contents" and "Reset Widths" on the column header menu (SPEC.md §5).
+    // Owned by the window for the same reason the timestamp submenu is — showColumnMenu
+    // builds its QMenu on the stack — and they act on the ACTIVE view, which is the only
+    // view whose header a right-click can land on.
+    void buildColumnWidthActions();
     // Apply a mode to the ACTIVE file, routed through applySettings so it persists
     // exactly like a dialog change would.
     void setTimeDisplay(TimeDisplay mode);
@@ -396,6 +401,9 @@ private:
     // TimeDisplay. Owned by the window (see buildTimeDisplayMenu).
     QMenu   *m_timeDisplayMenu = nullptr;
     QAction *m_timeDisplayActions[5] = {};
+    // Column widths, offered on the same header menu (see buildColumnWidthActions).
+    QAction *m_fitColumnsAction = nullptr;
+    QAction *m_resetColumnWidthsAction = nullptr;
     QLabel       *m_statusLabel = nullptr;
     // The scan indicator and its stop button, shown and hidden as one: cancelling is
     // only offered while there is a scan to cancel, so the two are never apart.

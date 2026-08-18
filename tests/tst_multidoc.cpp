@@ -5,6 +5,7 @@
 #include <QDockWidget>
 #include <QHeaderView>
 #include <QFile>
+#include <QFontDatabase>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTabWidget>
@@ -16,6 +17,7 @@
 #include "FilterPane.h"
 #include "Highlight.h"
 #include "LiveController.h"
+#include "LogFormat.h"
 #include "LogModel.h"
 #include "LogView.h"
 #include "MainWindow.h"
@@ -129,6 +131,12 @@ private slots:
     void aRuleWithoutTheTabActionMarksNothing();
     void returningToTheTabClearsTheMark();
     void theTabMarkerIsNotTheWordIndexing();
+
+    // Column widths (SPEC.md §5). The seed that matters is the one taken when the SCAN
+    // finishes and the intern tables are complete, which only a real window runs — and
+    // the two header-menu commands are actions on that window like any other.
+    void theSubsystemColumnWidensOnceTheScanHasSeenEveryName();
+    void theHeaderMenuFitsAndResetsTheColumnWidths();
 };
 
 namespace {
@@ -494,6 +502,18 @@ QTabWidget *docTabs(const MainWindow &w)
     return w.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
 }
 
+// Which column carries a field, since the format decides the order. By ROLE and never
+// by the caption: a caption is translated prose, and nothing in tests/ identifies
+// anything by its visible text.
+int columnOfRole(const Document &doc, FieldRole role)
+{
+    const QVector<Field> &fields = doc.format().fields;
+    for (int c = 0; c < fields.size(); ++c)
+        if (fields.at(c).role == role)
+            return c;
+    return -1;
+}
+
 // Add a rule to a file's Document directly, the way session restore does. The pane
 // holds one file's rules at a time and these cases care about the file that is NOT on
 // screen, so going through the pane would be the wrong route as well as a longer one.
@@ -658,6 +678,73 @@ int main(int argc, char *argv[])
 
     TestMultiDoc tc;
     return QTest::qExec(&tc, argc, argv);
+}
+
+// The Subsystem column is seeded twice: once at construction, from the caption and a
+// typical-value allowance, and once when the scan finishes, from the widest name the
+// intern table actually holds (invariant #4). Only the second one needs a window.
+void TestMultiDoc::theSubsystemColumnWidensOnceTheScanHasSeenEveryName()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    const QString wide = m_dir.filePath(QStringLiteral("wide.log"));
+    const char *longName = "com.example.deeply.nested.subsystem";
+    writeLog(wide, longName, 40);
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(wide);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    waitUntilIndexed(w);
+
+    auto *page = qobject_cast<DocumentView *>(docTabs(w)->widget(0));
+    QVERIFY(page);
+    LogView *view = page->logView();
+    const int logger = columnOfRole(*page->context()->doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+    QVERIFY2(view->header()->sectionSize(logger)
+                 >= view->fontMetrics().horizontalAdvance(QLatin1String(longName)),
+             "the Subsystem column did not take the widest interned name");
+}
+
+// The two commands the column header menu offers besides the visibility list. They are
+// window-owned actions with object names, so a test drives them exactly as it drives the
+// timestamp modes — without opening a modal menu.
+void TestMultiDoc::theHeaderMenuFitsAndResetsTheColumnWidths()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    const QString wide = m_dir.filePath(QStringLiteral("fit.log"));
+    // Longer than the 40 characters a SEED will open a column to, so the seeded width
+    // and the fitted width are tellable apart.
+    const char *longName = "com.example.a.name.longer.than.any.seed.allowance.at.all";
+    writeLog(wide, longName, 40);
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(wide);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    waitUntilIndexed(w);
+
+    auto *page = qobject_cast<DocumentView *>(docTabs(w)->widget(0));
+    QVERIFY(page);
+    LogView *view = page->logView();
+    const int logger = columnOfRole(*page->context()->doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+    const int full = view->fontMetrics().horizontalAdvance(QLatin1String(longName));
+    const int seeded = view->header()->sectionSize(logger);
+    QVERIFY(seeded < full); // the seed clamps a pathological name; a fit does not
+
+    trigger(w, "fitColumnsAction");
+    QVERIFY(view->header()->sectionSize(logger) >= full);
+
+    // Reset forgets the fit along with every dragged width and seeds the lot again.
+    trigger(w, "resetColumnWidthsAction");
+    QCOMPARE(view->header()->sectionSize(logger), seeded);
 }
 
 #include "tst_multidoc.moc"
