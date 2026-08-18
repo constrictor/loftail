@@ -132,6 +132,12 @@ private:
     void commit();               // push m_rules into the document + emit change
     void syncToDocument();
     void updateActivity();       // emit activityChanged() when hasRules() flips
+    // Grey the four buttons that need something to act on. ONE writer for all of them,
+    // called from the rebuild (where the rule count moves) and from the table's own
+    // currentCellChanged (where the row does) — a setEnabled() at a third call site is
+    // how the four drift out of step. Re-entrancy-safe by construction: it reads
+    // m_rules and the current row and writes nothing but enabled states.
+    void updateRuleButtons();
     // Show, word and place the empty table's message. TWO empty states, and they do not
     // say the same thing: no file open at all, versus a file whose rules the user has
     // just cleared. Driven from reloadRuleTable(), the one funnel the table is built by.

@@ -788,7 +788,13 @@ void HighlighterPane::buildUi()
 
     // --- Wiring -------------------------------------------------------------
     connect(m_ruleTable, &QTableWidget::currentCellChanged, this,
-            [this](int row, int, int, int) { loadEditorFor(row); });
+            [this](int row, int, int, int) {
+                loadEditorFor(row);
+                // Remove, Up and Down are all statements about the current row, so this
+                // is where three of the four are decided; the fourth rides along rather
+                // than acquiring a call site of its own.
+                updateRuleButtons();
+            });
     // The rule's own tick is the one thing in the table that is an ITEM rather than a
     // widget, because it is not an action: it says whether the rule runs at all, and a
     // press-and-stay button beside three of them would read as a fourth action.
@@ -1005,11 +1011,14 @@ void HighlighterPane::reloadRuleTable()
 
     const bool has = !m_rules.isEmpty();
     m_editor->setEnabled(has);
-    m_clearBtn->setEnabled(has);
     if (has)
         setCurrentRow(0);
     else
         loadEditorFor(-1);
+    // After the selection has settled, never before: three of the four buttons are
+    // about the current row, and the row this rebuild ends on is not the one it
+    // started with.
+    updateRuleButtons();
     updatePlaceholder();
     updateActivity();
 }
@@ -1089,6 +1098,31 @@ void HighlighterPane::updateActivity()
         return;
     m_activeState = active;
     emit activityChanged(active);
+}
+
+void HighlighterPane::updateRuleButtons()
+{
+    // Every button under the table needs something to act on, and only Clear used to
+    // say so: with no rules, three live buttons sat beside one correctly greyed, and
+    // pressing any of them did nothing at all. A disabled button is the honest answer —
+    // it says the command exists and what it is waiting for, where a live one that
+    // silently declines says the press was missed.
+    //
+    // ONE writer for all four. Called from exactly two places, which are the only two
+    // that can move either input: reloadRuleTable(), where the rule count changes, and
+    // the table's currentCellChanged, where the row does. Nothing here emits, so it is
+    // safe under reloadRuleTable()'s re-entrancy through loadEditorFor().
+    //
+    // New is deliberately NOT tracked here: what it needs is a document, and the pane
+    // greys itself entire without one (setDocument). With a document and an empty table
+    // it is the one live button in the row, which is exactly right — it is the way out
+    // of that state, and the placeholder over the table names it.
+    const int row = currentRow();
+    const bool selected = row >= 0 && row < m_rules.size();
+    m_removeBtn->setEnabled(selected);
+    m_upBtn->setEnabled(selected && row > 0);
+    m_downBtn->setEnabled(selected && row < m_rules.size() - 1);
+    m_clearBtn->setEnabled(!m_rules.isEmpty());
 }
 
 int HighlighterPane::nextFreeBackground() const
