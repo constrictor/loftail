@@ -336,8 +336,10 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::applyActiveHighlighters);
     // The same marker the Filters dock carries, for the same reason: with the panes
     // tabbed, rules colour the log while the pane that holds them is out of sight.
-    // "Present", not "in force" — a rule in the list is something the user put there,
-    // where a filter axis can be switched on and still exclude nothing.
+    // "Not the seeded rules", not "present": every log opens with the three default
+    // rules (HighlighterSet::defaults), so a marker meaning "there are rules" would be
+    // on for every file from the moment it opened and would say nothing. The pane
+    // compares its whole list, in order, against that seed (hasCustomRules).
     m_highlightersDock = highlightDock;
     connect(m_highlighterPane, &HighlighterPane::activityChanged, this, [this](bool active) {
         if (m_highlightersDock)

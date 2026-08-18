@@ -6,6 +6,7 @@
 #include <QTimeZone>
 
 #include <cmath>
+#include <functional>
 
 #include "Highlight.h"
 #include "LogFormat.h"
@@ -89,7 +90,43 @@ private slots:
     void everyDefaultRuleCarriesTheColourActionAndNothingElse();
     void everyDefaultRuleNamesTheTextColourThatReadsOnItsBackground();
     void theDefaultRulesAreInertWhereNoRecordCarriesALevel();
+
+    // Rule equality, which the Highlighters tab's marker is decided by.
+    void aFreshCopyOfTheSeededRulesComparesEqual();
+    void aRuleDiffersWhenAnyOneFieldOfItDoes();
+    void anUnsetTimeBoundEqualsAnotherUnsetOneAndNotAnySetOne();
+    void reorderingARuleListMakesItADifferentList();
 };
+
+// Every field of a rule set to something other than its default, so a case below can
+// move exactly one of them and be sure the move is what the comparison saw. Enumerated
+// from the struct definitions in Highlight.h and MatchCriteria.h, which is the only way
+// to write this: a field nobody thought of is a field nobody tests.
+static HighlightRule fullyConfiguredRule()
+{
+    HighlightRule r;
+    r.enabled = true;
+    r.match.priorityEnabled = true;
+    r.match.minPriority = Priority::Warn;
+    r.match.loggerEnabled = true;
+    r.match.loggerNames = QStringList{QStringLiteral("db.pool"), QStringLiteral("net.io")};
+    r.match.threadEnabled = true;
+    r.match.threadNames = QStringList{QStringLiteral("main")};
+    r.match.loggerCoversAll = false;
+    r.match.threadCoversAll = false;
+    r.match.loggerRestrictive = true;
+    r.match.threadRestrictive = true;
+    r.match.timeEnabled = true;
+    r.match.start = QDateTime(QDate(2026, 7, 21), QTime(10, 0, 0));
+    r.match.end = QDateTime(QDate(2026, 7, 21), QTime(11, 0, 0));
+    r.match.text.enabled = true;
+    r.match.text.negate = true;
+    r.match.text.matcher.set(QStringLiteral("boom"), /*regex=*/true, Qt::CaseSensitive);
+    r.actions = HighlightAction::Color | HighlightAction::Digest;
+    r.background = 3;
+    r.foreground = 7;
+    return r;
+}
 
 Record TestHighlight::rec(quint32 loggerId, Priority p, quint32 threadId, qint64 timestamp)
 {
@@ -927,6 +964,110 @@ void TestHighlight::theDefaultRulesAreInertWhereNoRecordCarriesALevel()
     // nothing, exactly as a hand-made priority rule does on such a log.
     QCOMPARE(colorRule(set, rec(1, Priority::Unknown)), -1);
     QCOMPARE(colorRule(set, rec(0, Priority::Unknown, 0, Record::kNoTimestamp)), -1);
+}
+
+void TestHighlight::aFreshCopyOfTheSeededRulesComparesEqual()
+{
+    // The baseline the marker rests on: the seed is a value, so a log that was handed
+    // it and never touched compares equal to a seed built a second later. If this ever
+    // fails, every log wears the marker again and for a subtler reason than before.
+    QVERIFY(HighlighterSet::defaults().rules == HighlighterSet::defaults().rules);
+    const HighlightRule r = fullyConfiguredRule();
+    QVERIFY(r == fullyConfiguredRule());
+    QVERIFY(!(r != fullyConfiguredRule()));
+}
+
+void TestHighlight::aRuleDiffersWhenAnyOneFieldOfItDoes()
+{
+    // One case per field a user can move, HighlightRule's five and MatchCriteria's
+    // fourteen alike. A field missing from operator== is a field the user can edit with
+    // the Highlighters tab going on saying nothing about it (ARCHITECTURE.md §7.5) —
+    // silent, and in the direction of reporting less than the truth. So the list here is
+    // the point, and it grows with the struct.
+    struct Case
+    {
+        const char                      *field;
+        std::function<void(HighlightRule &)> edit;
+    };
+    const Case cases[] = {
+        { "enabled",           [](HighlightRule &r) { r.enabled = false; } },
+        { "priorityEnabled",   [](HighlightRule &r) { r.match.priorityEnabled = false; } },
+        { "minPriority",       [](HighlightRule &r) { r.match.minPriority = Priority::Error; } },
+        { "loggerEnabled",     [](HighlightRule &r) { r.match.loggerEnabled = false; } },
+        { "loggerNames",       [](HighlightRule &r) { r.match.loggerNames.removeLast(); } },
+        { "threadEnabled",     [](HighlightRule &r) { r.match.threadEnabled = false; } },
+        { "threadNames",       [](HighlightRule &r) { r.match.threadNames = QStringList{QStringLiteral("worker")}; } },
+        { "loggerCoversAll",   [](HighlightRule &r) { r.match.loggerCoversAll = true; } },
+        { "threadCoversAll",   [](HighlightRule &r) { r.match.threadCoversAll = true; } },
+        { "loggerRestrictive", [](HighlightRule &r) { r.match.loggerRestrictive = false; } },
+        { "threadRestrictive", [](HighlightRule &r) { r.match.threadRestrictive = false; } },
+        { "timeEnabled",       [](HighlightRule &r) { r.match.timeEnabled = false; } },
+        { "start",             [](HighlightRule &r) { r.match.start = r.match.start.addSecs(60); } },
+        { "end",               [](HighlightRule &r) { r.match.end = r.match.end.addSecs(-60); } },
+        { "start unset",       [](HighlightRule &r) { r.match.start = QDateTime(); } },
+        { "end unset",         [](HighlightRule &r) { r.match.end = QDateTime(); } },
+        { "text.enabled",      [](HighlightRule &r) { r.match.text.enabled = false; } },
+        { "text.negate",       [](HighlightRule &r) { r.match.text.negate = false; } },
+        { "text pattern",      [](HighlightRule &r) { r.match.text.matcher.set(QStringLiteral("bang"), true, Qt::CaseSensitive); } },
+        { "text regex flag",   [](HighlightRule &r) { r.match.text.matcher.set(QStringLiteral("boom"), false, Qt::CaseSensitive); } },
+        { "text case option",  [](HighlightRule &r) { r.match.text.matcher.set(QStringLiteral("boom"), true, Qt::CaseInsensitive); } },
+        // An action ADDED, and every action taken away — the parked rule, one click from
+        // unticking Colour, which fromJson already refuses to read as "nothing saved".
+        { "actions gained",    [](HighlightRule &r) { r.actions |= HighlightAction::Tab; } },
+        { "actions emptied",   [](HighlightRule &r) { r.actions = HighlightActions(); } },
+        { "background",        [](HighlightRule &r) { r.background = 4; } },
+        { "foreground",        [](HighlightRule &r) { r.foreground = 8; } },
+    };
+
+    for (const Case &c : cases) {
+        HighlightRule edited = fullyConfiguredRule();
+        c.edit(edited);
+        QVERIFY2(edited != fullyConfiguredRule(), c.field);
+        QVERIFY2(!(edited == fullyConfiguredRule()), c.field);
+        // ...and the edit is the ONLY reason: put it back and the two agree again, so a
+        // case cannot pass by way of some other field the helper left unstable.
+        HighlightRule again = edited;
+        QVERIFY2(again == edited, c.field);
+    }
+}
+
+void TestHighlight::anUnsetTimeBoundEqualsAnotherUnsetOneAndNotAnySetOne()
+{
+    // A default rule holds two invalid QDateTimes and so does one read back from a
+    // stored empty ISO string, so "neither names a bound" has to compare equal or every
+    // log with the seeded rules reports itself edited. Spelled out in MatchCriteria
+    // rather than left to QDateTime, whose answer for two invalid values is a property
+    // of the Qt in front of you and not a promise (the floor is 6.4).
+    HighlightRule a;
+    HighlightRule b;
+    QVERIFY(a == b);
+    QVERIFY(!a.match.start.isValid() && !a.match.end.isValid());
+
+    b.match.start = QDateTime(QDate(2026, 7, 21), QTime(10, 0, 0));
+    QVERIFY(a != b);
+    a.match.start = b.match.start;
+    QVERIFY(a == b);
+}
+
+void TestHighlight::reorderingARuleListMakesItADifferentList()
+{
+    // Order is meaning, not presentation: first-match-wins is per action (§7.5), so the
+    // seeded rules with FATAL and ERROR swapped paint a FATAL record the ERROR colour.
+    // The marker therefore compares the whole list IN ORDER, never a count or a set.
+    QVector<HighlightRule> seeded = HighlighterSet::defaults().rules;
+    QVERIFY(seeded.size() >= 2);
+    QVector<HighlightRule> swapped = seeded;
+    swapped.swapItemsAt(0, 1);
+    QVERIFY(swapped != seeded);
+
+    swapped.swapItemsAt(0, 1);
+    QVERIFY(swapped == seeded);
+
+    // A shorter list is a different list too — the case an "every rule I have matches
+    // one of theirs" comparison would miss.
+    QVector<HighlightRule> shorter = seeded;
+    shorter.removeLast();
+    QVERIFY(shorter != seeded);
 }
 
 QTEST_APPLESS_MAIN(TestHighlight)

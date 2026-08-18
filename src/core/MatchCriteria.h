@@ -122,6 +122,31 @@ struct MatchCriteria
                       const QTimeZone &displayZone, AbsentField absent,
                       NoOpAxes noOps) const;
 
+    // Value equality over EVERY field above, in the order they are declared — the
+    // list is the point, not the convenience. It answers the Highlighters tab's
+    // marker, which is "are this log's rules still the ones loftail seeded"
+    // (HighlighterPane::hasCustomRules, ARCHITECTURE.md §7.5): a field left out here
+    // is a field the user can edit with nothing on screen changing, and it fails
+    // silently, in the direction of saying nothing. So a new axis — or a new flag on
+    // an existing one — belongs in this comparison in the same commit that adds it.
+    //
+    // coversAll is compared like the rest although it is derived and not persisted:
+    // it only ever moves as a consequence of an edit the user made in the axis
+    // editor, so treating it as part of the value costs nothing and leaving it out
+    // would be a second rule to remember.
+    bool operator==(const MatchCriteria &o) const
+    {
+        return priorityEnabled == o.priorityEnabled && minPriority == o.minPriority
+            && loggerEnabled == o.loggerEnabled && loggerNames == o.loggerNames
+            && threadEnabled == o.threadEnabled && threadNames == o.threadNames
+            && loggerCoversAll == o.loggerCoversAll && threadCoversAll == o.threadCoversAll
+            && loggerRestrictive == o.loggerRestrictive
+            && threadRestrictive == o.threadRestrictive
+            && timeEnabled == o.timeEnabled && sameBound(start, o.start)
+            && sameBound(end, o.end) && text == o.text;
+    }
+    bool operator!=(const MatchCriteria &o) const { return !(*this == o); }
+
     // Portable JSON — names and levels, never ids or UTC ms. The key names are
     // FilterPane's original ones, unchanged, so existing filter presets, exported
     // preset files and stored sessions keep loading byte-identically and neither
@@ -130,6 +155,21 @@ struct MatchCriteria
     // would silently discard every saved preset).
     QJsonObject         toJson() const;
     static MatchCriteria fromJson(const QJsonObject &o);
+
+private:
+    // Two time bounds are the same bound when they are the same INSTANT, or when
+    // neither names one. Spelled out rather than left to QDateTime::operator==,
+    // because an unset bound is an *invalid* QDateTime — which is what both a default
+    // rule and a bound read back from an empty ISO string hold — and what Qt makes of
+    // comparing two of those is a detail of the version in front of you, not a
+    // promise (the floor is 6.4, ARCHITECTURE.md §1). Valid ones compare as instants,
+    // which is right: the bound is the moment, never the digits (§5.1).
+    static bool sameBound(const QDateTime &a, const QDateTime &b)
+    {
+        if (!a.isValid() || !b.isValid())
+            return a.isValid() == b.isValid();
+        return a == b;
+    }
 };
 
 } // namespace loftail

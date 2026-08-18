@@ -66,6 +66,19 @@ public:
     };
     QVector<Span> spans(const QString &text, int limit = -1) const;
 
+    // Value equality over WHAT WAS TYPED — the pattern, the regex flag and the case
+    // option — and nothing else. m_re and m_valid are derived from those three by
+    // set(), so a comparison that included them would either be redundant or, if one
+    // day the compile became lazy, wrong. Exists for the Highlighters tab's marker,
+    // which asks whether a log's rules still are the ones loftail seeded
+    // (HighlighterPane::hasCustomRules), so every field a rule carries has to be
+    // reachable by ==.
+    bool operator==(const TextMatcher &o) const
+    {
+        return m_pattern == o.m_pattern && m_regex == o.m_regex && m_cs == o.m_cs;
+    }
+    bool operator!=(const TextMatcher &o) const { return !(*this == o); }
+
 private:
     QString             m_pattern;
     bool                m_regex = false;
@@ -85,6 +98,15 @@ struct TextFilter
     // Active only when enabled with a non-empty pattern — an empty pattern would
     // match everything (or, negated, nothing), which is not a filter.
     bool active() const { return enabled && !matcher.isEmpty(); }
+
+    // Every field, including a pattern sitting behind a switched-off axis: it is
+    // still something the user typed, and the marker this serves reports what they
+    // set rather than what is currently in force.
+    bool operator==(const TextFilter &o) const
+    {
+        return enabled == o.enabled && negate == o.negate && matcher == o.matcher;
+    }
+    bool operator!=(const TextFilter &o) const { return !(*this == o); }
 };
 
 // The complete filter state for one Document (per-file, ARCHITECTURE.md §12). Every
