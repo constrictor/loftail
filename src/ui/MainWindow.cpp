@@ -92,6 +92,11 @@ constexpr int  kBulkRestoreWatchMs = 500;
 constexpr int  kBulkRestoreCapMs = 60000;
 constexpr auto kRecentFilesKey = "recentFiles";
 
+// Longest parent prefix a recent entry carries before its middle is elided
+// (TabLabels.h). Wider than a tab's, because a menu is laid out to its widest item and
+// has the room, where a tab bar divides one fixed width among every open log.
+constexpr int  kMaxRecentPrefixChars = 40;
+
 // How far Find will go to count the matches behind its "3 of 47" (SPEC.md §5).
 // Finding a match stops at the first one; counting them asks the text of EVERY visible
 // record, which on a four-million-record log is several seconds — per keystroke, since
@@ -334,6 +339,10 @@ void MainWindow::buildMenus()
     connect(m_openRemoteAction, &QAction::triggered, this, &MainWindow::chooseRemoteToOpen);
 
     m_recentMenu = fileMenu->addMenu(tr("Open &Recent"));
+    m_recentMenu->setObjectName(QStringLiteral("recentMenu")); // findChild, for tests
+    // A menu shows an action's tooltip only when asked to, and here the tooltip is the
+    // whole reason the entry itself can be short: it carries the full address.
+    m_recentMenu->setToolTipsVisible(true);
     refreshRecentFilesMenu();
 
     m_remoteHostsMenu = fileMenu->addMenu(tr("Remote &Hosts"));
@@ -3086,13 +3095,52 @@ void MainWindow::refreshRecentFilesMenu()
     const QStringList recent = QSettings().value(QLatin1String(kRecentFilesKey)).toStringList();
     if (recent.isEmpty()) {
         QAction *none = m_recentMenu->addAction(tr("(none)"));
+        none->setObjectName(QStringLiteral("recentEmptyAction"));
         none->setEnabled(false);
-        return;
+    } else {
+        // What an entry is CALLED is decided against the whole list at once, by the very
+        // function that names the tabs (TabLabels.h): the log's own name, grown by the
+        // nearest parent directory that differs wherever two entries would otherwise
+        // read alike. A raw address is unbounded in width — an `ssh://` URL or a path
+        // continuing through an archive especially — and a menu is as wide as its widest
+        // item, so the list used to size itself to the longest path ever opened. The
+        // full address is not lost: it is the entry's tooltip, which is also what makes
+        // shortening the label safe, exactly as it is on a tab.
+        const QStringList labels = tabLabelsFor(recent, kMaxRecentPrefixChars);
+        for (int i = 0; i < recent.size(); ++i) {
+            const QString path = recent.at(i);
+            QString label = labels.at(i);
+            label.replace(u'&', QLatin1String("&&")); // a menu reads '&' as a mnemonic
+            QAction *a = m_recentMenu->addAction(label);
+            // The address, for a test and for anything that has to say WHICH entry this
+            // is without reading its visible text.
+            a->setData(path);
+            // The address VERBATIM, exactly as a tab's tooltip carries its document's
+            // path: this string is what triggering the entry opens, so anything
+            // re-spelled here would describe a different open.
+            a->setToolTip(path);
+            connect(a, &QAction::triggered, this, [this, path]() { openFile(path); });
+        }
     }
-    for (const QString &path : recent) {
-        QAction *a = m_recentMenu->addAction(path);
-        connect(a, &QAction::triggered, this, [this, path]() { openFile(path); });
+    // Forgetting the list is the one thing the menu could not do, and a list of ten
+    // addresses is exactly the kind of thing somebody wants off the screen. Always
+    // present so it can be found, disabled while there is nothing to forget.
+    //
+    // Made ONCE and parented to the window, unlike every entry above it: triggering it
+    // rebuilds this menu, and the rebuild starts with QMenu::clear(), which deletes the
+    // actions the menu owns — this action, while its own triggered() is being emitted.
+    if (!m_clearRecentAction) {
+        m_clearRecentAction = new QAction(tr("Clear Recent Files"), this);
+        // findChild, for tests
+        m_clearRecentAction->setObjectName(QStringLiteral("clearRecentFilesAction"));
+        connect(m_clearRecentAction, &QAction::triggered, this, [this]() {
+            QSettings().remove(QLatin1String(kRecentFilesKey));
+            refreshRecentFilesMenu();
+        });
     }
+    m_clearRecentAction->setEnabled(!recent.isEmpty());
+    m_recentMenu->addSeparator();
+    m_recentMenu->addAction(m_clearRecentAction);
 }
 
 // --- Drag and drop ---------------------------------------------------------
