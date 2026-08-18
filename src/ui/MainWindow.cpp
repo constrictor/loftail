@@ -471,6 +471,7 @@ void MainWindow::buildMenus()
             [setWrap]() { setWrap(LogView::WrapMode::AlwaysOn); });
 
     buildTimeDisplayMenu();
+    buildColumnWidthActions();
 
     // Return-to-bottom / follow control (SPEC.md §3, M6). Checked reflects whether
     // the view is currently following; triggering it re-attaches and jumps to the end.
@@ -1684,6 +1685,15 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
             m_highlighterPane->refreshDiscoveredLists();
     }
 
+    // The intern tables are complete too, so a Subsystem or Thread column can now be
+    // seeded from the widest name in the file rather than from a guess (SPEC.md §5,
+    // ARCHITECTURE.md §7.1). Here and nowhere else on this path: once per scan, never
+    // per ingest tick, and the seed itself skips every column the user, a fit or a
+    // restored session has already spoken for. Every view of the file, not just the
+    // active one — a background tab is read the moment it is raised.
+    for (DocumentView *v : std::as_const(ctx->views))
+        v->logView()->seedColumnWidths();
+
     doc->resolveHighlighters();
     // Runs are detected now that the full index exists (§3a). Restore the
     // persisted selection if this open came from session restore, else default
@@ -2560,6 +2570,30 @@ void MainWindow::updateTimeDisplayActions()
         a->setChecked(true);
 }
 
+// The two width commands on the column header menu (SPEC.md §5). Window-owned actions
+// with object names, exactly like the timestamp submenu above and for the same two
+// reasons: showColumnMenu builds its menu on the stack per invocation, and a test can
+// then reach them without opening a modal menu.
+//
+// They act on the ACTIVE view rather than on a header remembered from the click, on the
+// same argument the record menu makes: a right-click can only land in the visible tab.
+void MainWindow::buildColumnWidthActions()
+{
+    m_fitColumnsAction = new QAction(tr("&Fit to Contents"), this);
+    m_fitColumnsAction->setObjectName(QStringLiteral("fitColumnsAction"));
+    connect(m_fitColumnsAction, &QAction::triggered, this, [this]() {
+        if (m_activeView)
+            m_activeView->logView()->fitColumnsToContents();
+    });
+
+    m_resetColumnWidthsAction = new QAction(tr("&Reset Widths"), this);
+    m_resetColumnWidthsAction->setObjectName(QStringLiteral("resetColumnWidthsAction"));
+    connect(m_resetColumnWidthsAction, &QAction::triggered, this, [this]() {
+        if (m_activeView)
+            m_activeView->logView()->resetColumnWidths();
+    });
+}
+
 void MainWindow::showColumnMenu(const QPoint &pos)
 {
     // The menu belongs to the header that asked for it, which may be any view's.
@@ -2582,6 +2616,13 @@ void MainWindow::showColumnMenu(const QPoint &pos)
         menu.addMenu(m_timeDisplayMenu); // borrowed; addMenu does not take ownership
         menu.addSeparator();
     }
+
+    // Widths above the visibility list, and separated from it: one pair acts on every
+    // column at once, the list acts on one column each, and run together they would read
+    // as two more entries of the same kind.
+    menu.addAction(m_fitColumnsAction);
+    menu.addAction(m_resetColumnWidthsAction);
+    menu.addSeparator();
 
     menu.addSection(tr("Columns"));
     for (int c = 0; c < model->columnCount(); ++c) {

@@ -242,6 +242,14 @@ Time-range filter bounds (§6) are always entered as wall clock in the display t
 
 - Columns can be resized, reordered, and individually hidden. Column layout is remembered per view (§5a). Right-clicking any column header offers that list; right-clicking the **timestamp** column also offers its display mode (§4), which applies to the whole file rather than to the view.
 
+- **A column opens at a width that fits what is in it.** Its width is measured from the table's own fixed-width font — the column's heading and a typical value of its field — rather than being a pixel count chosen in advance: a *Priority* column too narrow to fit the word *Priority* cannot say what it is. Once the whole file has been read, the **Subsystem** and **Thread** columns take the width of the longest name the log actually contains, which is known exactly by then and not before.
+
+- **A width the reader has set is theirs.** A divider they dragged, a column they fitted, and a layout restored from the last session are never widened or narrowed by loftail afterwards. The header menu offers the way back and the way further:
+
+  - **Fit to Contents** widens or narrows every column to the widest value it holds, so a column of short subsystem names stops spending a third of the window. On a log too large to measure in full it reads a sample rather than every record, and no fit opens a column wider than a window's worth.
+  - **Reset Widths** forgets every width anyone has set — dragged, fitted or restored — and puts the columns back where they opened.
+  - **Double-clicking a divider** fits the column to its left, which is what a double-click on a divider does everywhere else and previously did nothing here.
+
 - **The table renders in a fixed-width font — every column, and the header.** Logs are column-aligned text written by machines; a proportional font destroys the alignment inside a message and makes timestamps and levels ragged from row to row. The font is the one the desktop designates as fixed-width, at the usual UI text size.
 
 - **A value too wide for its column ends in an ellipsis, and hovering it shows it in full.** A thread named `http-nio-8080-exec-3` does not fit a thread column at any sensible width, and a name cut off mid-character is indistinguishable from a name that genuinely ends there — so a value that does not fit is drawn with a trailing `…`, and its whole text is available as a tooltip. Column **headings** behave the same way, so a column headed *Priorit* names itself on hover rather than leaving the reader to guess.

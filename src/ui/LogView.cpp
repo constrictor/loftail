@@ -31,28 +31,53 @@
 namespace loftail {
 
 namespace {
-int defaultColumnWidth(FieldRole role)
+
+// A column's seed width in CHARACTERS of the fixed-pitch font rather than in pixels
+// (SPEC.md §5, ARCHITECTURE.md §7.1). Every column renders in monospaceFont(), so a
+// character count is the one unit that means the same thing at every font size — and a
+// pixel count is a guess about a font nobody has resolved yet. These are what a TYPICAL
+// value of the field takes; the header caption is measured separately and the wider of
+// the two wins, which is what stops "Priority" arriving in a column too narrow to say so.
+int seedColumnChars(FieldRole role)
 {
     switch (role) {
-    case FieldRole::Date:       return 190;
-    case FieldRole::Thread:     return 110;
-    case FieldRole::Priority:   return 60;
-    case FieldRole::Logger:     return 160;
-    case FieldRole::FileName:   return 140;
-    case FieldRole::LineNumber: return 60;
-    case FieldRole::Method:     return 140;
-    case FieldRole::Location:   return 200;
-    case FieldRole::ThreadName: return 120;
-    case FieldRole::ProcessId:  return 70;
-    case FieldRole::Hostname:   return 140;
-    case FieldRole::Elapsed:    return 90;
-    case FieldRole::Ndc:        return 140;
-    case FieldRole::Mdc:        return 160;
-    case FieldRole::EnvVar:     return 120;
-    case FieldRole::Message:    return 1600; // wide: wrap-off scrolls sideways (§5)
+    case FieldRole::Date:       return 23; // 2026-07-21 14:32:05,123
+    case FieldRole::Thread:     return 12;
+    case FieldRole::Priority:   return 5;  // the longest level word; the caption is longer
+    case FieldRole::Logger:     return 20;
+    case FieldRole::FileName:   return 18;
+    case FieldRole::LineNumber: return 6;
+    case FieldRole::Method:     return 18;
+    case FieldRole::Location:   return 26;
+    case FieldRole::ThreadName: return 14;
+    case FieldRole::ProcessId:  return 8;
+    case FieldRole::Hostname:   return 18;
+    case FieldRole::Elapsed:    return 10;
+    case FieldRole::Ndc:        return 18;
+    case FieldRole::Mdc:        return 20;
+    case FieldRole::EnvVar:     return 14;
+    case FieldRole::Message:    return 200; // wide: wrap-off scrolls sideways (§5)
     }
-    return 120;
+    return 16;
 }
+
+// A gutter, so a value that fills its column does not touch the first glyph of the next.
+constexpr int kColumnPadding = 10;
+// Floors and ceilings for every width this file computes. The floor is what a font that
+// resolves to NOTHING falls back to — Windows' offscreen plugin ships no fonts, so every
+// advance there is 0 and an unfloored width would collapse the whole header.
+constexpr int kMinColumnWidth = 40;
+constexpr int kMaxColumnWidth = 2400;
+constexpr int kFallbackCharWidth = 8;
+// A seed reads the intern table but is not a fit: one 300-character logger name may not
+// open a column half a window wide before the user has asked for anything.
+constexpr int kSeedNameMaxChars = 40;
+// What "Fit to Contents" is allowed to measure, so the menu item costs the same on a
+// ten-million-record log as on a small one.
+constexpr int kFitSampleRecords = 400;
+constexpr int kFitNamesScanned = 20000;
+
+int clampColumnWidth(int w) { return qBound(kMinColumnWidth, w, kMaxColumnWidth); }
 
 // One fixed-height cell, ELIDED at the column's right edge rather than left to clip
 // mid-glyph (SPEC.md §5). The ellipsis is the only thing that tells a value too wide
@@ -161,9 +186,10 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent, Rol
     // QHeaderView would show for every section whether or not it fitted.
     m_header->setTextElideMode(Qt::ElideRight);
     m_header->viewport()->installEventFilter(this);
-    // Seed sensible per-role widths; the user can resize and the layout is saved.
-    for (int c = 0; c < m_document->format().fields.size(); ++c)
-        m_header->resizeSection(c, defaultColumnWidth(m_document->format().fields.at(c).role));
+    // Widths that fit what is in them, measured from the font (SPEC.md §5). At this
+    // point the index is empty, so this is the caption and the per-role allowance; the
+    // scan-completion seed refines the Subsystem/Thread columns from the intern tables.
+    seedColumnWidths();
 
     m_selection = new QItemSelectionModel(m_model, this);
 
@@ -176,10 +202,21 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent, Rol
 
     verticalScrollBar()->setSingleStep(1);
 
-    connect(m_header, &QHeaderView::sectionResized, this, [this](int, int, int) {
-        recomputeGeometry();
-        emit columnLayoutChanged();
-    });
+    connect(m_header, &QHeaderView::sectionResized, this,
+            [this](int logical, int oldSize, int newSize) {
+                // A width the USER chose is theirs from here on and no later seed may
+                // touch it. Hiding and unhiding a section resizes it to and from zero,
+                // which is not somebody dragging a divider, so both ends are excluded.
+                if (!m_applyingColumnWidths && oldSize > 0 && newSize > 0)
+                    markUserSized(logical);
+                recomputeGeometry();
+                emit columnLayoutChanged();
+            });
+    // Double-clicking a divider fits the column to its left (SPEC.md §5). QHeaderView
+    // emits this and leaves the resizing to whoever is driving it — a QTableView would
+    // resize to contents here; with no view behind the header, nothing did.
+    connect(m_header, &QHeaderView::sectionHandleDoubleClicked, this,
+            [this](int logical) { fitColumnToContents(logical); });
     connect(m_header, &QHeaderView::sectionMoved, this, [this](int, int, int) {
         viewport()->update();
         emit columnLayoutChanged();
@@ -1173,12 +1210,200 @@ QByteArray LogView::saveColumnState() const
 bool LogView::restoreColumnState(const QByteArray &state)
 {
     const bool ok = m_header->restoreState(state);
+    // A restored layout speaks for every column, whatever it was that saved it: the
+    // widths in it are the ones the user was last looking at, and a seed arriving after
+    // the restore — which is the order session restore runs in, since indexing starts
+    // last — would silently widen columns somebody had narrowed on purpose.
+    m_userSizedColumns.fill(true, m_model->columnCount());
     recomputeGeometry();
     // Session restore moves every section at once and QHeaderView reports none of it,
     // so a digest strip mirroring only sectionResized/sectionMoved would sit under the
     // restored layout with the default one until the user touched a divider.
     emit columnLayoutChanged();
     return ok;
+}
+
+// ---------------------------------------------------------------------------
+// Column widths (SPEC.md §5, ARCHITECTURE.md §7.1)
+//
+// Two questions, deliberately answered by different code. A SEED is what a column is
+// worth before anyone has looked at it: the caption plus a typical value, in characters
+// of the resolved font, computed at construction and once more when the scan finishes
+// and the intern tables are complete. A FIT is what the user asks for by name, and it
+// measures the widest value there actually is — bounded, because the file may hold ten
+// million records and a menu item may not walk them.
+//
+// The rule joining them is that a seed never touches a column somebody has spoken for.
+// ---------------------------------------------------------------------------
+
+int LogView::charWidth() const
+{
+    const int w = fontMetrics().horizontalAdvance(QLatin1Char('0'));
+    // 0 is what a platform with an EMPTY font database answers (Windows offscreen ships
+    // no fonts at all), and every width here is a multiple of this one.
+    return w > 0 ? w : kFallbackCharWidth;
+}
+
+int LogView::textWidth(const QString &text) const
+{
+    const int w = fontMetrics().horizontalAdvance(text);
+    return w > 0 ? w : int(text.size()) * charWidth();
+}
+
+void LogView::markUserSized(int logical)
+{
+    if (logical < 0)
+        return;
+    if (m_userSizedColumns.size() <= logical)
+        m_userSizedColumns.resize(logical + 1);
+    m_userSizedColumns[logical] = true;
+}
+
+void LogView::applyColumnWidth(int logical, int width)
+{
+    const bool wasApplying = m_applyingColumnWidths;
+    m_applyingColumnWidths = true;
+    m_header->resizeSection(logical, width);
+    m_applyingColumnWidths = wasApplying;
+}
+
+int LogView::widestInternedWidth(int logical, int maxChars) const
+{
+    const QVector<Field> &fields = m_document->format().fields;
+    if (logical < 0 || logical >= fields.size())
+        return 0;
+    const FieldRole role = fields.at(logical).role;
+    if (role != FieldRole::Logger && role != FieldRole::Thread)
+        return 0;
+    // The intern tables ARE the complete value set — discovery is a side effect of
+    // indexing (invariant #4) — so the widest subsystem or thread name costs one walk of
+    // a list the filter pane already shows, and no record decode at all.
+    const RecordIndex &idx = m_document->index();
+    const QVector<QString> &names =
+        (role == FieldRole::Logger) ? idx.loggers.names() : idx.threads.names();
+    const int n = qMin<int>(names.size(), kFitNamesScanned);
+    int best = 0;
+    for (int i = 0; i < n; ++i) {
+        const QString &name = names.at(i);
+        best = qMax(best, textWidth(maxChars > 0 && name.size() > maxChars
+                                        ? name.left(maxChars)
+                                        : name));
+    }
+    return best;
+}
+
+int LogView::sampledContentWidth(int logical) const
+{
+    const int rows = recordCount();
+    if (rows <= 0)
+        return 0;
+
+    int best = 0;
+    int budget = kFitSampleRecords;
+    const auto measureRow = [&](int r) {
+        --budget; // spent whether or not the cell had anything in it
+        const QString text = m_model->cellText(r, logical);
+        if (text.isEmpty())
+            return;
+        if (text.contains(QLatin1Char('\n'))) {
+            // A record is not a line (invariant #2): a multi-line message is drawn one
+            // physical line at a time, so it is the widest LINE that has to fit.
+            for (QStringView seg : QStringView(text).split(QLatin1Char('\n')))
+                best = qMax(best, textWidth(seg.toString()));
+        } else {
+            best = qMax(best, textWidth(text));
+        }
+    };
+
+    // What is on screen first: a fit that leaves the row the user is pointing at elided
+    // reads as broken, however representative the rest of the sample was.
+    const int top = qBound(0, mapRecordAtLine(verticalScrollBar()->value()), rows - 1);
+    for (int r = top; r < rows && budget > 0 && r <= top + visibleLines(); ++r)
+        measureRow(r);
+    // Then an even stride across the whole view, so the cost is the same on a log of ten
+    // million records as on one of ten.
+    const int step = qMax(1, rows / qMax(1, budget));
+    for (int r = 0; r < rows && budget > 0; r += step)
+        measureRow(r);
+    return best;
+}
+
+int LogView::seedWidthOf(int logical) const
+{
+    const QVector<Field> &fields = m_document->format().fields;
+    if (logical < 0 || logical >= fields.size())
+        return kMinColumnWidth;
+    const FieldRole role = fields.at(logical).role;
+
+    // The caption always fits: a column headed "Priorit" is the very thing this replaces.
+    int w = qMax(textWidth(m_model->headerData(logical, Qt::Horizontal, Qt::DisplayRole)
+                               .toString()),
+                 seedColumnChars(role) * charWidth());
+    // Whatever the scan has interned so far, clamped — the constructor sees an empty
+    // table and answers 0, which is why the per-role allowance above is a floor and not
+    // an alternative.
+    w = qMax(w, widestInternedWidth(logical, kSeedNameMaxChars));
+    return clampColumnWidth(w + kColumnPadding);
+}
+
+int LogView::contentWidthOf(int logical) const
+{
+    const QVector<Field> &fields = m_document->format().fields;
+    if (logical < 0 || logical >= fields.size())
+        return kMinColumnWidth;
+    const FieldRole role = fields.at(logical).role;
+
+    int w = textWidth(
+        m_model->headerData(logical, Qt::Horizontal, Qt::DisplayRole).toString());
+    switch (role) {
+    case FieldRole::Logger:
+    case FieldRole::Thread:
+        w = qMax(w, widestInternedWidth(logical, -1)); // unclamped: this one was asked for
+        break;
+    case FieldRole::Priority:
+        // Six words, known at compile time. priorityName() is NOT translated (it round-
+        // trips against the log text, invariant #4), so this is exactly what is painted.
+        for (const Priority p : {Priority::Trace, Priority::Debug, Priority::Info,
+                                 Priority::Warn, Priority::Error, Priority::Fatal})
+            w = qMax(w, textWidth(QString(priorityName(p))));
+        break;
+    default:
+        w = qMax(w, sampledContentWidth(logical));
+        break;
+    }
+    return clampColumnWidth(w + kColumnPadding);
+}
+
+void LogView::seedColumnWidths()
+{
+    const int cols = m_model->columnCount();
+    for (int c = 0; c < cols; ++c) {
+        if (m_userSizedColumns.value(c, false))
+            continue;
+        applyColumnWidth(c, seedWidthOf(c));
+    }
+}
+
+void LogView::resetColumnWidths()
+{
+    m_userSizedColumns.clear();
+    seedColumnWidths();
+}
+
+void LogView::fitColumnToContents(int logical)
+{
+    if (logical < 0 || logical >= m_model->columnCount() || m_header->isSectionHidden(logical))
+        return;
+    applyColumnWidth(logical, contentWidthOf(logical));
+    // A fit is as much the user's choice as a drag, so it claims the column: the seed
+    // that runs when the scan finishes must not quietly undo it.
+    markUserSized(logical);
+}
+
+void LogView::fitColumnsToContents()
+{
+    for (int c = 0; c < m_model->columnCount(); ++c)
+        fitColumnToContents(c);
 }
 
 void LogView::scrollToEnd()
