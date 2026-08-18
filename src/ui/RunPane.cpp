@@ -1,5 +1,6 @@
 #include "RunPane.h"
 
+#include "MessageLabel.h"
 #include "UiColors.h"
 
 #include "Document.h"
@@ -50,10 +51,22 @@ void RunPane::buildUi()
     opts->addWidget(m_case);
     opts->addStretch(1);
     m_apply = new QPushButton(tr("Apply"), box);
+    m_apply->setObjectName(QStringLiteral("runApply")); // test contract, never translated
     opts->addWidget(m_apply);
     v->addLayout(opts);
 
+    // This pane is the only one with an Apply button — the Filters and Highlighters panes
+    // act as the user types — so it says why, next to the button that is the difference.
+    // Splitting a log into runs re-partitions and re-applies the whole view, which is not
+    // something to do per keystroke; but by the time a reader reaches this pane they have
+    // learned everywhere else that an edit takes effect as it is made, so an unpressed
+    // Apply otherwise reads as a pane that has stopped responding.
+    m_applyNote = new MessageLabel(box);
+    m_applyNote->setObjectName(QStringLiteral("runApplyNote")); // test contract, never translated
+    v->addWidget(m_applyNote);
+
     m_info = new QLabel(box);
+    m_info->setObjectName(QStringLiteral("runInfo")); // test contract, never translated
     m_info->setWordWrap(true);
     v->addWidget(m_info);
 
@@ -81,6 +94,15 @@ void RunPane::buildUi()
     connect(m_patternEdit, &QLineEdit::returnPressed, this, &RunPane::emitPattern);
     connect(m_regex, &QCheckBox::toggled, this, &RunPane::emitPattern);
     connect(m_case, &QCheckBox::toggled, this, &RunPane::emitPattern);
+    // Typing is the one edit here that is NOT applied as it is made, so it is the one
+    // that has to say so. The checkboxes apply themselves through emitPattern above, and
+    // whatever they apply comes back through refresh() -> rebuildRunList() -> here.
+    connect(m_patternEdit, &QLineEdit::textChanged, this, &RunPane::updateApplyNote);
+    // The boxes apply themselves, so these fire AFTER emitPattern and are normally a
+    // no-op the state guard swallows. They are here for the case where the emit reaches
+    // nobody — no active context — and the pane must not then claim to be up to date.
+    connect(m_regex, &QCheckBox::toggled, this, &RunPane::updateApplyNote);
+    connect(m_case, &QCheckBox::toggled, this, &RunPane::updateApplyNote);
     // currentRowChanged, not itemClicked: a list is walked with the arrow keys as well
     // as clicked, and only the current-row signal covers both. It fires on programmatic
     // changes too — including the clear() in rebuildRunList(), which emits row -1 — so
@@ -211,9 +233,47 @@ void RunPane::rebuildRunList()
             m_info->setText(tr("%1 run(s) detected.").arg(runs.size()));
     } else {
         m_runList->setCurrentRow(0);
-        m_info->clear();
+        // NOT cleared. The list below still shows "Last run" and "All runs" — two rows
+        // that read as something to click — so the one widget here built to explain the
+        // list must not fall silent exactly when there is nothing behind it to explain.
+        m_info->setText(tr("No log is open. Open one to split it into runs."));
     }
     m_populating = false;
+    updateApplyNote();
+}
+
+void RunPane::updateApplyNote()
+{
+    if (m_populating)
+        return;
+
+    // "Unapplied" is measured against the matcher that is actually in force, never
+    // against a remembered copy of the field: the pattern can change from under this
+    // pane — a rebind to another log, a session restore, a settings node edited in
+    // Preferences — and every one of those routes ends at rebuildRunList().
+    bool pending = false;
+    if (m_document) {
+        const TextMatcher &m = m_document->runStartMatcher();
+        pending = m_patternEdit->text() != m.pattern()
+            || m_regex->isChecked() != m.isRegex()
+            || m_case->isChecked() != (m.caseSensitivity() == Qt::CaseSensitive);
+    }
+
+    const int state = pending ? 1 : 0;
+    if (state == m_noteState)
+        return;
+    m_noteState = state;
+
+    m_applyNote->setText(pending
+        ? tr("Edited — press Apply to re-read the runs.")
+        : tr("The run-start pattern takes effect when you press Apply."));
+    // Both colours come from the palette rather than being picked, so the line lands on
+    // a dark theme as well as a light one: muted while it is only an explanation, and
+    // the caution amber once it is describing a difference the user has to resolve —
+    // which is what a caution is, something that still works and is not what was asked
+    // for. It is a colour change and not a bold, because the line does not move.
+    m_applyNote->setStyleSheet(QStringLiteral("color: %1;")
+        .arg((pending ? warningColor(palette()) : mutedColor(palette())).name()));
 }
 
 } // namespace loftail

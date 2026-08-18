@@ -65,6 +65,12 @@ private:
     void buildUi();
     void emitPattern();
     void rebuildRunList();
+    // Re-word the note under the Apply button: quiet while the field agrees with the
+    // pattern in force, active once it does not. Writes ONLY on a real change of state
+    // — it runs on every live append (rebuildRunList) and a setStyleSheet() there is a
+    // full style repolish per tick, which is the same "rewrite only on a real change"
+    // rule the dock titles and tab labels keep.
+    void updateApplyNote();
 
     Document  *m_document = nullptr;
     bool       m_populating = false; // guards signal storms while repopulating
@@ -73,7 +79,11 @@ private:
     QCheckBox  *m_regex = nullptr;
     QCheckBox  *m_case = nullptr;
     QPushButton *m_apply = nullptr;
+    QLabel     *m_applyNote = nullptr; // why this pane has an Apply button at all
     QLabel     *m_info = nullptr;   // "N runs" / invalid-regex notice
+    // Tri-state so the first write always happens: -1 is "nothing written yet", 0 quiet,
+    // 1 active. See updateApplyNote().
+    int         m_noteState = -1;
     // The run list is the one thing in this pane that GROWS: it is as long as the log
     // has runs, which is unknown when the pane is built and changes while it scans.
     // Row 0 is "Last run", row 1 is "All runs"; row i + kFirstRunRow is runs().at(i).
