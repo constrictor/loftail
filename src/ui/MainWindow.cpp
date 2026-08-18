@@ -259,6 +259,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_filterPane, &FilterPane::activityChanged, this, [this](bool active) {
         if (m_filtersDock)
             m_filtersDock->setWindowTitle(active ? tr("Filters •") : tr("Filters"));
+        // The same answer drives View ▸ Clear Filters, from the same signal: this is
+        // the only notification that a filter edit has landed, and it arrives AFTER
+        // the pane's debounce rather than per keystroke. The pane's own change guard
+        // is what keeps it off the per-tick path (FilterPane::updateActivity).
+        updateClearFiltersState();
     });
 
     m_highlighterPane = new HighlighterPane(this);
@@ -540,12 +545,19 @@ void MainWindow::buildMenus()
     connect(m_reloadAction, &QAction::triggered, this, &MainWindow::reloadActiveDocument);
 
     // The one way back to an unfiltered view that does not mean visiting five axes by
-    // hand. On the menu as well as on the pane's own header because the pane can be
-    // closed outright (View ▸ Panes), and a filter left in force with no pane to
+    // hand — and the ONLY way, the pane having no Clear button of its own: the pane can
+    // be closed outright (View ▸ Panes), and a filter left in force with no pane to
     // clear it from is the state this exists for.
+    //
+    // Which is also why its enablement is worth having. It is the one place the window
+    // can say whether anything is being hidden without the Filters tab in view, so a
+    // live item means "there is something to undo here" and a grey one answers the
+    // question a reader of a short-looking log actually has. Off until a document with
+    // filters in force is in front; updateClearFiltersState() is the only writer.
     viewMenu->addSeparator();
     m_clearFiltersAction = viewMenu->addAction(tr("&Clear Filters"));
     m_clearFiltersAction->setObjectName(QStringLiteral("clearFiltersAction"));
+    m_clearFiltersAction->setEnabled(false);
     connect(m_clearFiltersAction, &QAction::triggered, this, [this] {
         if (m_filterPane)
             m_filterPane->clearAll();
@@ -913,6 +925,9 @@ void MainWindow::updateActionStates()
     }
     // The timestamp mode is per FILE, so the checkmark has to follow the active tab.
     updateTimeDisplayActions();
+    // Filters are per FILE too (invariant #7), so switching tabs can move this either
+    // way even though nothing about the filters themselves changed.
+    updateClearFiltersState();
     if (m_progressBox) {
         m_progressBox->setVisible(hasFile && ctx->indexing);
         if (hasFile && ctx->indexing)
@@ -922,6 +937,30 @@ void MainWindow::updateActionStates()
     setWindowTitle(hasFile
                        ? tr("loftail — %1").arg(logSourceDisplayName(ctx->doc->path()))
                        : QStringLiteral("loftail"));
+}
+
+void MainWindow::updateClearFiltersState()
+{
+    if (!m_clearFiltersAction)
+        return;
+    // One question, asked in one place. hasActiveFilters() is the resolved answer the
+    // Filters tab's marker is already drawn from — an axis that is ticked but excludes
+    // nothing does not count, because applyToDocument() collapses it — and it answers
+    // false with no document bound, which is the no-file-open case as well.
+    //
+    // Context (M15's before/after N) counts, exactly as it does for the marker, and the
+    // reason is what this action DOES rather than what the FilterSet holds: clearAll()
+    // zeroes the two spinners, so a pane with context set and nothing else has work for
+    // this item to do and a grey menu entry would be a lie. That it is inert without a
+    // text axis is a statement about what the reader sees, not about whether the
+    // setting is there to be cleared.
+    //
+    // The active-tab check is on the pane's binding rather than on activeContext():
+    // setActiveView() calls updateActionStates() BEFORE it rebinds the panes, so
+    // reading the context here would report the incoming tab's presence against the
+    // outgoing tab's filters. The rebind emits activityChanged() whenever the answer
+    // actually moves, so the pane's own state is what settles it either way.
+    m_clearFiltersAction->setEnabled(m_filterPane && m_filterPane->hasActiveFilters());
 }
 
 void MainWindow::chooseFileToOpen()
