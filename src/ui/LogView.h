@@ -184,6 +184,13 @@ public:
     static QString columnsToTsv(const QVector<QVector<QString>> &rows);
 
 protected:
+    // Tooltips for what does not fit (SPEC.md §5). Served from the view because whether
+    // a value is cut short is a question about the COLUMN's current width, which nothing
+    // below the view can see; viewportEvent() answers for the cells and eventFilter()
+    // for the header, whose own tooltips arrive on ITS viewport and never reach this one.
+    bool viewportEvent(QEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
@@ -284,12 +291,29 @@ private:
     // the scroll position is restored separately and by a different rule.
     void selectRecordSilently(int record);
     int recordAtViewportY(int y) const; // hit-test, or -1
+    // The record under a viewport point, or -1 where there is none — the empty space
+    // BELOW the last record included. Deliberately not recordAtViewportY(), which clamps
+    // to the nearest record because it backs a click that selects one: a menu, or a
+    // tooltip, about a record the cursor is not on speaks for a row the user cannot see
+    // themselves pointing at.
+    int recordUnderPoint(int y) const;
     void selectRange(int anchor, int current);
+
+    // The full text of the cell / header section at a viewport position, but ONLY when
+    // the column is too narrow to show it — empty otherwise, because a tooltip that
+    // repeats what is already on screen is noise and "there is more here" is the whole
+    // of what this says. Built on demand, never per paint, and holding nothing
+    // (invariant #1).
+    QString truncatedCellText(const QPoint &pos) const;
+    QString truncatedHeaderText(int x) const;
 
     const Document *m_document;
     LogModel       *m_model;
     Role            m_role = Role::Main;
-    QHeaderView    *m_header;
+    // nullptr until the constructor builds it, and DELIBERATELY initialized:
+    // QAbstractScrollArea installs the view itself as an event filter on its own
+    // scrollbars, so eventFilter() is called during construction — before this exists.
+    QHeaderView    *m_header = nullptr;
     QItemSelectionModel *m_selection;
 
     WrapMode m_wrapMode = WrapMode::Off;

@@ -14,6 +14,7 @@
 #include <QClipboard>
 #include <QContextMenuEvent>
 #include <QHeaderView>
+#include <QHelpEvent>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -22,8 +23,10 @@
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStyle>
+#include <QStyleOptionHeader>
 #include <QTimer>
 #include <QToolButton>
+#include <QToolTip>
 
 namespace loftail {
 
@@ -49,6 +52,16 @@ int defaultColumnWidth(FieldRole role)
     case FieldRole::Message:    return 1600; // wide: wrap-off scrolls sideways (§5)
     }
     return 120;
+}
+
+// One fixed-height cell, ELIDED at the column's right edge rather than left to clip
+// mid-glyph (SPEC.md §5). The ellipsis is the only thing that tells a value too wide
+// for its column from one that genuinely ends there — and it is what makes the tooltip
+// honest, since both ask the same question of the same width.
+void drawElidedCell(QPainter &p, const QRect &rect, const QString &text)
+{
+    p.drawText(rect, Qt::AlignVCenter | Qt::TextSingleLine,
+               p.fontMetrics().elidedText(text, Qt::ElideRight, rect.width()));
 }
 } // namespace
 
@@ -142,6 +155,12 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent, Rol
     m_header->setSectionResizeMode(QHeaderView::Interactive);
     m_header->setStretchLastSection(false);
     m_header->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    // A caption reading "Priorit" says nothing about being a caption cut short, so the
+    // header elides like the cells under it and names itself in full on hover. The
+    // tooltip is filtered rather than answered through the model's ToolTipRole, which
+    // QHeaderView would show for every section whether or not it fitted.
+    m_header->setTextElideMode(Qt::ElideRight);
+    m_header->viewport()->installEventFilter(this);
     // Seed sensible per-role widths; the user can resize and the layout is saved.
     for (int c = 0; c < m_document->format().fields.size(); ++c)
         m_header->resizeSection(c, defaultColumnWidth(m_document->format().fields.at(c).role));
@@ -715,8 +734,7 @@ void LogView::paintEvent(QPaintEvent *event)
                     p.drawText(QRect(x, y, availW, rowH),
                                Qt::TextWrapAnywhere | Qt::AlignTop, m_model->cellText(r, logical));
                 } else {
-                    p.drawText(QRect(x, y, w, lh), Qt::AlignVCenter | Qt::TextSingleLine,
-                               m_model->cellText(r, logical));
+                    drawElidedCell(p, QRect(x, y, w, lh), m_model->cellText(r, logical));
                 }
             }
             y += rowH;
@@ -765,14 +783,14 @@ void LogView::paintEvent(QPaintEvent *event)
                     p.drawText(QRect(x, y, availW, rowH),
                                Qt::TextWordWrap | Qt::TextWrapAnywhere | Qt::AlignTop, msg);
                 } else {
+                    // Wrap off: each physical line of the record is a clipped line of
+                    // its own (invariant #2), so each elides on its own too.
                     const QList<QStringView> segs = QStringView(msg).split(QLatin1Char('\n'));
                     for (int li = 0; li < segs.size() && li < hLines; ++li)
-                        p.drawText(QRect(x, y + li * lh, w, lh),
-                                   Qt::AlignVCenter | Qt::TextSingleLine, segs.at(li).toString());
+                        drawElidedCell(p, QRect(x, y + li * lh, w, lh), segs.at(li).toString());
                 }
             } else {
-                p.drawText(QRect(x, y, w, lh), Qt::AlignVCenter | Qt::TextSingleLine,
-                           m_model->cellText(r, logical));
+                drawElidedCell(p, QRect(x, y, w, lh), m_model->cellText(r, logical));
             }
         }
 
@@ -792,6 +810,17 @@ int LogView::recordAtViewportY(int yPix) const
         return -1;
     const qint64 line = qint64(verticalScrollBar()->value()) + yPix / lineHeight();
     return mapRecordAtLine(line);
+}
+
+int LogView::recordUnderPoint(int y) const
+{
+    if (y < 0 || recordCount() == 0)
+        return -1;
+    const qint64 line = qint64(verticalScrollBar()->value()) + y / lineHeight();
+    if (line >= mapTotalLines())
+        return -1;
+    const int record = mapRecordAtLine(line);
+    return (record < 0 || record >= recordCount()) ? -1 : record;
 }
 
 void LogView::selectRange(int anchor, int current)
@@ -879,19 +908,13 @@ void LogView::contextMenuEvent(QContextMenuEvent *event)
     // press, so the position is in VIEWPORT coordinates — the coordinates the hit test
     // and the header's own both expect.
     //
-    // Resolved here rather than through recordAtViewportY because the empty space
-    // BELOW the last record has to answer "nothing", and that hit test deliberately
+    // Resolved through recordUnderPoint rather than recordAtViewportY because the empty
+    // space BELOW the last record has to answer "nothing", and that hit test deliberately
     // clamps to the last record instead (it backs a click, which selects the nearest
     // row). A menu for a record the cursor is not on would act on a record the user
     // cannot see themselves pointing at.
-    const int y = int(event->pos().y());
-    const qint64 line = qint64(verticalScrollBar()->value()) + y / lineHeight();
-    if (y < 0 || recordCount() == 0 || line >= mapTotalLines()) {
-        QAbstractScrollArea::contextMenuEvent(event);
-        return;
-    }
-    const int record = mapRecordAtLine(line);
-    if (record < 0 || record >= recordCount()) {
+    const int record = recordUnderPoint(int(event->pos().y()));
+    if (record < 0) {
         QAbstractScrollArea::contextMenuEvent(event);
         return;
     }
@@ -907,6 +930,115 @@ void LogView::contextMenuEvent(QContextMenuEvent *event)
     emit recordMenuRequested(record, m_header->logicalIndexAt(int(event->pos().x())),
                              event->globalPos());
     event->accept();
+}
+
+// ---------------------------------------------------------------------------
+// Tooltips for what does not fit (SPEC.md §5)
+//
+// The columns elide; the tooltip does not — HighlighterPane's summary column set the
+// precedent. Both halves ask the same question of the same width, the section's, so the
+// tooltip appears exactly where an ellipsis was painted and nowhere else: a tooltip
+// repeating a value already fully on screen is noise, and "there is more here" is the
+// whole of what this feature says.
+//
+// Everything here runs when a tooltip is ASKED FOR, never on the paint path, and holds
+// nothing: the text is decoded through the model on demand, exactly as painting does
+// (invariant #1).
+// ---------------------------------------------------------------------------
+
+QString LogView::truncatedCellText(const QPoint &pos) const
+{
+    const int record = recordUnderPoint(pos.y());
+    if (record < 0)
+        return {};
+    const int logical = m_header->logicalIndexAt(pos.x());
+    if (logical < 0 || logical >= m_model->columnCount() || m_header->isSectionHidden(logical))
+        return {};
+
+    QString text;
+    if (logical == messageColumn()) {
+        // A wrapped message is not elided — every character of it is on screen, in as
+        // many lines as it takes — so there is nothing for a tooltip to add.
+        if (estimating() || selRecordForGeometry() == record)
+            return {};
+        // Wrap off: each physical line of the record is drawn and clipped on its own
+        // (invariant #2), so the answer is about the line under the cursor rather than
+        // about the whole record.
+        const qint64 line = qint64(verticalScrollBar()->value()) + pos.y() / lineHeight();
+        const int within = int(line - mapLineOfRecord(record));
+        const QString message = m_model->cellText(record, logical);
+        const QList<QStringView> segs = QStringView(message).split(QLatin1Char('\n'));
+        if (within < 0 || within >= segs.size())
+            return {};
+        text = segs.at(within).toString();
+    } else {
+        text = m_model->cellText(record, logical);
+    }
+
+    if (text.isEmpty())
+        return {};
+    const int w = m_header->sectionSize(logical);
+    return fontMetrics().elidedText(text, Qt::ElideRight, w) == text ? QString() : text;
+}
+
+QString LogView::truncatedHeaderText(int x) const
+{
+    const int logical = m_header->logicalIndexAt(x);
+    if (logical < 0 || logical >= m_model->columnCount() || m_header->isSectionHidden(logical))
+        return {};
+    const QString text =
+        m_model->headerData(logical, Qt::Horizontal, Qt::DisplayRole).toString();
+    if (text.isEmpty())
+        return {};
+
+    // Measured against the rect the STYLE puts the label in, not the raw section: a
+    // header section spends a few pixels either side on its margin, so a caption that
+    // fits the section can still be the one painted as "Priorit".
+    QStyleOptionHeader opt;
+    opt.initFrom(m_header);
+    opt.orientation = Qt::Horizontal;
+    opt.section = logical;
+    opt.text = text;
+    opt.rect = QRect(m_header->sectionViewportPosition(logical), 0,
+                     m_header->sectionSize(logical), m_header->height());
+    const QRect label = m_header->style()->subElementRect(QStyle::SE_HeaderLabel, &opt, m_header);
+    return m_header->fontMetrics().elidedText(text, Qt::ElideRight, label.width()) == text
+        ? QString()
+        : text;
+}
+
+bool LogView::viewportEvent(QEvent *event)
+{
+    if (event->type() == QEvent::ToolTip) {
+        const auto *help = static_cast<QHelpEvent *>(event);
+        const QString text = truncatedCellText(help->pos());
+        // Answered either way — hiding is as much of an answer as showing, and letting
+        // an unanswered help event travel up the parents would hand the cursor whatever
+        // tooltip the surrounding widget carries.
+        if (text.isEmpty())
+            QToolTip::hideText();
+        else
+            QToolTip::showText(help->globalPos(), text, viewport());
+        return true;
+    }
+    return QAbstractScrollArea::viewportEvent(event);
+}
+
+bool LogView::eventFilter(QObject *watched, QEvent *event)
+{
+    // The header is a QHeaderView of its own, so its tooltips arrive on ITS viewport and
+    // never reach this one. QAbstractScrollArea filters its own scrollbars through this
+    // same function, and does so from ITS constructor — which runs before m_header.
+    if (m_header && watched == m_header->viewport() && event->type() == QEvent::ToolTip) {
+        const auto *help = static_cast<QHelpEvent *>(event);
+        const QString text = truncatedHeaderText(help->pos().x());
+        if (text.isEmpty())
+            QToolTip::hideText();
+        else
+            QToolTip::showText(help->globalPos(), text, m_header);
+        return true;
+    }
+    return QAbstractScrollArea::eventFilter(watched, event);
 }
 
 void LogView::keyPressEvent(QKeyEvent *event)
