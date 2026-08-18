@@ -2467,6 +2467,7 @@ void MainWindow::runFind(bool forward, bool fromStart)
     const QString pattern = findBar->pattern();
     if (pattern.isEmpty()) {
         findBar->setStatus(QString());
+        logView->clearFindMatcher(); // an empty query marks everything, which marks nothing
         return;
     }
 
@@ -2478,12 +2479,14 @@ void MainWindow::runFind(bool forward, bool fromStart)
                 findBar->caseSensitive() ? Qt::CaseSensitive : Qt::CaseInsensitive);
     if (!matcher.isValid()) {
         findBar->setStatus(tr("bad regex"));
+        logView->clearFindMatcher();
         return;
     }
 
     const int count = model->rowCount();
     if (count == 0) {
         findBar->setStatus(tr("no records"));
+        logView->clearFindMatcher();
         return;
     }
 
@@ -2503,9 +2506,16 @@ void MainWindow::runFind(bool forward, bool fromStart)
     const int hit = Find::search(count, from, forward, /*wrap=*/true, rowMatches);
     if (hit < 0) {
         findBar->setStatus(tr("no match"));
+        logView->clearFindMatcher(); // nothing matched, so there is nothing to point at
         return;
     }
     logView->setCurrentRecord(hit);
+    // Mark what matched, in the table this search ran over (SPEC.md §5). The MATCHER is
+    // handed over, not a list of positions: the view re-runs it over the cells it paints
+    // anyway, so the marks cost nothing off screen and survive every repaint
+    // (ARCHITECTURE.md §7.1.4). The same object the search just used, so a mark can
+    // never disagree with a hit about the regex or the case option.
+    logView->setFindMatcher(matcher);
 
     // The search wraps (SPEC.md §5), and a wrap that says nothing is a teleport: F3 at
     // the last match jumps to the top and the reader has no way to tell it apart from

@@ -37,6 +37,44 @@ bool TextMatcher::matches(const QString &text) const
     return text.contains(m_pattern, m_cs);
 }
 
+QVector<TextMatcher::Span> TextMatcher::spans(const QString &text, int limit) const
+{
+    QVector<Span> out;
+    // An empty query matches everything, and marking everything is not a mark; a broken
+    // regex matches nothing, exactly as matches() answers for it.
+    if (m_pattern.isEmpty() || text.isEmpty())
+        return out;
+    if (m_regex && !m_valid)
+        return out;
+
+    if (m_regex) {
+        QRegularExpressionMatchIterator it = m_re.globalMatch(text);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            const int length = m.capturedLength();
+            if (length <= 0)
+                continue; // a zero-width match covers no glyph
+            out.append(Span{m.capturedStart(), length});
+            if (limit > 0 && out.size() >= limit)
+                break;
+        }
+        return out;
+    }
+
+    const int patternLength = int(m_pattern.size());
+    int from = 0;
+    while (true) {
+        const int at = text.indexOf(m_pattern, from, m_cs);
+        if (at < 0)
+            break;
+        out.append(Span{at, patternLength});
+        if (limit > 0 && out.size() >= limit)
+            break;
+        from = at + patternLength; // non-overlapping, as globalMatch is
+    }
+    return out;
+}
+
 int Find::search(int count, int from, bool forward, bool wrap,
                  const std::function<bool(int)> &match)
 {

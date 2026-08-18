@@ -48,6 +48,7 @@ private slots:
     void absentLoggerOrThreadNeverHidden();
     void timeRange();
     void textSubstringRegexCaseNegate();
+    void theMatcherSaysWhereItMatchedAndNotOnlyThatItDid();
     void integersEvaluatedBeforeText();
     void filteredIndexGeometry();
     void filteredIndexIdentityWhenInactive();
@@ -182,6 +183,77 @@ void TestFilter::textSubstringRegexCaseNegate()
         fs.text.matcher.set(QStringLiteral("noise"), false, Qt::CaseInsensitive);
         QVERIFY(!fs.acceptsText(QStringLiteral("this is noise")));  // matches -> hidden
         QVERIFY(fs.acceptsText(QStringLiteral("signal")));          // no match -> kept
+    }
+}
+
+// --- where it matched, not only that it did (SPEC.md §5) --------------------
+//
+// The Find bar marks the matched run on screen, and it must mark exactly what the
+// search decided (ARCHITECTURE.md §7.1.4) — so the positions come off the same
+// TextMatcher rather than out of a second implementation beside it.
+
+void TestFilter::theMatcherSaysWhereItMatchedAndNotOnlyThatItDid()
+{
+    // Every occurrence, in order, and the same case rule matches() applies.
+    {
+        TextMatcher m;
+        m.set(QStringLiteral("needle"), false, Qt::CaseInsensitive);
+        const QVector<TextMatcher::Span> spans =
+            m.spans(QStringLiteral("a NEEDLE and a needle"));
+        QCOMPARE(spans.size(), 2);
+        QCOMPARE(spans.at(0).start, 2);
+        QCOMPARE(spans.at(0).length, 6);
+        QCOMPARE(spans.at(1).start, 15);
+        QCOMPARE(spans.at(1).length, 6);
+    }
+    {
+        TextMatcher m;
+        m.set(QStringLiteral("needle"), false, Qt::CaseSensitive);
+        QCOMPARE(m.spans(QStringLiteral("a NEEDLE and a needle")).size(), 1);
+    }
+    // Overlapping occurrences are not double-counted: a mark is a run of glyphs, and
+    // two spans over the same glyphs would paint one another out.
+    {
+        TextMatcher m;
+        m.set(QStringLiteral("aa"), false, Qt::CaseSensitive);
+        const QVector<TextMatcher::Span> spans = m.spans(QStringLiteral("aaaa"));
+        QCOMPARE(spans.size(), 2);
+        QCOMPARE(spans.at(0).start, 0);
+        QCOMPARE(spans.at(1).start, 2);
+    }
+    // A regex reports what it actually captured, not the query's length.
+    {
+        TextMatcher m;
+        m.set(QStringLiteral("err(or)?"), true, Qt::CaseInsensitive);
+        const QVector<TextMatcher::Span> spans = m.spans(QStringLiteral("an err and an ERROR"));
+        QCOMPARE(spans.size(), 2);
+        QCOMPARE(spans.at(0).length, 3);
+        QCOMPARE(spans.at(1).length, 5);
+    }
+    // A pattern that can match nothing at all marks nothing: there are no glyphs under
+    // a zero-width match, and a span per character position would fill the line.
+    {
+        TextMatcher m;
+        m.set(QStringLiteral("x*"), true, Qt::CaseSensitive);
+        QVERIFY(m.matches(QStringLiteral("abc")));
+        QVERIFY(m.spans(QStringLiteral("abc")).isEmpty());
+        QCOMPARE(m.spans(QStringLiteral("axxb")).size(), 1);
+    }
+    // The bound is the caller's, because the caller is a paint path.
+    {
+        TextMatcher m;
+        m.set(QStringLiteral("a"), false, Qt::CaseSensitive);
+        QCOMPARE(m.spans(QStringLiteral("aaaaaaaaaa"), 4).size(), 4);
+        QCOMPARE(m.spans(QStringLiteral("aaaaaaaaaa"), -1).size(), 10);
+    }
+    // An empty query matches everything and marks nothing; a broken regex matches
+    // nothing and marks nothing — both exactly as matches() answers for them.
+    {
+        TextMatcher m;
+        QVERIFY(m.matches(QStringLiteral("anything")));
+        QVERIFY(m.spans(QStringLiteral("anything")).isEmpty());
+        m.set(QStringLiteral("("), true, Qt::CaseSensitive);
+        QVERIFY(m.spans(QStringLiteral("(")).isEmpty());
     }
 }
 

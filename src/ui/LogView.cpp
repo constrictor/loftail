@@ -24,6 +24,8 @@
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QStyleOptionHeader>
+#include <QTextLayout>
+#include <QTextOption>
 #include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
@@ -86,14 +88,149 @@ constexpr int kAutoScrollMaxLines = 8;
 
 int clampColumnWidth(int w) { return qBound(kMinColumnWidth, w, kMaxColumnWidth); }
 
+// How many runs one cell will mark. A one-character query over a hundred-thousand-
+// character message has a match per character, and this is the paint path (§7.1.4).
+constexpr int kMaxCellMarks = 64;
+
+// What Find matched, and what to paint it in (SPEC.md §5, ARCHITECTURE.md §7.1.4).
+// `find` is the query the search ran — never a precomputed list of positions — so a
+// cell is marked from the same text the same paint just decoded, and nothing is held
+// for a record off screen (invariant #1). The two colours are the RECORD's own,
+// SWAPPED: whatever contrast that record already had, a rule's colours or the theme's,
+// the marked run has exactly, in either theme, and no palette entry can drift from it.
+struct CellMark
+{
+    const TextMatcher *find = nullptr;
+    QColor             bg;   // the record's foreground
+    QColor             fg;   // the record's background
+    bool active() const { return find != nullptr; }
+};
+
+// Repaint the glyphs under `patch` in the mark's colours. The text is redrawn by the
+// SAME call that drew it, merely clipped — never re-positioned by hand — so the mark
+// cannot drift from the glyphs it is meant to be under.
+template <class DrawFn>
+void paintMark(QPainter &p, const QRect &patch, const CellMark &mark, DrawFn &&draw)
+{
+    if (patch.isEmpty())
+        return;
+    p.fillRect(patch, mark.bg);
+    p.save();
+    p.setClipRect(patch, Qt::IntersectClip);
+    p.setPen(mark.fg);
+    draw();
+    p.restore();
+}
+
 // One fixed-height cell, ELIDED at the column's right edge rather than left to clip
 // mid-glyph (SPEC.md §5). The ellipsis is the only thing that tells a value too wide
 // for its column from one that genuinely ends there — and it is what makes the tooltip
 // honest, since both ask the same question of the same width.
-void drawElidedCell(QPainter &p, const QRect &rect, const QString &text)
+void drawElidedCell(QPainter &p, const QRect &rect, const QString &text,
+                    const CellMark &mark = CellMark())
 {
-    p.drawText(rect, Qt::AlignVCenter | Qt::TextSingleLine,
-               p.fontMetrics().elidedText(text, Qt::ElideRight, rect.width()));
+    constexpr int kFlags = Qt::AlignVCenter | Qt::TextSingleLine;
+    const QString shown = p.fontMetrics().elidedText(text, Qt::ElideRight, rect.width());
+    p.drawText(rect, kFlags, shown);
+    if (!mark.active())
+        return;
+
+    // The runs are found in the string AS DRAWN, so what the ellipsis took away is
+    // simply not marked: a match past the cut is not on screen, and the honest answer
+    // to "where is it" is to say nothing rather than to point at the ellipsis.
+    const QVector<TextMatcher::Span> spans = mark.find->spans(shown, kMaxCellMarks);
+    const QFontMetrics fm = p.fontMetrics();
+    for (const TextMatcher::Span &span : spans) {
+        const int x0 = rect.left() + fm.horizontalAdvance(shown, span.start);
+        const int x1 = rect.left() + fm.horizontalAdvance(shown, span.start + span.length);
+        const QRect patch = QRect(x0, rect.top(), qMax(1, x1 - x0), rect.height())
+                                .intersected(rect);
+        paintMark(p, patch, mark, [&] { p.drawText(rect, kFlags, shown); });
+    }
+}
+
+// The wrapped message cell. With nothing to mark it is EXACTLY the drawText call it
+// replaces — which is what keeps every unmarked record rendering as it always has, and
+// keeps the line breaking the height model was measured against (§7.1.1).
+//
+// With something to mark, the text is laid out here instead: a mark has to know where
+// each character landed, and the only way to be sure of that is to have placed it. The
+// same QTextLayout draws the text and answers where the run is, so the two cannot
+// disagree — at the price of Qt's own wrapping being reproduced rather than used, which
+// is why this path is reached only while a search is armed and only for records that
+// actually match.
+void drawWrappedCell(QPainter &p, const QRect &rect, const QString &text, int lineHeight,
+                     bool wordWrap, const CellMark &mark)
+{
+    const int flags = (wordWrap ? (Qt::TextWordWrap | Qt::TextWrapAnywhere)
+                                : Qt::TextWrapAnywhere) | Qt::AlignTop;
+    QVector<TextMatcher::Span> spans;
+    if (mark.active())
+        spans = mark.find->spans(text, kMaxCellMarks);
+    if (spans.isEmpty()) {
+        p.drawText(rect, flags, text);
+        return;
+    }
+
+    QTextOption option;
+    option.setWrapMode(wordWrap ? QTextOption::WrapAtWordBoundaryOrAnywhere
+                                : QTextOption::WrapAnywhere);
+    const int lh = qMax(1, lineHeight);
+    const int maxLines = qMax(1, rect.height() / lh);
+
+    p.save();
+    p.setClipRect(rect, Qt::IntersectClip); // drawText clips to its rect; a layout does not
+
+    int placed = 0; // display lines used so far by this record
+    int base = 0;   // character offset of this paragraph within `text`
+    // A record is not a line (invariant #2): the message's own newlines are paragraph
+    // breaks, which QTextLayout does not take for itself. Splitting a DECODED string,
+    // never raw bytes (invariant #8).
+    const QList<QStringView> paragraphs = QStringView(text).split(QLatin1Char('\n'));
+    for (const QStringView &paragraph : paragraphs) {
+        if (placed >= maxLines)
+            break;
+        QTextLayout layout(paragraph.toString(), p.font());
+        layout.setTextOption(option);
+        layout.beginLayout();
+        QVector<QTextLine> lines;
+        while (placed + lines.size() < maxLines) {
+            QTextLine line = layout.createLine();
+            if (!line.isValid())
+                break;
+            line.setLineWidth(rect.width());
+            // Positioned on the view's own line pitch rather than the layout's, so a
+            // marked record occupies exactly the lines the geometry model gave it.
+            line.setPosition(QPointF(0, (placed + lines.size()) * lh));
+            lines.append(line);
+        }
+        layout.endLayout();
+        const auto drawLayout = [&] { layout.draw(&p, rect.topLeft()); };
+        drawLayout();
+
+        for (const QTextLine &line : lines) {
+            const int lineStart = line.textStart();
+            const int lineEnd = lineStart + line.textLength();
+            for (const TextMatcher::Span &span : spans) {
+                // Paragraph-local, and clipped to this line: a match may straddle a
+                // wrapped-line boundary, and then it is marked on BOTH lines.
+                const int from = qMax(span.start - base, lineStart);
+                const int to = qMin(span.start + span.length - base, lineEnd);
+                if (to <= from)
+                    continue;
+                const int x0 = int(line.cursorToX(from));
+                const int x1 = int(line.cursorToX(to));
+                const QRect patch =
+                    QRect(rect.left() + qMin(x0, x1), rect.top() + int(line.position().y()),
+                          qMax(1, qAbs(x1 - x0)), lh)
+                        .intersected(rect);
+                paintMark(p, patch, mark, drawLayout);
+            }
+        }
+        placed += int(lines.size());
+        base += int(paragraph.size()) + 1; // the newline itself
+    }
+    p.restore();
 }
 } // namespace
 
@@ -716,6 +853,27 @@ void LogView::resolveRowColors(int row, bool selected, QColor &bg, QColor &fg) c
     }
 }
 
+bool LogView::marking() const
+{
+    // An empty query matches everything, and marking everything is not a mark; a regex
+    // that will not compile matched nothing to land on in the first place.
+    return !m_findMatcher.isEmpty() && m_findMatcher.isValid();
+}
+
+void LogView::setFindMatcher(const TextMatcher &matcher)
+{
+    m_findMatcher = matcher;
+    viewport()->update(); // the marks are re-derived per paint; asking for one is all it takes
+}
+
+void LogView::clearFindMatcher()
+{
+    if (m_findMatcher.isEmpty())
+        return;
+    m_findMatcher = TextMatcher();
+    viewport()->update();
+}
+
 void LogView::paintEvent(QPaintEvent *event)
 {
     QPainter p(viewport());
@@ -738,6 +896,21 @@ void LogView::paintEvent(QPaintEvent *event)
     }
 
     const int lh = lineHeight();
+
+    // What Find matched, marked in the record's own two colours swapped (SPEC.md §5).
+    // Per record, because those two colours are: a rule's, the band's, the selection's
+    // or a context row's dimmed pair — whatever contrast the record already had, the
+    // marked run has exactly, in either theme.
+    const bool mark = marking();
+    const auto markFor = [this, mark](const QColor &bg, const QColor &fg) {
+        CellMark m;
+        if (mark) {
+            m.find = &m_findMatcher;
+            m.bg = fg;
+            m.fg = bg;
+        }
+        return m;
+    };
 
     // Estimated (wrap-always-on) path — kept entirely separate from the exact
     // painting below so the exact path never routes through estimation (#6).
@@ -764,6 +937,7 @@ void LogView::paintEvent(QPaintEvent *event)
             resolveRowColors(r, selected, band, fg);
             p.fillRect(QRect(0, y, vw, rowH), band);
             p.setPen(fg);
+            const CellMark mark = markFor(band, fg);
 
             for (int vi = 0; vi < fields.size(); ++vi) {
                 const int logical = m_header->logicalIndex(vi);
@@ -775,10 +949,10 @@ void LogView::paintEvent(QPaintEvent *event)
                     const int availW = qMax(10, vw - x);
                     // Character wrapping (TextWrapAnywhere) so the painted height
                     // matches the ceil(chars/cols) measurement model exactly.
-                    p.drawText(QRect(x, y, availW, rowH),
-                               Qt::TextWrapAnywhere | Qt::AlignTop, m_model->cellText(r, logical));
+                    drawWrappedCell(p, QRect(x, y, availW, rowH), m_model->cellText(r, logical),
+                                    lh, /*wordWrap=*/false, mark);
                 } else {
-                    drawElidedCell(p, QRect(x, y, w, lh), m_model->cellText(r, logical));
+                    drawElidedCell(p, QRect(x, y, w, lh), m_model->cellText(r, logical), mark);
                 }
             }
             y += rowH;
@@ -811,6 +985,7 @@ void LogView::paintEvent(QPaintEvent *event)
         resolveRowColors(r, selected, band, fg);
         p.fillRect(QRect(0, y, vw, rowH), band);
         p.setPen(fg);
+        const CellMark mark = markFor(band, fg);
 
         const bool wrapThis = (sel == r);
         for (int vi = 0; vi < fields.size(); ++vi) {
@@ -824,17 +999,19 @@ void LogView::paintEvent(QPaintEvent *event)
                 const QString msg = m_model->cellText(r, logical);
                 if (wrapThis) {
                     const int availW = qMax(10, vw - x);
-                    p.drawText(QRect(x, y, availW, rowH),
-                               Qt::TextWordWrap | Qt::TextWrapAnywhere | Qt::AlignTop, msg);
+                    drawWrappedCell(p, QRect(x, y, availW, rowH), msg, lh,
+                                    /*wordWrap=*/true, mark);
                 } else {
                     // Wrap off: each physical line of the record is a clipped line of
-                    // its own (invariant #2), so each elides on its own too.
+                    // its own (invariant #2), so each elides on its own too — and each
+                    // is marked on its own, for the same reason.
                     const QList<QStringView> segs = QStringView(msg).split(QLatin1Char('\n'));
                     for (int li = 0; li < segs.size() && li < hLines; ++li)
-                        drawElidedCell(p, QRect(x, y + li * lh, w, lh), segs.at(li).toString());
+                        drawElidedCell(p, QRect(x, y + li * lh, w, lh), segs.at(li).toString(),
+                                       mark);
                 }
             } else {
-                drawElidedCell(p, QRect(x, y, w, lh), m_model->cellText(r, logical));
+                drawElidedCell(p, QRect(x, y, w, lh), m_model->cellText(r, logical), mark);
             }
         }
 
