@@ -706,7 +706,8 @@ void AxisEditor::clearAll()
     m_threadSeen.clear();
     m_populating = false;
 
-    repopulate({}, {}, /*exact=*/false); // nothing seen, nothing restrictive: all ticked
+    // Nothing seen, nothing restrictive: everything ticked.
+    repopulate({}, {}, ListRule::Discover, ListRule::Discover);
     refreshObservedSpan();
     updateAxisState();
     updateTextValidity();
@@ -1114,7 +1115,8 @@ void AxisEditor::refreshDiscoveredLists()
         m_populating = false;
         return;
     }
-    repopulate(checkedNames(m_loggerList), checkedNames(m_threadList), /*exact=*/false);
+    repopulate(checkedNames(m_loggerList), checkedNames(m_threadList), ListRule::Discover,
+               ListRule::Discover);
     // The other thing the index tells the editor. Both callers of this function mean
     // "the scan has moved on", and a time axis seeded once at open time is seeded from
     // an empty file.
@@ -1122,7 +1124,8 @@ void AxisEditor::refreshDiscoveredLists()
 }
 
 void AxisEditor::repopulate(const QSet<QString> &loggerChecked,
-                            const QSet<QString> &threadChecked, bool exact)
+                            const QSet<QString> &threadChecked, ListRule loggerRule,
+                            ListRule threadRule)
 {
     if (!m_document)
         return;
@@ -1133,9 +1136,9 @@ void AxisEditor::repopulate(const QSet<QString> &loggerChecked,
     threads.append(m_threadManualNames.values());
 
     populateList(m_loggerList, loggers, loggerChecked, m_loggerManualNames, m_loggerSeen,
-                 exact, restrictiveFor(ValueAxis::Subsystem));
+                 loggerRule, restrictiveFor(ValueAxis::Subsystem));
     populateList(m_threadList, threads, threadChecked, m_threadManualNames, m_threadSeen,
-                 exact, restrictiveFor(ValueAxis::Thread));
+                 threadRule, restrictiveFor(ValueAxis::Thread));
     narrowList(m_loggerList, m_loggerNarrow ? m_loggerNarrow->text() : QString());
     narrowList(m_threadList, m_threadNarrow ? m_threadNarrow->text() : QString());
     // The list just changed under the narrowing, so the hidden count the buttons
@@ -1262,10 +1265,33 @@ void AxisEditor::setCriteria(const MatchCriteria &c)
 
     m_populating = false;
 
-    // Exact: the stored selection is reproduced as-is rather than run through the
+    // Load: the stored selection is reproduced as-is rather than run through the
     // discovery rule, so loading one highlight rule after another shows each rule's
     // own subsystems instead of inheriting the previous rule's.
-    repopulate(loggerSel, threadSel, /*exact=*/true);
+    //
+    // Unless it narrowed nothing, which is a statement about the file and not a list of
+    // names: its list is only as long as the scan had got when it was written, so a
+    // state stored before its log was indexed lists nothing at all. Loading THAT as a
+    // literal selection ticks nothing, files every name into `seen` as shown-and-
+    // unticked — which puts the axis beyond the discovery rule's reach for the rest of
+    // this binding — and leaves an axis that is on with an empty id set, i.e. a log
+    // showing none of its records. Keyed on coversAll and never on which pane hosts the
+    // editor: an axis that named some of the values still loads exactly. A RESTRICTIVE
+    // selection loads exactly whatever its coverage says, because "these names,
+    // whatever turns up later" is the one statement that must not widen.
+    //
+    // An axis that is OFF has no selection to show at all, so it loads nothing ticked
+    // and records nothing as seen instead — see ListRule::Unstated. That is what fixes
+    // the same trap on the Thread axis, which ships off: ticking its values here would
+    // write them into any highlight rule that merely has this one selected.
+    const auto ruleFor = [](bool enabled, bool coversAll, bool restrictive) {
+        if (!coversAll || restrictive)
+            return ListRule::Load;
+        return enabled ? ListRule::CoverAll : ListRule::Unstated;
+    };
+    repopulate(loggerSel, threadSel,
+               ruleFor(c.loggerEnabled, c.loggerCoversAll, c.loggerRestrictive),
+               ruleFor(c.threadEnabled, c.threadCoversAll, c.threadRestrictive));
 
     updateAxisState();
     updateTextValidity();
@@ -1513,7 +1539,7 @@ void AxisEditor::setTimeRange(qint64 fromUtcMs, qint64 toUtcMs)
 
 void AxisEditor::populateList(QListWidget *list, const QStringList &names,
                               const QSet<QString> &checked, const QSet<QString> &manual,
-                              QSet<QString> &seen, bool exact, bool restrictive)
+                              QSet<QString> &seen, ListRule rule, bool restrictive)
 {
     if (!list)
         return;
@@ -1532,7 +1558,7 @@ void AxisEditor::populateList(QListWidget *list, const QStringList &names,
         sorted.append(n);
     }
     sorted.sort(Qt::CaseInsensitive);
-    // Discovery rule (exact == false): a name the editor has never shown before is
+    // Discovery rule (ListRule::Discover): a name the editor has never shown before is
     // checked; one it has shown keeps whatever state it had. The distinction matters
     // because the subsystem axis is enabled by default (SPEC.md §6) and subsystems are
     // discovered *as the file is scanned* — without it, every subsystem that first
@@ -1540,25 +1566,58 @@ void AxisEditor::populateList(QListWidget *list, const QStringList &names,
     // would vanish from an untouched view. "Never shown" also covers the very first
     // population, where everything is new.
     //
-    // Load rule (exact == true): checked means exactly `checked`, because the caller is
-    // reproducing a stored selection, not discovering values.
+    // Load rule (ListRule::Load): checked means exactly `checked`, because the caller
+    // is reproducing a stored selection, not discovering values.
     //
-    // Restriction rule (restrictive, exact == false): the discovery rule is exactly
+    // Coverage rule (ListRule::CoverAll): everything is checked, because the caller is
+    // reproducing a selection that excluded NOTHING — which is a statement about the
+    // file rather than a list of names, and its list is only as long as the scan had
+    // got when it was stored. `seen` is filled as under every other rule, which costs
+    // nothing here: every name is ticked, so the next Discover pass carries it through
+    // `checked` rather than through freshness.
+    //
+    // Unstated rule (ListRule::Unstated): checked means exactly `checked`, as under the
+    // load — but nothing is recorded in `seen`, so the discovery rule is still armed
+    // for every name here. It is the same "excluded nothing" as CoverAll with the axis
+    // switched OFF, where there is no selection to show and ticking one would put names
+    // into a rule that does not use this axis the next time criteria() is read.
+    //
+    // Restriction rule (restrictive, under Discover): the discovery rule is exactly
     // wrong — the selection names what the user asked to see, so a value nobody has
     // seen yet is not part of it and arrives UNCHECKED. A name the user typed by hand
     // still arrives checked: adding it is the request to see it.
     //
-    // A name already listed keeps its own state under every rule but the load, which
-    // is what makes an unticked value stay unticked across the repopulations indexing
-    // drives — including one the user typed in and then unticked.
+    // A name already listed keeps its own state under Discover, which is what makes an
+    // unticked value stay unticked across the repopulations indexing drives —
+    // including one the user typed in and then unticked.
     for (const QString &n : sorted) {
         auto *item = new QListWidgetItem(n, list);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         const bool fresh = !seen.contains(n);
-        const bool on = exact ? checked.contains(n)
-                              : (checked.contains(n)
-                                 || (fresh && (!restrictive || manual.contains(n))));
-        seen.insert(n);
+        bool       on = false;
+        switch (rule) {
+        case ListRule::Discover:
+            on = checked.contains(n) || (fresh && (!restrictive || manual.contains(n)));
+            break;
+        case ListRule::Load:
+        case ListRule::Unstated:
+            on = checked.contains(n);
+            break;
+        case ListRule::CoverAll:
+            on = true;
+            break;
+        }
+        // `seen` is what the discovery rule tests a name's freshness against. Under
+        // Unstated a name that arrives unticked is UN-seen rather than recorded: the
+        // axis excluded nothing, so nothing here may be carried as excluded — and the
+        // set has usually just been filled by setDocument()'s own discovery pass, which
+        // runs immediately before the pane hydrates. Without the removal the pass that
+        // follows this one finds nothing fresh and the axis stays empty for good, which
+        // is the whole defect on the axis that ships switched off.
+        if (on || rule != ListRule::Unstated)
+            seen.insert(n);
+        else
+            seen.remove(n);
         item->setCheckState(on ? Qt::Checked : Qt::Unchecked);
     }
     m_populating = false;

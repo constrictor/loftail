@@ -14,7 +14,10 @@
 #include <QTemporaryDir>
 #include <QToolButton>
 #include <QLabel>
+#include <QListWidget>
+#include <QAbstractButton>
 
+#include "AxisEditor.h"
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
@@ -169,6 +172,17 @@ private slots:
     void severalFilesOpenedAtOnceBecomeSeveralTabs();
     void aRefusedLogAmongSeveralLeavesTheOthersOpenAndIsNamedWithThem();
     void aRefusalOutlivesTheTicksAndTabSwitchesThatFollowItUntilDismissed();
+
+    // What a tab's stashed filter state MEANS when its log had not been indexed yet
+    // (SPEC.md §6). The panes are stashed on the way out of a tab, and opening the
+    // next log leaves that tab immediately — so the state stashed for every log but
+    // the last one lists no subsystems at all, and reading that back as a selection
+    // left every one of those tabs showing none of its records. The two cases below
+    // must NOT wait for indexing between the opens: that is the whole condition, and
+    // it is why the multi-open cases above are green with the bug in place.
+    void everyTabKeepsItsRecordsWhenTheOpensRunTogether();
+    void aSecondLogOpenedByHandLeavesTheFirstItsRecords();
+    void anEmptySelectionTheUserChoseSurvivesATabSwitchAndARelaunch();
 
     // Tab labels (SPEC.md §3). What a log is called depends on which OTHER logs are
     // open, so the claims are about the set: two app.logs say which is which, closing
@@ -918,6 +932,190 @@ void TestMultiDoc::aRefusalOutlivesTheTicksAndTabSwitchesThatFollowItUntilDismis
     dismiss->click();
     QVERIFY(!noticeLabel(w)->isVisible());
     QVERIFY(noticeText(w).isEmpty());
+}
+
+// The value rows of a value axis, "Others" (row 0) excluded — the tick states these
+// three cases are about. Never found by the row's label, which is translated prose.
+//
+// Searched from the FILTERS pane and never from the window: the Highlighters pane
+// embeds an AxisEditor of its own, so `subsystemList` and `subsystemNone` name a
+// widget in each of them and findChild() on the window answers with whichever it
+// reaches first — a rule list belonging to one highlight rule, whose ticks say
+// nothing about what the table is showing.
+namespace {
+FilterPane *filterPane(const MainWindow &w)
+{
+    return w.findChild<FilterPane *>();
+}
+
+QListWidget *valueList(const MainWindow &w, const char *name)
+{
+    FilterPane *pane = filterPane(w);
+    return pane ? pane->findChild<QListWidget *>(QLatin1String(name)) : nullptr;
+}
+
+int tickedValues(const QListWidget *list)
+{
+    int n = 0;
+    for (int i = AxisEditor::kFirstValueRow; i < list->count(); ++i)
+        if (list->item(i)->checkState() == Qt::Checked)
+            ++n;
+    return n;
+}
+
+int valueCount(const QListWidget *list)
+{
+    return list->count() - AxisEditor::kFirstValueRow;
+}
+
+LogModel *modelOfTab(const MainWindow &w, int index)
+{
+    QTabWidget *t = w.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    if (!t || index < 0 || index >= t->count())
+        return nullptr;
+    return modelOf(t->widget(index)->findChild<LogView *>(QStringLiteral("logView")));
+}
+} // namespace
+
+void TestMultiDoc::everyTabKeepsItsRecordsWhenTheOpensRunTogether()
+{
+    // Its own pair of logs, because the cases above append to the shared ones and
+    // these three count records.
+    const QString first = m_dir.filePath(QStringLiteral("stash-a.log"));
+    const QString second = m_dir.filePath(QStringLiteral("stash-b.log"));
+    writeLog(first, "net.io", 30);
+    writeLog(second, "db.pool", 20);
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    // One gesture, two logs, and NOTHING pumped between them — which is what
+    // `loftail a.log b.log`, a multi-select in File ▸ Open and a drop of both files all
+    // reach. Indexing is asynchronous, so the second open brings its own tab forward
+    // while the first log's index still holds not one record, and what gets stashed for
+    // a.log is an enabled Subsystem axis over an empty list. That is an axis excluding
+    // nothing, and it must not come back reading as a selection of nothing.
+    QVERIFY(w.openFiles({first, second}));
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
+    waitUntilIndexed(w);
+
+    QTabWidget *t = tabs(w);
+    QVERIFY(t);
+    QCOMPARE(t->count(), 2);
+
+    // The tab left in front was always fine: nothing was ever stashed for it, because
+    // it was never switched away from.
+    QCOMPARE(modelOfTab(w, 1)->rowCount(), 20);
+
+    // The one behind is the case — every record of it, not "0 of 30".
+    t->setCurrentIndex(0);
+    QCOMPARE(modelOfTab(w, 0)->rowCount(), 30);
+
+    // And the pane agrees with the table. With the bug the two contradicted each
+    // other: the axis ticked, "Others" ticked, and every value discovered under them
+    // unticked — a picture no click of the user's could have produced.
+    FilterPane *fp = filterPane(w);
+    QVERIFY(fp);
+    QVERIFY(!fp->hasActiveFilters());
+    QListWidget *loggers = valueList(w, "subsystemList");
+    QVERIFY(loggers);
+    QCOMPARE(valueCount(loggers), 1); // a.log logs under one subsystem
+    QCOMPARE(tickedValues(loggers), valueCount(loggers));
+
+    // The Thread axis ships OFF, which is the only reason it was not reported too: it
+    // is stashed and reloaded by the same rule, and switching it on has to narrow
+    // nothing rather than everything.
+    QListWidget *threads = valueList(w, "threadList");
+    QVERIFY(threads);
+    QCOMPARE(tickedValues(threads), valueCount(threads));
+    QVERIFY(valueCount(threads) > 0);
+
+    w.close();
+}
+
+void TestMultiDoc::aSecondLogOpenedByHandLeavesTheFirstItsRecords()
+{
+    const QString first = m_dir.filePath(QStringLiteral("byhand-a.log"));
+    const QString second = m_dir.filePath(QStringLiteral("byhand-b.log"));
+    writeLog(first, "net.io", 30);
+    writeLog(second, "db.pool", 20);
+
+    // The same condition reached one file at a time: nothing about it needs the two
+    // opens to be one gesture, only that the first log is still being indexed when the
+    // second takes the window. Two openFile() calls back to back are exactly that, and
+    // are what a user opening a second log a moment after the first does.
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    QVERIFY(w.openFile(first));
+    QVERIFY(w.openFile(second));
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
+    waitUntilIndexed(w);
+
+    tabs(w)->setCurrentIndex(0);
+    QCOMPARE(modelOfTab(w, 0)->rowCount(), 30);
+    w.close();
+}
+
+void TestMultiDoc::anEmptySelectionTheUserChoseSurvivesATabSwitchAndARelaunch()
+{
+    const QString first = m_dir.filePath(QStringLiteral("none-a.log"));
+    const QString second = m_dir.filePath(QStringLiteral("none-b.log"));
+    writeLog(first, "net.io", 30);
+    writeLog(second, "db.pool", 20);
+
+    // The other half of the same ambiguity, and the reason it cannot be settled by
+    // reading an empty selection as "show everything": None is a click, and a tab
+    // switch or a relaunch must not undo it.
+    {
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(w.openFiles({first, second}));
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
+        waitUntilIndexed(w);
+
+        QTabWidget *t = tabs(w);
+        t->setCurrentIndex(0);
+        QVERIFY(filterPane(w));
+        auto *none =
+            filterPane(w)->findChild<QAbstractButton *>(QStringLiteral("subsystemNone"));
+        QVERIFY(none);
+        none->click();
+        QTRY_COMPARE(modelOfTab(w, 0)->rowCount(), 0);
+        QCOMPARE(tickedValues(valueList(w, "subsystemList")), 0);
+
+        // Away and back, which stashes and hydrates it exactly as the case above does.
+        t->setCurrentIndex(1);
+        t->setCurrentIndex(0);
+        QCOMPARE(modelOfTab(w, 0)->rowCount(), 0);
+        QCOMPARE(tickedValues(valueList(w, "subsystemList")), 0);
+
+        // Closed from the OTHER tab, so the relaunch resumes there. A pane hydrated
+        // while its own log is still being scanned is discovering values rather than
+        // loading them, and everything a scan discovers arrives ticked (SPEC.md §6) —
+        // which is a separate rule and not this one.
+        t->setCurrentIndex(1);
+        w.close();
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
+    waitUntilIndexed(w);
+    QTabWidget *t = tabs(w);
+    QCOMPARE(t->count(), 2);
+    QVERIFY(t->tabText(0).contains(QStringLiteral("none-a.log")));
+
+    t->setCurrentIndex(0);
+    QCOMPARE(modelOfTab(w, 0)->rowCount(), 0);
+    QCOMPARE(tickedValues(valueList(w, "subsystemList")), 0);
+    // And the log it was not applied to still shows everything.
+    t->setCurrentIndex(1);
+    QCOMPARE(modelOfTab(w, 1)->rowCount(), 20);
+    w.close();
 }
 
 void TestMultiDoc::theCommandLineTakesEveryFileNamedAndOnePatternForThemAll()
