@@ -31,8 +31,18 @@ public:
     bool regex() const;
     bool caseSensitive() const;
 
-    // Show the bar and focus the text field (Ctrl+F).
+    // Show the bar and focus the text field (Ctrl+F). Clears the last report and
+    // selects the standing query for replacement — the reader asked for a box to type
+    // into, so what the previous query found is about to stop being true.
     void activate();
+    // Put the bar on screen and focus it, touching NOTHING else — not the status, not
+    // the query, not the selection. Every report runFind() makes goes into this bar's
+    // own label, so a search asked for from the table (F3) has to reveal it BEFORE it
+    // writes, or the answer lands where nobody can read it (SPEC.md §5). The focus is
+    // not decoration: Escape is handled in FindBar::keyPressEvent and the bar is a
+    // SIBLING of the table under DocumentView, not an ancestor, so a bar revealed with
+    // the caret left in the table could be closed only with the ✕ button.
+    void reveal();
     // Report the outcome of the last search in the bar's own status label (SPEC.md §5):
     // which match of how many, whether the search wrapped, or why there was nothing to
     // go to. The bar's label rather than the window's status bar, because that one is

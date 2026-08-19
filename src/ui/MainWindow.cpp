@@ -2828,6 +2828,23 @@ void MainWindow::runFind(bool forward, bool fromStart)
     FindBar *findBar = m_activeView ? m_activeView->findBar() : nullptr;
     if (!logView || !model || !findBar)
         return;
+
+    // The bar goes on screen BEFORE anything is written into it. Every branch below —
+    // `no search text`, `bad regex`, `no records`, `no match` and the match report
+    // itself — answers into the bar's own label, and F3 can be pressed with the bar
+    // closed (the shortcut is a window action, and Escape closes the bar without
+    // touching the query): without this, a search runs, the cursor moves, the table
+    // re-arms its marks, and the sentence explaining all of it is written to a widget
+    // nobody can see (SPEC.md §5).
+    //
+    // reveal() and NOT activate(): activate() opens by clearing the status, so calling
+    // it here would wipe the very report this exists to show, and it selects the query
+    // for replacement, which on an already-open bar would arm the reader's next
+    // keystroke to delete the text they are stepping through. reveal() is a no-op on an
+    // open bar, so the focus a `no match` or a successful find leaves inside the bar
+    // stays exactly where it was.
+    findBar->reveal();
+
     const QString pattern = findBar->pattern();
     if (pattern.isEmpty()) {
         // Which of the two empty-query cases this is, is exactly `fromStart`. It is true

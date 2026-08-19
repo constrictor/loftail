@@ -113,9 +113,24 @@ void FindBar::activate()
     // Whatever the last search reported is about a query that is about to be replaced,
     // and a stale "3 of 47" over a fresh empty box is a lie.
     setStatus(QString());
-    show();
+    reveal();
+    // Again, unconditionally: reveal() is a no-op on a bar that is already open, and
+    // Ctrl+F on an open bar still means "give me the box to type in".
     m_edit->setFocus();
     m_edit->selectAll();
+}
+
+void FindBar::reveal()
+{
+    // isHidden() and not isVisible(): the question is whether the bar is MEANT to be on
+    // screen, which is what hide() and show() set, and isVisible() is additionally false
+    // for the whole of a window that has not been shown yet.
+    if (!isHidden())
+        return; // already open — selecting the query here would arm the reader's next
+                // keystroke to destroy the very text they are stepping through, and
+                // moving the focus would take it off whatever they had put it on.
+    show();
+    m_edit->setFocus(); // so Escape closes it — see the header
 }
 
 void FindBar::setStatus(const QString &text)

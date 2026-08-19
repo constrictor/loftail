@@ -114,48 +114,28 @@ defect went with it: an explicitly empty value (`--pattern "$FMT"` with `FMT`
 unset) is now stated to be the bare launch rather than left to fall out of
 `isEmpty()` meaning two different things on the same line.
 
+Entry 16 has gone as well, in the wider form its amendment described: F3 answered
+into a bar that need not be on screen. Every branch of `runFind()` reports into the
+Find bar's own label — including the match-and-wrap report, so a reader who had
+closed the bar with Escape and pressed F3 got the cursor moved, the marks put back
+over the table and the sentence explaining both written where nobody could read it.
+`runFind()` now reveals the bar above every branch, through a new
+`FindBar::reveal()` that shows and focuses and touches nothing else: revealing
+through `activate()` would have cleared the status it was added to show, and a
+reveal without the focus would have shipped a bar closable only with the ✕ button,
+since Escape is handled in the bar and the bar is a sibling of the table rather
+than an ancestor of it. The mirror-image state the entry did not name — Ctrl+F
+reopening a bar whose query the table is not marking — is settled by leaving Ctrl+F
+searching nothing on purpose: a reopened bar shows the standing query selected for
+replacement, with a blank report and no marks, so it claims nothing it is not
+showing.
+
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 16. F3 with the Find bar closed answers into a bar nobody can see
-
-`MainWindow::runFind()` (`MainWindow.cpp:2791`) reports `no search text` through
-`findBar->setStatus()` (`:2807`) when a deliberate navigation is made on an empty
-query. `7f32c65` added that branch precisely so that F3 stops being silent — but
-the bar is a `DocumentView` child that starts hidden and is only put on screen by
-`DocumentView::activateFind()` (`DocumentView.cpp:105`), which nothing on this
-path calls.
-
-So a reader who has opened a log and pressed F3 without ever opening the Find bar
-gets exactly the silence the branch was written to remove. What it does cover is
-the case where the bar is already open — which needed it least, since the empty
-box is right there.
-
-It was reported when the branch was written and left alone deliberately, because
-revealing the bar changes what the action *does* and that was outside the scope
-of an enablement fix. It is still the right change: F3 asking a question is a
-reasonable moment to put the box on screen.
-
-Fix: have the empty-query navigation branch call `activateFind()`, which already
-does the show-and-focus. Decide whether focus moves with it (it probably should),
-and keep `FindBar`'s Escape-closes handling working. The branch is reached only
-on an empty query, so a *not found* on a real query must go on leaving focus
-where it is.
-
-**Amended 2026-08-19: this entry is narrower than the defect it describes.** It is
-written about the empty-query branch only. Measured: with a **non-empty** query,
-`Esc` closes the bar (clearing the marks via `DocumentView.cpp:57`), and a
-subsequent **F3 still searches** — it re-arms the find marks in the table, moves
-the cursor, and writes `2 of 2` / `…, wrapped to the top` into the **hidden**
-label. So marks reappear over the table with no bar and no visible query, and the
-wrap report is silent again on a real query, not just on an empty one.
-Reproduction: open a log, Ctrl+F, type a query with two matches, Esc, then F3
-twice — the cursor wraps to the first match with nothing on screen saying so.
-Same fix site (`runFind()` calling `activateFind()`), wider trigger.
 
 ### 17. `viewportCols()` trusts `averageCharWidth()`, which is truncated, so Always On clips the tail of long records
 
