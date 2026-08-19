@@ -3,14 +3,28 @@
 #include "UiColors.h"
 
 #include <QCheckBox>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QToolButton>
 
 namespace loftail {
+namespace {
+
+// How the row's spare width is split between the two elastic items. The query box is
+// what a reader types into and keeps the larger share; the status keeps enough of one
+// that the ordinary wordings — `2 of 7`, `1 of 7, wrapped to the top` — fit without
+// eliding at an ordinary window width, and grows with the window rather than against a
+// "longest wording" constant that translation and an unbounded match count would both
+// outrun.
+constexpr int kQueryStretch  = 3;
+constexpr int kStatusStretch = 2;
+
+} // namespace
 
 FindBar::FindBar(QWidget *parent) : QWidget(parent)
 {
@@ -26,7 +40,7 @@ FindBar::FindBar(QWidget *parent) : QWidget(parent)
     // Shift+Enter has to be taken off the field before QLineEdit sees it — see
     // eventFilter() below, which is where the backwards gesture lives.
     m_edit->installEventFilter(this);
-    row->addWidget(m_edit, 1);
+    row->addWidget(m_edit, kQueryStretch);
 
     auto *prev = new QToolButton(this);
     prev->setObjectName(QStringLiteral("findPrevious"));
@@ -52,7 +66,21 @@ FindBar::FindBar(QWidget *parent) : QWidget(parent)
     // wipe it within the second on a live log.
     m_status = new QLabel(this);
     m_status->setObjectName(QStringLiteral("findStatus")); // findChild, for tests
-    row->addWidget(m_status);
+    // The label may NOT be allowed to size itself from its text. The query box is the
+    // row's other elastic item, so every pixel the wording grows by is a pixel taken
+    // from the box — and everything laid out between the two, which is every control
+    // the user clicks, slides left by exactly that much. Stepping through matches with
+    // ▼ then walks the Case checkbox under a stationary pointer the moment a wrap note
+    // appears, and the next click restarts the search case-sensitively. So the cell is
+    // text-independent: QSizePolicy::Ignored drops the label's width hint out of the
+    // layout's sum, and its own stretch share is what it gets, at every bar width. The
+    // text is elided into whatever that comes to (updateStatusText below).
+    //
+    // Ignored must NOT be paired with setMaximumWidth — the two pull opposite ways and
+    // the combination lays the row out on top of itself (see CLAUDE.md, the Filters
+    // pane's context spinners). A stretch share is the whole mechanism here.
+    m_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    row->addWidget(m_status, kStatusStretch);
 
     auto *close = new QToolButton(this);
     close->setObjectName(QStringLiteral("findClose"));
@@ -74,6 +102,9 @@ FindBar::FindBar(QWidget *parent) : QWidget(parent)
 }
 
 QString FindBar::pattern() const { return m_edit->text(); }
+// The report as it was given, not as the label happens to be rendering it — which is
+// elided to whatever width the bar has (updateStatusText below).
+QString FindBar::status() const { return m_statusText; }
 bool FindBar::regex() const { return m_regex->isChecked(); }
 bool FindBar::caseSensitive() const { return m_case->isChecked(); }
 
@@ -81,7 +112,7 @@ void FindBar::activate()
 {
     // Whatever the last search reported is about a query that is about to be replaced,
     // and a stale "3 of 47" over a fresh empty box is a lie.
-    m_status->clear();
+    setStatus(QString());
     show();
     m_edit->setFocus();
     m_edit->selectAll();
@@ -89,7 +120,38 @@ void FindBar::activate()
 
 void FindBar::setStatus(const QString &text)
 {
-    m_status->setText(text);
+    m_statusText = text;
+    updateStatusText();
+}
+
+void FindBar::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    // The layout is applied before this arrives (QLayout filters the resize on its own
+    // parent), so the label's width is already the new one.
+    updateStatusText();
+}
+
+// "The column elides; the tooltip does not" — the house rule the log table and the
+// highlighter list already follow. The label's cell is settled by the bar's width alone,
+// so a long report is cut to fit rather than allowed to push the controls about, and
+// only a report that was actually cut short offers the full text on hover.
+//
+// It is cut in the MIDDLE, for the reason a crowded tab label is (SPEC.md §5a): both
+// ends of this wording carry something — `1 of 7` at the front, `wrapped to the top` at
+// the back — and eliding from the right takes away the wrap note, which is the half the
+// reader does not already know.
+void FindBar::updateStatusText()
+{
+    const int width = m_status->width();
+    if (m_statusText.isEmpty() || width <= 0) {
+        m_status->setText(m_statusText);
+        m_status->setToolTip(QString());
+        return;
+    }
+    const QString shown = m_status->fontMetrics().elidedText(m_statusText, Qt::ElideMiddle, width);
+    m_status->setText(shown);
+    m_status->setToolTip(shown == m_statusText ? QString() : m_statusText);
 }
 
 void FindBar::keyPressEvent(QKeyEvent *event)
