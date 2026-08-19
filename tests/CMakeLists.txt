@@ -283,7 +283,7 @@ add_test(NAME tst_complete COMMAND tst_complete)
 # committed — which is why these link the dependency directly as well: loftail_core
 # links it PRIVATE, and the fixtures call it.
 if(LOFTAIL_HAVE_ARCHIVE)
-    foreach(unit archivemembers archivefetcher archivetail)
+    foreach(unit archivemembers archivefetcher archivetail archivewaiting)
         qt_add_executable(tst_${unit} tst_${unit}.cpp)
         target_link_libraries(tst_${unit} PRIVATE loftail_core Qt6::Test ${LOFTAIL_ARCHIVE_TARGET})
         add_test(NAME tst_${unit} COMMAND tst_${unit})
@@ -635,6 +635,7 @@ set(loftail_threading_tests
     tst_archivemembers  # libarchive-only
     tst_archivefetcher  # libarchive-only
     tst_archivetail     # libarchive-only
+    tst_archivewaiting  # libarchive-only
 )
 # Label only what this configuration actually defined — several above are conditional,
 # and set_tests_properties on a test that does not exist is a configure error.

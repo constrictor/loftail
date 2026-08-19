@@ -58,9 +58,21 @@ Document::~Document() = default;
 QString waitingForText(const QString &path, WaitCause cause)
 {
     const QString name = logSourceDisplayName(path);
-    return cause == WaitCause::Gone
-        ? Tr::tr("%1 is no longer there — waiting for it to reappear").arg(name)
-        : Tr::tr("%1 has not appeared yet — waiting for it").arg(name);
+    switch (cause) {
+    case WaitCause::Gone:
+        return Tr::tr("%1 is no longer there — waiting for it to reappear").arg(name);
+    case WaitCause::NoAccess:
+        return Tr::tr("%1 cannot be read — waiting for permission to read it").arg(name);
+    case WaitCause::NotYet:
+        break;
+    }
+    return Tr::tr("%1 has not appeared yet — waiting for it").arg(name);
+}
+
+WaitCause waitCauseFor(const QString &path, WaitCause whenAbsent)
+{
+    return logSourcePresence(path) == LogPresence::Unreadable ? WaitCause::NoAccess
+                                                             : whenAbsent;
 }
 
 QTimeZone Document::inferSourceZone(const LogFormat &format)
@@ -143,7 +155,11 @@ bool Document::prepare(const QString &rawPath,
         if (logPathIsWellFormed(path) && !logSourceAvailable(path)) {
             m_sourceZone = sourceZone.isValid() ? sourceZone : inferSourceZone(m_format);
             recomputeDisplayZone();
-            enterWaiting(waitingForText(path, WaitCause::NotYet));
+            // Which sentence, not whether to wait: a log whose permissions are against
+            // us is waited for exactly as an absent one is — a mode is changed as
+            // readily as a file is written — but it must not be described as one that
+            // has not appeared, because the reader can see it.
+            enterWaiting(waitingForText(path, waitCauseFor(path, WaitCause::NotYet)));
             return true; // waiting, not open — see isWaiting()
         }
         // A remote failure phrases itself ("host unreachable", "not built in"); a
@@ -367,7 +383,7 @@ bool Document::reopen()
         // error: the live seam brings it back the moment it reappears (§6.5), instead
         // of leaving a null source and an error string nobody reads.
         if (!logSourceAvailable(m_path)) {
-            enterWaiting(waitingForText(m_path, WaitCause::Gone));
+            enterWaiting(waitingForText(m_path, waitCauseFor(m_path, WaitCause::Gone)));
             return false;
         }
         clearIndex();
@@ -416,7 +432,7 @@ bool Document::reformat(IFormatProvider &provider,
     QString openError;
     if (!openAndSettleFormat(provider, OpenPolicy::Reuse, &openError)) {
         if (!logSourceAvailable(m_path)) {
-            enterWaiting(waitingForText(m_path, WaitCause::Gone));
+            enterWaiting(waitingForText(m_path, waitCauseFor(m_path, WaitCause::Gone)));
             return false;
         }
         clearIndex();

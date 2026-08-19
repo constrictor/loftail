@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 
 #include "ArchiveLocation.h"
@@ -129,6 +130,7 @@ private slots:
     void rotationInsideTheGracePeriodNeverWaits();
     void theGracePeriodIsElapsedTimeNotACheckCount();
     void aBrokenAddressStillFailsOutright();
+    void anUnreadableLogWaitsButIsNotDescribedAsMissing();
 };
 
 void TestWaiting::absentPathOpensWaitingAndSettlesFormatOnArrival()
@@ -528,6 +530,63 @@ void TestWaiting::aBrokenAddressStillFailsOutright()
     QVERIFY(!noMember.prepare(container, provider, Encoding::Utf8, QTimeZone::utc()));
     QVERIFY(!noMember.isWaiting());
     QVERIFY(!noMember.lastError().isEmpty());
+
+    // And the same when the container is not there EITHER. This one used to wait, and
+    // the wait could never end: whether a member has been picked is pure string work,
+    // so the refusal is just as decidable before the file arrives as after it, and the
+    // address it holds would still name no log once it did.
+    const QString absentContainer = dir.filePath(QStringLiteral("elsewhere.tar"));
+    QVERIFY(!QFileInfo::exists(absentContainer));
+    Document noMemberYet;
+    QVERIFY(!noMemberYet.prepare(absentContainer, provider, Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(!noMemberYet.isWaiting());
+    QVERIFY(!noMemberYet.lastError().isEmpty());
+}
+
+void TestWaiting::anUnreadableLogWaitsButIsNotDescribedAsMissing()
+{
+    // A log the user can SEE in their file manager, told it "has not appeared yet".
+    // Both are waits and both recover, so this is about the sentence, which SPEC.md §3
+    // says is what the tab is for: a wrong one sends the reader looking in the wrong
+    // place, and there is nothing on screen to correct it.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("noperm.log"));
+    QVERIFY(writeWhole(path, rec(1, "INFO ", "app.core", "first")));
+    QVERIFY(QFile::setPermissions(path, QFileDevice::WriteOwner));
+    if (QFileInfo(path).isReadable()) {
+        QVERIFY(QFile::setPermissions(path,
+                                      QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+        QSKIP("running as root: a mode-000 file is still readable");
+    }
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.prepare(path, provider, Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(doc.isWaiting());
+    QCOMPARE(doc.waitReason(), waitingForText(path, WaitCause::NoAccess));
+    QCOMPARE(doc.waitReason(), waitingForText(path, waitCauseFor(path, WaitCause::NotYet)));
+    QVERIFY2(doc.waitReason() != waitingForText(path, WaitCause::NotYet),
+             qPrintable(doc.waitReason()));
+
+    // It is a WAIT all the same, and giving the permission back ends it — which is the
+    // reason this is a wording defect rather than a hang.
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    QObject::connect(&live, &LiveController::resumeRequested, &live, [&doc, &model] {
+        ManualFormatProvider p(QString::fromLatin1(kPattern));
+        model.beginFilterReset();
+        doc.resume(p);
+        model.endFilterReset();
+    });
+    live.start();
+    live.checkNow();
+    QVERIFY(doc.isWaiting());
+
+    QVERIFY(QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    live.checkNow();
+    QVERIFY(!doc.isWaiting());
+    QCOMPARE(doc.index().records.size(), 1);
 }
 
 QTEST_GUILESS_MAIN(TestWaiting)

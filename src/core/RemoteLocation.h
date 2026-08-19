@@ -141,11 +141,29 @@ QString logSourceDisplayName(const QString &path);
 // Password-free for the same reason and by the same route as the name above.
 QString logSourceDisplayPath(const QString &path);
 
-// Whether opening `path` is worth attempting. NON-BLOCKING, and deliberately
-// optimistic for a remote path: answering it truthfully would mean a network round
-// trip, and this is called during session restore where a stall would be a hang. For
-// an archived path this asks about the CONTAINER — opening the archive to confirm the
-// member is there would cost as much as expanding it.
+// What is at an address, as far as can be told WITHOUT I/O beyond an attribute query.
+//
+// Absent and Unreadable are not the same thing to a user, and folding them together is
+// what made a log the user can see in their file manager report that it "has not
+// appeared yet". Both WAIT rather than fail — a permission is granted as readily as a
+// file is written — but each says its own sentence (SPEC.md §3), and one of them is a
+// reason to stop retrying a container that will never open (§6.4).
+enum class LogPresence {
+    Present,    // it is there, and this process may read it
+    Absent,     // there is nothing at the address
+    Unreadable, // something is there and this process may not read it
+};
+
+// Which of the three `path` is. NON-BLOCKING, and deliberately optimistic for a remote
+// path — Present, always: answering it truthfully would mean a network round trip, and
+// this is called during session restore where a stall would be a hang. For an archived
+// path this asks about the CONTAINER, because opening the archive to confirm the member
+// is there would cost as much as expanding it.
+LogPresence logSourcePresence(const QString &path);
+
+// Whether opening `path` is worth attempting: logSourcePresence() == Present, and the
+// same non-blocking, remote-optimistic answer. Kept as its own name because most
+// callers only ever want the one bit.
 bool logSourceAvailable(const QString &path);
 
 // Whether `path` NAMES A LOG AT ALL — pure string work, no I/O, and a much weaker
