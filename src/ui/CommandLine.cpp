@@ -5,10 +5,11 @@ namespace loftail {
 CommandLine::CommandLine()
     : m_patternOption(
           QStringLiteral("pattern"),
-          tr("log4cplus ConversionPattern for the format of the files named. "
-             "Used only for a file loftail has not seen before; a file "
-             "with a remembered format ignores it. A pattern that does "
-             "not match opens the file as plain text."),
+          tr("log4cplus ConversionPattern for the format of the files named. It "
+             "overrides whatever loftail has remembered for them, and is then "
+             "checked against each one: where it fits it is remembered for that "
+             "log; where it does not, Preferences opens to correct it, and "
+             "dismissing that leaves the log unopened and nothing saved."),
           QStringLiteral("pattern"))
 {
     m_parser.setApplicationDescription(

@@ -129,9 +129,11 @@ public:
     // cannot overwrite each other; a fetcher publishing its progress must not erase it.
     QString formatNotice;
 
-    // The user opened this log INTERACTIVELY and it has not yet been offered the Log
-    // Format dialog, because when it opened there were no bytes to judge a pattern
-    // against (M17) — the log had not turned up, or it had and was empty. Consumed by
+    // Somebody opened this log and it has not yet been offered the Log Format dialog,
+    // because when it opened there were no bytes to judge a pattern against (M17) — the
+    // log had not turned up, or it had and was empty. An open carrying a --pattern sets
+    // it too: a supplied pattern is judged against the log like any other, so the one
+    // thing it cannot do is arrive unexamined (SPEC.md §3). Consumed by
     // the first settle that has some, and by nothing else: a resume with an empty file
     // behind it must leave this armed, or the one dialog the open owes is spent on a
     // sample of nothing.

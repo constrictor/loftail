@@ -83,8 +83,11 @@ int main(int argc, char *argv[])
     // dropping several files on the window does (SPEC.md §3). No file argument -> an
     // empty window (session restore may still reopen the last files inside MainWindow);
     // the files named are ADDED to whatever the session brought back, never a
-    // replacement for it. A bad --pattern is taken as intent and opens the file as
-    // plain text without a blocking prompt (PLAN.md M3).
+    // replacement for it. --pattern overrides what is remembered for each of them and is
+    // then judged against it: a pattern that does not fit raises Preferences, and
+    // dismissing that opens neither the file nor a settings node (SPEC.md §3). It used
+    // to be taken as intent and open the file as plain text, which also saved it
+    // (bugs.md 15).
     //
     // None of this blocks: openFiles() is a loop over openFile(), which returns with a
     // tab that says it is connecting rather than connecting (ARCHITECTURE.md §6.3.3),

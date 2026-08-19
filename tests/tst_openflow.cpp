@@ -107,6 +107,14 @@ private slots:
     void aDefaultThatDoesNotParseStillAsks();
     void aPatternMatchOpensWithoutADialog();
     void aPatternThatDoesNotParseStillAsks();
+    // --pattern (SPEC.md §3): it wins over every level of the tree, and is then judged
+    // against the log exactly as a resolved node is. One case per branch of that rule.
+    void aSuppliedPatternThatFitsIsRememberedForTheLog();
+    void aSuppliedPatternEqualToWhatIsInheritedLeavesNoNode();
+    void aSuppliedPatternThatDoesNotFitAsksAndSavesNothingWhenDismissed();
+    void correctingASuppliedPatternPersistsTheCorrectionAndNotTheSwitch();
+    void aDismissedSuppliedPatternLeavesAStoredEntryAlone();
+    void anEmptyPatternValueIsTheBareLaunch();
     void applyingToTheCurrentFileWaitsForOkAndThenRereadsTheLog();
 };
 
@@ -553,6 +561,263 @@ void TestOpenFlow::aPatternThatDoesNotParseStillAsks()
     dismissWhenShown(d, Qt::Key_Escape);
     w.openFile(housed);
     QVERIFY2(d.seen, "a file pattern that cannot parse the log was applied without asking");
+    w.close();
+}
+
+// The layout m_weird is written in, and one that compiles and matches nothing anywhere.
+// Both are log4cplus conversion patterns and neither is translated.
+static QString weirdPattern()
+{
+    return QStringLiteral("%D{%m/%d/%y %H:%M:%S} %-5p %c [%t] - %m%n");
+}
+static QString uselessPattern()
+{
+    return QStringLiteral("%p|%c|%m%n");
+}
+
+// The tree as it stands on disk, which is the only place a persisted format can be read
+// back from — the window's in-memory copy would answer even for a write that never
+// reached the file.
+static LogSettingsTree storedTree()
+{
+    return LogSettingsStore(LogSettingsStore::defaultDir()).load();
+}
+
+static void saveTree(const LogSettingsTree &tree)
+{
+    // BEFORE the window is constructed, always: MainWindow reads the tree once, in its
+    // constructor.
+    QVERIFY(LogSettingsStore(LogSettingsStore::defaultDir()).save(tree));
+}
+
+// --pattern NAMES A FORMAT AND IS NOT A PROMISE THAT IT FITS (SPEC.md §3, bugs.md 15).
+// It overrides whatever the tree resolved — that is the switch's whole job — and is then
+// checked against the log like any other level. It earns a per-log node by fitting; it
+// costs nothing at all when it does not, because the open stops at the dialog.
+//
+// This case is the fitting one, over defaults that cannot parse the log: no dialog, real
+// records, and the pattern written under the log's own key. Before the fix the tab and
+// the records were the same, so only the last assertion tells the two apart — and it was
+// also true before the fix, for the wrong reason (a supplied pattern was persisted
+// UNCHECKED, which is what let an unparseable one be saved).
+void TestOpenFlow::aSuppliedPatternThatFitsIsRememberedForTheLog()
+{
+    {
+        LogSettingsTree tree;
+        LogProfile root;
+        root.format.pattern = uselessPattern();
+        tree.setDefaults(root);
+        saveTree(tree);
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape); // fires only if a dialog appears, which it must not
+    // What main() does with the command line, one file at a time (MainWindow::openFiles).
+    w.openFile(m_weird, weirdPattern());
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTest::qWait(200);
+    QVERIFY2(!d.seen, "Preferences was shown for a supplied pattern that parses the log");
+
+    // Parsed, not opened as a wall of plain text: the subsystem column has this log's
+    // logger names in it, which only the supplied pattern can produce.
+    QTRY_VERIFY(documentOf(w)->index().loggers.names().contains(QStringLiteral("Vms::Http")));
+
+    const auto hit = storedTree().resolve(m_weird);
+    QVERIFY2(hit.fileIndex >= 0, "a pattern that fits left no per-log node");
+    QCOMPARE(hit.profile.format.pattern, weirdPattern());
+    w.close();
+}
+
+// The redundancy rule is not suspended for the command line: a node exists only while it
+// says something its address would not inherit anyway (LogSettingsTree::setFileProfile).
+// So the same pattern passed over defaults that already say it stores nothing, and a
+// scripted open cannot silt the tree up with one node per log it names.
+void TestOpenFlow::aSuppliedPatternEqualToWhatIsInheritedLeavesNoNode()
+{
+    {
+        LogSettingsTree tree;
+        LogProfile root;
+        root.format.pattern = weirdPattern();
+        tree.setDefaults(root);
+        saveTree(tree);
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape);
+    w.openFile(m_weird, weirdPattern());
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTest::qWait(200);
+    QVERIFY2(!d.seen, "Preferences was shown for a supplied pattern that parses the log");
+
+    const LogSettingsTree tree = storedTree();
+    QVERIFY2(tree.files().isEmpty(), "a supplied pattern the log already inherits was stored");
+    QCOMPARE(tree.defaults().format.pattern, weirdPattern());
+    w.close();
+}
+
+// The branch the bug was: a pattern that does not fit used to be applied silently AND
+// saved, so the log opened as a wall of unparsed plain text and every LATER launch —
+// with no switch at all — resolved to the pattern that had been written over the working
+// one. It now asks, and a dismissed dialog cancels the open and writes nothing: the
+// tree is byte-for-byte what it was, defaults included.
+void TestOpenFlow::aSuppliedPatternThatDoesNotFitAsksAndSavesNothingWhenDismissed()
+{
+    {
+        // Defaults that DO parse this log, so the only thing that can make it unreadable
+        // is the switch — and the only thing that can make the tree change is the switch
+        // being saved.
+        LogSettingsTree tree;
+        LogProfile root;
+        root.format.pattern = weirdPattern();
+        tree.setDefaults(root);
+        saveTree(tree);
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape);
+    QVERIFY2(!w.openFile(m_weird, uselessPattern()), "a pattern that fits nothing opened the log");
+    QVERIFY2(d.seen, "a supplied pattern that parses nothing was applied without asking");
+
+    // No tab: the dialog was the open, and dismissing it cancelled it.
+    QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 0);
+
+    const LogSettingsTree tree = storedTree();
+    QVERIFY2(tree.files().isEmpty(), "a dismissed --pattern was written under the log's key");
+    QCOMPARE(tree.defaults().format.pattern, weirdPattern());
+    w.close();
+}
+
+// Correcting it in the dialog is the other way out, and what is kept is what the dialog
+// finally said — never the switch that raised it. The dialog is Preferences, so the
+// correction could as easily have been made one level up; this case takes the offered
+// node, which is the log's own.
+void TestOpenFlow::correctingASuppliedPatternPersistsTheCorrectionAndNotTheSwitch()
+{
+    {
+        LogSettingsTree tree;
+        LogProfile root;
+        root.format.pattern = uselessPattern();
+        tree.setDefaults(root);
+        saveTree(tree);
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    d.timer.setInterval(10);
+    connect(&d.timer, &QTimer::timeout, [&d]() {
+        auto *dlg = qobject_cast<PreferencesDialog *>(QApplication::activeModalWidget());
+        if (!dlg)
+            return;
+        d.seen = true;
+        d.timer.stop();
+        auto *edit = dlg->findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
+        QVERIFY(edit);
+        edit->setText(weirdPattern());
+        dlg->accept();
+    });
+    d.timer.start();
+
+    // A pattern that compiles and fits nothing — the shape of a typo in a script.
+    const QString typo = QStringLiteral("%d %-5p %c - %m%n");
+    QVERIFY(w.openFile(m_weird, typo));
+    QVERIFY2(d.seen, "the Preferences dialog was never shown");
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTest::qWait(200);
+
+    QTRY_VERIFY(documentOf(w)->index().loggers.names().contains(QStringLiteral("Vms::Http")));
+
+    const auto hit = storedTree().resolve(m_weird);
+    QVERIFY(hit.fileIndex >= 0);
+    QCOMPARE(hit.profile.format.pattern, weirdPattern());
+    QVERIFY2(hit.profile.format.pattern != typo, "the switch was stored instead of the correction");
+    w.close();
+}
+
+// The destructive case, and the reason "not saved anywhere" is worth a case of its own: a
+// log that already HAS a remembered format. A single command line naming a pattern that
+// does not fit used to overwrite that entry — or, where the pattern happened to equal the
+// defaults, delete it outright under the redundancy rule — with no dialog and no message.
+// Nothing the user did not confirm may touch it.
+void TestOpenFlow::aDismissedSuppliedPatternLeavesAStoredEntryAlone()
+{
+    {
+        // Defaults that cannot parse m_good, and a per-log node that can: the node is
+        // therefore worth storing, and it is also the only reason the log is readable.
+        LogSettingsTree tree;
+        LogProfile root;
+        root.format.pattern = uselessPattern();
+        tree.setDefaults(root);
+        LogProfile mine;
+        mine.format.pattern = LogProfile::builtIn().format.pattern;
+        tree.insertFileProfile(m_good, mine);
+        saveTree(tree);
+    }
+    QCOMPARE(storedTree().files().size(), 1);
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape);
+    QVERIFY(!w.openFile(m_good, weirdPattern())); // fits m_weird, not this log
+    QVERIFY2(d.seen, "the overriding pattern was applied to a log it cannot parse");
+    QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 0);
+
+    const LogSettingsTree tree = storedTree();
+    QCOMPARE(tree.files().size(), 1);
+    QCOMPARE(tree.resolve(m_good).profile.format.pattern, LogProfile::builtIn().format.pattern);
+    w.close();
+}
+
+// `--pattern "$FMT"` with FMT unset reaches openFile() as an empty string, and an empty
+// string names no format: there is nothing to override with, so the tree answers exactly
+// as it does for a launch with no switch at all. Deliberately not an error — refusing the
+// launch would refuse an open that is perfectly well defined, and the failure it would
+// guard against is gone now that a supplied pattern is judged rather than believed.
+void TestOpenFlow::anEmptyPatternValueIsTheBareLaunch()
+{
+    {
+        LogSettingsTree tree;
+        LogProfile root;
+        root.format.pattern = uselessPattern();
+        tree.setDefaults(root);
+        LogProfile mine;
+        mine.format.pattern = LogProfile::builtIn().format.pattern;
+        tree.insertFileProfile(m_good, mine);
+        saveTree(tree);
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape);
+    QVERIFY(w.openFile(m_good, QString::fromLatin1("")));
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTest::qWait(200);
+    QVERIFY2(!d.seen, "an empty --pattern value asked about a log its own entry parses");
+
+    QCOMPARE(w.findChild<LogView *>(QStringLiteral("logView"))->recordCount(), 2);
+    QTRY_VERIFY(documentOf(w)->index().loggers.names().contains(QStringLiteral("net.io")));
+    QCOMPARE(storedTree().resolve(m_good).profile.format.pattern,
+             LogProfile::builtIn().format.pattern);
     w.close();
 }
 

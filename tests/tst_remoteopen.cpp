@@ -17,6 +17,9 @@
 #include <QTabWidget>
 #include <QTimer>
 
+#include "Document.h"
+#include "DocumentContext.h"
+#include "DocumentView.h"
 #include "FakeFetcher.h"
 #include "HostBookmarkStore.h"
 #include "PreferencesDialog.h"
@@ -497,13 +500,26 @@ void TestRemoteOpen::anInteractiveRemoteOpenStillGetsTheFormatDialog()
 void TestRemoteOpen::aBackgroundResumeRaisesNoFormatDialog()
 {
     // The other side of the same rule, and the one §6.5 has always insisted on: a log
-    // arriving on a watch tick raises nothing, because the tab may not even be on screen
-    // and the user is doing something else. Here the open passed a pattern, so no prompt
-    // was ever owed — which is exactly the session-restore case.
+    // arriving on a watch tick raises nothing when its tab is NOT the one on screen,
+    // because the user is reading something else and a modal dialog over it is an
+    // interruption about a file they are not looking at.
+    //
+    // What makes the tab a background one is the second log below, and nothing else.
+    // This case used to arrange it by passing a --pattern, back when a supplied pattern
+    // silently switched the prompt off — which is the very thing bugs.md 15 was about:
+    // a pattern is judged against the log now, so a pattern that does not fit owes a
+    // dialog exactly as a resolved node does, and only the tab being in the background
+    // withholds it.
     FakeRemoteFarm farm;
     auto remote = farm.at(bgUrl());
     remote->setInitialContent(QByteArrayLiteral("<12>Jul 21 00:00:01 host app: first\n"));
     remote->setConnectDelayed();
+
+    // The log that takes the window while the one above is still connecting. It parses,
+    // so it asks nothing of its own.
+    const QString front = QStringLiteral("ssh://deploy@bg2/var/log/app.log");
+    auto other = farm.at(front);
+    other->setInitialContent(sampleLog());
 
     // Stack-scoped for the reason given in the case above: it captures `shown`, and an
     // assertion that fails returns from here without running any teardown.
@@ -522,18 +538,25 @@ void TestRemoteOpen::aBackgroundResumeRaisesNoFormatDialog()
     MainWindow window;
     window.show();
     window.openFile(bgUrl(), QString::fromLatin1(kPattern));
+    window.openFile(front, QString::fromLatin1(kPattern)); // this tab is now the active one
+    QCOMPARE(tabCount(window), 2);
     remote->becomeAvailable();
 
-    // Wait for the resume to have happened, then check nothing was raised on the way.
-    auto *view = window.findChild<LogView *>(QStringLiteral("logView"));
-    QVERIFY(view);
-    QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() > 0, 5000);
+    // Wait for the background resume to have happened, then check nothing was raised on
+    // the way. Its own view, taken by tab index — it was opened first, and its address
+    // is not the string passed in: openFile() normalizes a remote URL (the port is
+    // filled in), so a lookup by path here would compare against the wrong spelling.
+    auto *dv = qobject_cast<DocumentView *>(tabs(window)->widget(0));
+    QVERIFY(dv);
+    QVERIFY(dv != tabs(window)->currentWidget());
+    QTRY_VERIFY_WITH_TIMEOUT(dv->logView()->recordCount() > 0, 5000);
     settle(300);
     watcher.stop();
 
     QVERIFY(!shown);
-    // It says where to fix it instead, which is the whole of §6.5's alternative.
-    QVERIFY(statusText(window).contains(QStringLiteral("format not recognised")));
+    // It says where to fix it instead, which is the whole of §6.5's alternative — on the
+    // context that owns the log, since the status bar is describing the other tab.
+    QVERIFY(dv->context()->formatNotice.contains(QStringLiteral("format not recognised")));
 }
 
 void TestRemoteOpen::aChangedReasonReachesTheViewTheTabAndTheStatusBar()

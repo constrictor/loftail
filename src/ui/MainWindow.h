@@ -60,8 +60,11 @@ public:
     // Open `path`. Its settings come from the most specific level of the settings tree
     // that names it — its own entry, the first file pattern that matches, or the
     // defaults (SPEC.md §4) — unless `pattern` overrides the conversion pattern.
-    // Preferences is offered when what resolved cannot parse the file. Safe to call
-    // repeatedly; it adds a tab.
+    // Preferences is offered when what resolved cannot parse the file, INCLUDING when
+    // what resolved is `pattern`: an overriding pattern wins over every level but is
+    // still judged against the log, and is remembered for it only if it fits or the
+    // user corrects it in the dialog (SPEC.md §3). Safe to call repeatedly; it adds a
+    // tab.
     // `rawPath` is a local path or an ssh:// URL in any accepted spelling; it is
     // normalized before it becomes a Document path (RemoteLocation.h).
     // Returns false when the open was REFUSED and reported — a malformed address, a
@@ -323,16 +326,19 @@ private:
     // down at 32 pt with no answer at all reads as a broken shortcut.
     void announceLogFontSize();
 
-    // Open `path` under `settings`. When `promptIfNoMatch` and the pattern matches
-    // no sample record, Preferences is offered first (SPEC.md §4). Builds
-    // the model/view, starts indexing, and persists the format on a good result.
+    // Open `path` under `settings`. When the pattern matches no sample record,
+    // Preferences is offered first (SPEC.md §4) — there is deliberately no way in for a
+    // caller that would rather not ask, because the one that used to have it (a command
+    // line carrying --pattern) is exactly how an unparseable pattern got saved over a
+    // working one. Builds the model/view, starts indexing, and persists the format on a
+    // good result.
     // Returns false when the open did not happen — a source that cannot be opened,
     // or a format dialog the user cancelled. On false the previously open document
-    // (if any) is left untouched.
+    // (if any) is left untouched, and NOTHING is written to the settings tree.
     // `runRestore` carries a persisted run selection (session restore only); it is
     // re-resolved once indexing finishes. A normal open passes nullopt and defaults
     // to the newest run (§3a).
-    bool openWithSettings(const QString &path, FormatSettings settings, bool promptIfNoMatch,
+    bool openWithSettings(const QString &path, FormatSettings settings,
                           std::optional<RunRestore> runRestore = std::nullopt);
     // Build the model and the indexing controller for `ctx`. No views, no scan.
     void buildContext(DocumentContext *ctx);
