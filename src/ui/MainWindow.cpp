@@ -1325,13 +1325,15 @@ bool MainWindow::openFiles(const QStringList &rawPaths, const QString &pattern)
     // reason would be left on screen, with the earlier files silently missing from the
     // tab bar and nothing anywhere saying they had been asked for.
     beginOpenBatch();
-    QStringList refused;
+    bool allOpened = true;
     for (const QString &raw : rawPaths) {
+        // Each refusal has already named itself through reportOpenRefusal(); all that
+        // is left to answer here is whether there were any.
         if (!openFile(raw, pattern))
-            refused.append(logSourceDisplayName(normalizeLogPath(raw)));
+            allOpened = false;
     }
     endOpenBatch();
-    return refused.isEmpty();
+    return allOpened;
 }
 
 bool MainWindow::openFile(const QString &rawPath, const QString &pattern)

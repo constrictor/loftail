@@ -37,6 +37,7 @@ private slots:
 
     void anEnormousDirectoryIsElidedInTheMiddleAndTheLogsOwnNameIsKeptWhole();
     void addressesThatNoSegmentCanSeparateKeepTheirSharedName();
+    void addressesWithNoFileNamePartStillSeparateOnTheirDirectories();
 };
 
 // One row per case: the addresses as they would be open, and the label each should
@@ -242,4 +243,33 @@ void TestTabLabels::addressesThatNoSegmentCanSeparateKeepTheirSharedName()
 }
 
 QTEST_MAIN(TestTabLabels)
+// An address with no file-name part — a directory, a share that is not mounted — gets
+// its deepest segment as a name rather than "" (RemoteLocation.h). Grouping is what
+// makes that choice load-bearing here: with the empty name, `/srv/a/logs/` and
+// `/srv/b/logs/` shared one base and grew prefixes onto NOTHING, so the tabs read
+// "a/" and "b/". With the raw address as the name they would not group at all and each
+// tab would carry a whole path. The segment is what makes them behave like any other
+// pair of same-named logs — and every base stays free of separators, which is the
+// property the prefix arithmetic above rests on.
+void TestTabLabels::addressesWithNoFileNamePartStillSeparateOnTheirDirectories()
+{
+    run({QStringLiteral("/srv/a/logs/"), QStringLiteral("/srv/b/logs/")},
+        {QStringLiteral("a/logs"), QStringLiteral("b/logs")});
+
+    // A directory beside an ordinary log and a remote one: nothing collides, so each
+    // keeps its own plain name and no label is a path.
+    const QStringList mixed = {QStringLiteral("/var/log/"), QStringLiteral("/srv/log/"),
+                               QStringLiteral("ssh://h/var/log/app.log")};
+    const QStringList labels = tabLabelsFor(mixed);
+    QCOMPARE(labels, QStringList({QStringLiteral("var/log"), QStringLiteral("srv/log"),
+                                  QStringLiteral("app.log (h)")}));
+
+    // The degenerate addresses too: a label is never empty, whatever it was made from.
+    for (const QString &odd : {QStringLiteral("/"), QString(), QStringLiteral("ssh://")}) {
+        const QStringList one = tabLabelsFor({odd});
+        QCOMPARE(one.size(), 1);
+        QVERIFY2(!one.first().isEmpty(), qPrintable(odd));
+    }
+}
+
 #include "tst_tablabels.moc"

@@ -59,8 +59,13 @@ std::unique_ptr<LogSource> openRemote(const QString &path, OpenPolicy policy, QS
 {
     const auto location = RemoteLocation::parse(path);
     if (!location) {
-        if (error)
-            *error = Tr::tr("Not a valid remote log address: %1").arg(path);
+        // withoutPassword(), because this is the one error that quotes an address that
+        // did NOT parse: parse() is where a URL password is dropped, so an address it
+        // refused still has one and it would be echoed into the refusal strip verbatim.
+        if (error) {
+            *error = Tr::tr("Not a valid remote log address: %1")
+                         .arg(RemoteLocation::withoutPassword(path));
+        }
         return nullptr;
     }
     // The registry keys on the normalized address string, not on the parsed value: it

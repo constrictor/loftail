@@ -30,6 +30,9 @@ private slots:
     void neverEmitsAPasswordFromTheUrl();
     void targetGroupsFilesOnOneHost();
     void displayHelpersFallBackToLocalBehavior();
+    void everyAddressGetsANonEmptyNameAndNoNameIsAPath();
+    void everyAddressGetsANonEmptyNameAndNoNameIsAPath_data();
+    void anAddressThatDoesNotParseStillLosesItsPassword();
     void availabilityIsOptimisticForRemote();
     void settingsKeyIsWorkingDirectoryIndependent();
     void theSettingsTreeRoundTripsARemotePath();
@@ -191,6 +194,83 @@ void TestRemoteLocation::displayHelpersFallBackToLocalBehavior()
              QStringLiteral("app.log (web1)"));
     QCOMPARE(logSourceDisplayPath(QStringLiteral("ssh://deploy@web1/var/log/app.log")),
              QStringLiteral("ssh://deploy@web1:22/var/log/app.log"));
+}
+
+// An address with no file-name part still has to be CALLED something. It used to be
+// called "" — QFileInfo("/var/log/").fileName() — and every consumer showed the gap
+// instead of the log: "Cannot open : …" in the refusal strip with nothing before the
+// colon, a waiting tab wearing its marker and nothing else, "loftail — " in the title
+// bar, a blank clickable row in the recent-files menu.
+//
+// The second half of the claim is the one that is easy to undo: the fallback is a
+// SEGMENT, never the raw address. tabLabelsFor() groups on this string and builds a
+// label as parent directories plus it, which only stays unambiguous while the name is
+// the tail of its own label — and a menu is as wide as its widest item.
+void TestRemoteLocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath_data()
+{
+    QTest::addColumn<QString>("address");
+    QTest::addColumn<QString>("expected");
+
+    QTest::newRow("ordinary local") << "/var/log/app.log" << "app.log";
+    // The deepest thing in the address that could be a name: the directory itself.
+    QTest::newRow("local directory") << "/var/log/" << "log";
+    QTest::newRow("relative directory") << "logs/" << "logs";
+    // Nothing left but the scheme, which at least says ssh from sftp.
+    QTest::newRow("scheme only") << "ssh://" << "ssh";
+    QTest::newRow("sftp scheme only") << "sftp://" << "sftp";
+    QTest::newRow("scheme and slash") << "ssh:///" << "ssh";
+    // A host but no path — RemoteLocation::isValid() wants both, so this does not parse.
+    QTest::newRow("host but no path") << "ssh://web1" << "web1";
+    QTest::newRow("user and host, no path") << "ssh://deploy@web1" << "deploy@web1";
+    // Nothing in the address that could be a name at all.
+    QTest::newRow("root") << "/" << "(unnamed)";
+    QTest::newRow("empty") << "" << "(unnamed)";
+}
+
+void TestRemoteLocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath()
+{
+    QFETCH(QString, address);
+    QFETCH(QString, expected);
+
+    const QString name = logSourceDisplayName(address);
+    QCOMPARE(name, expected);
+    QVERIFY(!name.isEmpty());
+    QVERIFY(!name.contains(u'/'));
+}
+
+// The password rule was written for addresses that PARSE — parse() is where a URL
+// password is dropped on the floor — and an address that does not parse never goes
+// through it. `ssh://u:pw@h` has no path and `ssh://u:pw@` has no host, so both were
+// shown back verbatim: once as the refusal's name half and once inside its reason.
+void TestRemoteLocation::anAddressThatDoesNotParseStillLosesItsPassword()
+{
+    const QStringList unparseable = {
+        QStringLiteral("ssh://deploy:hunter2@web1.example.com"), // no path
+        QStringLiteral("ssh://deploy:hunter2@"),                 // no host either
+        QStringLiteral("sftp://deploy:hunter2@web1"),
+    };
+    for (const QString &address : unparseable) {
+        QVERIFY(!RemoteLocation::parse(address).has_value()); // the precondition
+        QVERIFY2(!RemoteLocation::withoutPassword(address).contains(QStringLiteral("hunter2")),
+                 qPrintable(address));
+        QVERIFY2(!logSourceDisplayName(address).contains(QStringLiteral("hunter2")),
+                 qPrintable(address));
+        QVERIFY2(!logSourceDisplayPath(address).contains(QStringLiteral("hunter2")),
+                 qPrintable(address));
+        // The user is kept: it is what says WHICH login was refused, and it is not a
+        // secret. Only the password goes.
+        QVERIFY2(RemoteLocation::withoutPassword(address).contains(QStringLiteral("deploy")),
+                 qPrintable(address));
+    }
+
+    // And a string with nothing to take out comes back byte-identical, so nothing that
+    // merely passes through this is rewritten.
+    for (const QString &plain : {QStringLiteral("/var/log/app.log"),
+                                 QStringLiteral("ssh://web1/var/log/app.log"),
+                                 QStringLiteral("ssh://deploy@web1/var/log/app.log"),
+                                 QStringLiteral("ssh://")}) {
+        QCOMPARE(RemoteLocation::withoutPassword(plain), plain);
+    }
 }
 
 void TestRemoteLocation::availabilityIsOptimisticForRemote()
