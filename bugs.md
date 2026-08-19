@@ -25,40 +25,21 @@ were settled against an empty file and could never be settled again — which to
 two further defects with it: an empty log could not be opened at all without
 accepting a format nobody had been shown anything to judge, and a background or
 restored tab was told silently that its format was not recognised.
+Entry 8 has gone as well: the Priority column opened too narrow to say "Priority"
+on the style the user runs, because the caption was measured against the raw
+header section rather than against the rect the style puts a label in. Three more
+defects went with it — Fit to Contents opened any column whose values were shorter
+than its caption truncated for the same reason; the per-role allowance was one
+glyph's integer advance multiplied out, so at four zoom levels the Time column
+opened narrower than the timestamp it was seeded for; and a zoom that made the
+line space smaller re-attached follow on a view the reader had detached and threw
+them to the end of the log.
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 8. The Priority column opens too narrow to say "Priority" — the exact failure SPEC says was fixed
-
-`LogView::seedWidthOf()` (`LogView.cpp:2046`) adds a flat `kColumnPadding` of
-10 px to the caption width, but a header section spends `PM_HeaderMargin` on each
-side — 12 px on Breeze, the reference desktop's style. So the header renders
-`Priori…` on a clean config at 1600×1000. Fit to Contents does not fix it
-(73 → 72 px); no zoom level fixes it. The header tooltip correctly says
-"Priority", so the column knowingly reports its own truncation.
-
-`SPEC.md` §5 says "a *Priority* column too narrow to fit the word *Priority*
-cannot say what it is", and the comment above `seedWidthOf` says "The caption
-always fits: a column headed 'Priorit' is the very thing this replaces". It does
-not show on Fusion (4 px of margin), which is why it survived — the bug is
-style-dependent and shows on the style the user runs.
-
-A smaller relative of the same thing: the per-role allowance is
-`seedColumnChars(role) * charWidth()`, and `charWidth()` is a rounded-down single
-glyph advance multiplied out, so the gutter partly vanishes into accumulated
-rounding. Measured across zoom levels, the Time column's gutter is 14 px at 6 pt,
-**1 px at 7 pt**, 19 px at 8 pt, 5 px at 9 pt — at 7 pt the timestamp visibly
-touches the thread name (`09:00:00,137scheduler`).
-
-Fix: measure the caption against the rect the style puts it in.
-`truncatedHeaderText()` (`:1695`) already does exactly this and carries the
-comment explaining why — take its `QStyleOptionHeader` / `SE_HeaderLabel` inset
-and add it to the caption term of `seedWidthOf()` and `contentWidthOf()`. For the
-rounding, measure a representative string rather than multiplying one glyph.
 
 ### 9. Moving a column while Line Wrap is Always On leaves every row measured against the old width
 

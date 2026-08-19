@@ -481,6 +481,14 @@ private:
     // every column to its floor.
     int charWidth() const;
     int textWidth(const QString &text) const;
+    // A run of `chars` characters of the fixed-pitch font, measured as ONE string. Not
+    // `chars * charWidth()`: an int advance is rounded to the pixel, and a column's
+    // worth of that rounding is what left the Time column narrower than the timestamp
+    // it was seeded for.
+    int charsWidth(int chars) const;
+    // What the STYLE spends on a section before its caption starts, so a caption is
+    // measured against the rect it is actually painted in (see truncatedHeaderText).
+    int headerLabelInset(int logical) const;
     int seedWidthOf(int logical) const;    // a typical value + the caption
     int contentWidthOf(int logical) const; // the widest value, bounded
     // The widest interned logger/thread name, optionally clamped to `maxChars` — the

@@ -939,6 +939,17 @@ void LogView::applyFontChange()
     // The exact path's one cached height: measured in PIXELS and divided by the line
     // height, so both halves of it have just moved.
     m_selWrapCache = -1;
+    // Everything below narrows or widens the scroll range, and Qt CLAMPS the old value
+    // into a range that shrank. A clamp that lands at the bottom reaches
+    // updateFollowFromScrollPosition() as an ordinary scroll, so a view the reader had
+    // detached starts following again and the zoom throws them to the end of the log —
+    // the trap endFilterUpdate() records for the filter bracket, on the one other path
+    // that replaces the line space without replacing the records. A flag and not a
+    // QSignalBlocker, for the reason that bracket gives: blocking the scrollbar
+    // suppresses rangeChanged, whose connection to QAbstractScrollArea's own
+    // show/hide handling is queued.
+    const bool wasFollowScroll = m_inFollowScroll;
+    m_inFollowScroll = true;
     // Columns nobody has spoken for are re-seeded in the new font's characters, so they
     // grow and shrink with the text in them; a width that was dragged, fitted or
     // restored is left exactly where it was put, because a zoom is a statement about
@@ -960,22 +971,20 @@ void LogView::applyFontChange()
     // the line height, and both ends of that just changed.
     refreshDigestCap();
 
+    // m_following is what it was before any of the above, because the guard is what
+    // stopped the clamp from rewriting it.
     if (m_following) {
+        m_inFollowScroll = wasFollowScroll;
         scrollToEnd(); // following the tail outranks the anchor (SPEC.md §3)
         return;
     }
     if (topRecord >= 0 && topRecord < recordCount()) {
-        // A flag rather than a QSignalBlocker on the scrollbar: blocking it suppresses
-        // rangeChanged, whose connection to QAbstractScrollArea's own scrollbar
-        // show/hide handling is queued.
-        const bool wasFollowScroll = m_inFollowScroll;
-        m_inFollowScroll = true;
         const qint64 height = qMax(1, mapRecordHeightLines(topRecord));
         const qint64 target = mapLineOfRecord(topRecord) + qMin(intoRecord, height - 1);
         verticalScrollBar()->setValue(
             int(qBound<qint64>(0, target, qint64(verticalScrollBar()->maximum()))));
-        m_inFollowScroll = wasFollowScroll;
     }
+    m_inFollowScroll = wasFollowScroll;
 }
 
 void LogView::scrollContentsBy(int dx, int dy)
@@ -2032,6 +2041,41 @@ int LogView::textWidth(const QString &text) const
     return w > 0 ? w : int(text.size()) * charWidth();
 }
 
+int LogView::charsWidth(int chars) const
+{
+    if (chars <= 0)
+        return 0;
+    // Measured as one run rather than as one glyph's advance multiplied out. A
+    // QFontMetrics advance is an INTEGER, so `chars * charWidth()` accumulates the
+    // per-glyph rounding: at some sizes that came to a whole character, and the Time
+    // column opened a pixel narrower than the very timestamp its allowance names — the
+    // column eliding the value it was seeded for. textWidth() keeps the empty-font-
+    // database fallback, which lands on exactly the old arithmetic.
+    return textWidth(QString(chars, QLatin1Char('0')));
+}
+
+int LogView::headerLabelInset(int logical) const
+{
+    // The width a section spends on its own margin before the caption starts —
+    // PM_HeaderMargin either side, 12 px on Breeze against 4 on Fusion. Asked of the
+    // style exactly as truncatedHeaderText() asks it, because the two have to agree:
+    // one decides whether a caption fits, the other decides how wide to open the column
+    // so that it does. Measured against a SYNTHETIC rect of known width rather than the
+    // live section, so it is right at construction time, before the header has been
+    // laid out and while every section is still its default width.
+    constexpr int kProbeWidth = 1000; // wider than any inset a style could ask for
+    constexpr int kProbeHeight = 32;
+    QStyleOptionHeader opt;
+    opt.initFrom(m_header);
+    opt.orientation = Qt::Horizontal;
+    opt.section = logical;
+    opt.rect = QRect(0, 0, kProbeWidth, kProbeHeight);
+    const QRect label = m_header->style()->subElementRect(QStyle::SE_HeaderLabel, &opt, m_header);
+    // Bounded both ways: a style that answers nonsense may not collapse a column or
+    // open one half a window wide.
+    return qBound(0, kProbeWidth - label.width(), kProbeWidth / 2);
+}
+
 void LogView::markUserSized(int logical)
 {
     if (logical < 0)
@@ -2118,9 +2162,13 @@ int LogView::seedWidthOf(int logical) const
     const FieldRole role = fields.at(logical).role;
 
     // The caption always fits: a column headed "Priorit" is the very thing this replaces.
+    // The style's inset is added to the CAPTION term and to nothing else — a cell is
+    // painted at the raw section rect, so a value owes the header's margin nothing and
+    // widening every column by it would be a gutter nobody asked for.
     int w = qMax(textWidth(m_model->headerData(logical, Qt::Horizontal, Qt::DisplayRole)
-                               .toString()),
-                 seedColumnChars(role) * charWidth());
+                               .toString())
+                     + headerLabelInset(logical),
+                 charsWidth(seedColumnChars(role)));
     // Whatever the scan has interned so far, clamped — the constructor sees an empty
     // table and answers 0, which is why the per-role allowance above is a floor and not
     // an alternative.
@@ -2135,8 +2183,12 @@ int LogView::contentWidthOf(int logical) const
         return kMinColumnWidth;
     const FieldRole role = fields.at(logical).role;
 
-    int w = textWidth(
-        m_model->headerData(logical, Qt::Horizontal, Qt::DisplayRole).toString());
+    // Same rule as the seed, and needed here for the same reason: a fit over a column
+    // whose values are all shorter than its caption — an Elapsed, a Location, a thread
+    // name over a log of short ones — would otherwise open truncated on a style with a
+    // wide header margin, having just been asked to show everything.
+    int w = textWidth(m_model->headerData(logical, Qt::Horizontal, Qt::DisplayRole).toString())
+        + headerLabelInset(logical);
     switch (role) {
     case FieldRole::Logger:
     case FieldRole::Thread:
