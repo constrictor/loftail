@@ -419,8 +419,14 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent, Rol
     // resize to contents here; with no view behind the header, nothing did.
     connect(m_header, &QHeaderView::sectionHandleDoubleClicked, this,
             [this](int logical) { fitColumnToContents(logical); });
+    // Moving a column across the message column moves that column's ORIGIN, which is
+    // exactly what the wrapped height is measured against (§7.1.1) — so a move is a
+    // width change to everything downstream of it and has to re-measure exactly as a
+    // resize does. It is emphatically NOT a no-op outside AlwaysOn: in
+    // SelectedRecordOnly this is what re-measures m_selWrapCache at the new origin.
+    // Not markUserSized(), though: moving a column is not sizing it.
     connect(m_header, &QHeaderView::sectionMoved, this, [this](int, int, int) {
-        viewport()->update();
+        recomputeGeometry();
         emit columnLayoutChanged();
     });
     connect(m_model, &QAbstractItemModel::rowsInserted, this, &LogView::handleRowsInserted);
@@ -992,6 +998,13 @@ void LogView::scrollContentsBy(int dx, int dy)
     if (dx != 0) {
         m_header->setOffset(horizontalScrollBar()->value());
         emit horizontalOffsetChanged(horizontalScrollBar()->value());
+        // A horizontal scroll moves the message column's origin left, so the space the
+        // message wraps within — its origin to the viewport's right edge — grows with
+        // it, exactly as a resize or a column move changes it. The measurements are
+        // width-keyed, so they are stale from here and something has to say so; in
+        // AlwaysOn this restarts the debounce rather than remeasuring, which is what a
+        // dragged scrollbar wants (one remeasure when it settles, not one per pixel).
+        recomputeGeometry();
     }
     if (dy != 0)
         updateFollowFromScrollPosition(); // a vertical move may detach/re-attach follow

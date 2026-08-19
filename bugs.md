@@ -34,31 +34,17 @@ glyph's integer advance multiplied out, so at four zoom levels the Time column
 opened narrower than the timestamp it was seeded for; and a zoom that made the
 line space smaller re-attached follow on a view the reader had detached and threw
 them to the end of the log.
+Entry 9 has gone too: moving a column across the message column left every row
+measured against the width the message had before the drop — a blank band under
+every record one way, the tail of every message clipped away the other. Its fix
+took an unreported sibling with it, since a horizontal scroll slides the same
+origin and said no more about it than the move did.
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 9. Moving a column while Line Wrap is Always On leaves every row measured against the old width
-
-`LogView.cpp:385`, the `QHeaderView::sectionMoved` connection, does only
-`viewport()->update(); emit columnLayoutChanged();`. But `viewportCols()` is
-derived from `sectionViewportPosition(msgCol)`, so moving any column across the
-message column changes the wrap width exactly as a resize does — and
-`sectionResized` knows it, calling `recomputeGeometry()`, which restarts the
-debounce and reaches `m_estimated.setColumns(viewportCols())`.
-
-Observed: with Always On, drag the Message header to first position. Every record
-is drawn with a large blank gap under its text — payload records painted in four
-lines occupying about ten lines of row. Resizing the window by 20 px and back
-corrects every row instantly. A move in the other direction leaves rows too
-short, which is entry 4's clipping made worse.
-
-Fix: have the `sectionMoved` lambda call `recomputeGeometry()` as `sectionResized`
-does. It already routes to the debounce in estimating mode and is a no-op
-elsewhere.
 
 ### 10. The Find bar's buttons slide under the pointer when the status text changes
 
@@ -247,6 +233,43 @@ Fix: take the advance from `QFontMetricsF` — or `horizontalAdvance()` of a sam
 character — and floor the division, rather than trusting the integer
 `averageCharWidth()`. `updateScrollBars()` also uses it, for the horizontal
 scrollbar's single step, where being a fraction of a character out costs nothing.
+
+---
+
+### 18. Under Always On the message column is drawn over any column moved after it
+
+`LogView.cpp:1157` wraps the message cell within `availW = qMax(10, vw - x)` —
+its own origin to the **right edge of the viewport**, whatever its section width
+— and paints the columns in visual order, so the message is drawn first and the
+fields after it are drawn on top of it with no fill of their own. (Line numbers
+in this entry are as of the commit that fixed entry 9.) The selected record's
+cell under *Selected record only* is the same expression at `:1209`, so the mode
+does not save it either. That is exactly
+right while the message column is last, which is where the format puts it and
+where `SPEC.md` §5's "every record wraps to the viewport width" is written from.
+It is not right once the column has been dragged: the header is movable
+(`LogView.cpp:380`), and with the message column moved off the end every
+following field's cell sits inside the message's wrap area and the two texts are
+drawn one over the other on the record's first line — two strings of glyphs in
+the same colour on the same pixels, unreadable, for as long as the columns stay
+in that order.
+
+Measured while fixing entry 9: with the message column dragged to visual 0 in a
+880×400 view, its wrap width is the whole 864 px of the viewport and the Time,
+Thread, Priority and Subsystem cells occupy 0–440 px of it. The lines below the
+first are message text alone, so the damage is confined to the record's first
+line — which is the one carrying every field the reader moved the column to see.
+
+Not entry 9, which is now fixed: the rows are the right height and every
+character is drawn. What is wrong is where. Two shapes of fix are open and the
+choice is a product decision rather than a mechanical one: wrap the message
+within its own section when it is not the last visual column (which makes the
+wrap width a per-layout question rather than "to the right edge", and would want
+`SPEC.md` §5 rewording), or wrap it to the right edge only while it is last and
+otherwise treat a move as the reader asking for the narrow column. Note that the
+height model does not care either way — `viewportCols()` and the paint already
+derive the same width from the same origin, so both stay in step as long as they
+keep deriving it from one expression.
 
 ---
 

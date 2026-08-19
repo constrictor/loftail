@@ -282,6 +282,11 @@ private slots:
     void aTabbedRecordBreaksWhereItAlwaysDidWhenFindIsArmed();
     void theSelectedRecordBreaksWhereItAlwaysDidWhenFindIsArmed();
 
+    // --- the wrap width is remeasured wherever the message origin moves (bugs.md 9) ---
+    void aMovedColumnRemeasuresEveryRowUnderAlwaysOn();
+    void aMovedColumnRemeasuresTheSelectedRecord();
+    void aHorizontalScrollRemeasuresEveryRowUnderAlwaysOn();
+
     // --- Zoom (SPEC.md §5, ARCHITECTURE.md §7.1.5) ------------------------------
     void theLogTextSizeStopsAtBothBoundsAndComesBackOnReset();
     void aBiggerFontFitsFewerRecordsInTheSameViewport();
@@ -3456,6 +3461,261 @@ void TestLogView::theSelectedRecordBreaksWhereItAlwaysDidWhenFindIsArmed()
     QCOMPARE(after, before);
     QVERIFY2(after.last() < band.right() - 8,
              "the record's last row is mid-text: arming Find dropped the end of it");
+}
+
+// --- the wrap width follows the message column's origin (bugs.md 9) ----------
+//
+// Under Line Wrap ▸ Always On a record is given ceil(chars / cols) rows, and `cols` is
+// measured from the message column's ORIGIN to the right edge of the viewport (§7.1.1).
+// Three gestures move that origin and only one of them used to say so. A column resize
+// remeasured; a column MOVE across the message column did not, and neither did a
+// horizontal scroll, which slides the origin left by exactly the value of the bar. Both
+// left every row on screen measured against a width it no longer has — a blank band
+// under every record where the wrap area grew, and the tail of every message clipped
+// away where it shrank, since the paint clips the cell to the rows it was given.
+//
+// Only the pixels can tell. Every widget holds the right value throughout, the model is
+// untouched, and each record is drawn from its own text either way: what is wrong is the
+// number of rows it was drawn into. So all three cases render the viewport and read the
+// ink back, and all three need a resolved font — with an empty font database (Windows
+// offscreen, which ships none) there is no advance to wrap at.
+
+namespace {
+
+// The pixels between the last inked row of `band` and its bottom edge: the blank strip a
+// record wears when it was measured against a narrower message column than it is drawn
+// in. A whole line of it is a row the record did not need.
+int blankTail(const QImage &img, const QRect &band, const QColor &fill)
+{
+    const QVector<std::pair<int, int>> ink = inkRuns(img, band, fill);
+    if (ink.isEmpty())
+        return band.height();
+    return band.bottom() - (ink.last().first + ink.last().second - 1);
+}
+
+// Wait out the 120 ms remeasure debounce (§7.1.1) — the same delay a drag-resize pays,
+// and the reason a corrected height lands just after the gesture rather than during it.
+// On the column count rather than on the clock, so a loaded runner cannot decide the
+// case; a view that never remeasures at all arrives at the assertions with its old
+// count, which is exactly what they are about.
+void settleWrapWidth(const EstimatedGeometry &g, int wasCols)
+{
+    QElapsedTimer waited;
+    waited.start();
+    while (g.columns() == wasCols && waited.elapsed() < 2000)
+        QTest::qWait(20);
+}
+
+// Send a hidden view its pending resize: QWidget::resize() on something never shown
+// leaves the event queued, and the viewport keeps the size it was born at until somebody
+// renders it. Everything below measures a column width against the viewport, so it has
+// to be the real one.
+void settleLayout(LogView &view)
+{
+    (void)renderViewport(view);
+}
+
+// Let a remeasure that is already in flight land before the gesture under test. The
+// debounce is 120 ms and everything in the setup goes through it — the wrap mode, each
+// column resize, and a hidden view's own deferred layout — so a case that did not wait
+// here could read the setup's remeasure as the gesture's answer.
+void settleRemeasure()
+{
+    QTest::qWait(200);
+}
+
+// The band record 0 is drawn into: it sits at the top of the view, so its rows start at
+// y 0, and in AlwaysOn its message is drawn from the column's origin to the right edge
+// whatever the section's own width.
+QRect topRecordBand(LogView &view, int messageColumn, int lines)
+{
+    const int x = qMax(0, view.header()->sectionViewportPosition(messageColumn));
+    return QRect(x, 0, view.viewport()->width() - x, lines * view.lineHeight());
+}
+
+} // namespace
+
+// Dragging a column past the message column, both ways. The rows have to be remeasured
+// on the drop — one blank row per record where the message gained width, and a record
+// cut off mid-text where it lost it.
+void TestLogView::aMovedColumnRemeasuresEveryRowUnderAlwaysOn()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; there is no advance to wrap at");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 60), qPrintable(doc.lastError())); // ~200-char messages
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(880, 400);
+    // The first render is what sends a hidden widget its pending resize, so the viewport
+    // reaches its final width HERE. Measure a column against it before that and every
+    // width below is computed against the default 640 the widget was born at.
+    settleLayout(view);
+
+    const int msg = view.header()->count() - 1; // the message is the last field
+    aimWrapWidth(view, 200, 7);                 // and a narrow column, so it wraps deep
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    settleRemeasure();
+    view.measureBlockOfRecord(0);
+
+    const EstimatedGeometry &g = view.estimatedGeometry();
+    const int lh = view.lineHeight();
+    const QColor fill = view.palette().base().color(); // record 0 is an even row
+    const int narrowCols = g.columns();
+    const int narrowLines = g.recordHeightLines(0);
+    QVERIFY2(narrowLines >= 4, "the message must wrap to several rows for a gap to show");
+
+    const QImage baseline = renderViewport(view);
+    const QRect narrowBand = topRecordBand(view, msg, narrowLines);
+    QVERIFY2(blankTail(baseline, narrowBand, fill) < lh,
+             "the record is already drawn into more rows than its text fills");
+
+    // Drag the message column to the front. Everything that was before it is now after
+    // it, so it wraps within the whole viewport and needs a fraction of the rows. (What
+    // it is drawn OVER while it sits there is `bugs.md` 18 and is a separate question;
+    // what is asked here is only how many rows it was given.)
+    view.header()->moveSection(view.header()->visualIndex(msg), 0);
+    settleWrapWidth(g, narrowCols);
+    view.measureBlockOfRecord(0);
+    const int wideCols = g.columns();
+    const int wideLines = g.recordHeightLines(0);
+
+    // The symptom, in pixels: whatever rows the record was given, its text has to reach
+    // the bottom of them.
+    const QRect wideBand = topRecordBand(view, msg, wideLines);
+    QVERIFY2(blankTail(renderViewport(view), wideBand, fill) < lh,
+             "every record is drawn into rows measured against the old, narrower column");
+    QVERIFY2(wideCols > narrowCols, "the move left the estimator on the old wrap width");
+    QVERIFY(wideLines < narrowLines);
+
+    // ...and back, which is the other symptom: rows measured at the wide origin are too
+    // few for the narrow one, and what does not fit is clipped away in silence.
+    view.header()->moveSection(0, view.header()->count() - 1);
+    settleWrapWidth(g, wideCols);
+    QCOMPARE(g.columns(), narrowCols);
+    view.measureBlockOfRecord(0);
+    QCOMPARE(g.recordHeightLines(0), narrowLines);
+
+    const QImage back = renderViewport(view);
+    const QVector<int> ends = lineEnds(back, narrowBand, lh, narrowLines, fill);
+    for (int i = 0; i < narrowLines; ++i)
+        QVERIFY2(ends.at(i) >= 0, "a row of the record was left blank or was never drawn");
+    QVERIFY2(ends.last() < narrowBand.right() - 8,
+             "the record's last row is mid-text: its tail was clipped away");
+    // The move was a round trip, so the view is back where it started, pixel for pixel.
+    QCOMPARE(back, baseline);
+}
+
+// The same drop under Line Wrap ▸ Selected record only, where there is no debounce and
+// no estimator: what has to be remeasured is the one record's wrapped height, which is
+// what its band is filled to. This is why the fix is not scoped to AlwaysOn.
+void TestLogView::aMovedColumnRemeasuresTheSelectedRecord()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; there is no advance to wrap at");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(880, 400);
+    // The first render is what sends a hidden widget its pending resize, so the viewport
+    // reaches its final width HERE. Measure a column against it before that and every
+    // width below is computed against the default 640 the widget was born at.
+    settleLayout(view);
+
+    const int msg = view.header()->count() - 1;
+    aimWrapWidth(view, 200, 7);
+    view.setWrapMode(LogView::WrapMode::SelectedRecordOnly);
+    view.setCurrentRecord(0);
+    settleRemeasure();
+
+    const int lh = view.lineHeight();
+    const QColor fill = view.palette().highlight().color(); // the selected record's band
+    const int narrow = view.selWrapLines();
+    QVERIFY2(narrow >= 4, "the message must wrap to several rows for a gap to show");
+    QVERIFY2(blankTail(renderViewport(view), topRecordBand(view, msg, narrow), fill) < lh,
+             "the record is already drawn into more rows than its text fills");
+
+    view.header()->moveSection(view.header()->visualIndex(msg), 0);
+    const int wide = view.selWrapLines();
+    QVERIFY2(blankTail(renderViewport(view), topRecordBand(view, msg, wide), fill) < lh,
+             "the selected record is banded to a height its text no longer takes");
+    QVERIFY2(wide < narrow, "the selected record kept the height it had at the old origin");
+}
+
+// Scrolling sideways, which the message column being seeded wider than the viewport makes
+// the ordinary case. The bar's value is subtracted from every section's position, so the
+// message column's origin slides left and the space it wraps within grows by exactly as
+// much — with nothing to remeasure it, every record on screen keeps the height it had at
+// the left edge and wears the difference as a blank band.
+void TestLogView::aHorizontalScrollRemeasuresEveryRowUnderAlwaysOn()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; there is no advance to wrap at");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(880, 400);
+    // The first render is what sends a hidden widget its pending resize, so the viewport
+    // reaches its final width HERE. Measure a column against it before that and every
+    // width below is computed against the default 640 the widget was born at.
+    settleLayout(view);
+
+    const int msg = view.header()->count() - 1;
+    aimWrapWidth(view, 200, 8);
+    // Wide enough that the header runs past the right edge: without a horizontal
+    // scrollbar there is nothing to drag.
+    view.header()->resizeSection(msg, view.viewport()->width());
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    QScrollBar *hb = view.horizontalScrollBar();
+    QVERIFY2(hb->maximum() > 0, "the header has to be wider than the viewport");
+    settleRemeasure();
+    view.measureBlockOfRecord(0);
+
+    const EstimatedGeometry &g = view.estimatedGeometry();
+    const int lh = view.lineHeight();
+    const QColor fill = view.palette().base().color();
+    const int narrowCols = g.columns();
+    const int narrowLines = g.recordHeightLines(0);
+    QVERIFY2(narrowLines >= 4, "the message must wrap to several rows for a gap to show");
+
+    const QImage baseline = renderViewport(view);
+    QVERIFY2(blankTail(baseline, topRecordBand(view, msg, narrowLines), fill) < lh,
+             "the record is already drawn into more rows than its text fills");
+
+    // Right, to within 40 px of the message column's own origin.
+    const int msgX = view.header()->sectionViewportPosition(msg);
+    hb->setValue(qMin(hb->maximum(), msgX - 40));
+    QVERIFY(view.header()->sectionViewportPosition(msg) < msgX);
+    settleWrapWidth(g, narrowCols);
+    view.measureBlockOfRecord(0);
+    const int wideCols = g.columns();
+    const int wideLines = g.recordHeightLines(0);
+    QVERIFY2(blankTail(renderViewport(view), topRecordBand(view, msg, wideLines), fill) < lh,
+             "every record keeps the height it was given at the left edge of the log");
+    QVERIFY2(wideCols > narrowCols, "the scroll left the estimator on the old wrap width");
+    QVERIFY(wideLines < narrowLines);
+
+    // ...and scrolling back is a round trip, exactly as the resize it behaves like is.
+    hb->setValue(0);
+    settleWrapWidth(g, wideCols);
+    QCOMPARE(g.columns(), narrowCols);
+    view.measureBlockOfRecord(0);
+    QCOMPARE(g.recordHeightLines(0), narrowLines);
+    QCOMPARE(renderViewport(view), baseline);
 }
 
 #include "tst_logview.moc"
