@@ -524,7 +524,7 @@ int LogView::measureWrappedLines(const QString &text, int width) const
     // character wrap — so the height and the text disagreed by a line wherever a word had
     // to move down one.
     const int lines =
-        layoutWrappedText(text, font(), qMax(10, width), /*wordWrap=*/true,
+        layoutWrappedText(text, font(), qMax(minWrapWidth(), width), /*wordWrap=*/true,
                           RecordIndex::kDisplayLineCap, lineHeight(),
                           [](QTextLayout &, const QVector<QTextLine> &, int) {});
     return qMin<int>(RecordIndex::kDisplayLineCap, qMax(1, lines));
@@ -594,16 +594,31 @@ int LogView::mapRecordHeightLines(int r) const
 // Estimated-mode support (AlwaysOn only)
 // ---------------------------------------------------------------------------
 
+int LogView::charAdvance() const { return qMax(1, fontMetrics().averageCharWidth()); }
+
+int LogView::minWrapWidth() const { return kMinWrapCols * charAdvance(); }
+
+int LogView::messageWrapWidth() const
+{
+    // The ONE expression every wrap width comes from (§7.1.1): the message column's
+    // origin to the right edge of the viewport, floored at kMinWrapCols characters.
+    //
+    // The floor is what stops one record filling the screen (bugs.md 11). The columns
+    // before the message are seeded from the intern tables when the scan finishes, and
+    // on a narrow window their sum can reach or pass the viewport's right edge — which
+    // left the wrap width at a single pixel, every record measuring the 100-line
+    // display cap, and a 1400 px record against a 466 px viewport. The floor is in
+    // characters and not pixels because log text zooms (Fonts.h).
+    const int msgCol = messageColumn();
+    const int x = msgCol >= 0 ? m_header->sectionViewportPosition(msgCol) : 0;
+    return qMax(minWrapWidth(), viewport()->width() - x);
+}
+
 int LogView::viewportCols() const
 {
     // Characters that fit across the wrapped message column. Fixed-pitch font, so
-    // this is a divide, not a shaping pass (§7.1.1). The message wraps within the
-    // width from its column origin to the viewport's right edge.
-    const int msgCol = messageColumn();
-    const int x = msgCol >= 0 ? m_header->sectionViewportPosition(msgCol) : 0;
-    const int avail = qMax(1, viewport()->width() - x);
-    const int cw = qMax(1, fontMetrics().averageCharWidth());
-    return qMax(1, avail / cw);
+    // this is a divide, not a shaping pass (§7.1.1).
+    return qMax(kMinWrapCols, messageWrapWidth() / charAdvance());
 }
 
 void LogView::ensureEstimatorBound()
@@ -744,9 +759,12 @@ void LogView::recomputeGeometry()
     if (sel >= 0) {
         const int msgCol = messageColumn();
         if (msgCol >= 0) {
-            const int msgX = m_header->sectionViewportPosition(msgCol);
-            const int avail = qMax(50, viewport()->width() - msgX);
-            m_selWrapCache = measureWrappedLines(m_model->cellText(sel, msgCol), avail);
+            // The same width the paint lays the cell out in, from the same expression.
+            // These used to floor independently — 50 px here against 10 px there — so
+            // below ~28 px of available width the paint wrapped narrower than the
+            // measure, needed more lines than the rows it had been given, and dropped
+            // the tail of the selected record with no ellipsis and no tooltip.
+            m_selWrapCache = measureWrappedLines(m_model->cellText(sel, msgCol), messageWrapWidth());
         } else {
             m_selWrapCache = RecordIndex::displayLines(geom().records.at(sel));
         }
@@ -761,7 +779,11 @@ void LogView::updateScrollBars()
 {
     const qint64 total = mapTotalLines(); // exact or estimated, per the mode
     const int page = visibleLines();
-    verticalScrollBar()->setRange(0, int(qMax<qint64>(0, total - page)));
+    // Clamped into int, not cast: a record measures at most kDisplayLineCap display
+    // lines, so a log of 21 million records overflows and QAbstractSlider reads the
+    // negative range as no range at all — the log could not be scrolled.
+    verticalScrollBar()->setRange(
+        0, int(qBound<qint64>(0, total - page, qint64(std::numeric_limits<int>::max()))));
     verticalScrollBar()->setPageStep(page);
     verticalScrollBar()->setSingleStep(1);
 
@@ -1135,6 +1157,9 @@ void LogView::paintEvent(QPaintEvent *event)
         const int msgCol = messageColumn();
         const int vh = viewport()->height();
         const int vw = viewport()->width();
+        // Constant for the whole paint, and the number the heights below were measured
+        // in: read once rather than per record on the paint path.
+        const int msgW = messageWrapWidth();
 
         while (r < n && y < vh) {
             const int hLines = qMax(1, m_estimated.recordHeightLines(r));
@@ -1154,7 +1179,8 @@ void LogView::paintEvent(QPaintEvent *event)
                 const int x = m_header->sectionViewportPosition(logical);
                 const int w = m_header->sectionSize(logical);
                 if (logical == msgCol) {
-                    const int availW = qMax(10, vw - x);
+                    // The width the height was measured in, from the one expression.
+                    const int availW = msgW;
                     // Character wrapping (WrapAnywhere) so the painted height
                     // matches the ceil(chars/cols) measurement model exactly.
                     drawWrappedCell(p, QRect(x, y, availW, rowH), m_model->cellText(r, logical),
@@ -1183,6 +1209,7 @@ void LogView::paintEvent(QPaintEvent *event)
     const int msgCol = messageColumn();
     const int vh = viewport()->height();
     const int vw = viewport()->width();
+    const int msgW = messageWrapWidth(); // what selWrapLines() measured in
 
     while (r < n && y < vh) {
         const int hLines = recordHeightLines(r);
@@ -1206,7 +1233,7 @@ void LogView::paintEvent(QPaintEvent *event)
             if (logical == msgCol) {
                 const QString msg = m_model->cellText(r, logical);
                 if (wrapThis) {
-                    const int availW = qMax(10, vw - x);
+                    const int availW = msgW;
                     drawWrappedCell(p, QRect(x, y, availW, rowH), msg, lh,
                                     /*wordWrap=*/true, mark);
                 } else {

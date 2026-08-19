@@ -39,6 +39,17 @@ measured against the width the message had before the drop — a blank band unde
 every record one way, the tail of every message clipped away the other. Its fix
 took an unreported sibling with it, since a horizontal scroll slides the same
 origin and said no more about it than the move did.
+Entry 11 has gone as well: with the message column's origin at or past the right edge
+of the viewport — which the scan-completion column seed puts it at on an ordinary narrow
+window — the wrap width was floored at one pixel, so every record wrapped at one
+character per line, measured the 100-line display cap and filled the whole screen by
+itself. The wrap width is now one expression with a floor of twenty characters, and the
+fix took two unreported defects with it: the exact path measured the selected record at a
+50 px floor while the paint laid it out at a 10 px one, so below about 28 px of available
+width the record was cut off mid-word with no ellipsis and no tooltip; and the vertical
+scroll range was cast into `int` from a `qint64` total that the display cap brings within
+range of a large log, where a negative range is one `QAbstractSlider` collapses to zero.
+
 Entry 10 has gone as well: the Find bar's status label shared one stretchable row
 with the query box, which was that row's only elastic item, so every pixel the
 wording grew by was taken from the box and every control after it — ▲, ▼, Regex,
@@ -55,22 +66,6 @@ given, so they can still be referred to by number.
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 11. One record fills the whole viewport when the Message column is narrow and wrap is on
-
-With Line Wrap ▸ Always On and the document area about 640 px wide (a 1100 px
-window with the side pane docked), the table draws exactly one record per screen
-— one row's colour filling the entire viewport, at both ends of the file.
-Widening the window so the Message column fits restores normal rendering
-immediately, on both a freshly opened view and one whose wrap mode came from the
-settings tree.
-
-A message column at or near zero width appears to give the estimated line count
-no bound. `SPEC.md` §5 says every record wraps to the viewport width; it does not
-contemplate a record taller than the viewport for want of one.
-
-Fix: clamp the wrap width used for the estimated line count to a sensible
-minimum, and check the same clamp on the exact path's `measureWrappedLines()`.
 
 ### 12. A marked wrapped cell redraws the whole record layout once per match
 
@@ -266,7 +261,51 @@ wrap width a per-layout question rather than "to the right edge", and would want
 otherwise treat a move as the reader asking for the narrow column. Note that the
 height model does not care either way — `viewportCols()` and the paint already
 derive the same width from the same origin, so both stay in step as long as they
-keep deriving it from one expression.
+keep deriving it from one expression. (That expression now exists and is
+`LogView::messageWrapWidth()`, entry 11's fix.)
+
+---
+
+### 19. The column seed never consults the viewport width, so a view can collapse when indexing finishes
+
+`LogView::seedColumnWidths()` sizes each column from the font and the data —
+`seedWidthOf()` takes the wider of the header caption and a per-role allowance in
+characters, and for Subsystem and Thread that allowance is the widest interned
+name up to `kSeedNameMaxChars` (40). Nothing in it asks how wide the view is. At
+the shipped 9 pt that is up to about 850 px of Time, Thread, Priority and
+Subsystem before the Message column starts — more than the whole document area of
+a 1100 px window with a pane docked.
+
+The timing is what makes it a defect rather than a preference.
+`MainWindow::onIndexFinished` (`MainWindow.cpp:2100`) re-seeds Subsystem and
+Thread once the intern tables are complete, which is the only moment those two
+columns are measured exactly. So a view that rendered perfectly well while it was
+indexing — narrow columns, the message column with most of the width — jumps to
+the seeded widths when the scan completes and pushes the message column's origin
+to or past the right edge of the viewport, on any window narrower than that sum.
+The reader sees the table re-lay itself out and the messages go away at the moment
+the log finishes loading.
+
+Entry 11's fix does not touch this. It clamps the wrap *width* at a floor of
+twenty characters, so the records keep sane heights and a screen still holds
+several of them; the underlying condition — the columns before Message do not fit,
+so the message is drawn from an origin at or past the right edge and is reached
+only by scrolling sideways — is exactly as it was, and so is the collapse-on-scan-
+completion timing.
+
+Two shapes of fix, and the choice is a product decision. Bound each seeded column
+to a share of the viewport, so no column may be seeded past what is on screen —
+cheap, and it leaves a dragged width alone since `m_userSizedColumns` already
+guards those. Or bound the seed by what is left: seed in role order and stop
+widening once the message column would be pushed below a usable width. Either way
+the seed must go on being the two-callers-only pass it is (`CLAUDE.md`: constructor
+and `onIndexFinished`, never the ingest path), and neither may overwrite a width
+the user set.
+
+It interacts with entry 18. If the answer there is that the message cell wraps
+within its own section rather than to the viewport's right edge, then a message
+column pushed off the edge is a column with no visible cell at all rather than one
+whose text is off to the right — so the two want deciding together.
 
 ---
 

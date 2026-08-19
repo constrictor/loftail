@@ -261,6 +261,20 @@ public:
     // out at, not what QFontMetrics::height() rounds to.
     int lineHeight() const;
 
+    // The width a wrapped message is laid out in, in pixels: the message column's
+    // origin to the right edge of the viewport, floored at kMinWrapCols characters
+    // (ARCHITECTURE.md §7.1.1). ONE expression, used by the estimated column count,
+    // by the exact path's selected-record measurement and by both paint sites — the
+    // measure and the paint must derive the width identically or a record is given
+    // rows the text does not fill, or fewer than it needs and is silently clipped.
+    //
+    // The floor is in CHARACTERS because log text zooms across 27 point sizes: a
+    // pixel constant would be 28 columns at 7 pt and 6 at 30 pt. Without it a message
+    // column pushed to the viewport's right edge wraps at one character per line,
+    // every record measures the 100-line display cap, and one record fills the screen.
+    static constexpr int kMinWrapCols = 20;
+    int messageWrapWidth() const;
+
     // --- Pure geometry mapping (public for unit tests; no widget state) ---------
     // These express the exact-mode line<->record mapping with the selected record's
     // measured wrapped height folded in. `selRecord` is -1 when nothing wraps;
@@ -388,6 +402,9 @@ private:
     // AlwaysOn support: characters that fit across the message column, block
     // measurement from decoded text, and keeping the visible blocks measured.
     int viewportCols() const;
+    // One character's advance, and the pixel floor kMinWrapCols of them come to.
+    int charAdvance() const;
+    int minWrapWidth() const;
     void ensureEstimatorBound();
     void measureBlock(int block);
     void measureVisibleBlocks();
