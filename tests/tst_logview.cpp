@@ -1500,11 +1500,15 @@ int visibleMessageWidth(const LogView &view, int message)
     return view.viewport()->width() - view.header()->sectionViewportPosition(message);
 }
 
-// A view laid out at `width`, so that seedColumnWidths() has a viewport to bound itself
-// by. The resize event is what tells the view it has a real geometry.
+// A view laid out so that its VIEWPORT is `width` px wide, which is the width
+// seedColumnWidths() bounds itself by. Asked for in viewport terms rather than widget
+// ones because the frame around it is not a fixed number of pixels: PM_DefaultFrameWidth
+// is 1 under Fusion and 0 under Breeze, so a case that resizes the WIDGET to a measured
+// width and then relies on the frame to make the viewport narrower than it tests nothing
+// under half the styles. The resize event is what tells the view it has a real geometry.
 void layOutAt(LogView &view, int width)
 {
-    view.resize(width, 300);
+    view.resize(width + 2 * view.frameWidth(), 300);
     view.show();
     QCoreApplication::processEvents();
 }
@@ -1828,7 +1832,7 @@ void TestLogView::theSeedKeepsTheMessageColumnOnScreenWhereTheNamesAreLong()
     QVERIFY(message >= 0);
 
     LogView view(&doc, &model);
-    layOutAt(view, unbounded);
+    layOutAt(view, unbounded - 1); // a viewport one pixel short of what the seed asks for
     QVERIFY2(view.viewport()->width() < unbounded,
              "the viewport is not narrower than the widths the seed asks for; nothing "
              "is being tested");
@@ -1940,7 +1944,7 @@ void TestLogView::resetWidthsRescuesALayoutRestoredWithTheMessageOffScreen()
     const QByteArray collapsed = saved.saveColumnState();
 
     LogView view(&doc, &model);
-    layOutAt(view, unbounded);
+    layOutAt(view, unbounded - 1);
     QVERIFY(view.restoreColumnState(collapsed));
     QVERIFY2(visibleMessageWidth(view, message) <= 0,
              "the restored layout was expected to leave the message column off screen");
