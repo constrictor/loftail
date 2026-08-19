@@ -132,6 +132,7 @@ private slots:
     void savingOverwritesTheBookmarkOfTheSameName();
     void anInteractiveRemoteOpenStillGetsTheFormatDialog();
     void aBackgroundResumeRaisesNoFormatDialog();
+    void aChangedReasonReachesTheViewTheTabAndTheStatusBar();
 };
 
 void TestRemoteOpen::opensARemoteUrlAsATab()
@@ -533,6 +534,52 @@ void TestRemoteOpen::aBackgroundResumeRaisesNoFormatDialog()
     QVERIFY(!shown);
     // It says where to fix it instead, which is the whole of §6.5's alternative.
     QVERIFY(statusText(window).contains(QStringLiteral("format not recognised")));
+}
+
+void TestRemoteOpen::aChangedReasonReachesTheViewTheTabAndTheStatusBar()
+{
+    // THREE SURFACES, and only one of them used to follow. A spooled log opens on
+    // "connecting…" because the worker has not answered yet (M17), and the answer
+    // arrives on a later poll tick. The status bar tracked it; the view placeholder and
+    // the tab tooltip were written once, on the waiting transition, and stayed there
+    // for the life of the tab — so a refused archive member said "connecting…" in the
+    // middle of an empty table with no network anywhere.
+    const QString address = QStringLiteral("ssh://deploy@refuse1/var/log/app.log");
+    FakeRemoteFarm farm;
+    auto remote = farm.at(address);
+    remote->setInitialContent(sampleLog());
+    remote->setConnectDelayed();
+
+    MainWindow window;
+    window.openFile(address, QString::fromLatin1(kPattern));
+    settle(200);
+
+    QCOMPARE(tabCount(window), 1);
+    auto *view = window.findChild<LogView *>(QStringLiteral("logView"));
+    QVERIFY(view);
+    QVERIFY(view->placeholderText().contains(QStringLiteral("connecting")));
+
+    const QString refusal =
+        QStringLiteral("The archive holds no member named var/log/nosuch.log.");
+    remote->refuseWhileWaiting(refusal);
+
+    // The 750 ms poll tick is what notices; nothing else is driving this.
+    QTRY_VERIFY_WITH_TIMEOUT(view->placeholderText().contains(QStringLiteral("no member")),
+                             5000);
+    QVERIFY(tabs(window)->tabToolTip(0).contains(QStringLiteral("no member")));
+    QVERIFY(statusText(window).contains(QStringLiteral("no member")));
+
+    // And the second symptom, which is the half users read first: updateStatus() only
+    // joins the reason to the source status when they differ, so a reason that tracks
+    // the status collapses "connecting…  |  The archive holds no member…" back to one
+    // sentence.
+    QVERIFY(!statusText(window).contains(QStringLiteral("connecting")));
+    QVERIFY(!statusText(window).contains(QStringLiteral("  |  ")));
+    QCOMPARE(statusText(window), refusal);
+
+    // Still a waiting tab, not a failed one: the ◦ is there and the record count is 0.
+    QVERIFY(tabs(window)->tabText(0).startsWith(QString::fromUtf8("◦ ")));
+    QCOMPARE(view->recordCount(), 0);
 }
 
 int main(int argc, char *argv[])

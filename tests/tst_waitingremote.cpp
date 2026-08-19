@@ -1,6 +1,7 @@
 #include <QtTest>
 
 #include <QByteArray>
+#include <QTemporaryDir>
 
 #include "Document.h"
 #include "FakeFetcher.h"
@@ -73,6 +74,10 @@ private slots:
     void aConnectingSpoolWaitsUntilItsFirstBytes();
     void aRefusedConnectWaitsAndSaysWhy();
     void anEmptyRemoteLogIsNotAWait();
+
+    // The reason is REPUBLISHED, not merely announced (§6.5).
+    void aReasonThatChangesWhileWaitingIsRepublished();
+    void aLocalWaitKeepsTheReasonItWasGiven();
 };
 
 void TestWaitingRemote::unreachableHostOpensWaitingAndFillsInWhenItReturns()
@@ -285,6 +290,129 @@ void TestWaitingRemote::anEmptyRemoteLogIsNotAWait()
     remote->append(rec(1, "INFO ", "boot", "first line at last"));
     live.checkNow();
     QCOMPARE(model.rowCount(), 1);
+}
+
+void TestWaitingRemote::aReasonThatChangesWhileWaitingIsRepublished()
+{
+    // THE DEFECT THIS PINS. Since M17 a spooled log enters the wait on "connecting…" —
+    // the worker has not answered yet — and the answer arrives on a later tick. The
+    // waiting transition was the only thing that ever announced a reason, so the view
+    // and the tab tooltip froze on "connecting…" for the life of the tab while the
+    // status bar alone showed the refusal. Nothing was connecting, and for an archived
+    // log there was no network anywhere.
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(rec(1, "INFO ", "boot", "one"));
+    remote->setConnectDelayed();
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.prepare(url(), provider, Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(doc.isWaiting());
+    const QString connecting = doc.waitReason();
+    QVERIFY(connecting.contains(QStringLiteral("connecting")));
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    int resumes = 0;
+    wireResume(live, doc, model, &resumes);
+
+    QStringList announced;
+    bool everLeftWaiting = false;
+    connect(&live, &LiveController::waitingChanged, &live, [&](bool w, const QString &r) {
+        if (!w)
+            everLeftWaiting = true;
+        announced << r;
+    });
+    // A model reset per reason change would drop every view's anchor and selection
+    // while nothing about the visible set had moved, which is why this does NOT go
+    // through beginWaiting(). The count is the whole of that claim.
+    int resets = 0;
+    connect(&model, &QAbstractItemModel::modelAboutToBeReset, &model, [&] { ++resets; });
+
+    live.start();
+    live.checkNow();
+    // Nothing has changed yet, so nothing is said: the guard is a string compare
+    // against what is on screen, not a re-emit every 750 ms.
+    QVERIFY(announced.isEmpty());
+    QCOMPARE(doc.waitReason(), connecting);
+
+    const QString refusal =
+        QStringLiteral("The archive holds no member named var/log/nosuch.log.");
+    remote->refuseWhileWaiting(refusal);
+    live.checkNow();
+
+    QCOMPARE(announced.size(), 1);
+    QCOMPARE(announced.last(), refusal);
+    QCOMPARE(doc.waitReason(), refusal);
+    QVERIFY(!everLeftWaiting); // republished, not a transition
+    QVERIFY(doc.isWaiting());
+    QVERIFY(doc.lastError().isEmpty()); // still a state, not a failure
+    QCOMPARE(resets, 0);
+
+    // Idempotent: the same reason, tick after tick, says nothing further.
+    live.checkNow();
+    live.checkNow();
+    QCOMPARE(announced.size(), 1);
+    QCOMPARE(resets, 0);
+
+    // And a SECOND change is announced too — a real fetcher works down a ladder of
+    // ways to reach a log and restates itself at each rung.
+    const QString later = QStringLiteral("Cannot reach web1:22 — Connection refused");
+    remote->restateWait(later);
+    live.checkNow();
+
+    QCOMPARE(announced.size(), 2);
+    QCOMPARE(doc.waitReason(), later);
+    QCOMPARE(resets, 0);
+    QCOMPARE(resumes, 0);
+
+    // Leaving the wait still reports empty, exactly as before: the placeholder has to
+    // be taken away when the log turns up.
+    remote->becomeAvailable();
+    live.checkNow();
+    QCOMPARE(resumes, 1);
+    QVERIFY(!doc.isWaiting());
+    QVERIFY(everLeftWaiting);
+    QVERIFY(announced.last().isEmpty());
+}
+
+void TestWaitingRemote::aLocalWaitKeepsTheReasonItWasGiven()
+{
+    // TRAP 1, and it is why the republish is conditional. sourceStatusText() is empty
+    // for a local source ALWAYS — there is no fetcher to have an opinion — and the
+    // receiver writes whatever arrives straight into the view's placeholder. An
+    // unconditional re-emit would therefore blank "app.log has not appeared yet —
+    // waiting for it" on the very first tick, on every locally-waiting document there
+    // is. Local rather than remote and still in this file, because the rule being
+    // pinned is the republish's, not the local wait's.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.path() + QStringLiteral("/never-written.log");
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.prepare(path, provider, Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(doc.isWaiting());
+    const QString reason = doc.waitReason();
+    QVERIFY(!reason.isEmpty());
+    QVERIFY(!doc.source()); // the asymmetry: a local wait holds nothing
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    QStringList announced;
+    connect(&live, &LiveController::waitingChanged, &live,
+            [&](bool, const QString &r) { announced << r; });
+
+    live.start();
+    live.checkNow();
+    live.checkNow();
+    live.checkNow();
+
+    QVERIFY(announced.isEmpty());
+    QCOMPARE(doc.waitReason(), reason);
 }
 
 QTEST_GUILESS_MAIN(TestWaitingRemote)

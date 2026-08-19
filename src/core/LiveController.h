@@ -138,6 +138,14 @@ signals:
     // user-facing sentence while waiting, and empty when leaving it. Watching does NOT
     // stop — waiting is precisely the state in which the watch is the only thing
     // making progress.
+    //
+    // ALSO EMITTED WHILE ALREADY WAITING, with `waiting` still true, whenever the
+    // reason CHANGES — a spooled log opens on "connecting…" and the worker answers
+    // afterwards, so the reason is republished and not merely announced (§6.5). The
+    // receiver may therefore see true twice running and must treat this as "here is
+    // the current sentence", never as a transition. It is never emitted with an EMPTY
+    // reason while waiting: a local wait has no source to ask and would otherwise blank
+    // the placeholder it was given at the transition.
     void waitingChanged(bool waiting, const QString &reason);
 
     // The log a waiting document is waiting for is BACK, and the document is ready to
@@ -180,6 +188,10 @@ private:
     // the dialog settled on is a different one; the caller must then touch nothing.
     bool settleFirstBytes();
     void beginWaiting(const QString &reason);
+    // A document that is ALREADY waiting, whose reason has changed under it. Re-emits
+    // waitingChanged(true, …) so the view placeholder and the tab tooltip follow the
+    // status line rather than freezing on whatever was true at the transition (§6.5).
+    void republishWaitReason();
 
     Document    *m_document;
     LogModel    *m_model;

@@ -69,6 +69,20 @@ public:
         m_openMessage = message;
     }
 
+    // A refusal that lands AFTER start() has already returned — the ordinary shape
+    // since M17, where connecting happens on the worker and the document is already
+    // waiting on "connecting…" by the time the far end answers. Nothing has been
+    // committed, so the document stays waiting; only the REASON changes, which is the
+    // one thing a fake that refuses synchronously (setConnectRefusal) cannot express.
+    //
+    // Mechanically identical to failWith(); it is a separate name because the state it
+    // is called from is what the assertions are about.
+    void refuseWhileWaiting(const QString &message) { failWith(message); }
+
+    // The same one step milder: still waiting, but for a different stated reason —
+    // what SshFetcher does as it works down its ladder of ways to reach a log.
+    void restateWait(const QString &message) { becomeUnavailable(message); }
+
     // The wait ended: the host came back, or the log was finally written. Publishes
     // the initial content as generation 1 and goes Live, which is what start() would
     // have done had it succeeded.

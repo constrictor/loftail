@@ -70,33 +70,21 @@ elided path placed its marks by summing per-character advances, which is the log
 width of a prefix and not the visual position of a shaped run, so a match in Arabic or
 Hebrew text was marked over the wrong glyphs — 48 px of a 77 px run in the case measured.
 
+Entry 13 has gone as well: a waiting tab's explanation of itself was written once,
+on the transition into waiting, and nothing revised it — so a spooled log, which
+since M17 begins waiting on "connecting…" before the far end has answered, kept
+saying that in the view and in its tab tooltip for the life of the tab while only
+the status bar ever showed the refusal that actually came back. The reason is now
+republished whenever it changes, and the fix took a second, unreported symptom
+with it: the status line read "connecting…  |  The archive holds no member named
+…", because it joins the stale reason to the live status whenever the two differ.
+
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 13. A refused archive member says "connecting…" in the view for ever
-
-`MainWindow.cpp:2201` writes the view's placeholder on a waiting *transition*
-only, while `LiveController::checkWhileWaiting()` (`LiveController.cpp:264`)
-refreshes the status bar every tick and never touches it.
-
-Observed: `loftail bundle.tar.gz/var/log/nosuch.log`. The tab opens waiting, and
-45 seconds later the view still reads **connecting…** in the middle of the empty
-table while the status bar reads "The archive holds no member named
-var/log/nosuch.log." Nothing is connecting, and in this case there is no network
-at all.
-
-`SPEC.md` §3 says "the view says what it is waiting for, and the status bar says
-why". The same staleness applies to any spooled log whose reason changes while it
-waits.
-
-Fix: have `checkWhileWaiting()` re-emit the waiting reason when it differs from
-the last published one, and update `Document::m_waitReason` so a new view and the
-tab tooltip agree. Guard against re-emitting every tick by comparing against the
-last text, as `publishSourceStatus` already does.
 
 ### 14. A refusal whose address has no file-name part is reported as "Cannot open : …"
 
@@ -290,6 +278,60 @@ It interacts with entry 18. If the answer there is that the message cell wraps
 within its own section rather than to the viewport's right edge, then a message
 column pushed off the edge is a column with no visible cell at all rather than one
 whose text is off to the right — so the two want deciding together.
+
+---
+
+### 20. An archived log opened while its container is missing waits for ever, and never comes back when the container appears
+
+Line numbers in this entry are as of the commit that fixed the waiting-reason
+staleness described in the preamble; `Document.cpp` moved by about eleven lines
+between confirming this and recording it.
+
+`Document::resume()` opens with `OpenPolicy::Reuse` (`Document.cpp:274-300`), and
+`openSpooled()` refuses to *create* a spool under `Reuse`
+(`src/core/LogSourceFactory.cpp:41-48`) — it will only re-attach to one the registry
+already holds. That is right for the case it was written for, a remote document whose
+spool is already live and is what did the waiting. It is wrong for an archived log
+whose container is not there yet, because that document never got a spool in the first
+place.
+
+When a local container does not exist at open time, `ArchiveFetcher::start()` fails
+outright (`ArchiveFetcher.cpp:197-205`), so `openLogSource()` returns null and
+`prepare()` falls into the source-less waiting branch (`Document.cpp:143-147`) —
+reached rather than refused because `logSourceAvailable()` for an archive address asks
+only about the container (`RemoteLocation.cpp:189-197`). From that point the spool
+registry is permanently empty for that key, so every `resume()` on every tick fails,
+for ever, and nothing in the loop can populate it.
+
+Reproduced at core level. Open `bundle.tar.gz/var/log/app.log` before the file exists,
+create the container **with** the member in it, then poll:
+
+```
+prepare -> true waiting: true reason: "app.log (bundle.tar.gz) has not appeared yet…" source: 0x0
+--- creating the container now ---
+  resumeRequested -> resume() returned false        (x6 ticks, records: 0)
+  ...
+  resumeRequested -> resume() returned true         <-- only after a SECOND Document
+fresh document on the same address -> true waiting: false records: 2
+```
+
+The last two lines are the proof: the waiting document recovered only once an
+unrelated `Document` opened the same address `Interactive`ly and thereby populated the
+registry. Also reproduced through the real `MainWindow` — the tab still reads "has not
+appeared yet" 9 s after the container was created, with 16 poll ticks in between.
+
+This breaks `SPEC.md:92` ("The moment the log appears it is read and followed") and
+`SPEC.md:98` explicitly: a session restored with an archived log on a share that is not
+mounted yet gets a tab that can never recover, which is the exact case that promise
+names.
+
+It is not remote-specific, and the reason is worth stating: `logSourceAvailable()` is
+optimistic for `ssh://`, so a remote address fails the open outright instead of
+reaching this state. Local containers are what hit it.
+
+Note that this is a different mechanism from the staleness recorded in the preamble
+above (the former entry 13), which was about the *sentence* a waiting tab shows. This
+one is about a wait that cannot end.
 
 ---
 

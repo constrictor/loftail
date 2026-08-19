@@ -92,7 +92,10 @@ bool SpooledLogSource::notReadyYet() const
         // A refusal — a rejected password, a changed host key, a container that would
         // not open. The tab stays and says why (SPEC.md §3): the fetcher's own words
         // reach the placeholder and the status bar through sourceStatusText(), and
-        // File ▸ Reconnect is how the user tries again.
+        // File ▸ Reconnect is how the user tries again. The refusal usually lands
+        // AFTER the wait began — the open enters it on "connecting…" — so the words
+        // get there by LiveController::republishWaitReason() on a later tick rather
+        // than by the transition that announced the wait (§6.5).
         return true;
     case FetchStatus::State::Live:
         // An EMPTY remote log, which is a real thing and not a wait: it exists, it has
