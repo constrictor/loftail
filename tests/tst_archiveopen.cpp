@@ -2,6 +2,8 @@
 
 #include <QApplication>
 #include <QDialogButtonBox>
+#include <QFile>
+#include <QFileInfo>
 #include <QLabel>
 #include <QSettings>
 #include <QTabWidget>
@@ -57,6 +59,18 @@ private:
         return label ? label->text() : QString();
     }
 
+    // Put a container at `p` in ONE step. Written in place it would be opened
+    // half-written by the fetcher's own 100 ms retry, which is a race and not the
+    // subject of anything here.
+    bool placeTarGz(const QString &p, const QVector<Member> &members)
+    {
+        const QString staging = m_dir.path() + QStringLiteral("/staging.bin");
+        QFile::remove(staging);
+        if (!writeTarGz(staging, members))
+            return false;
+        return QFile::rename(staging, p);
+    }
+
     // The picker is modal, so drive it from a timer once it is up.
     static void whenDialogShown(std::function<void(OpenArchiveDialog *)> act)
     {
@@ -76,6 +90,8 @@ private slots:
     void severalPickedMembersOpenAsSeveralTabs();
     void oneMemberIsOneTabHoweverItIsSpelled();
     void theFormatAndTheSessionRememberAnArchivedPath();
+    void aTabOpenedBeforeItsContainerExistsFillsInWhenItAppears();
+    void aRestoredArchivedLogWaitsForItsContainerAndPicksItUp();
 
 private:
     QTemporaryDir m_dir;
@@ -231,6 +247,81 @@ void TestArchiveOpen::theFormatAndTheSessionRememberAnArchivedPath()
         QTRY_COMPARE(tabCount(window), 1);
         QTRY_VERIFY(statusText(window).contains(QStringLiteral("2 records")));
     }
+}
+
+void TestArchiveOpen::aTabOpenedBeforeItsContainerExistsFillsInWhenItAppears()
+{
+    // An archived log is a log, and SPEC.md §3 promises the same of every log: a path
+    // that is not there yet opens a tab that waits and fills in the moment it appears.
+    // It did not hold here for four milestones — the tab appeared and then waited for
+    // ever, because the fetcher that would have looked for the container was never
+    // built (ARCHITECTURE.md §6.4).
+    {
+        QSettings settings;
+        settings.clear(); // no tab but this one: an earlier case left a session behind
+    }
+
+    const QString tgz = path(QStringLiteral("late.tar.gz"));
+    const QString address = tgz + QStringLiteral("/var/log/app.log");
+    QVERIFY(!QFileInfo::exists(tgz));
+
+    MainWindow window;
+    window.show();
+    window.openFile(address, QString::fromLatin1(kPattern));
+
+    QTRY_COMPARE(tabCount(window), 1);
+    QTabWidget *bar = tabs(window);
+    QVERIFY(bar);
+    // The hollow mark: a log that is not there, as against one that is merely empty.
+    QTRY_VERIFY(bar->tabText(0).startsWith(QStringLiteral("◦")));
+    // And the tooltip says WHAT it is waiting for. The member is not what is missing
+    // and cannot be looked for; the container is.
+    QTRY_VERIFY2(bar->tabToolTip(0).contains(QStringLiteral("late.tar.gz")),
+                 qPrintable(bar->tabToolTip(0)));
+
+    QVERIFY(placeTarGz(tgz, {{QStringLiteral("var/log/app.log"), sampleLog()}}));
+
+    QTRY_VERIFY_WITH_TIMEOUT(statusText(window).contains(QStringLiteral("2 records")), 30000);
+    QVERIFY(!bar->tabText(0).startsWith(QStringLiteral("◦")));
+}
+
+void TestArchiveOpen::aRestoredArchivedLogWaitsForItsContainerAndPicksItUp()
+{
+    // SPEC.md §98's own example, in its archived form: a session restored with a log on
+    // a share that is not mounted yet. Reachable by construction, since restore goes
+    // through the same Document::prepare() an open does.
+    {
+        QSettings settings;
+        settings.clear(); // this test owns the session; earlier cases left their own
+    }
+
+    const QString tgz = path(QStringLiteral("session.tar.gz"));
+    const QString address = tgz + QStringLiteral("/app.log");
+    QVERIFY(placeTarGz(tgz, {{QStringLiteral("app.log"), sampleLog()}}));
+
+    {
+        MainWindow window;
+        window.show();
+        window.openFile(address, QString::fromLatin1(kPattern));
+        QTRY_COMPARE(tabCount(window), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(statusText(window).contains(QStringLiteral("2 records")),
+                                 30000);
+        window.close(); // saves the session
+    }
+
+    QVERIFY(QFile::remove(tgz)); // the share goes away between sessions
+
+    MainWindow window; // the constructor restores, before show()
+    window.show();
+    QTRY_COMPARE(tabCount(window), 1);
+    QTabWidget *bar = tabs(window);
+    QVERIFY(bar);
+    QTRY_VERIFY(bar->tabText(0).startsWith(QStringLiteral("◦")));
+
+    QVERIFY(placeTarGz(tgz, {{QStringLiteral("app.log"), sampleLog()}}));
+
+    QTRY_VERIFY_WITH_TIMEOUT(statusText(window).contains(QStringLiteral("2 records")), 30000);
+    QVERIFY(!bar->tabText(0).startsWith(QStringLiteral("◦")));
 }
 
 int main(int argc, char *argv[])

@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QByteArray>
 #include <QFile>
+#include <QFileInfo>
 #include <QLocale>
 #include <QStorageInfo>
 #include <QThread>
@@ -43,9 +44,10 @@ constexpr qint64 kChunkBytes = 256 * 1024;
 // than an empty file. The rest streams in on the fetcher thread.
 constexpr qint64 kPrimeBytes = 128 * 1024;
 
-// How long the reader waits for a container that is still arriving before asking again
-// whether it ever will. Only reached for a REMOTE container: a local one is complete
-// the moment it is opened.
+// How long the reader waits before asking again about a container it cannot yet read —
+// one still arriving over the wire, or one that has not been written at all. A local
+// container that IS there is complete the moment it is opened, so this is never a poll
+// over bytes that already exist.
 constexpr auto kAwaitSlice = std::chrono::milliseconds(100);
 
 // What an unknown expanded size is guessed at, as a multiple of the compressed input,
@@ -142,9 +144,19 @@ private:
         ArchiveFetcher *m_owner;
     };
 
+    // What one attempt at a container that was not there when the document opened came
+    // to. NotYet is the only one that goes round again.
+    enum class Attempt { Opened, NotYet, Failed };
+
     // Open the member, check the space, and prime enough for a format sample. Called
     // from start() when the container is readable, and from the worker when it was not.
     bool beginExpansion(QString *error);
+    // One try at a container start() could not open because nothing was there yet.
+    // Worker thread only, and LOCAL containers only — see start().
+    Attempt openAbsentContainer();
+    // "waiting for bundle.tar.gz to appear", naming the CONTAINER rather than the log
+    // inside it: the member is not what is missing and cannot be looked for.
+    QString waitingForContainer() const;
     // Block until the container's transport has something to give, then beginExpansion().
     // Worker thread only. False if the fetcher was stopped or the open failed.
     bool awaitContainer();
@@ -158,6 +170,7 @@ private:
     void beginGeneration(qint64 expandedSize);
     void publishComplete();
     void setError(const QString &message);
+    void setWaiting(const QString &reason);
     void setState(FetchStatus::State state);
     bool stopping() const;
 
@@ -196,6 +209,44 @@ bool ArchiveFetcher::start(const QString &spoolDir, QString *error)
     // builds an SSH fetcher whose own start() no longer blocks either.
     m_input = openContainerSource(m_location.container, OpenPolicy::Interactive, &openError);
     if (!m_input) {
+        // A CONTAINER THAT IS MERELY NOT THERE IS A WAIT, NOT A REFUSAL, and restoring
+        // that is what un-breaks an archived log opened before its container exists.
+        // Failing here failed the whole open, so the Document fell into its SOURCE-LESS
+        // waiting branch — and a spooled document with no source has no fetcher, so
+        // nothing was retrying and nothing ever could: resume() reuses a spool the
+        // registry never got (§6.5, LogSourceFactory.cpp). The M13 asymmetry says a
+        // waiting spooled document KEEPS its source; this is what makes that true of an
+        // archive as well.
+        //
+        // Only an ABSENCE. A container that is there and will not open — unreadable, a
+        // malformed address, a dependency that is not built in, a cache directory that
+        // cannot be made — is a refusal with no I/O left to change its mind, and M17's
+        // rule is that those still fail outright. logSourcePresence() is optimistic for
+        // a remote container, which is also what keeps this branch local-only: the
+        // retry below runs on the worker, and re-opening a remote container would reach
+        // SourceSpoolRegistry::acquire() off the GUI thread.
+        //
+        // A LOCAL container that is there and will not open — unreadable, or a special
+        // file — is the other half of the same rule and stays a REFUSAL, but one that
+        // keeps its tab and says why (M17): a permission is not something to poll for
+        // eighty times a minute, and File ▸ Reconnect is the deliberate gesture for
+        // asking again. Only a REMOTE container still fails the open outright, because
+        // the only ways its open can fail are decided with no I/O at all — an address
+        // that names no host, a dependency that is not built in, a cache directory that
+        // cannot be created — and SshFetcher::start() itself cannot fail.
+        if (!RemoteLocation::isRemote(m_location.container)) {
+            if (logSourcePresence(m_location.container) == LogPresence::Absent) {
+                setWaiting(waitingForContainer());
+                m_worker = std::make_unique<Worker>(this);
+                m_worker->start();
+                return true;
+            }
+            setError(openError.isEmpty()
+                         ? Tr::tr("Cannot read %1.")
+                               .arg(logSourceDisplayPath(m_location.container))
+                         : openError);
+            return true; // no worker: there is nothing left for one to try
+        }
         if (error) {
             *error = openError.isEmpty()
                 ? Tr::tr("Cannot open %1.").arg(m_location.container)
@@ -209,8 +260,8 @@ bool ArchiveFetcher::start(const QString &spoolDir, QString *error)
     // it, and for a compressed tar that decompresses the container until it is reached —
     // on the thread that opened the document, which is how a large `.tar.gz` used to
     // freeze the window for as long as the scan took. Waiting for a container that is not
-    // there yet has always been the worker's (§6.5); this simply stops treating the two
-    // cases differently, since neither can happen here.
+    // there yet is the worker's too (§6.5) — including, since the branch above, a
+    // container that is not there at all.
     //
     // What the caller gets back is a legal, empty spool in State::Connecting, which
     // notReadyYet() reads as "wait": the tab appears at once and fills in as the member
@@ -230,8 +281,21 @@ bool ArchiveFetcher::awaitContainer()
     forever {
         if (stopping())
             return false;
-        if (!m_input) // start() never got one
-            return false;
+        if (!m_input) {
+            // start() left the container to us because it was not there. Ask again, and
+            // go on asking: this is the archive's half of "the moment the log appears it
+            // is read and followed" (SPEC.md §3).
+            const Attempt attempt = openAbsentContainer();
+            if (attempt == Attempt::Failed)
+                return false;
+            if (attempt == Attempt::NotYet) {
+                std::unique_lock<std::mutex> lock(m_mutex);
+                if (m_stopping)
+                    return false;
+                m_wake.wait_for(lock, kAwaitSlice);
+                continue;
+            }
+        }
         m_input->refreshSize();
         // notReadyYet() as well as originVanished(), and without it this loop falls
         // straight through on a remote container: its fetcher is Connecting, not
@@ -369,6 +433,57 @@ void ArchiveFetcher::setError(const QString &message)
     std::unique_lock<std::mutex> lock(m_mutex);
     m_status.state = FetchStatus::State::Error;
     m_status.error = message;
+}
+
+void ArchiveFetcher::setWaiting(const QString &reason)
+{
+    // Not an error: the container is not there and this fetcher is still looking for it.
+    // SpooledLogSource::originVanished() reads this state, which is how the document
+    // upstream shows itself as waiting rather than as broken, and how the reason gets
+    // republished as it changes (§6.5) instead of freezing at the transition's sentence.
+    std::unique_lock<std::mutex> lock(m_mutex);
+    m_status.state = FetchStatus::State::Waiting;
+    m_status.error = reason;
+}
+
+QString ArchiveFetcher::waitingForContainer() const
+{
+    // QFileInfo, not logSourceDisplayName(): the container path IS an archive address,
+    // so the display name would strip a single-stream container's suffix and say it was
+    // waiting for "app.log" while the thing that is missing is `app.log.gz`. Only a
+    // local container ever reaches here (start()), so a file name is the whole answer.
+    const QString name = QFileInfo(m_location.container).fileName();
+    return Tr::tr("waiting for %1 to appear")
+        .arg(name.isEmpty() ? logSourceDisplayPath(m_location.container) : name);
+}
+
+ArchiveFetcher::Attempt ArchiveFetcher::openAbsentContainer()
+{
+    if (logSourcePresence(m_location.container) == LogPresence::Absent) {
+        // Restated every pass rather than latched at the transition, so the sentence on
+        // screen keeps naming what is actually being waited for.
+        setWaiting(waitingForContainer());
+        return Attempt::NotYet;
+    }
+
+    // Present — or unreadable, which openContainerSource() is about to refuse in its own
+    // words. Anything that is not an absence is answered ONCE and then stands: a
+    // container whose permissions are against us would otherwise be retried eighty times
+    // a minute for the life of the tab with nothing new to learn, and M17's rule is that
+    // a refusal keeps its tab and says why. File ▸ Reconnect is the way to ask again.
+    QString openError;
+    m_input = openContainerSource(m_location.container, OpenPolicy::Interactive, &openError);
+    if (!m_input) {
+        setError(openError.isEmpty()
+                     ? Tr::tr("Cannot open %1.").arg(logSourceDisplayPath(m_location.container))
+                     : openError);
+        return Attempt::Failed;
+    }
+
+    // Out of Waiting the moment there is something to read from, or notReadyYet() would
+    // go on reading the stale reason while the expansion runs.
+    setState(FetchStatus::State::Connecting);
+    return Attempt::Opened;
 }
 
 // Whether the container has more bytes coming. A local container is whole the moment it

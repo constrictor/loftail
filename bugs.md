@@ -176,64 +176,29 @@ before the scan finished. So the bound gives back the growth the intern tables
 asked for and never a pixel more, and Reset Widths is the way out of a session
 restored with the old widths, since those come back marked as the user's own.
 
+Entry 20 has gone too: an archived log opened while its container was not there yet
+waited for ever and never came back when the container appeared, because
+`ArchiveFetcher::start()` failed the open outright — which destroyed the spool, and
+with it the fetcher that would have been retrying, leaving the one state the waiting
+model says cannot exist: a spooled document waiting with nothing looking for its log.
+It hit every archive address whose local container was absent, a bare `.gz` with no
+member spelled included, and a session restored with such a log came back to a tab
+that could never recover. `start()` now publishes a wait, spawns its worker and lets
+the retry loop that was already there — and unreachable — go looking; a container that
+is there and will not open stays a refusal that keeps its tab and says why. The fix
+took two unreported defects with it: a multi-member container spelled with no member
+picked was judged well-formed while it was missing, so what should have been an
+outright refusal became a wait the container's arrival could not end; and a resume
+that declined while the presence check said the log was back wrote nothing at all to
+the diagnostics log, so a document retrying eighty times a minute for ever was
+indistinguishable from one that had just missed a tick. A third, adjacent, went at the
+same time: a log that exists but cannot be read said it "had not appeared yet",
+sending the reader to look for a file they can see in their file manager.
+
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
-
----
-
-### 20. An archived log opened while its container is missing waits for ever, and never comes back when the container appears
-
-Line numbers in this entry are as of the commit that fixed the waiting-reason
-staleness described in the preamble; `Document.cpp` moved by about eleven lines
-between confirming this and recording it.
-
-`Document::resume()` opens with `OpenPolicy::Reuse` (`Document.cpp:274-300`), and
-`openSpooled()` refuses to *create* a spool under `Reuse`
-(`src/core/LogSourceFactory.cpp:41-48`) — it will only re-attach to one the registry
-already holds. That is right for the case it was written for, a remote document whose
-spool is already live and is what did the waiting. It is wrong for an archived log
-whose container is not there yet, because that document never got a spool in the first
-place.
-
-When a local container does not exist at open time, `ArchiveFetcher::start()` fails
-outright (`ArchiveFetcher.cpp:197-205`), so `openLogSource()` returns null and
-`prepare()` falls into the source-less waiting branch (`Document.cpp:143-147`) —
-reached rather than refused because `logSourceAvailable()` for an archive address asks
-only about the container (`RemoteLocation.cpp:189-197`). From that point the spool
-registry is permanently empty for that key, so every `resume()` on every tick fails,
-for ever, and nothing in the loop can populate it.
-
-Reproduced at core level. Open `bundle.tar.gz/var/log/app.log` before the file exists,
-create the container **with** the member in it, then poll:
-
-```
-prepare -> true waiting: true reason: "app.log (bundle.tar.gz) has not appeared yet…" source: 0x0
---- creating the container now ---
-  resumeRequested -> resume() returned false        (x6 ticks, records: 0)
-  ...
-  resumeRequested -> resume() returned true         <-- only after a SECOND Document
-fresh document on the same address -> true waiting: false records: 2
-```
-
-The last two lines are the proof: the waiting document recovered only once an
-unrelated `Document` opened the same address `Interactive`ly and thereby populated the
-registry. Also reproduced through the real `MainWindow` — the tab still reads "has not
-appeared yet" 9 s after the container was created, with 16 poll ticks in between.
-
-This breaks `SPEC.md:92` ("The moment the log appears it is read and followed") and
-`SPEC.md:98` explicitly: a session restored with an archived log on a share that is not
-mounted yet gets a tab that can never recover, which is the exact case that promise
-names.
-
-It is not remote-specific, and the reason is worth stating: `logSourceAvailable()` is
-optimistic for `ssh://`, so a remote address fails the open outright instead of
-reaching this state. Local containers are what hit it.
-
-Note that this is a different mechanism from the staleness recorded in the preamble
-above (the former entry 13), which was about the *sentence* a waiting tab shows. This
-one is about a wait that cannot end.
 
 ---
 

@@ -233,7 +233,8 @@ void LiveController::checkNow()
         // about a machine it can no longer reach.
         const QString reported = sourceStatusText(*src, m_document->path());
         beginWaiting(reported.isEmpty()
-                         ? waitingForText(m_document->path(), WaitCause::Gone)
+                         ? waitingForText(m_document->path(),
+                                          waitCauseFor(m_document->path(), WaitCause::Gone))
                          : reported);
         return;
     }
@@ -324,8 +325,19 @@ void LiveController::checkWhileWaiting()
     emit resumeRequested();
     if (!alive)
         return;
-    if (m_document->isWaiting())
+    if (m_document->isWaiting()) {
+        // ONE tick of this is ordinary — the log went again between the check above and
+        // the open — and a document that does it for ever is a document that can never
+        // come back. Until this line that case wrote NOTHING: `back` said yes, so the
+        // presence-retry line above is not reached, and the owner declines in silence.
+        // Eighty attempts a minute with no record of any of them is precisely what
+        // SPEC.md's "Diagnostics" promises there will not be. Its own key, so it does
+        // not throttle against the line above: the two say different things.
+        diagLogEvery(60000, "wait", QStringLiteral("resume:") + m_document->path(),
+                     QStringLiteral("%1 looked ready but resuming it declined")
+                         .arg(m_document->path()));
         return;
+    }
 
     syncBaseline();
     // "records=N" rather than prose: this file is untranslated and greppable by design,

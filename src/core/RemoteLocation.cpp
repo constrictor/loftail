@@ -191,16 +191,24 @@ QString plainDisplayName(const QString &path)
 
 // Likewise: a container path is itself an archive address, so the archive branch must
 // ask this rather than the public function.
-bool plainAvailable(const QString &path)
+LogPresence plainPresence(const QString &path)
 {
     if (RemoteLocation::isRemote(path)) {
         // Optimistic by design: the honest answer costs a connection, and this is
         // called from session restore, where blocking would be a hang. A host that
-        // turns out to be unreachable surfaces as an open failure instead.
-        return RemoteLocation::parse(path).has_value();
+        // turns out to be unreachable surfaces as an open failure instead. An address
+        // that does not parse names no file, so nothing is at it and nothing will be —
+        // logPathIsWellFormed() is what keeps that from becoming an endless wait.
+        return RemoteLocation::parse(path) ? LogPresence::Present : LogPresence::Absent;
     }
     const QFileInfo info(path);
-    return info.exists() && info.isReadable();
+    if (!info.exists())
+        return LogPresence::Absent;
+    // exists() and isReadable() were one answer until M-archive-wait, and the conflation
+    // was visible: a file whose mode is 000 was reported as one that "has not appeared
+    // yet", sending the reader looking for a file they can see. isReadable() is an
+    // access(2) question, so it costs an attribute query and no open.
+    return info.isReadable() ? LogPresence::Present : LogPresence::Unreadable;
 }
 
 } // namespace
@@ -283,14 +291,19 @@ QString logSourceDisplayPath(const QString &path)
     return RemoteLocation::withoutPassword(path);
 }
 
-bool logSourceAvailable(const QString &path)
+LogPresence logSourcePresence(const QString &path)
 {
-    // An archived log is available exactly when its container is: whether the member
+    // An archived log is present exactly when its container is: whether the member
     // is really in there costs an expansion to answer, and a wrong member surfaces as
     // an open failure instead.
     if (const auto loc = ArchiveLocation::split(path))
-        return plainAvailable(loc->container);
-    return plainAvailable(path);
+        return plainPresence(loc->container);
+    return plainPresence(path);
+}
+
+bool logSourceAvailable(const QString &path)
+{
+    return logSourcePresence(path) == LogPresence::Present;
 }
 
 bool logPathIsWellFormed(const QString &path)
@@ -299,6 +312,14 @@ bool logPathIsWellFormed(const QString &path)
     // really inside is the same unanswerable-without-expanding question as above, and a
     // missing one surfaces as an open failure rather than as an endless wait.
     const auto archive = ArchiveLocation::split(path);
+    // WITH ONE EXCEPTION, and it is pure string work: a multi-member container with no
+    // member spelled out names no log at all, and no amount of waiting will put one in
+    // the address. Answering "well-formed" there turned M17's no-I/O refusal into an
+    // endless wait for any such container that did not happen to exist yet — the tab
+    // could not open even once the file arrived, because the address it holds is still
+    // not openable (openArchive, LogSourceFactory.cpp).
+    if (archive && archive->needsMember())
+        return false;
     const QString address = archive ? archive->container : path;
 
     // A remote address either parses into a host and a path or it does not. "ssh://"

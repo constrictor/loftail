@@ -37,6 +37,7 @@ private slots:
     void aRemoteContainerSplitsAndKeepsItsAddress();
     void displayNamesReadLikeALog();
     void availabilityAsksAboutTheContainer();
+    void anAddressWithNoMemberPickedIsNotWellFormed();
     void theSettingsKeyKeepsAnArchivedPathUnmangled();
     void aPlainPathIsUntouchedByAllOfIt();
     void openingReportsWhenArchivesAreNotBuiltIn();
@@ -231,6 +232,23 @@ void TestArchiveLocation::availabilityAsksAboutTheContainer()
     QVERIFY(logSourceAvailable(container + QStringLiteral("/app.log")));
     QVERIFY(logSourceAvailable(container + QStringLiteral("/no/such/member.log")));
     QVERIFY(!logSourceAvailable(m_dir.path() + QStringLiteral("/absent.tgz/app.log")));
+}
+
+void TestArchiveLocation::anAddressWithNoMemberPickedIsNotWellFormed()
+{
+    // The line between waiting and failing (§6.5), and this side of it is decidable
+    // with no I/O at all: a multi-member container with no member spelled out names no
+    // log, whether or not the container is there. Answering "well-formed" for one that
+    // was merely absent turned M17's refusal into a wait that could not end — the file
+    // arriving changed nothing, because the address still named nothing to open.
+    const QString absent = m_dir.path() + QStringLiteral("/nothere.tar.gz");
+    QVERIFY(!logPathIsWellFormed(absent));
+    QVERIFY(!logPathIsWellFormed(m_dir.path() + QStringLiteral("/nothere.zip")));
+
+    // A member picked, and a single-stream container which implies its own, are both
+    // well-formed while they are missing — that is exactly the case that waits.
+    QVERIFY(logPathIsWellFormed(absent + QStringLiteral("/var/log/app.log")));
+    QVERIFY(logPathIsWellFormed(m_dir.path() + QStringLiteral("/nothere.log.gz")));
 }
 
 void TestArchiveLocation::theSettingsKeyKeepsAnArchivedPathUnmangled()

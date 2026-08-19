@@ -22,11 +22,15 @@ namespace loftail {
 
 class IFormatProvider;
 
-// Why a document is waiting. The two read differently to a user and must not be
-// conflated: one log has never existed, the other was being read a moment ago.
+// Why a document is waiting. The three read differently to a user and must not be
+// conflated: one log has never existed, one was being read a moment ago, and one is
+// sitting there in plain sight with its permissions against us. Saying the wrong one
+// sends the reader looking in the wrong place (SPEC.md §3), which is exactly what a
+// file with mode 000 used to do — it reported itself as one that had not appeared yet.
 enum class WaitCause {
-    NotYet, // it has not been written yet, or the host holding it is unreachable
-    Gone,   // it was open and has been deleted
+    NotYet,   // it has not been written yet, or the host holding it is unreachable
+    Gone,     // it was open and has been deleted
+    NoAccess, // it is there and this process may not read it
 };
 
 // The user-facing sentence for a waiting document, e.g.
@@ -34,6 +38,13 @@ enum class WaitCause {
 // Uses logSourceDisplayName(), so a remote or archived log names itself the same way
 // it does in a tab title.
 QString waitingForText(const QString &path, WaitCause cause);
+
+// Which of the three `path` deserves, given what an ABSENCE would mean here: NotYet for
+// a log that has never been read, Gone for one that was open a moment ago. An
+// unreadable log is NoAccess either way, because it is there and neither sentence about
+// whether it exists is true of it. Non-blocking — logSourcePresence() is an attribute
+// query, and optimistic for a remote address, which therefore never reads as NoAccess.
+WaitCause waitCauseFor(const QString &path, WaitCause whenAbsent);
 
 // All per-file state for one open log (invariant #7, ARCHITECTURE.md §12). The
 // main window holds a std::vector<std::unique_ptr<Document>> plus an active

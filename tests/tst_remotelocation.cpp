@@ -1,6 +1,8 @@
 #include <QtTest>
 
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 
 #include "LogSettings.h"
@@ -34,6 +36,7 @@ private slots:
     void everyAddressGetsANonEmptyNameAndNoNameIsAPath_data();
     void anAddressThatDoesNotParseStillLosesItsPassword();
     void availabilityIsOptimisticForRemote();
+    void presenceTellsAnAbsentLogFromAnUnreadableOne();
     void settingsKeyIsWorkingDirectoryIndependent();
     void theSettingsTreeRoundTripsARemotePath();
 };
@@ -292,6 +295,45 @@ void TestRemoteLocation::availabilityIsOptimisticForRemote()
     QVERIFY(logSourceAvailable(QStringLiteral("ssh://web1/var/log/app.log")));
     // A malformed one is not — there is nothing to try.
     QVERIFY(!logSourceAvailable(QStringLiteral("ssh://")));
+}
+
+void TestRemoteLocation::presenceTellsAnAbsentLogFromAnUnreadableOne()
+{
+    // exists() and isReadable() were one answer, and the conflation was user-visible: a
+    // file whose mode is 000 was reported as one that "has not appeared yet", sending
+    // the reader looking for a file they can see in their file manager. Both still WAIT
+    // — a permission is granted as readily as a file is written — but each has to say
+    // its own sentence (SPEC.md §3), and the archive layer needs the distinction for a
+    // second reason: an absent container is worth retrying and an unreadable one is not.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString present = dir.filePath(QStringLiteral("there.log"));
+    QFile f(present);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("x");
+    f.close();
+
+    QCOMPARE(logSourcePresence(present), LogPresence::Present);
+    QCOMPARE(logSourcePresence(dir.filePath(QStringLiteral("gone.log"))), LogPresence::Absent);
+
+    // Optimistic for remote, exactly as availability is, and therefore NEVER Unreadable:
+    // that answer would cost a round trip, and this runs during session restore.
+    QCOMPARE(logSourcePresence(QStringLiteral("ssh://web1/var/log/app.log")),
+             LogPresence::Present);
+    QCOMPARE(logSourcePresence(QStringLiteral("ssh://")), LogPresence::Absent);
+
+#if !defined(Q_OS_WIN)
+    QVERIFY(QFile::setPermissions(present, QFileDevice::WriteOwner));
+    if (QFileInfo(present).isReadable()) {
+        QVERIFY(QFile::setPermissions(present,
+                                      QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+        QSKIP("running as root: a mode-000 file is still readable");
+    }
+    QCOMPARE(logSourcePresence(present), LogPresence::Unreadable);
+    QVERIFY(!logSourceAvailable(present)); // still not openable, so still a wait
+    QVERIFY(QFile::setPermissions(present,
+                                  QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+#endif
 }
 
 void TestRemoteLocation::settingsKeyIsWorkingDirectoryIndependent()
