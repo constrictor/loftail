@@ -261,6 +261,10 @@ private slots:
     void aColumnSeedsFromTheWidestInternedName();
     void aWidthTheUserDraggedSurvivesEverySeed();
     void aRestoredColumnLayoutIsNeverReseeded();
+    void theSeedKeepsTheMessageColumnOnScreenWhereTheNamesAreLong();
+    void aViewWithRoomToSpareIsSeededFromTheWidestNameAsBefore();
+    void theViewportBoundLeavesAWidthTheUserSetAlone();
+    void resetWidthsRescuesALayoutRestoredWithTheMessageOffScreen();
     void fittingAColumnShowsItsWidestValueAndKeepsIt();
     void aFitIsBoundedHoweverWideTheValueIs();
     void doubleClickingASectionDividerFitsThatColumn();
@@ -1445,17 +1449,58 @@ namespace {
 
 // A log whose subsystem name is far longer than any typical-value allowance, so the
 // seed taken from the intern table is tellable apart from the seed taken without one.
-QByteArray makeLongNameLog(const QByteArray &logger, int n, int messageChars = 20)
+QByteArray makeLongNameLog(const QByteArray &logger, int n, int messageChars = 20,
+                           const QByteArray &thread = "main")
 {
     QByteArray bytes;
     for (int i = 0; i < n; ++i) {
         bytes += "2026-07-21 14:32:0";
         bytes += QByteArray::number(i % 10);
-        bytes += ",123 [main] INFO  " + logger + " - ";
+        bytes += ",123 [" + thread + "] INFO  " + logger + " - ";
         bytes += QByteArray("m").repeated(messageChars);
         bytes += "\n";
     }
     return bytes;
+}
+
+// A log whose subsystem AND thread names are both past the seed's kSeedNameMaxChars
+// clamp, which is the shape that overruns a window: Time, Thread, Priority and Subsystem
+// together then ask for more than an ordinary document area holds (bugs.md 19).
+QByteArray makeWideNameLog(int n)
+{
+    return makeLongNameLog("com.example.deeply.nested.subsystem.of.some.service", n, 200,
+                           "worker-thread-number-seventeen-of-many");
+}
+
+// What the seed asks for with NOTHING bounding it: the widths a view that has never been
+// laid out takes, which is what shipped before the viewport bound existed. Summed over
+// every column but the message — the sum this bound is about.
+int unboundedSeedPrefix(const Document &doc, LogModel &model, int *messageColumn = nullptr)
+{
+    LogView bare(&doc, &model); // never resized, never shown: no viewport to consult
+    const int message = columnOfRole(doc, FieldRole::Message);
+    if (messageColumn)
+        *messageColumn = message;
+    int sum = 0;
+    for (int c = 0; c < model.columnCount(); ++c)
+        if (c != message)
+            sum += bare.header()->sectionSize(c);
+    return sum;
+}
+
+// The pixels of the message column that are actually on screen.
+int visibleMessageWidth(const LogView &view, int message)
+{
+    return view.viewport()->width() - view.header()->sectionViewportPosition(message);
+}
+
+// A view laid out at `width`, so that seedColumnWidths() has a viewport to bound itself
+// by. The resize event is what tells the view it has a real geometry.
+void layOutAt(LogView &view, int width)
+{
+    view.resize(width, 300);
+    view.show();
+    QCoreApplication::processEvents();
 }
 
 bool openBytes(Document &doc, QTemporaryFile &file, const QByteArray &bytes)
@@ -1750,6 +1795,156 @@ void TestLogView::aRestoredColumnLayoutIsNeverReseeded()
     QCOMPARE(restored.header()->sectionSize(logger), 45);
     restored.seedColumnWidths();
     QCOMPARE(restored.header()->sectionSize(logger), 45);
+}
+
+// The seed is measured from the font and the data, and the SUM of what it measures can
+// be wider than the view: at the shipped size a 40-character subsystem and a 40-character
+// thread name put the message column's origin at or past the right edge, and they do it
+// at the moment the scan finishes and MainWindow::onIndexFinished re-seeds those two
+// columns from the complete intern tables. Nothing renders wrongly — the message is
+// simply not on screen any more, on a log that was readable a moment earlier (bugs.md 19).
+//
+// The width here is derived from the seed rather than written down, so the case means the
+// same thing at every font: exactly the widths the unbounded seed asks for, which is the
+// one width at which the old behaviour leaves precisely zero pixels of message.
+void TestLogView::theSeedKeepsTheMessageColumnOnScreenWhereTheNamesAreLong()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openBytes(doc, file, makeWideNameLog(5)), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    int message = -1;
+    const int unbounded = unboundedSeedPrefix(doc, model, &message);
+    QVERIFY(message >= 0);
+
+    LogView view(&doc, &model);
+    layOutAt(view, unbounded);
+    QVERIFY2(view.viewport()->width() < unbounded,
+             "the viewport is not narrower than the widths the seed asks for; nothing "
+             "is being tested");
+    view.seedColumnWidths(); // the seed MainWindow runs when the scan finishes
+
+    const int visible = visibleMessageWidth(view, message);
+    QVERIFY2(visible >= view.fontMetrics().horizontalAdvance(QString(20, QLatin1Char('0'))),
+             qPrintable(QStringLiteral("the message column has %1 px on screen of a %2 px "
+                                       "viewport: the columns before it take %3 px")
+                            .arg(visible)
+                            .arg(view.viewport()->width())
+                            .arg(view.header()->sectionViewportPosition(message))));
+
+    // And the columns that gave the room back still say what they are.
+    for (int c = 0; c < model.columnCount(); ++c) {
+        if (c == message || view.header()->isSectionHidden(c))
+            continue;
+        QVERIFY2(view.header()->sectionSize(c) >= captionWidth(view, model, c),
+                 qPrintable(QStringLiteral("column %1 was squeezed below its own heading")
+                                .arg(model.headerData(c, Qt::Horizontal).toString())));
+    }
+}
+
+// The other half of the same rule: the bound is about a view with no room, and must not
+// bite where there is some. Given the width the seed asks for plus the message column's
+// own share, every column opens exactly as it did before the bound existed.
+void TestLogView::aViewWithRoomToSpareIsSeededFromTheWidestNameAsBefore()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    const QByteArray longName = "com.example.deeply.nested.subsystem.of.some.service";
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openBytes(doc, file, makeWideNameLog(5)), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    int message = -1;
+    const int unbounded = unboundedSeedPrefix(doc, model, &message);
+    QVERIFY(message >= 0);
+
+    LogView view(&doc, &model);
+    // Room for every seeded column and a wide message column besides.
+    layOutAt(view, unbounded + 800);
+    view.seedColumnWidths();
+
+    const int logger = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+    // Clamped at kSeedNameMaxChars = 40 characters of the name, which is what the seed
+    // has always offered a name this long.
+    QVERIFY2(view.header()->sectionSize(logger)
+                 >= view.fontMetrics().horizontalAdvance(
+                     QString::fromLatin1(longName.left(40))),
+             "a view with room to spare did not take the widest interned name");
+    int prefix = 0;
+    for (int c = 0; c < model.columnCount(); ++c)
+        if (c != message)
+            prefix += view.header()->sectionSize(c);
+    QCOMPARE(prefix, unbounded);
+}
+
+// The bound may no more overwrite a chosen width than the seed it lives in may. A column
+// the user dragged WIDE is the case: it is exactly what a bound looking only at the sum
+// would want to take back, and it is the one width that is not the seed's to give.
+void TestLogView::theViewportBoundLeavesAWidthTheUserSetAlone()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openBytes(doc, file, makeWideNameLog(5)), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    int message = -1;
+    const int unbounded = unboundedSeedPrefix(doc, model, &message);
+    const int logger = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+
+    LogView view(&doc, &model);
+    layOutAt(view, unbounded);
+    view.header()->resizeSection(logger, 420); // the user drags it wide on purpose
+    view.seedColumnWidths();
+    QCOMPARE(view.header()->sectionSize(logger), 420);
+}
+
+// The escape hatch, and the reason it had to be one. A session restored from before this
+// fix comes back with the collapsed widths verbatim, and restoreColumnState() marks every
+// column as the user's — so no later seed touches them. "Reset Widths" forgets those
+// marks and re-seeds, which used to land on exactly the same collapsed layout and now
+// puts the message column back on screen.
+void TestLogView::resetWidthsRescuesALayoutRestoredWithTheMessageOffScreen()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openBytes(doc, file, makeWideNameLog(5)), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    int message = -1;
+    const int unbounded = unboundedSeedPrefix(doc, model, &message);
+    QVERIFY(message >= 0);
+
+    // The layout the old seed saved: the unbounded widths, in a view too narrow for them.
+    LogView saved(&doc, &model);
+    const QByteArray collapsed = saved.saveColumnState();
+
+    LogView view(&doc, &model);
+    layOutAt(view, unbounded);
+    QVERIFY(view.restoreColumnState(collapsed));
+    QVERIFY2(visibleMessageWidth(view, message) <= 0,
+             "the restored layout was expected to leave the message column off screen");
+    view.seedColumnWidths(); // a scan finishing does NOT undo it: those widths are the user's
+    QVERIFY(visibleMessageWidth(view, message) <= 0);
+
+    view.resetColumnWidths();
+    QVERIFY2(visibleMessageWidth(view, message)
+                 >= view.fontMetrics().horizontalAdvance(QString(20, QLatin1Char('0'))),
+             "Reset Widths re-seeded the same collapsed layout");
 }
 
 // "Fit to Contents" is the other question: not what a typical value takes but what the

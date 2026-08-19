@@ -157,56 +157,29 @@ record at the wrapped height its now-invisible message wanted, so a log rendered
 one line of fields followed by three blank rows, per record, with the scrollbar still
 spanning the lines nothing was in.
 
+Entry 19 has gone as well: the column seed was measured from the font and the data
+and never asked how wide the view was, which is right for one column and wrong for
+the sum of four. A 40-character subsystem name beside a 40-character thread name
+comes to some 850 px of Time, Thread, Priority and Subsystem — more than the
+document area of an ordinary window with a pane docked — so the message column's
+origin landed at or past the right edge, and it landed there at the exact moment
+the scan finished and `onIndexFinished` re-seeded those two columns from the
+complete intern tables. A log that had been perfectly readable while it was
+indexing lost its messages when it finished loading, and nothing rendered wrongly
+while it did: the geometry stayed self-consistent, the widths were then saved and
+restored verbatim, and "Reset Widths" re-seeded to exactly the same collapsed
+layout. The seed is now bounded by the sum — the columns other than the message
+must fit the viewport less forty characters of message, and where they do not, one
+cap is lowered over all of them at once, widest first — with a floor at each
+column's caption-and-typical-value width, which is precisely what it was seeded at
+before the scan finished. So the bound gives back the growth the intern tables
+asked for and never a pixel more, and Reset Widths is the way out of a session
+restored with the old widths, since those come back marked as the user's own.
+
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
-
----
-
-### 19. The column seed never consults the viewport width, so a view can collapse when indexing finishes
-
-`LogView::seedColumnWidths()` sizes each column from the font and the data —
-`seedWidthOf()` takes the wider of the header caption and a per-role allowance in
-characters, and for Subsystem and Thread that allowance is the widest interned
-name up to `kSeedNameMaxChars` (40). Nothing in it asks how wide the view is. At
-the shipped 9 pt that is up to about 850 px of Time, Thread, Priority and
-Subsystem before the Message column starts — more than the whole document area of
-a 1100 px window with a pane docked.
-
-The timing is what makes it a defect rather than a preference.
-`MainWindow::onIndexFinished` (`MainWindow.cpp:2100`) re-seeds Subsystem and
-Thread once the intern tables are complete, which is the only moment those two
-columns are measured exactly. So a view that rendered perfectly well while it was
-indexing — narrow columns, the message column with most of the width — jumps to
-the seeded widths when the scan completes and pushes the message column's origin
-to or past the right edge of the viewport, on any window narrower than that sum.
-The reader sees the table re-lay itself out and the messages go away at the moment
-the log finishes loading.
-
-Entry 11's fix does not touch this. It clamps the wrap *width* at a floor of
-twenty characters, so the records keep sane heights and a screen still holds
-several of them; the underlying condition — the columns before Message do not fit,
-so the message is drawn from an origin at or past the right edge and is reached
-only by scrolling sideways — is exactly as it was, and so is the collapse-on-scan-
-completion timing.
-
-Two shapes of fix, and the choice is a product decision. Bound each seeded column
-to a share of the viewport, so no column may be seeded past what is on screen —
-cheap, and it leaves a dragged width alone since `m_userSizedColumns` already
-guards those. Or bound the seed by what is left: seed in role order and stop
-widening once the message column would be pushed below a usable width. Either way
-the seed must go on being the two-callers-only pass it is (`CLAUDE.md`: constructor
-and `onIndexFinished`, never the ingest path), and neither may overwrite a width
-the user set.
-
-It was thought to interact with entry 18, and does not. Entry 18 is fixed, and the
-shape it was fixed in tests whether the message is the last VISIBLE column: with
-something after it the cell wraps within its own section, and with nothing after it
-the branch is byte for byte the one that shipped. This collapse happens in natural
-order, with the message last, so it takes that unchanged branch — a message column
-pushed off the edge is still a column whose text is off to the right rather than one
-with no visible cell at all. The two are decided independently after all.
 
 ---
 

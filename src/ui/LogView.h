@@ -532,6 +532,12 @@ private:
     // measured against the rect it is actually painted in (see truncatedHeaderText).
     int headerLabelInset(int logical) const;
     int seedWidthOf(int logical) const;    // a typical value + the caption
+    // The narrowest a seeded column may be squeezed to: its caption and nothing else.
+    int seedFloorOf(int logical) const;
+    // Bounds the SUM of the seeded widths by what is on screen, so the columns before the
+    // message cannot push it off the right edge when the scan completes (bugs.md 19).
+    // Called only from seedColumnWidths(), which keeps the seed a three-callers pass.
+    void boundSeedToViewport(QVector<int> &width) const;
     int contentWidthOf(int logical) const; // the widest value, bounded
     // The widest interned logger/thread name, optionally clamped to `maxChars` — the
     // clamp is for the SEED, so one pathological name cannot open a column half a
@@ -558,6 +564,10 @@ private:
     // Set while this class is doing the resizing, so the QHeaderView::sectionResized it
     // provokes is not read back as the user dragging a divider.
     bool m_applyingColumnWidths = false;
+    // Whether this view has ever been given a real geometry. The constructor seeds before
+    // anything has been laid out, where the viewport is still QWidget's default and a
+    // bound taken from it would squash every column on a window with room to spare.
+    bool m_viewportLaidOut = false;
 
     // The query Find is marking, or empty. The QUERY, not its results: see
     // setFindMatcher(). Costs one small object per view and nothing per record.
