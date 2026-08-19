@@ -270,12 +270,14 @@ Time-range filter bounds (§6) are always entered as wall clock in the display t
 - **Line wrapping is a user setting with three modes:**
   
   - **Off** — long lines extend horizontally; the view scrolls sideways.
-  - **Selected record only** — the focused record wraps so it can be read in full; all others stay unwrapped.
-  - **Always on** — every record wraps to the viewport width.
+  - **Selected record only** — the focused record wraps so it can be read in full; all others stay unwrapped. It breaks at **word boundaries**, since reading one record in full is what the mode is for, and falls back to breaking inside a word only where a word is wider than the column.
+  - **Always on** — every record wraps to the viewport width, breaking wherever the line runs out rather than at word boundaries, so every record's height is the same arithmetic and a whole file's worth of them can be laid out at once.
 
   The mode a newly opened view starts in is remembered for the log (§4); changing it afterwards changes the view in front of you and is remembered for that view alone, so two views of one file can differ.
 
   **`Alt+Z` toggles between *off* and *always on*** — the two a reader flips between while reading, one to see the shape of the table and the other to read a long message. *Selected record only* is not on the way round: it is picked for a particular record from the menu, and a key that stopped there on the way would make its own effect depend on which mode happened to be in force. Pressed while in *selected record only*, the key wraps everything. It is the same command as the menu entry in every respect, the checkmark and what the log remembers included.
+
+  **A record breaks in the same places whether or not a search is armed.** Typing into the Find box marks what matched (§5) and moves nothing else: the record under the reader's eye keeps its lines exactly where they were, and a tab inside a message counts as one character in both modes rather than jumping to a tab stop.
 
   Note that in *always on* mode the vertical scrollbar is an approximation that refines as you scroll, since exact total height cannot be known without measuring every record (see `ARCHITECTURE.md` §7.1). Scroll position and navigation stay accurate; only the thumb size and position are estimates.
 
