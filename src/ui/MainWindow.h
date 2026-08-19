@@ -181,11 +181,17 @@ private:
     // re-applies its own filters without disturbing the active one.
     void applyFiltersFor(DocumentContext *ctx, KeepPosition keep = KeepPosition::Yes);
 
-    // The log a waiting document has been waiting for has turned up (M13, SPEC.md §3):
-    // reopen it, index it, and settle its format from the bytes that have now arrived.
-    // Wired to LiveController::resumeRequested — it lives here because the pattern
-    // lives here and core must never hold one (invariant #3).
-    void resumeWaitingDocument(DocumentContext *ctx);
+    // There are bytes to read that there were not before: either the log a waiting
+    // document has been waiting for has turned up (M13, SPEC.md §3), or a log that
+    // opened EMPTY has just been written to for the first time. Reopen it, index it, and
+    // settle its format and encoding from the bytes that have now arrived — and only
+    // now decide whether that format fits, persist it, or ask about it, because until
+    // this moment there was nothing to decide it against.
+    //
+    // Wired to LiveController::resumeRequested, which is emitted for both cases — it
+    // lives here because the pattern lives here and core must never hold one
+    // (invariant #3).
+    void resumeOrSettleDocument(DocumentContext *ctx);
 
     // A saved host's remembered password, handed to the transport the only way core will
     // take one: through the per-target cache it already consults (SshPrompter.h). This is

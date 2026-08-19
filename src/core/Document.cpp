@@ -216,9 +216,13 @@ bool Document::openAndSettleFormat(IFormatProvider &provider, OpenPolicy policy,
     // Settled means settled AGAINST REAL BYTES, which is why this is not simply "we got
     // here". A spooled source whose input is not there opens perfectly well and hands
     // back nothing, and a format derived from an empty sample is a guess about a log
-    // nobody has seen — so resume() has to do this again when the bytes arrive. An
-    // empty LOCAL file gets the same answer for the same reason; nothing reads the flag
-    // in that case, because a file that is present is never waiting.
+    // nobody has seen — so this has to happen again when the bytes arrive. An empty
+    // LOCAL file gets the same answer for the same reason, and the flag is read there
+    // too: an empty log is NOT waiting (it is right there, and a file that stays empty
+    // for ever must not sit under "has not appeared yet"), so what an empty local open
+    // leaves behind is an ordinary open document with nothing judged. LiveController
+    // asks this flag the moment there are bytes and settles it then, through the same
+    // resumeRequested/resume() pair the waiting seam uses.
     m_formatSettled = sampleLen > 0;
     return true;
 }

@@ -16,6 +16,7 @@
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QPair>
+#include <QPointer>
 #include <QTimer>
 
 #include <cstring>
@@ -136,6 +137,24 @@ void LiveController::start()
     if (m_started || !m_document || m_document->path().isEmpty())
         return;
     m_started = true;
+
+    // BEFORE the baseline is taken, and that order is the point. A document that opened
+    // with no bytes may have some by now: the scan that just finished runs on a worker
+    // while a spool fills behind it, so the whole of an archived or remote log can land
+    // between the open and this call. Take the baseline first and that arrival is
+    // already behind us — there is no growth left for checkNow() to notice, and the
+    // format and the encoding stay unjudged for the rest of the session (§6.5).
+    //
+    // refreshSize(), never size(): a source reports the size it last latched, and the
+    // one thing this case guarantees is that somebody else did the reading. Asking the
+    // stale number is how a log with every one of its records already indexed reports
+    // that it has no bytes — which is exactly what it did until this line said refresh.
+    if (!m_document->isWaiting() && !m_document->formatSettled() && m_document->source()
+        && m_document->source()->refreshSize() > 0) {
+        if (!settleFirstBytes())
+            return; // this controller no longer exists — see settleFirstBytes()
+    }
+
     syncBaseline();
     // Publish once up front rather than leaving the status line blank until the first
     // poll tick 750 ms later. It matters most for a document that opens WAITING, where
@@ -220,10 +239,25 @@ void LiveController::checkNow()
     }
     m_vanishedSince.invalidate();
 
-    if (newSize > m_lastSize)
+    // A log that opened with NO BYTES has had nothing judged about it — not its format
+    // and not its encoding (§6.5) — and this is where that is put right, before a single
+    // record of it is read. Reading first and settling afterwards is not the same thing:
+    // the records would be cut and decoded by whatever an empty sample produced, which
+    // for a UTF-16 log is garbage, and nothing would ever read them again.
+    //
+    // Asked on the SIZE, not on growth over the baseline. The bytes may have turned up
+    // before this watch began — a spool filling while the initial scan ran — in which
+    // case the baseline already includes them and there is no growth to notice.
+    if (!m_document->formatSettled() && newSize > 0) {
+        if (!settleFirstBytes())
+            return; // this controller no longer exists — see settleFirstBytes()
+        if (m_document->isWaiting())
+            return; // it went again between the tick and the open; the wait has it
+    } else if (newSize > m_lastSize) {
         ingestAppended();
-    else
+    } else {
         m_lastSize = newSize; // no growth (or a spurious watcher tick)
+    }
 
     publishSourceStatus();
 
@@ -279,7 +313,13 @@ void LiveController::checkWhileWaiting()
     // (invariant #3). It may decline — the log can vanish again between this check and
     // that open — in which case the document is still waiting and the next tick tries
     // again, which is why this does not assume success.
+    //
+    // Guarded, for the reason settleFirstBytes() sets out: answering this can end with
+    // the owner rebuilding the document and deleting this controller outright.
+    QPointer<LiveController> alive(this);
     emit resumeRequested();
+    if (!alive)
+        return;
     if (m_document->isWaiting())
         return;
 
@@ -291,6 +331,57 @@ void LiveController::checkWhileWaiting()
                         .arg(m_document->index().records.size()));
     emit waitingChanged(false, QString());
     emit rescanned(); // the visible set was replaced wholesale, exactly as a rotation
+}
+
+// The first bytes of a log that was open and empty. A format and an encoding are settled
+// against REAL BYTES or not at all (§6.5), and an empty file has none to offer — so a log
+// created before its writer has logged anything (the freshly rolled file of a service
+// that has not started yet, the very file somebody opens to watch it start) opens as an
+// ordinary tab with nothing settled, and this is where the settling it could not do
+// happens.
+//
+// It asks the OWNER, through the same signal and for the same reason the waiting seam
+// does: the pattern lives there and core must never hold one (invariant #3). What comes
+// back is a document reopened, re-decoded and re-indexed from the top — Document::resume()
+// — which is why the appended bytes must not be ingested here as well.
+//
+// RETURNS FALSE WHEN THIS CONTROLLER NO LONGER EXISTS, and every caller must obey it.
+// Answering this signal can end in the owner being told a different format — the dialog
+// it raises is the one the open owed — and applying one rebuilds the document, which
+// destroys the live controller and builds a new one. The emit then returns into a `this`
+// that has been deleted. A QPointer is what notices, since a QObject clears its weak
+// references from its own destructor whether it was deleted or deleteLater()'d.
+bool LiveController::settleFirstBytes()
+{
+    QPointer<LiveController> alive(this);
+    emit resumeRequested();
+    if (!alive)
+        return false;
+
+    // The log can go again between the tick that saw it grow and the open that settles
+    // it, exactly as it can on a resume from waiting. Then it IS waiting, and the waiting
+    // branch owns it from the next tick.
+    if (m_document->isWaiting() || !m_document->source())
+        return true;
+
+    if (!m_document->formatSettled()) {
+        // Nobody answered — a Document driven with no owner connected to the signal,
+        // which is a supported way to use this class (the signal's own note says so).
+        // The bytes still have to land, so this falls back to an ordinary append rather
+        // than dropping them: the format is whatever the empty open compiled, which for
+        // a manual pattern is already the right one.
+        ingestAppended();
+        return true;
+    }
+
+    syncBaseline();
+    diagLog("wait", QStringLiteral("%1 has its first bytes — format settled, records=%2")
+                        .arg(m_document->path())
+                        .arg(m_document->index().records.size()));
+    // The whole visible set was replaced, exactly as after a rotation: the records were
+    // cut and decoded again by a format nobody had when the tab opened.
+    emit rescanned();
+    return true;
 }
 
 void LiveController::beginWaiting(const QString &reason)

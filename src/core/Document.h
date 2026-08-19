@@ -142,9 +142,16 @@ public:
     const QString &waitReason() const { return m_waitReason; }
 
     // False until the format and encoding have been resolved against REAL BYTES. A
-    // document that opened into waiting has neither — there was nothing to sample —
-    // so resume() must settle them when the log finally arrives. Distinct from
-    // formatError(), which reports on a pattern that WAS compiled.
+    // document that opened into waiting has neither — there was nothing to sample — and
+    // neither has one that opened on an EMPTY file, which is not waiting at all: the log
+    // is right there and simply has no lines yet. Both settle through resume(), the
+    // first when the log turns up and the second when it is first written to; the
+    // caller that notices either is LiveController. Distinct from formatError(), which
+    // reports on a pattern that WAS compiled.
+    //
+    // Nothing may judge a format, persist one, or ask the user about one while this is
+    // false: there is nothing to judge it against, and the answer would be a guess the
+    // log is then stuck with (SPEC.md §4, ARCHITECTURE.md §6.5).
     bool formatSettled() const { return m_formatSettled; }
 
     // Enter the waiting state from an open document: drop the index, the runs and the
@@ -165,6 +172,12 @@ public:
     //
     // Returns false and stays waiting if the open did not stick (the file appeared
     // and vanished again between the check and the open, which is ordinary).
+    //
+    // ALSO CALLED ON A DOCUMENT THAT IS NOT WAITING, and that is not a misuse: a log
+    // that opened empty is open, readable and settled about nothing, and what it needs
+    // when its first bytes arrive is precisely this — reopen, settle the format and the
+    // encoding from the sample, re-index from the top. Leaving the waiting state is then
+    // a no-op. Do not "tidy" that into an early return for !isWaiting().
     bool resume(IFormatProvider &provider);
 
     LogSource *source() const { return m_source.get(); }

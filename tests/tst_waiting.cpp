@@ -59,6 +59,32 @@ private:
         return out;
     }
 
+    // The file exists and has nothing in it — a log created by a service that has not
+    // logged anything yet, which is the ordinary state of one for as long as it takes
+    // the first record to be written.
+    static bool touchEmpty(const QString &path)
+    {
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return false;
+        f.close();
+        return true;
+    }
+
+    // The same records in UTF-16LE with a BOM. The encoding is settled from the first
+    // bytes exactly as the format is, and from the same sample, so a log whose first
+    // bytes arrive after the file does is the case where getting it wrong is not a
+    // wrong annotation but an unreadable log (invariant #8, ARCHITECTURE.md §6.1).
+    static QByteArray utf16le(const QByteArray &ascii)
+    {
+        QByteArray out("\xFF\xFE", 2);
+        for (char c : ascii) {
+            out += c;
+            out += '\0';
+        }
+        return out;
+    }
+
     static bool writeWhole(const QString &path, const QByteArray &bytes)
     {
         QFile f(path);
@@ -95,6 +121,9 @@ private:
 
 private slots:
     void absentPathOpensWaitingAndSettlesFormatOnArrival();
+    void aLogThatTurnsUpEmptyIsJudgedOnItsFirstBytesInstead();
+    void anEmptyLogOpensAsAnOrdinaryTabAndSettlesWhenItIsWritten();
+    void theEncodingSettlesAgainstTheFirstBytesToo();
     void deletingAnOpenLogClearsToWaitingAndComesBack();
     void perFileStateSurvivesTheWait();
     void rotationInsideTheGracePeriodNeverWaits();
@@ -159,6 +188,146 @@ void TestWaiting::absentPathOpensWaitingAndSettlesFormatOnArrival()
     f.close();
     live.checkNow();
     QCOMPARE(model.rowCount(), 3);
+}
+
+// The same journey as the case above, but through the state a real logging application
+// actually passes through: the file is CREATED first and written to a moment later.
+// Existence used to be the whole test — the document resumed on the empty file, settled
+// its format and its encoding against a sample of nothing, and could never settle them
+// again, because resume() is a one-way door. A format was then judged, persisted and
+// reported on for a log nobody had seen a line of.
+void TestWaiting::aLogThatTurnsUpEmptyIsJudgedOnItsFirstBytesInstead()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("notyet.log"));
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.prepare(path, provider, Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(doc.isWaiting());
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    int resumes = 0;
+    wireResume(live, doc, model, QString::fromLatin1(kPattern), &resumes);
+    live.start();
+
+    // The file turns up EMPTY. It stops waiting — it is there, it may stay empty for
+    // ever, and "has not appeared yet" would be a lie about a file anyone can see.
+    QVERIFY(touchEmpty(path));
+    live.checkNow();
+    QVERIFY(!doc.isWaiting());
+    QCOMPARE(resumes, 1);
+    QCOMPARE(model.rowCount(), 0);
+    // But nothing has been judged, and this is the whole fix: an empty sample settles
+    // neither a format nor an encoding, so the flag stays down and says so.
+    QVERIFY(!doc.formatSettled());
+
+    // Ticks over a file that is still empty change nothing, and in particular do not
+    // settle anything against the emptiness by trying again.
+    live.checkNow();
+    live.checkNow();
+    QVERIFY(!doc.formatSettled());
+
+    QVERIFY(writeWhole(path, rec(0, "INFO ", "net.io", "hello")
+                                 + rec(1, "ERROR", "db.pool", "boom")));
+    live.checkNow();
+
+    // NOW it is judged, against the bytes there actually are.
+    QVERIFY(doc.formatSettled());
+    QCOMPARE(model.rowCount(), 2);
+    QCOMPARE(doc.index().records.at(1).priorityEnum(), Priority::Error);
+    QCOMPARE(doc.index().loggers.name(doc.index().records.at(0).loggerId),
+             QStringLiteral("net.io"));
+
+    // And it is an ordinary live log from here: the settle happened once and an append
+    // is an append.
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::Append));
+    f.write(rec(2, "WARN ", "net.io", "slow"));
+    f.close();
+    live.checkNow();
+    QCOMPARE(model.rowCount(), 3);
+    QCOMPARE(resumes, 2); // the arrival, and the first bytes — never once per tick
+}
+
+// A log that is there and empty is NOT waiting for anything, and must not be made to
+// look as though it were: it opens as an ordinary tab reading an ordinary empty file.
+// The other half of the same rule — nothing about it is judged until it has lines.
+void TestWaiting::anEmptyLogOpensAsAnOrdinaryTabAndSettlesWhenItIsWritten()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("empty.log"));
+    QVERIFY(touchEmpty(path));
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.open(path, provider, Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(!doc.isWaiting());
+    QVERIFY(doc.waitReason().isEmpty());
+    QVERIFY(doc.lastError().isEmpty());
+    QVERIFY(doc.source()); // a present file is held, empty or not
+    QCOMPARE(doc.index().records.size(), 0);
+    QVERIFY(!doc.formatSettled());
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    int resumes = 0;
+    wireResume(live, doc, model, QString::fromLatin1(kPattern), &resumes);
+    live.start();
+
+    live.checkNow();
+    QVERIFY(!doc.isWaiting()); // still there, still empty, still not waiting
+    QCOMPARE(resumes, 0);
+
+    QVERIFY(writeWhole(path, rec(0, "FATAL", "app", "first line ever")));
+    live.checkNow();
+
+    QCOMPARE(resumes, 1);
+    QVERIFY(doc.formatSettled());
+    QCOMPARE(model.rowCount(), 1);
+    QCOMPARE(doc.index().records.at(0).priorityEnum(), Priority::Fatal);
+}
+
+// The format is the half that shows: a pattern judged against nothing merely annotates
+// the log wrongly. The ENCODING is judged from the same sample and is the half that
+// makes the log unreadable — the bytes are cut into records and decoded by whatever
+// Decoder::detect() answers for an empty view, which for a UTF-16 log is neither.
+void TestWaiting::theEncodingSettlesAgainstTheFirstBytesToo()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("wide.log"));
+    QVERIFY(touchEmpty(path));
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    // Auto, which is the default and the whole point: the answer comes from the bytes.
+    QVERIFY(doc.open(path, provider, Encoding::Auto, QTimeZone::utc()));
+    QVERIFY(!doc.formatSettled());
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    wireResume(live, doc, model, QString::fromLatin1(kPattern));
+    live.start();
+
+    QVERIFY(writeWhole(path, utf16le(rec(0, "INFO ", "net.io", "hello")
+                                     + rec(1, "ERROR", "db.pool", "boom"))));
+    live.checkNow();
+
+    QVERIFY(doc.formatSettled());
+    QCOMPARE(doc.resolvedEncoding(), Encoding::Utf16LE);
+    QCOMPARE(model.rowCount(), 2);
+    // Read back as records rather than as one long line of NUL-separated rubbish,
+    // which is what a UTF-8 decoder makes of these bytes.
+    QCOMPARE(doc.index().records.at(1).priorityEnum(), Priority::Error);
+    QCOMPARE(doc.index().loggers.name(doc.index().records.at(0).loggerId),
+             QStringLiteral("net.io"));
 }
 
 void TestWaiting::deletingAnOpenLogClearsToWaitingAndComesBack()

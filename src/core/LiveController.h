@@ -144,6 +144,16 @@ signals:
     // be resumed. The owner must respond by calling Document::resume() with a provider
     // built from the file's remembered pattern.
     //
+    // EMITTED FROM TWO PLACES, and deliberately not two signals. The second is the first
+    // bytes of a log that was open but EMPTY (settleFirstBytes): a file created before
+    // its writer has logged anything is not waiting — it is right there — but nothing
+    // about its format or its encoding has been judged, because there was nothing to
+    // judge (Document::formatSettled). The request the owner has to answer is identical
+    // in both cases and Document::resume() is the whole of it, so a second signal would
+    // only be a second wire for somebody to forget to connect — and a document whose
+    // owner connects one but not the other would settle its format against an empty
+    // sample and keep it for the session, which is the exact fault this exists to stop.
+    //
     // A signal rather than a call, because this class is UI-free core and has no
     // pattern to build a provider from — the pattern lives in the owner and must stay
     // there (invariant #3). The consequence is worth stating plainly: a document whose
@@ -164,6 +174,11 @@ private:
     void publishSourceStatus();
     // The waiting half of checkNow(): returns true when it handled this tick.
     void checkWhileWaiting();
+    // The first bytes of a log that was open with none: ask the owner to settle its
+    // format and encoding against them before anything is read (§6.5). Returns FALSE
+    // when answering destroyed this controller, which the owner does when the format
+    // the dialog settled on is a different one; the caller must then touch nothing.
+    bool settleFirstBytes();
     void beginWaiting(const QString &reason);
 
     Document    *m_document;

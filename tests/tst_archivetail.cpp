@@ -73,7 +73,7 @@ private:
             model.beginFilterReset();
             const bool ok = doc.resume(provider);
             if (ok) {
-                // Exactly what MainWindow::resumeWaitingDocument does after a successful
+                // Exactly what MainWindow::resumeOrSettleDocument does after a successful
                 // resume: the intern tables were rebuilt from scratch, and a filter set
                 // before the bytes arrived still has to apply to them.
                 doc.resolveHighlighters();
