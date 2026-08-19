@@ -143,48 +143,24 @@ advance out and `viewportCols()` re-raises the count to it, so one column of
 clipping survived a fix to the division alone. What the fix does NOT reach is
 recorded as entry 22 below, and was found while testing it.
 
+Entry 18 has gone too: under Always On the message cell was laid out from its own
+origin to the right edge of the viewport whatever its section width, and the columns
+are painted in visual order with no fill of their own, so every field after the
+message was drawn on top of it on the record's first line — the line carrying every
+field there is. It needed no gesture to reach, which the entry did not know: an
+ordinary `%d [%t] %-5p %m (%c)%n` puts the subsystem after the message, and turning
+Always On on was the whole of what the reader did. The message now wraps within its
+own section whenever anything is visible after it, and to the viewport's right edge —
+byte for byte what shipped — while it is the last visible column. The fix took an
+unreported defect with it: hiding the Message column from the header menu left every
+record at the wrapped height its now-invisible message wanted, so a log rendered as
+one line of fields followed by three blank rows, per record, with the scrollbar still
+spanning the lines nothing was in.
+
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
-
----
-
-### 18. Under Always On the message column is drawn over any column moved after it
-
-`LogView.cpp:1157` wraps the message cell within `availW = qMax(10, vw - x)` —
-its own origin to the **right edge of the viewport**, whatever its section width
-— and paints the columns in visual order, so the message is drawn first and the
-fields after it are drawn on top of it with no fill of their own. (Line numbers
-in this entry are as of the commit that fixed entry 9.) The selected record's
-cell under *Selected record only* is the same expression at `:1209`, so the mode
-does not save it either. That is exactly
-right while the message column is last, which is where the format puts it and
-where `SPEC.md` §5's "every record wraps to the viewport width" is written from.
-It is not right once the column has been dragged: the header is movable
-(`LogView.cpp:380`), and with the message column moved off the end every
-following field's cell sits inside the message's wrap area and the two texts are
-drawn one over the other on the record's first line — two strings of glyphs in
-the same colour on the same pixels, unreadable, for as long as the columns stay
-in that order.
-
-Measured while fixing entry 9: with the message column dragged to visual 0 in a
-880×400 view, its wrap width is the whole 864 px of the viewport and the Time,
-Thread, Priority and Subsystem cells occupy 0–440 px of it. The lines below the
-first are message text alone, so the damage is confined to the record's first
-line — which is the one carrying every field the reader moved the column to see.
-
-Not entry 9, which is now fixed: the rows are the right height and every
-character is drawn. What is wrong is where. Two shapes of fix are open and the
-choice is a product decision rather than a mechanical one: wrap the message
-within its own section when it is not the last visual column (which makes the
-wrap width a per-layout question rather than "to the right edge", and would want
-`SPEC.md` §5 rewording), or wrap it to the right edge only while it is last and
-otherwise treat a move as the reader asking for the narrow column. Note that the
-height model does not care either way — `viewportCols()` and the paint already
-derive the same width from the same origin, so both stay in step as long as they
-keep deriving it from one expression. (That expression now exists and is
-`LogView::messageWrapWidth()`, entry 11's fix.)
 
 ---
 
@@ -224,10 +200,13 @@ the seed must go on being the two-callers-only pass it is (`CLAUDE.md`: construc
 and `onIndexFinished`, never the ingest path), and neither may overwrite a width
 the user set.
 
-It interacts with entry 18. If the answer there is that the message cell wraps
-within its own section rather than to the viewport's right edge, then a message
-column pushed off the edge is a column with no visible cell at all rather than one
-whose text is off to the right — so the two want deciding together.
+It was thought to interact with entry 18, and does not. Entry 18 is fixed, and the
+shape it was fixed in tests whether the message is the last VISIBLE column: with
+something after it the cell wraps within its own section, and with nothing after it
+the branch is byte for byte the one that shipped. This collapse happens in natural
+order, with the message last, so it takes that unchanged branch — a message column
+pushed off the edge is still a column whose text is off to the right rather than one
+with no visible cell at all. The two are decided independently after all.
 
 ---
 

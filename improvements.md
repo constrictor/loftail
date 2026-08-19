@@ -205,3 +205,24 @@ is recorded rather than filed as a defect: the next pass over the pane should no
 have to re-derive it. If it ever becomes reachable, the fix is a
 `changeEvent(QEvent::PaletteChange)` that clears `m_noteState` and calls
 `updateApplyNote()` — not the removal of the guard.
+
+### 10. Nothing puts the columns back in the order they opened in
+
+The header is movable (`LogView.cpp:436`) and the header context menu offers *Fit
+to Contents*, *Reset Widths* and a tick per column — and nothing else.
+`LogView::resetColumnWidths()` (`:2338`) clears `m_userSizedColumns` and re-seeds
+the widths; no command anywhere touches the visual ORDER. So a reader who has
+dragged four columns into an order they cannot read has no route back except
+dragging each one again by hand and guessing where it started, and the state is
+saved: `saveColumnState()` is `QHeaderView::saveState()`, which carries the visual
+order, stored per view in the session (`SessionStore.h:60`), so the layout they
+made a mess of is the one the next launch opens on.
+
+Found while fixing `bugs.md` 18, where a dragged column order was how the defect
+was reached. The fix is small — a *Reset Column Order* item beside *Reset Widths*,
+calling `QHeaderView::moveSection()` back to identity for every logical index (or
+`restoreState()` on a blob captured at construction), and marking nothing, since a
+reset is loftail's own choice and not the user's. Worth considering whether the two
+items should be one *Reset Columns*: the widths and the order are the same idea to
+a reader who wants the table back the way it opened, and two commands that both
+say "reset" invite the guess that one of them is the wrong one.
