@@ -96,6 +96,12 @@ constexpr int kFallbackCharWidth = 8;
 // A seed reads the intern table but is not a fit: one 300-character logger name may not
 // open a column half a window wide before the user has asked for anything.
 constexpr int kSeedNameMaxChars = 40;
+// What the seed keeps on screen for the message column, in characters. NOT kMinWrapCols,
+// which is the floor a wrapped LAYOUT may not go below — a last resort against one record
+// filling the screen (bugs.md 11). This is the other question: how much of the message a
+// reader must be able to read without scrolling sideways, once the scan finishes and the
+// columns before it are seeded from the complete intern tables (bugs.md 19).
+constexpr int kSeedMessageChars = 40;
 // What "Fit to Contents" is allowed to measure, so the menu item costs the same on a
 // ten-million-record log as on a small one.
 constexpr int kFitSampleRecords = 400;
@@ -997,6 +1003,13 @@ void LogView::setHorizontalOffset(int value)
 void LogView::resizeEvent(QResizeEvent *event)
 {
     QAbstractScrollArea::resizeEvent(event);
+    // A width worth consulting exists from here on, and this flag is the WHOLE of what
+    // the resize path does for the seed: it does not re-seed. The seed is the
+    // three-callers pass it has always been (constructor, font change, scan completion,
+    // plus the explicit Reset), and calling it from here would take a dragged window
+    // width as licence to overwrite widths the reader had settled on.
+    if (viewport()->width() > 0)
+        m_viewportLaidOut = true;
     layoutHeader();
     positionFollowButton();
     if (estimating()) {
@@ -2348,7 +2361,7 @@ int LogView::sampledContentWidth(int logical) const
     return best;
 }
 
-int LogView::seedWidthOf(int logical) const
+int LogView::seedFloorOf(int logical) const
 {
     const QVector<Field> &fields = m_document->format().fields;
     if (logical < 0 || logical >= fields.size())
@@ -2359,15 +2372,21 @@ int LogView::seedWidthOf(int logical) const
     // The style's inset is added to the CAPTION term and to nothing else — a cell is
     // painted at the raw section rect, so a value owes the header's margin nothing and
     // widening every column by it would be a gutter nobody asked for.
-    int w = qMax(textWidth(m_model->headerData(logical, Qt::Horizontal, Qt::DisplayRole)
-                               .toString())
-                     + headerLabelInset(logical),
-                 charsWidth(seedColumnChars(role)));
-    // Whatever the scan has interned so far, clamped — the constructor sees an empty
-    // table and answers 0, which is why the per-role allowance above is a floor and not
-    // an alternative.
-    w = qMax(w, widestInternedWidth(logical, kSeedNameMaxChars));
+    const int w = qMax(textWidth(m_model->headerData(logical, Qt::Horizontal, Qt::DisplayRole)
+                                     .toString())
+                           + headerLabelInset(logical),
+                       charsWidth(seedColumnChars(role)));
     return clampColumnWidth(w + kColumnPadding);
+}
+
+int LogView::seedWidthOf(int logical) const
+{
+    // Whatever the scan has interned so far, clamped — the constructor sees an empty
+    // table and answers 0, which is why the caption-and-typical-value width above is a
+    // floor and not an alternative.
+    return clampColumnWidth(
+        qMax(seedFloorOf(logical), widestInternedWidth(logical, kSeedNameMaxChars)
+                                       + kColumnPadding));
 }
 
 int LogView::contentWidthOf(int logical) const
@@ -2402,13 +2421,99 @@ int LogView::contentWidthOf(int logical) const
     return clampColumnWidth(w + kColumnPadding);
 }
 
+void LogView::boundSeedToViewport(QVector<int> &width) const
+{
+    // The seed is measured from the font and the data and knows nothing about how wide
+    // the view is, which is right per column and wrong for the SUM: at the shipped size a
+    // 40-character subsystem and a 40-character thread name come to some 850 px of Time,
+    // Thread, Priority and Subsystem, and on an ordinary window with a pane docked that
+    // puts the message column's origin at or past the right edge — at the exact moment
+    // the scan finishes and MainWindow::onIndexFinished re-seeds those two columns from
+    // the complete intern tables. Nothing renders wrongly; the message is simply not on
+    // screen any more, on a log that was perfectly readable a moment earlier (bugs.md 19).
+    //
+    // So the seed is bounded by the SUM, never per column: the columns other than the
+    // message may not take more than the viewport less kSeedMessageChars of message. Two
+    // things about how the shortfall is distributed. It comes off the WIDEST columns
+    // first — one cap lowered over all of them at once until they fit — because a column
+    // is only ever over-wide here by asking for a long interned name, and Priority has
+    // nothing to give. And no column goes below seedFloorOf(), its caption-and-typical-
+    // value width, which is EXACTLY what it was seeded at before the scan finished: the
+    // bound gives back the growth the intern tables asked for and never a pixel more, so
+    // on a window too narrow for even that the layout is the one that was already on
+    // screen and the fix cannot make a view worse than it found it.
+    if (!m_viewportLaidOut)
+        return; // nothing has been laid out yet, so there is no width to consult
+    const int budget = viewport()->width();
+    if (budget <= 0)
+        return;
+    const int msg = messageColumn();
+    if (msg < 0 || !columnIsOnScreen(msg))
+        return; // no message to protect: a format with no %m scrolls sideways as it always did
+
+    // A hidden column takes no room. A width the user chose is theirs and is spent from
+    // the budget without being touched, which is what keeps this from fighting a drag.
+    int fixed = 0;
+    QVector<int> reducible;
+    for (int c = 0; c < width.size(); ++c) {
+        if (c == msg || !columnIsOnScreen(c))
+            continue;
+        if (m_userSizedColumns.value(c, false))
+            fixed += width.at(c);
+        else
+            reducible.push_back(c);
+    }
+    int total = fixed;
+    int widest = 0;
+    for (const int c : std::as_const(reducible)) {
+        total += width.at(c);
+        widest = qMax(widest, width.at(c));
+    }
+    const int reserve = charsWidth(kSeedMessageChars);
+    if (total + reserve <= budget)
+        return; // it fits: the seed stands, exactly as it did before this existed
+
+    QVector<int> floors;
+    floors.reserve(reducible.size());
+    for (const int c : std::as_const(reducible))
+        floors.push_back(qMin(seedFloorOf(c), width.at(c)));
+
+    const int allowance = budget - reserve - fixed;
+    const auto sumAt = [&](int cap) {
+        int s = 0;
+        for (int i = 0; i < reducible.size(); ++i)
+            s += qMax(floors.at(i), qMin(width.at(reducible.at(i)), cap));
+        return s;
+    };
+    // The largest cap the allowance pays for. Binary search over pixels rather than a
+    // sort: at most a couple of dozen columns, and it needs no special case for two
+    // columns of equal width or for one already below its own floor.
+    int lo = 0;
+    int hi = widest;
+    while (lo < hi) {
+        const int mid = lo + (hi - lo + 1) / 2;
+        if (sumAt(mid) <= allowance)
+            lo = mid;
+        else
+            hi = mid - 1;
+    }
+    for (int i = 0; i < reducible.size(); ++i) {
+        const int c = reducible.at(i);
+        width[c] = qMax(floors.at(i), qMin(width.at(c), lo));
+    }
+}
+
 void LogView::seedColumnWidths()
 {
     const int cols = m_model->columnCount();
+    QVector<int> width(cols, 0);
+    for (int c = 0; c < cols; ++c)
+        width[c] = m_userSizedColumns.value(c, false) ? m_header->sectionSize(c) : seedWidthOf(c);
+    boundSeedToViewport(width);
     for (int c = 0; c < cols; ++c) {
         if (m_userSizedColumns.value(c, false))
             continue;
-        applyColumnWidth(c, seedWidthOf(c));
+        applyColumnWidth(c, width.at(c));
     }
 }
 

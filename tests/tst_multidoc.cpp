@@ -13,6 +13,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
+#include <QImage>
 #include <QLabel>
 #include <QListWidget>
 #include <QAbstractButton>
@@ -163,6 +164,7 @@ private slots:
     // finishes and the intern tables are complete, which only a real window runs — and
     // the two header-menu commands are actions on that window like any other.
     void theSubsystemColumnWidensOnceTheScanHasSeenEveryName();
+    void theScanCompletionSeedLeavesTheMessageColumnOnScreen();
     void theHeaderMenuFitsAndResetsTheColumnWidths();
 
     // SEVERAL logs asked for in ONE gesture (SPEC.md §3). Dropping files on the window
@@ -769,7 +771,12 @@ void TestMultiDoc::theSubsystemColumnWidensOnceTheScanHasSeenEveryName()
     writeLog(wide, longName, 40);
 
     MainWindow w;
-    w.resize(900, 600);
+    // Wide, and deliberately so: the seed is bounded by what is on screen (bugs.md 19),
+    // so the widest interned name is what the column takes only where there is room for
+    // it beside a readable message column. Wider than any window this case needs, because
+    // what a document area is worth depends on the font the PANES are labelled in. The
+    // narrow case, which derives its width rather than choosing one, is the sibling below.
+    w.resize(2400, 600);
     w.show();
     w.openFile(wide);
     QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
@@ -788,6 +795,137 @@ void TestMultiDoc::theSubsystemColumnWidensOnceTheScanHasSeenEveryName()
 // The two commands the column header menu offers besides the visibility list. They are
 // window-owned actions with object names, so a test drives them exactly as it drives the
 // timestamp modes — without opening a modal menu.
+// The other side of the same seed, and the defect it had (bugs.md 19). The widths above
+// are measured from the font and the data and know nothing about how wide the view is,
+// which is right per column and wrong for the SUM: a 40-character subsystem beside a
+// 40-character thread name pushes the message column's origin to or past the right edge
+// of an ordinary window — at the exact moment the scan finishes and this seed runs. A log
+// that was readable while it was indexing loses its messages when it finishes loading.
+//
+// Driven through the real window because the scan-completion seed is MainWindow's, and
+// the pixels are read back because "the message is off the edge" is not visible in any
+// value the view reports: the geometry stays perfectly self-consistent either way.
+//
+// Every width here is DERIVED, never written down. What the seed asks for depends on the
+// font, and what a document area is worth depends on the font the panes beside it are
+// labelled in — the two move independently, and a window size chosen against one of them
+// says nothing on a platform with different fonts. So the case measures what the seed
+// wants, then sizes the window until the document area is exactly that: the one width at
+// which the old behaviour leaves precisely nothing of the message on screen.
+void TestMultiDoc::theScanCompletionSeedLeavesTheMessageColumnOnScreen()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    // Two copies: the first settles the panes at the width these names give them, so the
+    // document area does not move under the second one's scan-completion seed.
+    const QString warmup = m_dir.filePath(QStringLiteral("wide-names-a.log"));
+    const QString path = m_dir.filePath(QStringLiteral("wide-names-b.log"));
+    for (const QString &p : {warmup, path}) {
+        QFile f(p);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        for (int i = 0; i < 40; ++i)
+            f.write(QStringLiteral("2026-07-21 10:00:%1,000 [worker-thread-number-seventeen"
+                                   "-of-many] INFO  com.example.deeply.nested.subsystem.of"
+                                   ".some.service - %2\n")
+                        .arg(i % 60, 2, 10, QLatin1Char('0'))
+                        .arg(QStringLiteral("message body number ").repeated(6))
+                        .toUtf8());
+        f.close();
+    }
+
+    // What the seed asks for with nothing bounding it — the widths that shipped. A view
+    // that has never been laid out has no viewport to consult, which is the one state in
+    // which the bound is inert by construction.
+    Document probe;
+    QVERIFY2(probe.open(path, QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                        Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(probe.lastError()));
+    LogModel probeModel(&probe);
+    LogView probeView(&probe, &probeModel);
+    const int message = columnOfRole(probe, FieldRole::Message);
+    QVERIFY(message >= 0);
+    int unbounded = 0;
+    for (int c = 0; c < probeModel.columnCount(); ++c)
+        if (c != message)
+            unbounded += probeView.header()->sectionSize(c);
+    const int em = qMax(1, probeView.fontMetrics().horizontalAdvance(QStringLiteral("0")));
+
+    MainWindow w;
+    w.resize(1400, 700);
+    w.show();
+    w.openFile(warmup);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    waitUntilIndexed(w);
+    auto *first = qobject_cast<DocumentView *>(docTabs(w)->widget(0));
+    QVERIFY(first);
+
+    // Narrow the window until the document area is the width the seed wants, less a
+    // couple of characters: too narrow for the seeded columns, wide enough that the
+    // message column's own share is there to be protected.
+    const int target = unbounded - 4 * em;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        const int have = first->logView()->viewport()->width();
+        if (qAbs(have - target) <= 2)
+            break;
+        w.resize(w.width() + (target - have), w.height());
+        QCoreApplication::processEvents();
+    }
+    const int well = first->logView()->viewport()->width();
+    if (qAbs(well - target) > 2 * em)
+        QSKIP("the window could not be sized to the width this case is about");
+
+    w.openFile(path);
+    QTRY_COMPARE(docTabs(w)->count(), 2);
+    waitUntilIndexed(w);
+    auto *page = qobject_cast<DocumentView *>(docTabs(w)->widget(1));
+    QVERIFY(page);
+    LogView *view = page->logView();
+    QCOMPARE(columnOfRole(*page->context()->doc, FieldRole::Message), message);
+
+    const int origin = view->header()->sectionViewportPosition(message);
+    const int visible = view->viewport()->width() - origin;
+    QVERIFY2(visible >= 20 * em,
+             qPrintable(QStringLiteral("the message column starts at %1 px of a %2 px "
+                                       "viewport (the seed asks for %3 px before it): "
+                                       "%4 px of it are on screen")
+                            .arg(origin)
+                            .arg(view->viewport()->width())
+                            .arg(unbounded)
+                            .arg(visible)));
+
+    // And there is message text in those pixels, which is the thing the reader lost.
+    QImage img(view->viewport()->size(), QImage::Format_ARGB32);
+    img.fill(Qt::transparent);
+    view->viewport()->render(&img);
+    QHash<QRgb, int> tally;
+    for (int y = 0; y < img.height(); ++y)
+        for (int x = origin; x < img.width(); ++x)
+            ++tally[img.pixel(x, y)];
+    QRgb background = 0;
+    int most = -1;
+    for (auto it = tally.cbegin(); it != tally.cend(); ++it) {
+        if (it.value() > most) {
+            most = it.value();
+            background = it.key();
+        }
+    }
+    int ink = 0;
+    for (int y = 0; y < img.height(); ++y) {
+        for (int x = origin; x < img.width(); ++x) {
+            const QRgb px = img.pixel(x, y);
+            if (qAbs(qRed(px) - qRed(background)) > 30
+                || qAbs(qGreen(px) - qGreen(background)) > 30
+                || qAbs(qBlue(px) - qBlue(background)) > 30)
+                ++ink;
+        }
+    }
+    QVERIFY2(ink > 200, qPrintable(QStringLiteral("only %1 painted pixels right of the "
+                                                  "message column's origin at %2")
+                                       .arg(ink)
+                                       .arg(origin)));
+}
+
 void TestMultiDoc::theHeaderMenuFitsAndResetsTheColumnWidths()
 {
     if (QFontDatabase::families().isEmpty())
