@@ -307,6 +307,10 @@ private slots:
     void theEmptyTableAsksForARuleWhileAFileIsOpen();
     void thePlaceholderGoesAsSoonAsThereIsARuleAndComesBackWithTheLast();
 
+    // A re-render of the time editors is not an edit to the rules (bugs.md #5).
+    void aRerenderThatMovesNoZoneLeavesTheSeededRulesAlone();
+    void aDisplayZoneChangeMovesEveryRulesBoundsAndNothingElse();
+
     // A button under the table is live only while it has something to act on.
     void theRuleButtonsAreDeadWhileThereIsNothingToActOn();
     void upAndDownAreDeadAtTheEndsOfTheList();
@@ -1795,6 +1799,109 @@ void TestHighlighterPane::thePlaceholderGoesAsSoonAsThereIsARuleAndComesBackWith
 // pressing any of them did nothing. Up and Down have the sharper version of the same
 // problem — they are live for a selected rule, but not at the end of the list they would
 // move it past. Found by object name, never by their labels, which are translated prose.
+
+// refreshTimeBounds() is called whenever the timestamp column's terms move — a display
+// mode change, a source zone change, and a RUN SELECTION, which moves the baseline the
+// two seconds modes count from. It used to answer all three by reading the whole of
+// AxisEditor::criteria() back into the selected rule, and criteria() is not the inverse
+// of setCriteria(): a QDateTimeEdit always holds a datetime, so a rule with no bounds
+// came back holding 2000-01-01, and a value axis that is switched off came back claiming
+// to cover nothing. Both are compared by MatchCriteria::operator==, so merely clicking a
+// run row rewrote this log's seeded rules, lit the Highlighters marker and — through
+// commit() → the Document → the session — persisted a state no gesture could undo.
+//
+// The assertion is on the RULES and not on the marker: a patch that fixed only the
+// bounds would leave the rules rewritten and still pass a marker-only test, because
+// coversAll would carry the difference on its own.
+void TestHighlighterPane::aRerenderThatMovesNoZoneLeavesTheSeededRulesAlone()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+    doc.highlighters().rules = HighlighterSet::defaults().rules; // what MainWindow seeds
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    QCOMPARE(ruleTable(pane)->rowCount(), HighlighterSet::defaults().rules.size());
+    // A rule IS selected, which is the state the write-back happened in — with none
+    // selected the old code wrote nothing and this would prove nothing.
+    selectRule(pane, 0);
+    QVERIFY(!pane.hasCustomRules());
+
+    // Seconds, then back: neither moves the display zone (Document::recomputeDisplayZone
+    // leaves it at the source zone for both), so nothing about a stored bound has become
+    // wrong and nothing may be written.
+    doc.setTimeDisplay(TimeDisplay::EpochSeconds);
+    pane.refreshTimeBounds();
+    QCOMPARE(doc.highlighters().rules, HighlighterSet::defaults().rules);
+    QVERIFY(!pane.hasCustomRules());
+
+    doc.setTimeDisplay(TimeDisplay::AsWritten);
+    pane.refreshTimeBounds();
+    QCOMPARE(doc.highlighters().rules, HighlighterSet::defaults().rules);
+    QVERIFY(!pane.hasCustomRules());
+
+    // "Seconds from run start" counts from the SELECTED run, so picking a run re-renders
+    // the editors through this very function — the gesture the defect was found by.
+    doc.setTimeDisplay(TimeDisplay::RunSeconds);
+    pane.refreshTimeBounds();
+    doc.selectRun(0);
+    pane.refreshTimeBounds();
+    QCOMPARE(doc.highlighters().rules, HighlighterSet::defaults().rules);
+    QVERIFY(!pane.hasCustomRules());
+}
+
+// The other half of the same rule: what a zone change DOES invalidate is every rule's
+// wall clock, not merely the selected one's. MatchCriteria stores display-zone digits
+// and resolve() reads them in whatever zone is current, so a rule left alone comes to
+// name a different instant with nothing on screen changing.
+//
+// Deterministic zones, never the machine's: the file is written in UTC+3 and the column
+// is switched to UTC, so the shift is three hours wherever this runs.
+void TestHighlighterPane::aDisplayZoneChangeMovesEveryRulesBoundsAndNothingElse()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+    doc.highlighters().rules = HighlighterSet::defaults().rules;
+    doc.reparseTimestamps(QTimeZone(3 * 3600)); // as written == UTC+3
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+
+    const QDateTime bound(QDate(2026, 7, 21), QTime(10, 0, 0));
+    MatchCriteria c;
+    c.timeEnabled = true;
+    c.start = bound;
+    c.end = bound.addSecs(60);
+    pane.addRule(c); // rule 3
+    pane.addRule(c); // rule 4, and the one the editor is showing
+
+    const int seeded = HighlighterSet::defaults().rules.size();
+    QCOMPARE(doc.highlighters().rules.size(), seeded + 2);
+    QCOMPARE(ruleTable(pane)->currentRow(), seeded + 1);
+
+    doc.setTimeDisplay(TimeDisplay::Utc);
+    pane.refreshTimeBounds();
+
+    const QVector<HighlightRule> &rules = doc.highlighters().rules;
+    for (int row = seeded; row < rules.size(); ++row) {
+        // Both rules, not just the selected one: 10:00 in UTC+3 is 07:00 UTC, which is
+        // the same instant asked for in the terms the column now reads in.
+        QCOMPARE(rules.at(row).match.start, QDateTime(QDate(2026, 7, 21), QTime(7, 0, 0)));
+        QCOMPARE(rules.at(row).match.end, QDateTime(QDate(2026, 7, 21), QTime(7, 1, 0)));
+        QVERIFY(rules.at(row).match.timeEnabled);
+    }
+    // ...and the three seeded rules, which name no bound, are untouched.
+    QCOMPARE(rules.mid(0, seeded), HighlighterSet::defaults().rules);
+
+    // Back again, and the digits come back: the bound is the instant, and a round trip
+    // through two zones has to leave it where it was.
+    doc.setTimeDisplay(TimeDisplay::AsWritten);
+    pane.refreshTimeBounds();
+    for (int row = seeded; row < rules.size(); ++row)
+        QCOMPARE(rules.at(row).match.start, bound);
+}
 
 void TestHighlighterPane::theRuleButtonsAreDeadWhileThereIsNothingToActOn()
 {

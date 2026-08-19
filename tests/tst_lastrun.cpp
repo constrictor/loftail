@@ -7,12 +7,16 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 
+#include <QTableWidget>
+
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
 #include "LiveController.h"
 #include "LogModel.h"
 #include "LogView.h"
+#include "Highlight.h"
+#include "HighlighterPane.h"
 #include "MainWindow.h"
 #include "RunPane.h"
 
@@ -116,6 +120,7 @@ private slots:
     void aNewRunMovesTheViewOntoIt();
     void aBackgroundTabFollowsTheNewRunToo();
     void aPinnedRunIsLeftWhereItIs();
+    void aRestartDoesNotRewriteTheSeededHighlightRules();
 };
 
 void TestLastRun::aNewRunMovesTheViewOntoIt()
@@ -228,6 +233,45 @@ void TestLastRun::aPinnedRunIsLeftWhereItIs()
     QCOMPARE(doc->selectedRun(), 0); // ...but not switched to
     QCOMPARE(ctx->model->rowCount(), 3);
     QCOMPARE(list->currentRow(), RunPane::kFirstRunRow);
+}
+
+// The tick above goes through MainWindow::followLastRunIfMoved(), which re-renders the
+// two panes' time bounds because the run baseline the seconds modes count from has just
+// moved. HighlighterPane::refreshTimeBounds() used to answer that by reading the whole
+// axis editor back into the selected rule, so a log that simply RESTARTED rewrote its
+// seeded highlight rules, marked the Highlighters tab and persisted both — with nobody
+// having touched anything, and once per tick for as long as it kept restarting
+// (bugs.md #5).
+void TestLastRun::aRestartDoesNotRewriteTheSeededHighlightRules()
+{
+    const QString path = m_dir.filePath(QStringLiteral("seeded.log"));
+    writeOneRun(path);
+
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+    w.openFile(path);
+    waitUntilIndexed(w);
+    typeRunPattern(w);
+
+    DocumentContext *ctx = contextAt(w, 0);
+    QVERIFY(ctx);
+    Document *doc = ctx->doc.get();
+    // A rule is selected in the pane, which is the state the write-back happened in.
+    auto *table = w.findChild<QTableWidget *>(QStringLiteral("ruleTable"));
+    QVERIFY(table);
+    QCOMPARE(table->rowCount(), HighlighterSet::defaults().rules.size());
+    table->setCurrentCell(0, HighlighterPane::kColRule);
+    QCOMPARE(doc->highlighters().rules, HighlighterSet::defaults().rules);
+
+    appendNewRun(path);
+    tick(w, 0);
+
+    QCOMPARE(doc->selectedRun(), 1); // the retarget really did happen...
+    QCOMPARE(doc->highlighters().rules, HighlighterSet::defaults().rules); // ...and cost nothing
+    auto *pane = w.findChild<HighlighterPane *>();
+    QVERIFY(pane && !pane->hasCustomRules());
 }
 
 int main(int argc, char *argv[])

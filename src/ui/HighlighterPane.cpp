@@ -32,6 +32,7 @@
 #include <QStyledItemDelegate>
 #include <QSystemTrayIcon>
 #include <QTableWidget>
+#include <QTimeZone>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QVector>
@@ -39,6 +40,27 @@
 namespace loftail {
 
 namespace {
+
+// Re-express one display-zone wall clock in a new display zone, keeping the INSTANT it
+// names (§5.1: the bound is the moment, the digits are only how it is asked for).
+// Returns whether the digits actually moved.
+//
+// The stored form carries no zone — it is what a QDateTimeEdit produced, or what an ISO
+// string with no offset parsed to — so the answer is rebuilt from the converted date and
+// time rather than handed back with a zone attached, which criteria() and resolve() would
+// then read a second time.
+bool reexpressBound(QDateTime &wallClock, const QTimeZone &from, const QTimeZone &to)
+{
+    if (!wallClock.isValid())
+        return false;
+    QDateTime at = wallClock;
+    at.setTimeZone(from);
+    const QDateTime moved = at.toTimeZone(to);
+    if (!moved.isValid() || (moved.date() == wallClock.date() && moved.time() == wallClock.time()))
+        return false;
+    wallClock = QDateTime(moved.date(), moved.time());
+    return true;
+}
 
 constexpr int kGlyphPx = 14;
 // Inside a cell that holds a widget: enough that a framed button does not touch the row
@@ -1252,6 +1274,10 @@ void HighlighterPane::setDocument(Document *document)
 {
     m_document = document;
     setEnabled(document != nullptr);
+    // The zone the rules about to be taken from this document are written in. Rebinding
+    // is not a zone change, so nothing is re-expressed here — refreshTimeBounds() is
+    // what moves it, and it moves the bounds with it.
+    m_boundZone = document ? document->displayZone() : QTimeZone();
     m_axes->setDocument(document);
     m_rules = document ? document->highlighters().rules : QVector<HighlightRule>();
     if (normaliseRules())
@@ -1277,15 +1303,55 @@ void HighlighterPane::refreshDiscoveredLists()
 
 void HighlighterPane::refreshTimeBounds()
 {
+    // The editors first: they show the selected rule's bounds in whatever terms the
+    // timestamp column now reads in, which is a question about digits and not about
+    // rules (AxisEditor::refreshTimeBounds).
     m_axes->refreshTimeBounds();
-    // The shown instant is unchanged, but the rule's stored wall clock was written in
-    // the old zone; take the re-rendered values back so the two cannot disagree.
-    const int row = currentRow();
-    if (row >= 0 && row < m_rules.size()) {
-        m_rules[row].match = m_axes->criteria();
-        commit();
-        refreshRow(row);
+
+    // Then the rules themselves — and ONLY their time bounds, ONLY the valid ones, and
+    // only when the DISPLAY ZONE moved. Three things this must not become:
+    //
+    //  - It must not read the whole of criteria() back into the selected rule. That
+    //    function is not the inverse of setCriteria(): the date editors always hold a
+    //    datetime, so a rule with no bounds comes back holding 2000-01-01. Writing
+    //    that back is what made clicking a run row — or a live log simply restarting,
+    //    through followLastRunIfMoved() — rewrite this log's seeded rules, light the
+    //    Highlighters marker and persist both, with no gesture and no way back.
+    //  - It must not fix up the selected rule alone. Every rule's digits are read in
+    //    the current display zone by MatchCriteria::resolve(), so a zone change
+    //    re-points all of them; leaving the rest alone silently moves what they match
+    //    while the pane shows no change at all.
+    //  - It must not key on the display MODE or on the seconds baseline. A run
+    //    selection and an As Written ↔ Epoch Seconds switch leave Document's display
+    //    zone exactly where it was (recomputeDisplayZone), so they legitimately write
+    //    nothing here.
+    //
+    // The conversion is done on the STORED value, old zone → instant → new zone, so a
+    // bound survives a zone change intact whether or not its rule is the one on screen.
+    const QTimeZone was = m_boundZone;
+    const QTimeZone now = m_document ? m_document->displayZone() : QTimeZone();
+    m_boundZone = now;
+    if (!was.isValid() || !now.isValid() || was == now)
+        return;
+
+    bool moved = false;
+    for (int row = 0; row < m_rules.size(); ++row) {
+        MatchCriteria &m = m_rules[row].match;
+        // Both bounds, never short-circuited: `||` would leave `end` in the old zone
+        // whenever `start` had already moved.
+        const bool startMoved = reexpressBound(m.start, was, now);
+        const bool endMoved = reexpressBound(m.end, was, now);
+        if (!startMoved && !endMoved)
+            continue;
+        moved = true;
+        refreshRow(row); // the summary names the bounds
     }
+    // commit() is what emits highlightersChanged() and re-tests the marker, and this
+    // function is on the ingest path via followLastRunIfMoved(): call it only when a
+    // rule actually changed, or every tick of a log that restarts pays for a re-resolve
+    // and a tab-bar relayout.
+    if (moved)
+        commit();
 }
 
 void HighlighterPane::addRule(const MatchCriteria &criteria)

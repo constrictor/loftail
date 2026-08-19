@@ -4,6 +4,7 @@
 
 #include <QColor>
 #include <QJsonObject>
+#include <QTimeZone>
 #include <QVector>
 #include <QWidget>
 
@@ -77,10 +78,23 @@ public:
     // Refresh the editor's discovered subsystem/thread lists as indexing progresses.
     void refreshDiscoveredLists();
 
-    // Re-render the selected rule's time-range editors after the display zone moves
-    // (SPEC.md §4). A time-range rule holds wall clock, so leaving the digits alone
-    // would silently re-point it at a different instant — the same concern the
-    // Filters pane has.
+    // Re-render the time-range editors, and re-express EVERY rule's stored bounds,
+    // after the way the timestamp column reads has moved (SPEC.md §4).
+    //
+    // A rule's bounds are display-zone WALL CLOCK (MatchCriteria), so the one thing
+    // that invalidates them is a change of DISPLAY ZONE — and it invalidates all of
+    // them, not merely the rule that happens to be selected: `resolve()` reads every
+    // rule's digits in whatever zone is current, so a rule left alone comes to name an
+    // instant an hour or three away from the one it was given, with nothing on screen
+    // changing. What is NOT a change of zone changes nothing here: a run selection and
+    // an As Written ↔ Seconds switch move only how the editors are spelled, which is
+    // AxisEditor's own business.
+    //
+    // Nothing is read back out of the editor. criteria() is not a round trip — a
+    // QDateTimeEdit always holds a datetime, so an unset bound comes back as
+    // 2000-01-01 — and writing it into the selected rule is what used to make merely
+    // clicking a run row rewrite this log's seeded rules, mark the tab and persist
+    // both, irreversibly.
     void refreshTimeBounds();
 
     // Portable, name/index-based snapshot for highlighter presets and per-file
@@ -210,6 +224,11 @@ private:
 
     Document *m_document = nullptr;
     QVector<HighlightRule> m_rules;
+    // The display zone m_rules' wall-clock bounds are written in — set when a document
+    // is bound and moved only by refreshTimeBounds(), which re-expresses the bounds in
+    // the same breath. Invalid while no document is bound, which is the one state in
+    // which there is nothing to re-express and no zone to have come from.
+    QTimeZone m_boundZone;
     bool m_updating = false; // guards signal storms during (re)load
     std::optional<bool> m_activeState; // last hasCustomRules() reported by activityChanged()
 

@@ -1180,12 +1180,12 @@ MatchCriteria AxisEditor::criteria() const
     // Coverage is answered from the list the user was shown, never from the intern
     // table: the table grows mid-scan and the list lags it, so asking the table would
     // make a discovered-but-not-yet-listed subsystem look excluded.
-    c.loggerCoversAll = allChecked(m_loggerList);
+    c.loggerCoversAll = coversAllFor(ValueAxis::Subsystem);
     c.loggerRestrictive = restrictiveFor(ValueAxis::Subsystem);
 
     c.threadEnabled = m_threadGroup->isChecked();
     c.threadNames = toSortedList(checkedNames(m_threadList));
-    c.threadCoversAll = allChecked(m_threadList);
+    c.threadCoversAll = coversAllFor(ValueAxis::Thread);
     c.threadRestrictive = restrictiveFor(ValueAxis::Thread);
 
     c.text.enabled = m_textGroup->isChecked();
@@ -1629,6 +1629,22 @@ void AxisEditor::clearValueRows(QListWidget *list)
         return;
     while (list->count() > kFirstValueRow)
         delete list->takeItem(kFirstValueRow);
+}
+
+bool AxisEditor::coversAllFor(ValueAxis axis) const
+{
+    const QListWidget *list = listFor(axis);
+    if (allChecked(list))
+        return true;
+    // The lossy half of criteria(): a switched-off axis loads under ListRule::Unstated,
+    // which ticks nothing at all, so allChecked() answers false about a state that
+    // narrows nothing and never did. Reading that back would turn every edit to some
+    // OTHER axis of the same rule into a stored `loggerCoversAll: false` over an empty
+    // name list — which reloads under ListRule::Load, files every value as seen-and-
+    // excluded, and puts the axis beyond the discovery rule for good. So an axis with
+    // nothing ticked AND nothing switched on states nothing, and says so.
+    const QGroupBox *enable = enableFor(axis);
+    return enable && !enable->isChecked() && checkedNames(list).isEmpty();
 }
 
 bool AxisEditor::allChecked(const QListWidget *list)

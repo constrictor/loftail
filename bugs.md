@@ -13,41 +13,16 @@ log grew under Line Wrap ▸ Always On, entry 2, every tab but the last one
 showing none of its records after several logs were opened at once, entry 3,
 wrapped message text clipped off the bottom of every wrapped record, and entry 4,
 a wrapped record re-flowing to different line breaks the moment Find was armed.
+Entry 5 has gone the same way: selecting a run rewrote the log's seeded highlight
+rules and saved them, and the fix took a second, unreported defect with it — a
+display-zone change re-pointed every time-bounded rule except the one the pane
+happened to be showing.
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 5. Selecting a run rewrites the log's seeded highlight rules and saves them
-
-`HighlighterPane::refreshTimeBounds()` (`HighlighterPane.cpp:1278`) does
-`m_rules[row].match = m_axes->criteria(); commit();` unconditionally, even though
-`AxisEditor::refreshTimeBounds()` early-returns when nothing moved. `criteria()`
-always returns *valid* start/end bounds — the editors always hold a datetime —
-while `HighlighterSet::defaults()` leaves both invalid. So the comparison fails
-and `hasCustomRules()` flips true.
-
-Observed: a fresh window with `app.log` open reads "Highlighters" correctly.
-Clicking **All runs**, or any run row, or choosing Timestamp Format ▸ Seconds,
-immediately changes it to "Highlighters •" while the rule table shows no change
-at all — same three rules, same ticks, same colours, same order. Switching the
-display mode back does not clear it. `followLastRunIfMoved` reaches the same
-line, so a live log that simply restarts marks itself with no gesture at all.
-
-Worse than a wrong marker: `commit()` → `syncToDocument()` puts the rewritten
-rules on the Document, so the session persists them and the log comes back marked
-on the next launch. `SPEC.md` §7 says the mark means "a rule added, or one of the
-three switched off, recoloured, re-aimed or moved… Put the three back exactly and
-the mark goes out". None of that happened, and there is no way back.
-
-Fix: only write back when the editor actually re-rendered — have
-`AxisEditor::refreshTimeBounds()` report whether it changed anything, or compare
-the new criteria against `m_rules[row].match` and skip when equal. More than a
-one-liner because a rule with `timeEnabled` set whose bounds genuinely were
-re-rendered must still write back, and `commit()` is also what emits
-`highlightersChanged()`.
 
 ### 6. The Runs pane's Regex and Case boxes apply a pattern the user has not pressed Apply for
 

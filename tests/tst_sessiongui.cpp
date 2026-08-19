@@ -11,7 +11,10 @@
 #include <QLineEdit>
 #include <QPushButton>
 
+#include <QDockWidget>
+
 #include "FilterPane.h"
+#include "Highlight.h"
 #include "HighlighterPane.h"
 #include "LogView.h"
 #include "MainWindow.h"
@@ -96,6 +99,7 @@ private slots:
     // the half of that promise that is easy to break: they are a SEED, not a floor.
     void aFreshlyOpenedLogArrivesWithTheLevelColours();
     void aDeletedDefaultRuleStaysDeletedAcrossARelaunch();
+    void aRunClickAndAZoneChangeLeaveTheSeedRestorable();
 };
 
 void TestSessionGui::initTestCase()
@@ -343,6 +347,76 @@ void TestSessionGui::aDeletedDefaultRuleStaysDeletedAcrossARelaunch()
 
         // Leave no file in the session: the log below this one lives in a QTemporaryDir
         // that dies with this object.
+        closeEverything(w);
+        w.close();
+    }
+}
+
+void TestSessionGui::aRunClickAndAZoneChangeLeaveTheSeedRestorable()
+{
+    // The persistence half of bugs.md #5. Picking a run, and switching the timestamp
+    // column between zones, both run MainWindow through HighlighterPane::
+    // refreshTimeBounds() — which used to read the whole of the axis editor back into
+    // whichever rule was selected. The rule then differed from the seed in two fields
+    // nothing on screen showed, commit() put it on the Document, and the session wrote
+    // it: the log came back marked on the next launch, for ever, with no gesture that
+    // could put it back.
+    //
+    // Compared against HighlighterSet::defaults() rather than against a rule count or
+    // the marker: the corruption never changed the number of rules, and a fix that
+    // repaired only the time bounds would still leave loggerCoversAll rewritten.
+    QJsonArray seeded;
+    for (const HighlightRule &r : HighlighterSet::defaults().rules)
+        seeded.append(r.toJson());
+
+    {
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        closeEverything(w);
+        w.openFile(m_sample);
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+        QTest::qWait(300);
+        QCOMPARE(paneRules(w), seeded);
+
+        // A run row. "All runs" needs no run-start pattern and reaches exactly the same
+        // MainWindow::onRunSelected() a detected run does.
+        auto *runs = w.findChild<QListWidget *>(QStringLiteral("runList"));
+        QVERIFY(runs);
+        runs->setCurrentRow(RunPane::kAllRunsRow);
+        QTest::qWait(50);
+        QCOMPARE(paneRules(w), seeded);
+
+        // ...and the timestamp menu, including the two entries that really do move the
+        // display zone. The seeded rules name no time bound, so there is nothing for a
+        // zone change to re-express and nothing may be written.
+        for (const char *name : {"timeDisplayUtcAction", "timeDisplayLocalAction",
+                                 "timeDisplaySecondsAction", "timeDisplayAsWrittenAction"}) {
+            auto *action = w.findChild<QAction *>(QString::fromLatin1(name));
+            QVERIFY2(action, name);
+            action->trigger();
+            QTest::qWait(20);
+            QVERIFY2(paneRules(w) == seeded, name);
+        }
+
+        w.close(); // saves a session naming m_sample and its rules
+    }
+
+    {
+        MainWindow w;
+        w.show();
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+        QTest::qWait(300);
+        // What the reader sees on the next launch: the same three rules, and a
+        // Highlighters tab with nothing to report about them.
+        QCOMPARE(paneRules(w), seeded);
+        auto *hp = w.findChild<HighlighterPane *>();
+        QVERIFY(hp && !hp->hasCustomRules());
+        auto *dock = w.findChild<QDockWidget *>(QStringLiteral("highlightersDock"));
+        QVERIFY(dock);
+        QVERIFY2(!dock->windowTitle().contains(QChar(0x2022)),
+                 qPrintable(dock->windowTitle()));
+
         closeEverything(w);
         w.close();
     }
