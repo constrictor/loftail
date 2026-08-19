@@ -137,6 +137,28 @@ private:
         }
     }
 
+    // Whether the bar is ON SCREEN. Every case in this file used to assert on status()
+    // alone, and a report written into a hidden bar satisfies that exactly as well as one
+    // the reader can read — which is how F3 shipped answering into nothing.
+    static bool barVisible(const MainWindow &w)
+    {
+        DocumentView *view = activeView(w);
+        return view && view->findBar()->isVisible();
+    }
+
+    // The FIND-NEXT GESTURE, not the menu item. trigger() on the action starts halfway
+    // through the story: the subject here is what the window does with F3 pressed while
+    // the reader is looking at the table, so the key has to be a real one.
+    static void pressFindNext(MainWindow &w, Qt::KeyboardModifiers mods = Qt::NoModifier)
+    {
+        QTest::keyClick(&w, Qt::Key_F3, mods);
+    }
+
+    // The focus widget WITHIN the window. QWidget::focusWidget() and not
+    // QApplication::focusWidget(), because the latter answers null unless the window is
+    // active, which an offscreen window need not be.
+    static QWidget *focusIn(const MainWindow &w) { return w.focusWidget(); }
+
     // The gesture itself: a real key press at the query field, found by object name.
     // `key` is Qt::Key_Return (the main keyboard's) or Qt::Key_Enter (the keypad's) —
     // both reach the same field and both must mean the same thing.
@@ -167,6 +189,11 @@ private slots:
     void theFindItemsAreDeadUntilThereIsALogToSearch();
     void theFindItemsFollowTheTabInFrontAndDieWithTheLastOne();
     void anExplicitFindOnAnEmptyQuerySaysThereIsNothingToFind();
+    void findNextWithTheBarClosedPutsItOnScreenToAnswerInto();
+    void steppingThroughMatchesAfterEscapeIsNotDoneBehindTheReadersBack();
+    void escapeStillClosesTheBarThatFindNextRevealed();
+    void aQueryThatMatchesNothingLeavesTheFocusWhereItWas();
+    void theReopenedBarClaimsNothingItIsNotShowing();
     void theControlsDoNotMoveWhenTheStatusTextChanges();
 };
 
@@ -604,11 +631,16 @@ void TestFind::anExplicitFindOnAnEmptyQuerySaysThereIsNothingToFind()
     waitUntilIndexed(w);
 
     // F3 before anything has been typed used to report nothing whatsoever, which is
-    // indistinguishable from a search that ran and had nothing to say.
+    // indistinguishable from a search that ran and had nothing to say — and then, once
+    // it did report, it reported into a bar that was still hidden. Both halves are
+    // asserted: what was said, and that there is somewhere to read it.
+    QVERIFY(!barVisible(w));
     findNext(w);
     QCOMPARE(reported(w), QStringLiteral("no search text"));
+    QVERIFY(barVisible(w));
     findPrevious(w);
     QCOMPARE(reported(w), QStringLiteral("no search text"));
+    QVERIFY(barVisible(w));
 
     // Deleting the query is the other empty-query case and stays quiet: the reader just
     // removed their own text, and telling them so is a nag rather than an answer.
@@ -617,9 +649,178 @@ void TestFind::anExplicitFindOnAnEmptyQuerySaysThereIsNothingToFind()
     queryField(w)->clear();
     QCOMPARE(reported(w), QString());
 
-    // But asking again, deliberately, still gets an answer.
+    // But asking again, deliberately, still gets an answer — in a bar still on screen.
     findNext(w);
     QCOMPARE(reported(w), QStringLiteral("no search text"));
+    QVERIFY(barVisible(w));
+
+    w.close();
+}
+
+// F3 is a window shortcut and the bar is a DocumentView child that starts hidden, so the
+// two used to meet only by luck: a reader who opened a log and pressed F3 got
+// `no search text` written into a widget that was never on screen — exactly the silence
+// the branch was added to remove. The gesture is a REAL key press here, because that is
+// the whole of what is being asked: trigger() on the menu action would answer a question
+// about the action rather than about the key the reader pressed.
+void TestFind::findNextWithTheBarClosedPutsItOnScreenToAnswerInto()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    QVERIFY(!barVisible(w)); // nothing has opened it: no Ctrl+F, no typing
+    pressFindNext(w);
+
+    QVERIFY(barVisible(w));
+    QCOMPARE(reported(w), QStringLiteral("no search text"));
+    // And the label carrying that sentence is on screen too, which is the claim the
+    // bar's own visibility only implies.
+    auto *label = activeView(w)->findBar()->findChild<QLabel *>(QStringLiteral("findStatus"));
+    QVERIFY(label);
+    QVERIFY(label->isVisible());
+
+    w.close();
+}
+
+// The wider half of the same defect, and the one that shows the state machine
+// contradicting itself. Escape closes the bar and takes the marks with it (SPEC.md §5),
+// on the argument that a mark is a claim about a search the reader can no longer see —
+// and the very next F3 used to re-arm exactly those marks, move the cursor and write the
+// wrap note into the hidden label. So the log was searched behind the reader's back, and
+// the one report that would have explained the jump was the report they could not read.
+void TestFind::steppingThroughMatchesAfterEscapeIsNotDoneBehindTheReadersBack()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    activeView(w)->activateFind();
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QCOMPARE(reported(w), QStringLiteral("1 of 3"));
+    QCOMPARE(cursorRow(w), int(kAlphaOne));
+
+    // Escape: the bar goes, the marks go, the query stays (it is the reader's).
+    QTest::keyClick(focusIn(w), Qt::Key_Escape);
+    QVERIFY(!barVisible(w));
+    QVERIFY(marked(w).isNull());
+    QCOMPARE(queryField(w)->text(), QStringLiteral("alpha"));
+
+    // F3 still searches — and now says so somewhere the reader can see.
+    pressFindNext(w);
+    QVERIFY(barVisible(w));
+    QCOMPARE(cursorRow(w), int(kAlphaTwo));
+    QCOMPARE(reported(w), QStringLiteral("2 of 3"));
+    QCOMPARE(marked(w), QStringLiteral("alpha"));
+
+    // Including the wrap, which is the report this file exists for: the cursor teleports
+    // to the top and the sentence explaining it must not be written into a hidden bar.
+    pressFindNext(w);
+    pressFindNext(w);
+    QCOMPARE(cursorRow(w), int(kAlphaOne));
+    QVERIFY(barVisible(w));
+    QCOMPARE(reported(w), QStringLiteral("1 of 3, wrapped to the top"));
+
+    w.close();
+}
+
+// The reveal moves the focus, and that is not decoration. Escape is handled in
+// FindBar::keyPressEvent, and the bar is a SIBLING of the table under DocumentView, not
+// an ancestor — so an Escape pressed with the caret still in the table propagates
+// LogView -> DocumentView -> MainWindow and never reaches the bar at all. A reveal
+// written as a bare show() therefore ships a bar closable only with the mouse, which no
+// assertion about status(), visibility or marks can see.
+void TestFind::escapeStillClosesTheBarThatFindNextRevealed()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    activeView(w)->logView()->setFocus();
+    QCOMPARE(focusIn(w), static_cast<QWidget *>(activeView(w)->logView()));
+
+    pressFindNext(w);
+    QVERIFY(barVisible(w));
+    // The caret came with the bar: it is in the query field, which is what makes the
+    // next line's Escape reach FindBar::keyPressEvent.
+    QCOMPARE(focusIn(w), static_cast<QWidget *>(queryField(w)));
+
+    QTest::keyClick(focusIn(w), Qt::Key_Escape);
+    QVERIFY(!barVisible(w));
+
+    w.close();
+}
+
+// The other side of the same rule: a reveal is for a bar that is not there. On one that
+// is, it must touch nothing — a `no match` on a real query leaves the focus inside the
+// bar so the next F3 goes on being typed at, and the query stays unselected so that
+// keystroke does not delete the text being stepped through.
+void TestFind::aQueryThatMatchesNothingLeavesTheFocusWhereItWas()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    activeView(w)->activateFind();
+    QLineEdit *query = queryField(w);
+    QVERIFY(query);
+    QTest::keyClicks(query, QStringLiteral("zulu")); // matches nothing in this log
+    QCOMPARE(reported(w), QStringLiteral("no match"));
+
+    findNext(w);
+    QCOMPARE(reported(w), QStringLiteral("no match"));
+    QVERIFY(barVisible(w));
+    QCOMPARE(focusIn(w), static_cast<QWidget *>(query));
+    QCOMPARE(query->text(), QStringLiteral("zulu"));
+    QVERIFY(!query->hasSelectedText()); // nothing re-selected it under the reader
+
+    w.close();
+}
+
+// Ctrl+F on a bar that was closed with a query still in it: the box shows that query
+// again, and the table marks nothing. That is not the hidden-search state above and must
+// not become it — Ctrl+F asks for a box to type into, so it may not move the cursor, and
+// a mark whose search never ran is a mark that disagrees with the hit (ARCHITECTURE.md
+// §7.1.4). What makes the state honest is that it claims nothing: no report, no marks,
+// and the standing query selected for replacement. One gesture then puts all three into
+// agreement at once.
+void TestFind::theReopenedBarClaimsNothingItIsNotShowing()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    activeView(w)->activateFind();
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QCOMPARE(reported(w), QStringLiteral("1 of 3"));
+    const int cursorBefore = cursorRow(w);
+
+    QTest::keyClick(focusIn(w), Qt::Key_Escape);
+    QVERIFY(!barVisible(w));
+
+    activeView(w)->activateFind();
+    QVERIFY(barVisible(w));
+    QCOMPARE(queryField(w)->text(), QStringLiteral("alpha")); // the reader's, kept
+    QVERIFY(queryField(w)->hasSelectedText());                // and offered for replacement
+    QCOMPARE(reported(w), QString());                         // claiming nothing
+    QVERIFY(marked(w).isNull());
+    QCOMPARE(cursorRow(w), cursorBefore); // reopening searched nothing
+
+    // And the next find is the one that makes the box, the marks and the report agree.
+    pressFindNext(w);
+    QVERIFY(barVisible(w));
+    QCOMPARE(marked(w), QStringLiteral("alpha"));
+    QCOMPARE(reported(w), QStringLiteral("2 of 3"));
 
     w.close();
 }
