@@ -4,7 +4,9 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QFile>
+#include <QFontDatabase>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QSettings>
 #include <QTabWidget>
@@ -87,13 +89,13 @@ private:
         return view ? view->findBar()->findChild<QLineEdit *>(QStringLiteral("findEdit")) : nullptr;
     }
 
+    // The report AS GIVEN. The label renders an elided form of it into a cell whose
+    // width comes from the bar and never from the text (the case at the bottom of this
+    // file), so the label's own text is a rendering and this is the report.
     static QString reported(const MainWindow &w)
     {
         DocumentView *view = activeView(w);
-        if (!view)
-            return QStringLiteral("<no view>");
-        auto *label = view->findBar()->findChild<QLabel *>(QStringLiteral("findStatus"));
-        return label ? label->text() : QStringLiteral("<no label>");
+        return view ? view->findBar()->status() : QStringLiteral("<no view>");
     }
 
     // The query the table is MARKING, or a null string when it is marking nothing. The
@@ -165,6 +167,7 @@ private slots:
     void theFindItemsAreDeadUntilThereIsALogToSearch();
     void theFindItemsFollowTheTabInFrontAndDieWithTheLastOne();
     void anExplicitFindOnAnEmptyQuerySaysThereIsNothingToFind();
+    void theControlsDoNotMoveWhenTheStatusTextChanges();
 };
 
 void TestFind::initTestCase()
@@ -620,3 +623,85 @@ void TestFind::anExplicitFindOnAnEmptyQuerySaysThereIsNothingToFind()
 
     w.close();
 }
+
+// The status text may not move the controls beside it — the bug that made stepping
+// through matches with the mouse dangerous. The label used to sit at stretch 0 in a row
+// whose only elastic item was the query box, so every pixel the wording grew by was
+// taken from the box and ▲ ▼ Regex Case ✕ all slid left by exactly that much: with the
+// pointer parked on ▼, the wrap note appearing at the last match walked the Case
+// checkbox under it, and the click meant for "next match" restarted the search
+// case-sensitively.
+//
+// So this asserts on GEOMETRY and not on text, in the shape of
+// tst_filterpane::theContextRowLaysOutWithoutOverlapOrClipping and for the same reason:
+// every widget existed, was visible and held the right value in the broken build — only
+// its position was wrong, which no other kind of test can see.
+void TestFind::theControlsDoNotMoveWhenTheStatusTextChanges()
+{
+    // Every wording the bar can produce, plus one nobody will see: the match count is
+    // unbounded (`128 of 4096+`) and tr() puts translation on top, so no fix that sizes
+    // the label from a "longest wording" constant survives this row.
+    const QStringList reports = {
+        QString(),
+        QStringLiteral("2 of 2"),
+        QStringLiteral("1 of 2, wrapped to the bottom"),
+        QStringLiteral("128 of 4096+, wrapped to the bottom"),
+    };
+    const QStringList controls = {
+        QStringLiteral("findPrevious"), QStringLiteral("findNext"),
+        QStringLiteral("findRegex"),    QStringLiteral("findCase"),
+        QStringLiteral("findClose"),    QStringLiteral("findEdit"),
+    };
+
+    FindBar bar;
+    bar.show();
+
+    // Two widths, because the defect was not an overflow effect: all the surplus went to
+    // the stretch item however much of it there was, so it bit at every size.
+    for (int width : {700, 1100}) {
+        bar.resize(width, bar.sizeHint().height());
+        bar.layout()->activate();
+
+        QHash<QString, QRect> first;
+        for (const QString &report : reports) {
+            bar.setStatus(report);
+            bar.layout()->activate();
+            for (const QString &name : controls) {
+                auto *widget = bar.findChild<QWidget *>(name);
+                QVERIFY2(widget, qPrintable(name));
+                if (!first.contains(name))
+                    first.insert(name, widget->geometry());
+                QVERIFY2(widget->geometry() == first.value(name),
+                         qPrintable(QStringLiteral("%1 moved to %2 at width %3 under \"%4\"")
+                                        .arg(name)
+                                        .arg(QString::number(widget->geometry().x()))
+                                        .arg(width)
+                                        .arg(report)));
+            }
+        }
+    }
+
+    // What the cell cannot show is elided, and the whole report stays one hover away —
+    // "the column elides; the tooltip does not". Font metrics decide whether the longest
+    // wording fits, and a platform with no font database (Windows offscreen) answers 0
+    // to every advance, so nothing would ever be cut short there.
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no font database: nothing elides, so there is nothing to hover over");
+
+    auto *label = bar.findChild<QLabel *>(QStringLiteral("findStatus"));
+    QVERIFY(label);
+    bar.resize(700, bar.sizeHint().height());
+    bar.layout()->activate();
+    const QString longest = QStringLiteral("128 of 4096+, wrapped to the bottom");
+    bar.setStatus(longest);
+    QVERIFY(label->width() < label->fontMetrics().horizontalAdvance(longest)); // it is cut
+    QVERIFY(label->text() != longest);
+    QCOMPARE(label->toolTip(), longest);
+    QCOMPARE(bar.status(), longest); // and the report itself is untouched by the cutting
+
+    // A report that fits offers no tooltip: only a value actually cut short does.
+    bar.setStatus(QStringLiteral("2 of 2"));
+    QCOMPARE(label->text(), QStringLiteral("2 of 2"));
+    QCOMPARE(label->toolTip(), QString());
+}
+

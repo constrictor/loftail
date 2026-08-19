@@ -39,36 +39,22 @@ measured against the width the message had before the drop — a blank band unde
 every record one way, the tail of every message clipped away the other. Its fix
 took an unreported sibling with it, since a horizontal scroll slides the same
 origin and said no more about it than the move did.
+Entry 10 has gone as well: the Find bar's status label shared one stretchable row
+with the query box, which was that row's only elastic item, so every pixel the
+wording grew by was taken from the box and every control after it — ▲, ▼, Regex,
+Case and the close button — slid left by exactly that much. With the pointer
+parked on ▼, the wrap note appearing at the last match walked the Case checkbox
+under it, and the click meant for "next match" restarted the search
+case-sensitively. The label now has a cell whose width comes from the bar and not
+from the text, and the report is elided into it with the whole of it on the
+tooltip.
+
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 10. The Find bar's buttons slide under the pointer when the status text changes
-
-`FindBar.cpp:29` and `:55` put the query box and the status label in one
-stretchable row with the four controls. The label's width therefore moves
-everything after it.
-
-Reproduced with the pointer parked on ▼ and never moved, on a query with two
-matches: click → `2 of 2`, ▼ still under the pointer; click → `1 of 2, wrapped to
-the top`, the row shifts about 130 px left and the **Case checkbox** is now under
-the pointer; click → Case is ticked and the search silently restarts
-case-sensitive. Measured travel across states is 160 px.
-
-The wrap note's whole purpose is to appear and disappear as the reader steps
-through matches, so stepping with the mouse — which is what ▲/▼ are for — reaches
-this on any query, and the click after a wrap changes the search options instead
-of advancing. The query box shrinking under the caret while typing is the same
-cause, milder.
-
-Fix: take the status out of the stretchable flow — a fixed minimum width sized to
-the longest wording, or its own fixed cell after the ✕, or move the four controls
-to the left of the query box. A size policy on the label alone is not enough: it
-must not be able to take width from the query box, which is what shifts
-everything between them.
 
 ### 11. One record fills the whole viewport when the Message column is narrow and wrap is on
 
@@ -193,6 +179,17 @@ does the show-and-focus. Decide whether focus moves with it (it probably should)
 and keep `FindBar`'s Escape-closes handling working. The branch is reached only
 on an empty query, so a *not found* on a real query must go on leaving focus
 where it is.
+
+**Amended 2026-08-19: this entry is narrower than the defect it describes.** It is
+written about the empty-query branch only. Measured: with a **non-empty** query,
+`Esc` closes the bar (clearing the marks via `DocumentView.cpp:57`), and a
+subsequent **F3 still searches** — it re-arms the find marks in the table, moves
+the cursor, and writes `2 of 2` / `…, wrapped to the top` into the **hidden**
+label. So marks reappear over the table with no bar and no visible query, and the
+wrap report is silent again on a real query, not just on an empty one.
+Reproduction: open a log, Ctrl+F, type a query with two matches, Esc, then F3
+twice — the cursor wraps to the first match with nothing on screen saying so.
+Same fix site (`runFind()` calling `activateFind()`), wider trigger.
 
 ### 17. `viewportCols()` trusts `averageCharWidth()`, which is truncated, so Always On clips the tail of long records
 

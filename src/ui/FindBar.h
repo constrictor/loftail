@@ -25,6 +25,9 @@ public:
     explicit FindBar(QWidget *parent = nullptr);
 
     QString pattern() const;
+    // The last report given to setStatus(), in full. The label itself shows an elided
+    // rendering of it, so this — not the label's text — is what the report IS.
+    QString status() const;
     bool regex() const;
     bool caseSensitive() const;
 
@@ -45,10 +48,18 @@ signals:
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
+    // Re-elides the status into the cell the bar's width gives it — see setStatus().
+    void resizeEvent(QResizeEvent *event) override;
     // Watches the query field so Shift+Enter can mean "search backwards" (SPEC.md §5).
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    // Cuts m_statusText into the label's own width, and puts the full text on the
+    // tooltip only when it did not fit. The label's width never depends on the text:
+    // it is a stretch share of the bar, so the controls beside it cannot move.
+    void updateStatusText();
+
+    QString    m_statusText;
     QLineEdit *m_edit = nullptr;
     QCheckBox *m_regex = nullptr;
     QCheckBox *m_case = nullptr;
