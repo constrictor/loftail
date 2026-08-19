@@ -21,9 +21,13 @@ add_library(loftail_ui STATIC
     # The fixed-pitch font shared by the record view and the format preview
     Fonts.cpp
     Fonts.h
-    # M2b — the production custom record view
+    # M2b — the production custom record view, and the per-codepoint wrap model its
+    # estimated geometry measures records through (a fallback face's advance and an
+    # overhanging glyph's ink are both wider than a column count can express)
     LogView.cpp
     LogView.h
+    WrapMetrics.cpp
+    WrapMetrics.h
     # M3 — the format editor. Its controls live in FormatEditor, shared with
     # the Preferences dialog below so the per-file format and the default for new files
     # are entered through one widget and cannot drift apart.

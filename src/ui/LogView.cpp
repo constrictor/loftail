@@ -238,10 +238,10 @@ void drawElidedCell(QPainter &p, const QRect &rect, const QString &text,
 QTextOption wrapOptionFor(bool wordWrap)
 {
     QTextOption option;
-    // AlwaysOn wraps ANYWHERE and must go on doing so: §7.1.1's height model is
-    // ceil(chars / cols), which only a character wrap satisfies. SelectedRecordOnly means
-    // "read this one record in full", so it breaks at word boundaries and falls back to
-    // anywhere for a word wider than the column.
+    // AlwaysOn wraps ANYWHERE and must go on doing so: §7.1.1's height model is a
+    // per-character greedy fill, which only a character wrap satisfies.
+    // SelectedRecordOnly means "read this one record in full", so it breaks at word
+    // boundaries and falls back to anywhere for a word wider than the column.
     option.setWrapMode(wordWrap ? QTextOption::WrapAtWordBoundaryOrAnywhere
                                 : QTextOption::WrapAnywhere);
     return option;
@@ -434,6 +434,9 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent, Rol
     // At the application's current log-text size (Fonts.h), so a view opened after a
     // zoom opens zoomed and nothing has to push a font into it afterwards.
     setFont(logTextFont());
+    // applyFontChange() bails before the header exists, so the constructor binds the
+    // wrap metrics itself — exactly as it does every other thing that handler does.
+    m_wrapMetrics.setFont(font());
     setFocusPolicy(Qt::StrongFocus);
     viewport()->setFocusProxy(this);
 
@@ -546,8 +549,8 @@ LogView::~LogView() = default;
 // The pitch a display line is drawn at, and it must be the number QT lays text out
 // at — not QFontMetrics::height(), which rounds ascent and descent SEPARATELY while
 // QTextLine::height() is ceil(ascentF + descentF). The two differ by a pixel at over
-// half the point sizes this font is offered at, and the whole height model is
-// ceil(chars / cols) lines of this size (§7.1.1): one pixel short per line clips the
+// half the point sizes this font is offered at, and the whole height model is a
+// count of lines of this size (§7.1.1): one pixel short per line clips the
 // bottom of a wrapped record and, past about thirteen lines, loses the last one
 // entirely. qCeil(QFontMetricsF::height()) is that number at every size measured.
 int LogView::lineHeight() const
@@ -698,23 +701,21 @@ int LogView::mapRecordHeightLines(int r) const
 
 qreal LogView::charAdvance() const
 {
-    // One character's advance in the primary fixed-pitch face, UNROUNDED. Every integer
-    // advance Qt offers truncates: at the reference face's shipped 9 pt both
-    // averageCharWidth() and horizontalAdvance() answer 7 where the advance is 7.21875,
-    // so a 379 px column measured 54 characters where only 52 fit, the record was given
-    // one row too few, and everything past the fold was drawn nowhere — no ellipsis and
-    // no tooltip, because a wrapped message deliberately offers neither (bugs.md 17).
-    // Rounding the other way is no better: qCeil() undercounts and hangs a blank line off
-    // every wrapped record. Keep the fraction and floor the division that uses it.
+    // One character's advance in the primary fixed-pitch face, UNROUNDED. No height
+    // divides by it any more — a record's height is a greedy fill over per-codepoint
+    // metrics (WrapMetrics) — but the wrap width's FLOOR is still stated in characters
+    // (SPEC.md §5) and this is what states it in pixels. Every integer advance Qt offers
+    // truncates: at the reference face's shipped 9 pt both averageCharWidth() and
+    // horizontalAdvance() answer 7 where the advance is 7.21875, which is a floor two
+    // characters narrower than the twenty it claims.
     return qMax(qreal(1), QFontMetricsF(font()).horizontalAdvance(QLatin1Char('0')));
 }
 
 int LogView::minWrapWidth() const
 {
-    // qCeil, not a truncating multiply: this width is handed straight to viewportCols(),
-    // so a floor a pixel short of kMinWrapCols characters divides back out as one column
-    // too many — and the qMax() there then re-raises the count to a width that cannot
-    // hold it, which is one column of clipping surviving the fix above.
+    // qCeil, not a truncating multiply: a floor a pixel short of kMinWrapCols characters
+    // is a width that cannot hold the twenty columns SPEC.md §5 promises, and the promise
+    // is what stops one record filling the screen (bugs.md 11, 17).
     return qCeil(kMinWrapCols * charAdvance());
 }
 
@@ -742,16 +743,6 @@ int LogView::messageWrapWidth() const
     return qMax(minWrapWidth(), viewport()->width() - x);
 }
 
-int LogView::viewportCols() const
-{
-    // Characters that fit across the wrapped message column. Fixed-pitch font, so this
-    // is a divide, not a shaping pass (§7.1.1) — but a FLOORED divide by a FRACTIONAL
-    // advance, which is what QTextLine actually fits at every point size and width the
-    // zoom offers. An integer advance is a rounded one, and rounded down it hands the
-    // record more columns than the layout can place (bugs.md 17).
-    return qMax(kMinWrapCols, qFloor(messageWrapWidth() / charAdvance()));
-}
-
 void LogView::ensureEstimatorBound()
 {
     // Bind (or rebind) the estimator to the current index, then fold in whatever
@@ -768,7 +759,7 @@ void LogView::ensureEstimatorBound()
     // the lines it had gained.
     const RecordIndex &idx = geom();
     if (m_estimated.index() != &idx) {
-        m_estimated.reset(&idx, viewportCols());
+        m_estimated.reset(&idx, messageWrapWidth());
         return;
     }
     m_estimated.syncTail();
@@ -781,7 +772,7 @@ void LogView::measureBlock(int block)
         return;
 
     const int msgCol = messageColumn();
-    const int cols = m_estimated.columns();
+    const int width = m_estimated.wrapWidth();
     const int cap = RecordIndex::kDisplayLineCap;
     const int start = block * RecordIndex::kBlockSize;
     const int n = recordCount();
@@ -794,25 +785,13 @@ void LogView::measureBlock(int block)
 
     QVector<quint16> lines;
     lines.reserve(qMax(0, end - first));
-    QVector<int> lineChars;
     for (int r = first; r < end; ++r) {
-        // Decoded message text via the model (invariant #8: split the decoded
-        // string on '\n', never scan raw bytes). Only char counts are kept — no
-        // parsed text is retained per record (invariant #1); the block cache
-        // stores heights, and only for visited blocks.
-        const QString msg = m_model->cellText(r, msgCol);
-        lineChars.clear();
-        int from = 0;
-        while (true) {
-            const int nl = msg.indexOf(QLatin1Char('\n'), from);
-            if (nl < 0) {
-                lineChars.append(int(msg.size()) - from);
-                break;
-            }
-            lineChars.append(nl - from);
-            from = nl + 1;
-        }
-        lines.append(quint16(EstimatedGeometry::measuredRecordLines(lineChars, cols, cap)));
+        // Decoded message text via the model (invariant #8: WrapMetrics splits the
+        // DECODED string on '\n', and nothing here ever scans raw bytes). Only the
+        // height is kept — no parsed text is retained per record (invariant #1); the
+        // block cache stores heights, and only for visited blocks, and WrapMetrics'
+        // own memo is per CODEPOINT rather than per record.
+        lines.append(quint16(m_wrapMetrics.recordLines(m_model->cellText(r, msgCol), width, cap)));
     }
     m_estimated.measureBlock(block, lines, first - start);
 }
@@ -1031,7 +1010,7 @@ void LogView::applyDebouncedResize()
         return;
     ensureEstimatorBound();
     const int topRec = m_estimated.recordAtLine(verticalScrollBar()->value());
-    if (m_estimated.setColumns(viewportCols())) {
+    if (m_estimated.setWrapWidth(messageWrapWidth())) {
         // Width actually changed: every measurement was width-keyed and is now
         // dropped, so the total falls back to estimates until blocks are
         // remeasured on the next paint. Re-anchor on the top record so the
@@ -1127,11 +1106,17 @@ void LogView::applyFontChange()
     // THE ONE THAT IS EASY TO MISS. ensureEstimatorBound() rebinds on the index's
     // ADDRESS and folds in what its TAIL has grown, and a font change moves neither —
     // so on its own it leaves the estimator holding wrapped heights measured at the old
-    // character advance, i.e. at a column count that no longer holds. setColumns() is
-    // what drops them, and it must come AFTER the re-seed above, which moves the message
-    // column's origin and therefore the count itself.
-    if (m_estimated.isBound())
-        m_estimated.setColumns(viewportCols());
+    // face's advances. Both halves are needed and both must come AFTER the re-seed
+    // above, which moves the message column's origin and therefore the width itself.
+    // The metrics are rebound first (the memo is the old font's, entry by entry), and
+    // the drop is UNCONDITIONAL: the cache is keyed on the wrap width in pixels, and a
+    // zoom on a view whose every column width was dragged or restored moves no origin
+    // at all, so setWrapWidth() alone would keep every height the old font measured.
+    m_wrapMetrics.setFont(font());
+    if (m_estimated.isBound()) {
+        m_estimated.setWrapWidth(messageWrapWidth());
+        m_estimated.invalidateMeasurements();
+    }
     recomputeGeometry();
     // Digest role only, a no-op in the others: the strip's height is a line count times
     // the line height, and both ends of that just changed.
@@ -1334,8 +1319,8 @@ void LogView::paintEvent(QPaintEvent *event)
                         p.save();
                         p.setClipRect(QRect(x, y, w, rowH));
                     }
-                    // Character wrapping (WrapAnywhere) so the painted height
-                    // matches the ceil(chars/cols) measurement model exactly.
+                    // Character wrapping (WrapAnywhere) so the painted height matches
+                    // WrapMetrics' per-character greedy fill exactly (§7.1.1).
                     drawWrappedCell(p, QRect(x, y, availW, rowH), m_model->cellText(r, logical),
                                     lh, /*wordWrap=*/false, mark);
                     if (clip)
@@ -1951,8 +1936,16 @@ QString LogView::truncatedCellText(const QPoint &pos) const
 
     QString text;
     if (logical == messageColumn()) {
-        // A wrapped message is not elided — every character of it is on screen, in as
-        // many lines as it takes — so there is nothing for a tooltip to add.
+        // A wrapped message is not elided, so there is nothing for a tooltip to add:
+        // the height model measures the record at the very width the paint lays it out
+        // in, glyph for glyph (WrapMetrics), so every character of it is on screen in as
+        // many lines as it takes. That claim was FALSE for two shapes of text while the
+        // model was ceil(chars / cols) — anything drawn through a fallback face, and a
+        // line ending on a glyph whose ink overhangs its advance — and both lost their
+        // last line here in silence (bugs.md 21, 22, both fixed). The one thing still
+        // cut off is a message column both narrower than kMinWrapCols and not last,
+        // where the paint clips at the divider; SPEC.md §5 states that, and it is a clip
+        // and not an elision, so it is not this function's to report either.
         if (estimating() || selRecordForGeometry() == record)
             return {};
         // Wrap off: each physical line of the record is drawn and clipped on its own
@@ -2188,11 +2181,11 @@ void LogView::setWrapMode(WrapMode mode)
         return;
     m_wrapMode = mode;
     if (mode == WrapMode::AlwaysOn) {
-        // Bind the estimator and sync it to the current width. setColumns() is a
+        // Bind the estimator and sync it to the current width. setWrapWidth() is a
         // no-op (and preserves the cache) when the width is unchanged since the
         // last AlwaysOn stint, so a plain Off<->AlwaysOn toggle keeps measurements.
         ensureEstimatorBound();
-        m_estimated.setColumns(viewportCols());
+        m_estimated.setWrapWidth(messageWrapWidth());
     }
     // Switching AWAY from AlwaysOn deliberately leaves m_estimated untouched: the
     // exact path never reads it, and keeping the cache means returning to AlwaysOn

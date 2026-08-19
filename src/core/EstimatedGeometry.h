@@ -11,20 +11,23 @@ class RecordIndex;
 // Estimated line<->record geometry for wrap-ALWAYS-ON (invariant #6,
 // ARCHITECTURE.md §7.1.1). It is the machinery the exact path must never touch:
 // LogView constructs and consults it ONLY in WrapMode::AlwaysOn. It does no
-// decoding and holds no widget or file state — measurements are fed in from the
-// view — so it is pure integer/vector math, unit-testable without a QApplication
-// or a real log file.
+// decoding, no measuring and holds no widget or file state — every height is fed
+// in from the view — so it is pure integer/vector math, unit-testable without a
+// QApplication or a real log file.
 //
 // Why estimate at all: with wrap on, a record's rendered height depends on the
 // viewport width, so a resize would otherwise invalidate every height — an O(n)
 // text-shaping pass on every drag frame. Instead:
 //
-//   * A fixed-pitch font means wrapped height needs no shaping, only a character
-//     count: a physical line of `chars` characters occupies ceil(chars/cols)
-//     visual lines. That is the whole measurement model (visualLinesForChars /
-//     measuredRecordLines below).
+//   * A record's wrapped height is a per-record number the VIEW works out, from
+//     the font, by a greedy fill over per-codepoint advances (ui/WrapMetrics.h).
+//     Nothing here knows how it was arrived at; this class only caches, sums and
+//     estimates the quint16 heights it is handed.
 //   * Blocks the user has actually scrolled through are MEASURED exactly and
-//     cached, keyed by the current column count.
+//     cached, keyed by the current WRAP WIDTH IN PIXELS. It used to be a column
+//     count, which was the same key in a coarser unit — and a unit the model has
+//     stopped believing in, since two characters of one font need not be the same
+//     width (bugs.md 21, 22).
 //   * Blocks not yet visited are ESTIMATED from a running expansion factor —
 //     measured visual lines over measured physical lines — applied to each
 //     block's (column-independent) physical line count.
@@ -32,8 +35,10 @@ class RecordIndex;
 //     REFINES toward truth as blocks are measured (SPEC.md §5 states this
 //     plainly). Navigation resolves to real records and is exact; only the thumb
 //     geometry is estimated.
-//   * A column-count change drops every measurement (the caller debounces the
-//     resize so a drag remeasures once, at the end, not per frame).
+//   * A wrap-width change drops every measurement (the caller debounces the
+//     resize so a drag remeasures once, at the end, not per frame). So does a FONT
+//     change, which the view asks for explicitly through invalidateMeasurements():
+//     the width need not move with the font, and the heights always do.
 //   * A block may be measured only in PART. The bound index is append-only and
 //     live (invariant #5), so a measured block's record count grows under it and
 //     its trailing record grows continuation lines in place; syncTail() gives back
@@ -42,33 +47,28 @@ class RecordIndex;
 class EstimatedGeometry
 {
 public:
-    // --- Pure wrap math (static, for direct unit testing) ------------------
-    // Visual lines occupied by one physical line of `chars` characters wrapped
-    // at `cols` columns: ceil(chars/cols), never fewer than one (an empty line
-    // still occupies a row). `cols` <= 0 is treated as "no wrap" (one line).
-    static int visualLinesForChars(int chars, int cols);
-
-    // Exact wrapped height, in display lines, of a record whose physical lines
-    // hold `lineChars[i]` characters each, wrapped at `cols` and clamped to
-    // `cap` (the shared 100-line display cap, RecordIndex::kDisplayLineCap).
-    static int measuredRecordLines(const QVector<int> &lineChars, int cols, int cap);
-
     // --- Lifecycle ---------------------------------------------------------
     // Bind to `idx` (whose block prefix sums must already be built) and seed all
-    // blocks as unmeasured, estimated at `cols` columns with expansion 1.0 (i.e.
-    // initially every record is its physical-line height — no wrap assumed until
-    // real measurements arrive).
-    void reset(const RecordIndex *idx, int cols);
+    // blocks as unmeasured, estimated at `wrapWidth` pixels with expansion 1.0
+    // (i.e. initially every record is its physical-line height — no wrap assumed
+    // until real measurements arrive).
+    void reset(const RecordIndex *idx, int wrapWidth);
     void clear();
     bool isBound() const { return m_idx != nullptr; }
     const RecordIndex *index() const { return m_idx; }
 
-    int columns() const { return m_cols; }
-    // Change the viewport column count. When it actually differs, EVERY cached
-    // measurement is dropped (heights are width-dependent) and totals fall back
-    // to estimates until blocks are remeasured. Returns true when the width
-    // changed and the cache was invalidated.
-    bool setColumns(int cols);
+    int wrapWidth() const { return m_wrapWidth; }
+    // Change the pixel width a record is measured at. When it actually differs,
+    // EVERY cached measurement is dropped (heights are width-dependent) and totals
+    // fall back to estimates until blocks are remeasured. Returns true when the
+    // width changed and the cache was invalidated.
+    bool setWrapWidth(int wrapWidth);
+    // Drop every measurement at the CURRENT width. The one caller is the view's
+    // font change: heights are the font's as much as the width's, and a zoom whose
+    // column origins did not move leaves setWrapWidth() a no-op — so without this
+    // the model goes on answering with heights measured at the old face's advances
+    // for the rest of the session (§7.1.5).
+    void invalidateMeasurements();
 
     // --- Measurement -------------------------------------------------------
     int blockCount() const { return m_blockPhysical.size(); }
@@ -85,7 +85,7 @@ public:
 
     // Fold in exact measurements for the records of `block` from its `first`-th
     // onward: `visualLines[i]` is the wrapped display-line count of record
-    // blockStartRecord(block) + first + i at the CURRENT columns. `first` must not
+    // blockStartRecord(block) + first + i at the CURRENT wrap width. `first` must not
     // exceed measuredRecordsInBlock(block), or the run would leave a hole; the run
     // itself is truncated to the block. The default `first` of 0 with the whole
     // block's heights is the ordinary "this block has now been visited" call and
@@ -128,15 +128,15 @@ private:
     int    blockStartRecord(int block) const;
 
     const RecordIndex *m_idx = nullptr;
-    int    m_cols = 80;
+    int    m_wrapWidth = 1;
 
-    // Per block, column-INDEPENDENT: sum of display (capped) physical lines.
+    // Per block, width-INDEPENDENT: sum of display (capped) physical lines.
     QVector<qint64> m_blockPhysical;
-    // Per block: the display-line total of its MEASURED PREFIX at m_cols, or -1
+    // Per block: the display-line total of its MEASURED PREFIX at m_wrapWidth, or -1
     // when nothing in the block is measured. Equal to the block's exact total when
     // the prefix covers the whole block.
     QVector<qint64> m_blockLines;
-    // Per block: the (column-independent) physical line total of that same
+    // Per block: the (width-independent) physical line total of that same
     // measured prefix, so the unmeasured remainder can still be estimated.
     QVector<qint64> m_blockMeasuredPhysical;
     // Per MEASURED block only: the per-record wrapped display-line counts of its
