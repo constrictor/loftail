@@ -172,6 +172,8 @@ private slots:
     void severalFilesOpenedAtOnceBecomeSeveralTabs();
     void aRefusedLogAmongSeveralLeavesTheOthersOpenAndIsNamedWithThem();
     void aRefusalOutlivesTheTicksAndTabSwitchesThatFollowItUntilDismissed();
+    void anAddressWithNoFileNamePartIsStillNamedInTheStrip();
+    void aWaitingLogWithNoFileNamePartStillHasALabelATitleAndAStatus();
 
     // What a tab's stashed filter state MEANS when its log had not been indexed yet
     // (SPEC.md §6). The panes are stashed on the way out of a tab, and opening the
@@ -873,6 +875,59 @@ void TestMultiDoc::aRefusedLogAmongSeveralLeavesTheOthersOpenAndIsNamedWithThem(
     // The reason is the half the reader actually needs, so it travels with each name
     // rather than being dropped when several are listed.
     QCOMPARE(notice.count(QStringLiteral("Authentication")), 2);
+}
+
+// An address with no file-name part was named "" everywhere, and the strip is where
+// it showed worst: "Cannot open : Not a valid remote log address: ssh://" with nothing
+// at all before the colon, and — in the multi form, which is a bare "%1: %2" per line —
+// a list of lines each beginning with a colon and no way to tell which address was
+// which. Every address has a name now (RemoteLocation.h).
+void TestMultiDoc::anAddressWithNoFileNamePartIsStillNamedInTheStrip()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    QVERIFY(!w.openFile(QStringLiteral("ssh://")));
+    QCOMPARE(tabCount(w), 0);
+    QString notice = noticeText(w);
+    QVERIFY2(!notice.contains(QStringLiteral("open :")), qPrintable(notice));
+    QVERIFY2(notice.contains(QStringLiteral("ssh")), qPrintable(notice));
+
+    // The multi form, where the name is the only thing telling the lines apart.
+    QVERIFY(!w.openFiles({QStringLiteral("ssh://"), QStringLiteral("sftp://")}));
+    QCOMPARE(tabCount(w), 0);
+    notice = noticeText(w);
+    const QStringList lines = notice.split(u'\n', Qt::SkipEmptyParts);
+    QCOMPARE(lines.size(), 3); // the caption and one line each
+    for (int i = 1; i < lines.size(); ++i)
+        QVERIFY2(!lines.at(i).startsWith(u':'), qPrintable(lines.at(i)));
+    QVERIFY2(lines.at(1).startsWith(QStringLiteral("ssh:")), qPrintable(lines.at(1)));
+    QVERIFY2(lines.at(2).startsWith(QStringLiteral("sftp:")), qPrintable(lines.at(2)));
+}
+
+// `loftail /mnt/share/logs/` with the share not mounted — the M13 case, and a
+// SUCCESSFUL open: the path is well-formed, so it waits. Which is exactly why the empty
+// name reached further here than in the strip, into three places at once.
+void TestMultiDoc::aWaitingLogWithNoFileNamePartStillHasALabelATitleAndAStatus()
+{
+    const QString absent = m_dir.filePath(QStringLiteral("share")) + u'/';
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    QVERIFY(w.openFile(absent)); // waiting is a state, not a failure (SPEC.md §3)
+    QCOMPARE(tabCount(w), 1);
+
+    // The hollow marker AND a name — the marker on its own says a log is not there
+    // without saying which log.
+    QTRY_COMPARE(tabs(w)->tabText(0), QStringLiteral("◦ share"));
+    QCOMPARE(w.windowTitle(), QStringLiteral("loftail — share"));
+
+    auto *status = w.findChild<QLabel *>(QStringLiteral("statusLabel"));
+    QVERIFY(status);
+    QVERIFY2(status->text().startsWith(QStringLiteral("share ")), qPrintable(status->text()));
 }
 
 void TestMultiDoc::aRefusalOutlivesTheTicksAndTabSwitchesThatFollowItUntilDismissed()

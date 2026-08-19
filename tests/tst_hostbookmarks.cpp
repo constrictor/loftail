@@ -361,6 +361,16 @@ void TestHostBookmarks::aPasswordNeverLeaksIntoAPathString()
     QVERIFY(!RemoteLocation::normalize(withSecret).contains(QStringLiteral("hunter2")));
     QVERIFY(!logSourceDisplayName(withSecret).contains(QStringLiteral("hunter2")));
     QVERIFY(!logSourceDisplayPath(withSecret).contains(QStringLiteral("hunter2")));
+
+    // And the case this used to miss. Everything above is downstream of a SUCCESSFUL
+    // parse(), which is where the password is dropped — so an address parse() REFUSES
+    // never met the rule at all, and was echoed back verbatim into the refusal strip.
+    // `ssh://u:pw@h` has no path; RemoteLocation::isValid() wants a host and a path.
+    const QString unparseable = QStringLiteral("ssh://deploy:hunter2@web1.example.com");
+    QVERIFY(!RemoteLocation::parse(unparseable).has_value());
+    QVERIFY(!logSourceDisplayName(unparseable).contains(QStringLiteral("hunter2")));
+    QVERIFY(!logSourceDisplayPath(unparseable).contains(QStringLiteral("hunter2")));
+    QVERIFY(!RemoteLocation::withoutPassword(unparseable).contains(QStringLiteral("hunter2")));
 }
 
 // passwordAccepted() is handed a target and nothing else, so the store must be reachable

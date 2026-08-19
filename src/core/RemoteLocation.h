@@ -51,6 +51,16 @@ struct RemoteLocation
     // recent-files list and the window title; a credential must not ride along.
     QString toString() const;
 
+    // `s` with any URL password taken out, for a string that is about to be SHOWN.
+    //
+    // parse() drops a password on the floor, so everything downstream of a SUCCESSFUL
+    // parse is already clean. An address that does NOT parse never goes through it —
+    // `ssh://u:pw@h` has no path and `ssh://u:pw@` has no host — and used to be echoed
+    // back verbatim into the refusal strip, credential and all. This is the one place
+    // that is answered, so the refusal's name half and its reason half can both ask.
+    // A non-remote string is returned unchanged: a local path has no userinfo.
+    static QString withoutPassword(const QString &s);
+
     // "user@host:port" — the connection-pool key, so every file on one host shares a
     // single SSH connection and, at restore, a single password prompt.
     QString target() const;
@@ -104,9 +114,31 @@ bool logPathIsSpooled(const QString &s);
 // "app.log (prod-web)" for a remote file — the host is what disambiguates two tabs
 // showing the same-named log from different machines — and "app.log (bundle.tar.gz)"
 // for one inside an archive.
+//
+// TWO PROPERTIES HOLD FOR EVERY ADDRESS, AND BOTH ARE LOAD-BEARING.
+//
+// It is NEVER EMPTY. An address with no file-name part — `ssh://`, `/var/log/`, `/`,
+// the empty string — used to answer "", and every consumer showed the gap rather than
+// the address: the refusal strip read "Cannot open : …" with nothing before the colon,
+// a waiting tab wore its marker and nothing else, the window title trailed off after
+// the em dash and a recent-files entry was a blank clickable row. The fallback is the
+// deepest non-empty segment of the address ("log" for `/var/log/`), then the scheme
+// word for a remote-shaped address that has nothing else ("ssh" for `ssh://`), then a
+// placeholder for the truly nameless (`/`, "").
+//
+// It NEVER CONTAINS A SEPARATOR. tabLabelsFor() (TabLabels.h) groups on this string and
+// builds a label as parent directories plus it, which only stays unambiguous while the
+// name is the tail of its own label — so the fallback is a SEGMENT and never the raw
+// address. The raw address is also unbounded in width, which is the recent-files menu's
+// own reason for not using one.
+//
+// And it never carries a password: the fallback goes through
+// RemoteLocation::withoutPassword() first, because the addresses that reach it are
+// exactly the ones parse() refused and so never cleaned.
 QString logSourceDisplayName(const QString &path);
 
 // The full location for a tooltip or an error message: the local path, or the URL.
+// Password-free for the same reason and by the same route as the name above.
 QString logSourceDisplayPath(const QString &path);
 
 // Whether opening `path` is worth attempting. NON-BLOCKING, and deliberately

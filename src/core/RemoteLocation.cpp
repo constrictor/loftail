@@ -2,11 +2,25 @@
 
 #include "ArchiveLocation.h"
 
+#include <QCoreApplication>
 #include <QFileInfo>
 #include <QLatin1String>
+#include <QStringList>
 #include <QUrl>
 
 namespace loftail {
+
+namespace {
+// Translation context for this file. Nothing in core is a QObject, so there is no
+// inherited tr() — and the one string below is user-facing all the same: it reaches a
+// tab, a window title and the refusal strip. Q_DECLARE_TR_FUNCTIONS is what lets
+// lupdate file it under a name that means something rather than under the file it
+// happens to sit in.
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::RemoteLocation)
+};
+} // namespace
 
 namespace {
 
@@ -64,6 +78,37 @@ QString RemoteLocation::normalize(const QString &s)
     return s;
 }
 
+QString RemoteLocation::withoutPassword(const QString &s)
+{
+    if (!isRemote(s))
+        return s;
+
+    // Deliberately hand-cut rather than routed through QUrl. Every address that reaches
+    // here is one QUrl or parse() has already REFUSED — that is the whole reason it is
+    // being shown as a string instead of as a parsed location — so asking QUrl to
+    // re-serialize it would hand back either nothing or a tidied-up address that is no
+    // longer the one the user typed. The authority is the span between "://" and the
+    // next '/', the userinfo is what precedes its last '@', and a password is what
+    // follows the first ':' inside that.
+    const int schemeEnd = s.indexOf(QLatin1String("://"));
+    if (schemeEnd < 0)
+        return s;
+    const int authorityStart = schemeEnd + 3;
+    int authorityEnd = s.indexOf(u'/', authorityStart);
+    if (authorityEnd < 0)
+        authorityEnd = int(s.size());
+    if (authorityEnd <= authorityStart)
+        return s;
+
+    const int at = s.lastIndexOf(u'@', authorityEnd - 1);
+    if (at < authorityStart)
+        return s;
+    const int colon = s.indexOf(u':', authorityStart);
+    if (colon < 0 || colon > at)
+        return s;
+    return s.left(colon) + s.mid(at); // the user is kept; only the secret goes
+}
+
 QString RemoteLocation::toString() const
 {
     QUrl url;
@@ -91,6 +136,44 @@ namespace {
 // branch below can label its container with it without recursing back into itself —
 // a container path is an archive address, so calling the public function would not
 // terminate.
+// The name an address with no file-name part still gets. Never empty, never a
+// separator and never a credential — the three properties logSourceDisplayName()
+// promises (RemoteLocation.h), and this is where the last two are actually kept, since
+// the addresses that reach here are exactly the ones RemoteLocation::parse() refused
+// and so never cleaned.
+QString tailName(const QString &address)
+{
+    QString rest = RemoteLocation::withoutPassword(address);
+    QString scheme;
+    if (RemoteLocation::isRemote(address)) {
+        const int mark = rest.indexOf(QLatin1String("://"));
+        scheme = rest.left(mark); // "ssh" / "sftp" — the last thing an `ssh://` has
+        rest = rest.mid(mark + 3);
+    }
+#ifdef Q_OS_WIN
+    // Native separators, and only here: a backslash is an ordinary character in a POSIX
+    // file name, so folding it into a separator everywhere would split one segment into
+    // two on the platform where it is not one. TabLabels.cpp cuts the same way.
+    rest.replace(u'\\', u'/');
+#endif
+    const QStringList segments = rest.split(u'/', Qt::SkipEmptyParts);
+    if (!segments.isEmpty())
+        return segments.last(); // "/var/log/" is the log directory, and reads as one
+
+    if (!scheme.isEmpty())
+        return scheme;
+    // "/" and "" — an address with nothing in it that could be a name at all. Saying so
+    // beats the empty string every consumer used to be handed, and the reason half of a
+    // refusal carries the address itself.
+    return Tr::tr("(unnamed)");
+}
+
+// A name computed from `whole`, or what `whole` can offer when there was none.
+QString orTailOf(const QString &name, const QString &whole)
+{
+    return name.isEmpty() ? tailName(whole) : name;
+}
+
 QString plainDisplayName(const QString &path)
 {
     if (const auto loc = RemoteLocation::parse(path)) {
@@ -98,7 +181,12 @@ QString plainDisplayName(const QString &path)
         return QStringLiteral("%1 (%2)").arg(name.isEmpty() ? loc->path : name,
                                              loc->displayHost());
     }
-    return QFileInfo(path).fileName();
+    // A remote-shaped address that did NOT parse never goes near QFileInfo: its last
+    // path component is the authority — `ssh://deploy:hunter2@web1` has no path at all
+    // and fileName() hands back the whole userinfo, password included.
+    if (RemoteLocation::isRemote(path))
+        return tailName(path);
+    return orTailOf(QFileInfo(path).fileName(), path);
 }
 
 // Likewise: a container path is itself an archive address, so the archive branch must
@@ -159,32 +247,40 @@ QString logMatchTarget(const QString &path, bool fullPath)
 QString logSourceDisplayName(const QString &path)
 {
     if (const auto loc = ArchiveLocation::split(path)) {
+        // The member name gets the same guarantee as everything else: a member written
+        // with a trailing slash has no file-name part either, and it would arrive at a
+        // tab as "(bundle.tar.gz)" with nothing in front of the bracket.
+        const QString member =
+            orTailOf(loc->displayMember(),
+                     loc->member.isEmpty() ? loc->container : loc->member);
         // A bare compressed stream is shown as the log the writer meant — "app.log",
         // not "app.log (app.log.gz)", which would name the same thing twice.
         if (loc->isSingleStream()) {
             if (RemoteLocation::isRemote(loc->container)) {
                 if (const auto url = RemoteLocation::parse(loc->container)) {
-                    return QStringLiteral("%1 (%2)").arg(loc->displayMember(),
-                                                         url->displayHost());
+                    return QStringLiteral("%1 (%2)").arg(member, url->displayHost());
                 }
             }
-            return loc->displayMember();
+            return member;
         }
         if (loc->member.isEmpty())
             return plainDisplayName(loc->container);
-        return QStringLiteral("%1 (%2)").arg(loc->displayMember(),
-                                             plainDisplayName(loc->container));
+        return QStringLiteral("%1 (%2)").arg(member, plainDisplayName(loc->container));
     }
     return plainDisplayName(path);
 }
 
 QString logSourceDisplayPath(const QString &path)
 {
+    // Both toString()s are already password-free: they are built from a parse() that
+    // dropped it. The fall-through is not — it is the raw string precisely because
+    // nothing could parse it — and an archive's normal form keeps a container it could
+    // not normalize verbatim for the same reason, so both go through the one filter.
     if (const auto loc = ArchiveLocation::split(path))
-        return loc->toString();
+        return RemoteLocation::withoutPassword(loc->toString());
     if (const auto loc = RemoteLocation::parse(path))
         return loc->toString();
-    return path;
+    return RemoteLocation::withoutPassword(path);
 }
 
 bool logSourceAvailable(const QString &path)

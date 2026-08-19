@@ -79,28 +79,29 @@ republished whenever it changes, and the fix took a second, unreported symptom
 with it: the status line read "connecting…  |  The archive holds no member named
 …", because it joins the stale reason to the live status whenever the two differ.
 
+Entry 14 has gone: an address with no file-name part was called "" by
+`logSourceDisplayName()`, so a refusal read "Cannot open : …" with nothing before
+the colon and, in the multi form, a list of lines each beginning with one. The
+name is now the deepest non-empty segment of the address, then the scheme word for
+a remote address with nothing else, then a placeholder — a segment and never the
+raw address, because `tabLabelsFor()` groups on this string and builds a label as
+parent directories plus it. That reach turned out to be the larger half of it: the
+same "" wore a waiting tab's marker with no name beside it, trailed the title bar
+off after the em dash, and put a blank clickable row in the recent-files menu, all
+of which the fix covers at once. It took an unreported credential leak with it. The
+rule that a URL password is dropped had only ever applied downstream of a
+successful `RemoteLocation::parse()`, and an address parse REFUSES —
+`ssh://deploy:hunter2@web1`, which has no path — was echoed back in full twice
+over: once as the name half, since `QFileInfo::fileName()` on a pathless URL hands
+back the whole userinfo, and once inside "Not a valid remote log address: %1".
+Both now go through one `RemoteLocation::withoutPassword()`.
+
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 14. A refusal whose address has no file-name part is reported as "Cannot open : …"
-
-`loftail ssh://` puts `Cannot open : Not a valid remote log address: ssh://` in
-the strip above the tabs — nothing before the colon.
-`RemoteLocation::plainDisplayName()` (`RemoteLocation.cpp:101`) is
-`QFileInfo(path).fileName()`, which is empty for `ssh://` and for any address
-ending in a slash (`/var/log/` gives `""` too).
-
-`SPEC.md` §3 says the strip "names the address and the reason". In the
-multi-refusal form (`"%1: %2"`) the line begins with a bare colon and there is no
-way to tell which of several addresses it was.
-
-Fix: fall back to the raw address when the computed display name is empty. The
-same function names tab labels and recent-file entries, so one fallback covers
-all three.
 
 ### 15. `--pattern` overrides a remembered format, contradicting both `--help` and SPEC
 
