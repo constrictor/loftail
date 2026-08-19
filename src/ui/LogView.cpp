@@ -650,9 +650,27 @@ int LogView::mapRecordHeightLines(int r) const
 // Estimated-mode support (AlwaysOn only)
 // ---------------------------------------------------------------------------
 
-int LogView::charAdvance() const { return qMax(1, fontMetrics().averageCharWidth()); }
+qreal LogView::charAdvance() const
+{
+    // One character's advance in the primary fixed-pitch face, UNROUNDED. Every integer
+    // advance Qt offers truncates: at the reference face's shipped 9 pt both
+    // averageCharWidth() and horizontalAdvance() answer 7 where the advance is 7.21875,
+    // so a 379 px column measured 54 characters where only 52 fit, the record was given
+    // one row too few, and everything past the fold was drawn nowhere — no ellipsis and
+    // no tooltip, because a wrapped message deliberately offers neither (bugs.md 17).
+    // Rounding the other way is no better: qCeil() undercounts and hangs a blank line off
+    // every wrapped record. Keep the fraction and floor the division that uses it.
+    return qMax(qreal(1), QFontMetricsF(font()).horizontalAdvance(QLatin1Char('0')));
+}
 
-int LogView::minWrapWidth() const { return kMinWrapCols * charAdvance(); }
+int LogView::minWrapWidth() const
+{
+    // qCeil, not a truncating multiply: this width is handed straight to viewportCols(),
+    // so a floor a pixel short of kMinWrapCols characters divides back out as one column
+    // too many — and the qMax() there then re-raises the count to a width that cannot
+    // hold it, which is one column of clipping surviving the fix above.
+    return qCeil(kMinWrapCols * charAdvance());
+}
 
 int LogView::messageWrapWidth() const
 {
@@ -672,9 +690,12 @@ int LogView::messageWrapWidth() const
 
 int LogView::viewportCols() const
 {
-    // Characters that fit across the wrapped message column. Fixed-pitch font, so
-    // this is a divide, not a shaping pass (§7.1.1).
-    return qMax(kMinWrapCols, messageWrapWidth() / charAdvance());
+    // Characters that fit across the wrapped message column. Fixed-pitch font, so this
+    // is a divide, not a shaping pass (§7.1.1) — but a FLOORED divide by a FRACTIONAL
+    // advance, which is what QTextLine actually fits at every point size and width the
+    // zoom offers. An integer advance is a rounded one, and rounded down it hands the
+    // record more columns than the layout can place (bugs.md 17).
+    return qMax(kMinWrapCols, qFloor(messageWrapWidth() / charAdvance()));
 }
 
 void LogView::ensureEstimatorBound()

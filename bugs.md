@@ -130,52 +130,23 @@ searching nothing on purpose: a reopened bar shows the standing query selected f
 replacement, with a blank report and no marks, so it claims nothing it is not
 showing.
 
+Entry 17 has gone as well, and the note it opened with — that it is the horizontal
+sibling of entry 3's line pitch — held all the way down. `viewportCols()` divided
+the message column's width by `QFontMetrics::averageCharWidth()`, and every integer
+advance Qt offers is a rounded one, below the advance the layout actually uses at
+the same 15 of the 27 point sizes. So Always On counted 54 characters into a column
+that holds 52, gave a 53-character record one row, and drew the rest nowhere — no
+ellipsis and no tooltip, since a wrapped message deliberately offers neither. The
+advance is fractional now and the division floored, and the fix had to take the
+twenty-character floor with it: `minWrapWidth()` multiplied the same truncated
+advance out and `viewportCols()` re-raises the count to it, so one column of
+clipping survived a fix to the division alone. What the fix does NOT reach is
+recorded as entry 22 below, and was found while testing it.
+
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
-
----
-
-### 17. `viewportCols()` trusts `averageCharWidth()`, which is truncated, so Always On clips the tail of long records
-
-`LogView::viewportCols()` divides the message column's width by
-`fontMetrics().averageCharWidth()`. That is an **integer**, and at the
-reference fixed-pitch face at the shipped 9 pt it answers **7** where the real
-advance is **7.21875** — so the column count comes out too high, the estimated
-geometry gives the record too few rows, and the wrapped cell is clipped to the
-rows it was given. Nothing says so: a wrapped message is deliberately not elided
-and offers no tooltip (`SPEC.md` §5).
-
-This is the horizontal sibling of the fix in `a172374`, which replaced
-`QFontMetrics::height()` with `qCeil(QFontMetricsF::height())` for exactly the
-same reason one axis over, and it survived that pass untouched.
-
-Measured with Always On, a 880 px viewport (message column 395 px) and one record
-whose message is N `a`s:
-
-```
-N=54  : estimator cols 56, record 1 row , the text needs 1 — ok
-N=55  : estimator cols 56, record 1 row , the text needs 2 — CLIPPED
-N=56  : estimator cols 56, record 1 row , the text needs 2 — CLIPPED
-N=110 : estimator cols 56, record 2 rows, the text needs 3 — CLIPPED
-```
-
-`averageCharWidth()` is below the true advance at **15 of the 27 point sizes the
-zoom offers** — 7, 9, 11, 13, 14, 15, 18, 19, 20, 22, 24, 26, 28, 29, 30 —
-including the default. The share of message-line lengths that lose at least one
-line at 9 pt and 395 px: 2% under 100 characters, 14% for 100–300, 29% for
-300–600, 60% above 600.
-
-Not fixed by the entry-4 work, which made the two wrapped-cell paths agree with
-each other and with `measureWrappedLines()`; the count they are all clipped to
-still comes from here, and `layoutWrappedText()` stops at the same
-`rect.height() / lineHeight()` rows `drawText` used to clip at.
-
-Fix: take the advance from `QFontMetricsF` — or `horizontalAdvance()` of a sample
-character — and floor the division, rather than trusting the integer
-`averageCharWidth()`. `updateScrollBars()` also uses it, for the horizontal
-scrollbar's single step, where being a fraction of a character out costs nothing.
 
 ---
 
@@ -311,6 +282,83 @@ reaching this state. Local containers are what hit it.
 Note that this is a different mechanism from the staleness recorded in the preamble
 above (the former entry 13), which was about the *sentence* a waiting tab shows. This
 one is about a wait that cannot end.
+
+---
+
+### 21. A record of CJK or emoji is clipped by the same height model, and the entry-17 fix does not reach it
+
+Found while confirming entry 17, and it is the same user-visible failure with a
+different cause. `EstimatedGeometry::measuredRecordLines()` is `ceil(chars / cols)`
+(`src/core/EstimatedGeometry.cpp:22`), and `cols` is one number for the whole view —
+which assumes every glyph is drawn at the PRIMARY face's advance. A character the
+fixed-pitch face does not carry resolves through a fallback face with a wider one:
+at the reference face at 9 pt a Latin character advances 7.21875 px and U+4E2D
+advances **12**. So a record of such text needs more lines than it is counted for,
+and `drawWrappedCell()` clips it to the rows it was given (`LogView.cpp:307`,
+`maxLines = rect.height() / lineHeight()`) — no ellipsis and no tooltip, because a
+wrapped message deliberately offers neither (`SPEC.md` §5). Same class as entry 17:
+text that exists nowhere on screen and nothing on screen saying so.
+
+Measured at 9 pt in a 379 px wrap width (an 880 px viewport, Line Wrap ▸ Always On),
+one record whose message is N × U+4E2D:
+
+```
+N=20 : 240 px, layout 1 line , model 1 row  — ok
+N=30 : 360 px, layout 1 line , model 1 row  — ok
+N=40 : 480 px, layout 2 lines, model 1 row  — CLIPPED, the second line is not drawn
+N=60 : 720 px, layout 2 lines, model 2 rows — ok again, both sides round to 2
+```
+
+The model's row count is `ceil(40/52)` with entry 17 fixed and `ceil(40/54)` without
+it, so the entry-17 work neither causes this nor helps it; the two are independent.
+`ARCHITECTURE.md` §7.1.1 states the fixed-pitch assumption for the primary face and
+§7.1.4 already notes fallback CJK/emoji overhang as the one case the mark region
+behaves differently, but nothing anywhere covers the height model losing text on such
+a record.
+
+There is no arithmetic answer, because the advance is per character and the model
+counts characters. The likely fix is to MEASURE such records rather than count them —
+`LogView::measureWrappedLines()` already lays a cell out exactly, and it is what the
+exact path uses — falling back to it when a record's text is not wholly in the
+primary face (`QFontMetricsF::inFont()` per character, or a cheaper "any character
+above U+02FF" screen at index time). That is a design decision, not a one-liner: it
+puts a text-shaping pass back on a path §7.1.1 exists to keep free of one, so what
+has to be settled is how such records are detected cheaply enough and whether the
+answer is cached per record or per block.
+
+---
+
+### 22. The column count still overcounts by one on a line ending in an overhanging glyph
+
+Also found while fixing entry 17, and it is what remains after it. `QTextLine`'s
+break test allows for the last glyph's RIGHT BEARING, so where a glyph's ink
+overhangs its advance the line breaks one character earlier than any
+width-over-advance arithmetic predicts — and `viewportCols()` is exactly that
+arithmetic, `qFloor(messageWrapWidth() / advance)` (`src/ui/LogView.cpp:653,691`,
+as of the commit that fixed entry 17).
+The record is then given one row too few and clipped to it, silently, in the same
+way entry 17 was.
+
+Swept at the reference fixed-pitch face over widths 60–1400 px at all 27 point sizes,
+counting the widths at which `qFloor(w / advance)` exceeds what `QTextLine` places:
+
+```
+character:   '0'   'i'   '.'   'n'   'x'   'W'
+overcounts:    0     0     0     0   248    1590      (of 36,207 size x width pairs)
+```
+
+`'x'` misses only at 7 pt; `'W'` misses at 15 of the 27 sizes — 7, 9, 11, 13, 14, 15,
+18, 19, 20, 22, 24, 26, 28, 29, 30, which is the same set of sizes the truncated
+advance failed at, since it is the same fractional remainder that leaves room for the
+bearing to matter. At 9 pt with a 390 px column: the arithmetic says 54, a line of
+`'0'` holds 54, a line of `'W'` holds 53.
+
+The exposure is much narrower than entry 17's — it is one column, not up to 22, and
+only for a line that happens to end on such a glyph — but the failure is the same and
+so is its silence. It has the same shape as entry 21: the height model knows an
+advance and the layout knows glyphs, and where those differ the model is the one that
+is wrong. The same answer probably serves both, and `tst_logview::laidOutFit()`
+measures in DIGITS specifically to keep the entry-17 cases clear of this one.
 
 ---
 
