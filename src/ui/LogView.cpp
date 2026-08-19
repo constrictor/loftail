@@ -170,48 +170,55 @@ void drawElidedCell(QPainter &p, const QRect &rect, const QString &text,
     }
 }
 
-// The wrapped message cell. With nothing to mark it is EXACTLY the drawText call it
-// replaces — which is what keeps every unmarked record rendering as it always has, and
-// keeps the line breaking the height model was measured against (§7.1.1).
-//
-// With something to mark, the text is laid out here instead: a mark has to know where
-// each character landed, and the only way to be sure of that is to have placed it. The
-// same QTextLayout draws the text and answers where the run is, so the two cannot
-// disagree — at the price of Qt's own wrapping being reproduced rather than used, which
-// is why this path is reached only while a search is armed and only for records that
-// actually match.
-void drawWrappedCell(QPainter &p, const QRect &rect, const QString &text, int lineHeight,
-                     bool wordWrap, const CellMark &mark)
+// Wrapped text is laid out HERE, by the marked and the unmarked path alike, and that is
+// the whole point. Qt offers no `drawText` flag pair that reaches
+// `QTextOption::WrapAtWordBoundaryOrAnywhere` — `Qt::TextWordWrap | Qt::TextWrapAnywhere`
+// behaves as plain `WrapAnywhere` — so for as long as one path used flags and the other a
+// layout, a record re-flowed to different line breaks the moment Find was armed, and lost
+// whatever text the extra lines carried (bugs.md 4). One function lays every wrapped cell
+// out, `LogView::measureWrappedLines()` counts through the same one, and the wrap mode is
+// the only thing that varies between the two renderings.
+QTextOption wrapOptionFor(bool wordWrap)
 {
-    const int flags = (wordWrap ? (Qt::TextWordWrap | Qt::TextWrapAnywhere)
-                                : Qt::TextWrapAnywhere) | Qt::AlignTop;
-    QVector<TextMatcher::Span> spans;
-    if (mark.active())
-        spans = mark.find->spans(text, kMaxCellMarks);
-    if (spans.isEmpty()) {
-        p.drawText(rect, flags, text);
-        return;
-    }
-
     QTextOption option;
+    // AlwaysOn wraps ANYWHERE and must go on doing so: §7.1.1's height model is
+    // ceil(chars / cols), which only a character wrap satisfies. SelectedRecordOnly means
+    // "read this one record in full", so it breaks at word boundaries and falls back to
+    // anywhere for a word wider than the column.
     option.setWrapMode(wordWrap ? QTextOption::WrapAtWordBoundaryOrAnywhere
                                 : QTextOption::WrapAnywhere);
-    const int lh = qMax(1, lineHeight);
-    const int maxLines = qMax(1, rect.height() / lh);
+    return option;
+}
 
-    p.save();
-    p.setClipRect(rect, Qt::IntersectClip); // drawText clips to its rect; a layout does not
+// One paragraph as it is laid out. A `QTextLayout` advances U+0009 to a tab stop — 80 px
+// by default, about eleven columns at the reference face — where `drawText` gave it the
+// width of one ordinary character and where the height model counts it as one. So a tab is
+// laid out as a single blank, which renders pixel-identically to what `drawText` drew and
+// keeps a TAB-indented stack trace breaking where it always broke. The substitution is one
+// character for one, so every span offset still means the character it meant.
+QString paragraphForLayout(QStringView paragraph)
+{
+    QString s = paragraph.toString();
+    s.replace(QLatin1Char('\t'), QLatin1Char(' '));
+    return s;
+}
 
+// Lay `text` out at `width` and hand each paragraph to `visit(layout, lines, base)`.
+// Returns the display lines used. A record is not a line (invariant #2): the message's own
+// newlines are paragraph breaks, which `QTextLayout` does not take for itself, and the
+// string split is a DECODED one, never raw bytes (invariant #8).
+template <class Visit>
+int layoutWrappedText(const QString &text, const QFont &font, int width, bool wordWrap,
+                      int maxLines, int lineHeight, Visit &&visit)
+{
+    const QTextOption option = wrapOptionFor(wordWrap);
+    const QList<QStringView> paragraphs = QStringView(text).split(QLatin1Char('\n'));
     int placed = 0; // display lines used so far by this record
     int base = 0;   // character offset of this paragraph within `text`
-    // A record is not a line (invariant #2): the message's own newlines are paragraph
-    // breaks, which QTextLayout does not take for itself. Splitting a DECODED string,
-    // never raw bytes (invariant #8).
-    const QList<QStringView> paragraphs = QStringView(text).split(QLatin1Char('\n'));
     for (const QStringView &paragraph : paragraphs) {
         if (placed >= maxLines)
             break;
-        QTextLayout layout(paragraph.toString(), p.font());
+        QTextLayout layout(paragraphForLayout(paragraph), font);
         layout.setTextOption(option);
         layout.beginLayout();
         QVector<QTextLine> lines;
@@ -219,38 +226,66 @@ void drawWrappedCell(QPainter &p, const QRect &rect, const QString &text, int li
             QTextLine line = layout.createLine();
             if (!line.isValid())
                 break;
-            line.setLineWidth(rect.width());
-            // Positioned on the view's own line pitch rather than the layout's, so a
-            // marked record occupies exactly the lines the geometry model gave it.
-            line.setPosition(QPointF(0, (placed + lines.size()) * lh));
+            line.setLineWidth(width);
+            // Positioned on the view's own line pitch rather than the layout's, so a record
+            // occupies exactly the lines the geometry model gave it.
+            line.setPosition(QPointF(0, (placed + lines.size()) * lineHeight));
             lines.append(line);
         }
         layout.endLayout();
-        const auto drawLayout = [&] { layout.draw(&p, rect.topLeft()); };
-        drawLayout();
-
-        for (const QTextLine &line : lines) {
-            const int lineStart = line.textStart();
-            const int lineEnd = lineStart + line.textLength();
-            for (const TextMatcher::Span &span : spans) {
-                // Paragraph-local, and clipped to this line: a match may straddle a
-                // wrapped-line boundary, and then it is marked on BOTH lines.
-                const int from = qMax(span.start - base, lineStart);
-                const int to = qMin(span.start + span.length - base, lineEnd);
-                if (to <= from)
-                    continue;
-                const int x0 = int(line.cursorToX(from));
-                const int x1 = int(line.cursorToX(to));
-                const QRect patch =
-                    QRect(rect.left() + qMin(x0, x1), rect.top() + int(line.position().y()),
-                          qMax(1, qAbs(x1 - x0)), lh)
-                        .intersected(rect);
-                paintMark(p, patch, mark, drawLayout);
-            }
-        }
+        visit(layout, lines, base);
         placed += int(lines.size());
         base += int(paragraph.size()) + 1; // the newline itself
     }
+    return qMax(1, placed);
+}
+
+// The wrapped message cell. The text is laid out whether or not there is anything to mark,
+// because a mark has to know where each character landed — the only way to be sure of that
+// is to have placed it — and because a reader must not see the record re-break when the
+// search arms. The same `QTextLayout` draws the text and answers where the run is, so the
+// two cannot disagree.
+void drawWrappedCell(QPainter &p, const QRect &rect, const QString &text, int lineHeight,
+                     bool wordWrap, const CellMark &mark)
+{
+    QVector<TextMatcher::Span> spans;
+    if (mark.active())
+        spans = mark.find->spans(text, kMaxCellMarks);
+
+    const int lh = qMax(1, lineHeight);
+    const int maxLines = qMax(1, rect.height() / lh);
+
+    p.save();
+    p.setClipRect(rect, Qt::IntersectClip); // drawText clipped to its rect; a layout does not
+
+    layoutWrappedText(
+        text, p.font(), rect.width(), wordWrap, maxLines, lh,
+        [&](QTextLayout &layout, const QVector<QTextLine> &lines, int base) {
+            const auto drawLayout = [&] { layout.draw(&p, rect.topLeft()); };
+            drawLayout();
+            if (spans.isEmpty())
+                return;
+
+            for (const QTextLine &line : lines) {
+                const int lineStart = line.textStart();
+                const int lineEnd = lineStart + line.textLength();
+                for (const TextMatcher::Span &span : spans) {
+                    // Paragraph-local, and clipped to this line: a match may straddle a
+                    // wrapped-line boundary, and then it is marked on BOTH lines.
+                    const int from = qMax(span.start - base, lineStart);
+                    const int to = qMin(span.start + span.length - base, lineEnd);
+                    if (to <= from)
+                        continue;
+                    const int x0 = int(line.cursorToX(from));
+                    const int x1 = int(line.cursorToX(to));
+                    const QRect patch =
+                        QRect(rect.left() + qMin(x0, x1), rect.top() + int(line.position().y()),
+                              qMax(1, qAbs(x1 - x0)), lh)
+                            .intersected(rect);
+                    paintMark(p, patch, mark, drawLayout);
+                }
+            }
+        });
     p.restore();
 }
 } // namespace
@@ -477,11 +512,16 @@ int LogView::selRecordForGeometry() const
 
 int LogView::measureWrappedLines(const QString &text, int width) const
 {
-    const QRect br = fontMetrics().boundingRect(QRect(0, 0, qMax(10, width), 0),
-                                                Qt::TextWordWrap | Qt::TextWrapAnywhere, text);
-    const int lh = lineHeight();
-    const int lines = qMax(1, (br.height() + lh - 1) / lh);
-    return qMin<int>(RecordIndex::kDisplayLineCap, lines);
+    // Counted through the very function that paints it (§7.1.1, §7.1.4). This used to
+    // divide a `QFontMetrics::boundingRect()` height, and no flag that function takes
+    // measures word-boundary wrapping — `TextWordWrap | TextWrapAnywhere` measures a
+    // character wrap — so the height and the text disagreed by a line wherever a word had
+    // to move down one.
+    const int lines =
+        layoutWrappedText(text, font(), qMax(10, width), /*wordWrap=*/true,
+                          RecordIndex::kDisplayLineCap, lineHeight(),
+                          [](QTextLayout &, const QVector<QTextLine> &, int) {});
+    return qMin<int>(RecordIndex::kDisplayLineCap, qMax(1, lines));
 }
 
 int LogView::selWrapLines() const
@@ -1093,7 +1133,7 @@ void LogView::paintEvent(QPaintEvent *event)
                 const int w = m_header->sectionSize(logical);
                 if (logical == msgCol) {
                     const int availW = qMax(10, vw - x);
-                    // Character wrapping (TextWrapAnywhere) so the painted height
+                    // Character wrapping (WrapAnywhere) so the painted height
                     // matches the ceil(chars/cols) measurement model exactly.
                     drawWrappedCell(p, QRect(x, y, availW, rowH), m_model->cellText(r, logical),
                                     lh, /*wordWrap=*/false, mark);

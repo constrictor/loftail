@@ -272,6 +272,10 @@ private slots:
     void everyWrappedLineOfARecordIsDrawnInsideTheRowItWasGiven();
     void aSelectedRecordIsGivenExactlyTheLinesItsWrappedTextTakes();
 
+    // --- both wrapped-cell paths break lines the same way (bugs.md 4) -----------
+    void aTabbedRecordBreaksWhereItAlwaysDidWhenFindIsArmed();
+    void theSelectedRecordBreaksWhereItAlwaysDidWhenFindIsArmed();
+
     // --- Zoom (SPEC.md §5, ARCHITECTURE.md §7.1.5) ------------------------------
     void theLogTextSizeStopsAtBothBoundsAndComesBackOnReset();
     void aBiggerFontFitsFewerRecordsInTheSameViewport();
@@ -3031,6 +3035,213 @@ void TestLogView::aSelectedRecordIsGivenExactlyTheLinesItsWrappedTextTakes()
     QCOMPARE(ink.size(), claimed);
     for (int i = 1; i < ink.size(); ++i)
         QCOMPARE(ink.at(i).first - ink.at(i - 1).first, lh);
+}
+
+// --- the two wrapped-cell paths break lines identically ----------------------
+//
+// `drawWrappedCell()` lays a cell out with a QTextLayout whether or not there is
+// anything to mark, and `measureWrappedLines()` counts through the same function. It did
+// not always: the unmarked path was `QPainter::drawText()` with flags, and Qt maps NO
+// flag pair onto `QTextOption::WrapAtWordBoundaryOrAnywhere` — `TextWordWrap |
+// TextWrapAnywhere` behaves as plain `WrapAnywhere`. So the two disagreed, and the record
+// the reader was in the middle of re-broke the moment a search armed. A tab made it worse
+// and on the other mode: drawText gives U+0009 the width of one character, a QTextLayout
+// advances it to the default 80 px tab stop, so a TAB-indented stack trace re-flowed
+// under Always On too and the lines it gained past its allotted rows were clipped away.
+//
+// Neither is observable anywhere but in the pixels — every widget holds the same values
+// marked or not — so both cases render the viewport twice and compare where the lines
+// end. Both need a resolved font: with an empty font database (Windows offscreen, which
+// ships none) nothing has an advance to wrap at.
+
+namespace {
+
+// Where each of `lines` line boxes down `band` stops inking, or -1 for a box with nothing
+// drawn in it. This is where the line BREAKING is observable: a different break puts
+// different characters on the line, so the line ends somewhere else. A mark cannot move
+// it — the mark fills a run of glyphs that are already there, so it can only ink columns
+// the text already reaches.
+QVector<int> lineEnds(const QImage &img, const QRect &band, int lineHeight, int lines,
+                      const QColor &fill)
+{
+    const auto isFill = [&](QRgb px) {
+        return qAbs(qRed(px) - fill.red()) <= 1 && qAbs(qGreen(px) - fill.green()) <= 1
+            && qAbs(qBlue(px) - fill.blue()) <= 1;
+    };
+    QVector<int> ends;
+    for (int i = 0; i < lines; ++i) {
+        int end = -1;
+        const int y0 = band.top() + i * lineHeight;
+        for (int y = y0; y < y0 + lineHeight && y <= band.bottom(); ++y) {
+            for (int x = band.right(); x > end; --x) {
+                if (!isFill(img.pixel(x, y))) {
+                    end = x;
+                    break;
+                }
+            }
+        }
+        ends.append(end);
+    }
+    return ends;
+}
+
+// A stack trace: one exception line and TAB-indented frames under it, which are
+// continuations of the SAME record (invariant #2) and so are paragraphs of the one
+// wrapped message cell. The frames are long enough to wrap and the last one is short, so
+// the record's final row is the end of its text rather than the middle of it — which is
+// what makes clipped text visible rather than merely different.
+QByteArray makeTabbedStackTrace()
+{
+    QByteArray bytes = "2026-07-21 14:32:05,123 [main] ERROR net.socket - "
+                       "java.lang.NullPointerException: the Handler could not dispatch\n";
+    for (int i = 0; i < 5; ++i) {
+        bytes += "\tat com.example.Handler.dispatch(Handler.java:";
+        bytes += QByteArray::number(40 + i);
+        bytes += ") ~[app.jar:1.0.0] while serving the request from 10.0.0.7\n";
+    }
+    bytes += "\tCaused by: read timed out\n";
+    return bytes;
+}
+
+// The palette the pixel cases below read against: fixed rather than the desktop's, so the
+// fill a line box is measured against is known.
+void useKnownPalette(LogView &view)
+{
+    QPalette pal = view.palette();
+    pal.setColor(QPalette::Base, QColor(0x18, 0x1a, 0x1c));
+    pal.setColor(QPalette::Text, QColor(0xe0, 0xe2, 0xe4));
+    pal.setColor(QPalette::Highlight, QColor(0x1e, 0x28, 0x3c));
+    pal.setColor(QPalette::HighlightedText, QColor(0xe8, 0xea, 0xec));
+    view.setPalette(pal);
+}
+
+} // namespace
+
+// Line Wrap ▸ Always On over a record carrying tabs. Arming Find must not move a single
+// break: the unmarked rendering is the one the ceil(chars / cols) height model was
+// measured against, and a tab worth eleven columns re-flows the record and pushes its
+// tail past the rows it was given, where the clip silently eats it.
+void TestLogView::aTabbedRecordBreaksWhereItAlwaysDidWhenFindIsArmed()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
+
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, makeTabbedStackTrace()));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 1);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(900, 900);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    // The viewport takes its geometry on the first paint, and the wrap width is measured
+    // from it — so settle it before deciding where the message column goes, and again
+    // after, or every width below is one the view never had.
+    renderViewport(view);
+    aimWrapWidth(view, 380, 8);
+    renderViewport(view);
+    QTest::qWait(250); // the debounced resize is what re-keys the estimator to this width
+
+    const int lh = view.lineHeight();
+    view.measureBlockOfRecord(0);
+    const int lines = view.estimatedGeometry().recordHeightLines(0);
+    QVERIFY2(lines > 6, "the record did not wrap; nothing here is being tested");
+    QVERIFY(view.viewport()->height() >= lines * lh);
+
+    const QRect band = messageBand(view, lines);
+    const QColor fill = view.palette().base().color();
+
+    const QImage plain = renderViewport(view);
+    const QVector<int> before = lineEnds(plain, band, lh, lines, fill);
+    // Every row the record was given holds a drawn line: with none of the tabs widened,
+    // the text takes exactly the rows the height model counted.
+    for (int i = 0; i < lines; ++i)
+        QVERIFY2(before.at(i) >= 0, "a row of the unmarked record was left blank");
+    QVERIFY2(before.last() < band.right() - 8, "the record's last row is not the end of it");
+
+    TextMatcher matcher;
+    matcher.set(QStringLiteral("Handler"), /*regex=*/false, Qt::CaseInsensitive);
+    view.setFindMatcher(matcher);
+    const QImage marked = renderViewport(view);
+    const QVector<int> after = lineEnds(marked, band, lh, lines, fill);
+
+    QCOMPARE(after, before);
+    // And the record still ends where it ended: a break that moved would have pushed the
+    // tail past the rows it was given, and the clip takes what does not fit.
+    QVERIFY2(after.last() < band.right() - 8,
+             "the record's last row is mid-text: arming Find dropped the end of it");
+}
+
+// Line Wrap ▸ Selected record only, which wraps at WORD boundaries — what the mode is for
+// is reading one record in full. The break must not depend on whether a search is armed,
+// and `measureWrappedLines()` must be counting the wrapping the paint performs, or the
+// record is given the wrong number of rows in the first place.
+void TestLogView::theSelectedRecordBreaksWhereItAlwaysDidWhenFindIsArmed()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
+
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+                     "2026-07-21 14:32:05,123 [main] INFO  net.socket - Listening for "
+                     "incoming connections on port 8780 from 10.0.0.7 and waiting for the "
+                     "handler to accept them one at a time\n"
+                     "2026-07-21 14:32:06,000 [main] INFO  net.socket - done\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 2);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(900, 900);
+    view.setWrapMode(LogView::WrapMode::SelectedRecordOnly);
+    // The viewport takes its geometry on the first paint, and the wrap width is measured
+    // from it — so settle it before deciding where the message column goes, and again
+    // after, or every width below is one the view never had.
+    renderViewport(view);
+    aimWrapWidth(view, 150, 6);
+    renderViewport(view);
+    view.setCurrentRecord(0);
+
+    const int lh = view.lineHeight();
+    // What measureWrappedLines() answered — the rows the record is given and filled to.
+    const int lines = view.selWrapLines();
+    QVERIFY2(lines > 3, "the record did not wrap; nothing here is being tested");
+    QVERIFY(view.viewport()->height() >= lines * lh);
+
+    const QRect band = messageBand(view, lines);
+    // The record is selected, so its fill is the selection's rather than the band's.
+    const QColor fill = view.palette().highlight().color();
+
+    const QImage plain = renderViewport(view);
+    const QVector<int> before = lineEnds(plain, band, lh, lines, fill);
+    for (int i = 0; i < lines; ++i)
+        QVERIFY2(before.at(i) >= 0,
+                 "the record was given a row its own text does not reach: the measurement "
+                 "and the paint are wrapping differently");
+    QVERIFY2(before.last() < band.right() - 8, "the record's last row is not the end of it");
+
+    TextMatcher matcher;
+    matcher.set(QStringLiteral("connections"), /*regex=*/false, Qt::CaseInsensitive);
+    view.setFindMatcher(matcher);
+    const QImage marked = renderViewport(view);
+    const QVector<int> after = lineEnds(marked, band, lh, lines, fill);
+
+    QCOMPARE(after, before);
+    QVERIFY2(after.last() < band.right() - 8,
+             "the record's last row is mid-text: arming Find dropped the end of it");
 }
 
 #include "tst_logview.moc"

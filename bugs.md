@@ -10,37 +10,15 @@ by severity, not by area. The first entry — a narrowing conversion that MSVC
 refuses, which broke the Windows leg of CI at HEAD — has since been fixed and
 removed, and so have entry 1, the estimator reading past a measured block when a
 log grew under Line Wrap ▸ Always On, entry 2, every tab but the last one
-showing none of its records after several logs were opened at once, and entry 3,
-wrapped message text clipped off the bottom of every wrapped record. The numbers
-left behind are not reused: the entries below keep the ones they were given, so
-they can still be referred to by number.
+showing none of its records after several logs were opened at once, entry 3,
+wrapped message text clipped off the bottom of every wrapped record, and entry 4,
+a wrapped record re-flowing to different line breaks the moment Find was armed.
+The numbers left behind are not reused: the entries below keep the ones they were
+given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 4. A wrapped record re-flows to different line breaks the moment Find is armed
-
-`drawWrappedCell()` has two paths: an unmarked `p.drawText(rect, flags, text)`
-(`LogView.cpp:184`) and a marked `QTextLayout` one (`:196`). `ARCHITECTURE.md`
-§7.1.4 states they are equivalent — "the exact `SelectedRecordOnly` one
-(`TextWordWrap | TextWrapAnywhere` → `WrapAtWordBoundaryOrAnywhere`)". Qt does
-not honour that mapping.
-
-The same record at the same width, screenshotted twice: with a matching Find
-query it breaks `…port` / `8780`, at the space; with the bar closed it breaks
-`…port 87` / `80`, mid-number. Confirmed standalone — `drawText` with those flags
-produces four lines where `QTextLayout` with `WrapAtWordBoundaryOrAnywhere`
-produces five.
-
-So typing one character into the Find box re-flows the record the reader is in
-the middle of, and the word-boundary wrapping intended for "read this one record
-in full" is not what ships — mid-word breaks are.
-
-Fix: set the wrap mode explicitly on both paths instead of trusting the flag
-translation, and draw both through `QTextLayout`. That is also the fix for the
-previous entry. Either way `measureWrappedLines()` has to be measuring the same
-wrapping the paint performs, or the height and the text disagree again.
 
 ### 5. Selecting a run rewrites the log's seeded highlight rules and saves them
 
@@ -308,6 +286,46 @@ does the show-and-focus. Decide whether focus moves with it (it probably should)
 and keep `FindBar`'s Escape-closes handling working. The branch is reached only
 on an empty query, so a *not found* on a real query must go on leaving focus
 where it is.
+
+### 17. `viewportCols()` trusts `averageCharWidth()`, which is truncated, so Always On clips the tail of long records
+
+`LogView::viewportCols()` divides the message column's width by
+`fontMetrics().averageCharWidth()`. That is an **integer**, and at the
+reference fixed-pitch face at the shipped 9 pt it answers **7** where the real
+advance is **7.21875** — so the column count comes out too high, the estimated
+geometry gives the record too few rows, and the wrapped cell is clipped to the
+rows it was given. Nothing says so: a wrapped message is deliberately not elided
+and offers no tooltip (`SPEC.md` §5).
+
+This is the horizontal sibling of the fix in `a172374`, which replaced
+`QFontMetrics::height()` with `qCeil(QFontMetricsF::height())` for exactly the
+same reason one axis over, and it survived that pass untouched.
+
+Measured with Always On, a 880 px viewport (message column 395 px) and one record
+whose message is N `a`s:
+
+```
+N=54  : estimator cols 56, record 1 row , the text needs 1 — ok
+N=55  : estimator cols 56, record 1 row , the text needs 2 — CLIPPED
+N=56  : estimator cols 56, record 1 row , the text needs 2 — CLIPPED
+N=110 : estimator cols 56, record 2 rows, the text needs 3 — CLIPPED
+```
+
+`averageCharWidth()` is below the true advance at **15 of the 27 point sizes the
+zoom offers** — 7, 9, 11, 13, 14, 15, 18, 19, 20, 22, 24, 26, 28, 29, 30 —
+including the default. The share of message-line lengths that lose at least one
+line at 9 pt and 395 px: 2% under 100 characters, 14% for 100–300, 29% for
+300–600, 60% above 600.
+
+Not fixed by the entry-4 work, which made the two wrapped-cell paths agree with
+each other and with `measureWrappedLines()`; the count they are all clipped to
+still comes from here, and `layoutWrappedText()` stops at the same
+`rect.height() / lineHeight()` rows `drawText` used to clip at.
+
+Fix: take the advance from `QFontMetricsF` — or `horizontalAdvance()` of a sample
+character — and floor the division, rather than trusting the integer
+`averageCharWidth()`. `updateScrollBars()` also uses it, for the horizontal
+scrollbar's single step, where being a fraction of a character out costs nothing.
 
 ---
 
