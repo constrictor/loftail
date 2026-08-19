@@ -59,6 +59,18 @@ private:
         return views.isEmpty() ? nullptr : views.first()->context()->doc.get();
     }
 
+    // The tab showing `path`, whichever tab that is. Several are open in the cases
+    // below, and the one being asserted about is deliberately not the active one.
+    static DocumentView *viewOf(MainWindow &w, const QString &path)
+    {
+        const auto views = w.findChildren<DocumentView *>();
+        for (DocumentView *v : views) {
+            if (v->context() && v->context()->doc && v->context()->doc->path() == path)
+                return v;
+        }
+        return nullptr;
+    }
+
     static void dismissWhenShown(Dismisser &d, Qt::Key key)
     {
         d.timer.setInterval(10);
@@ -85,6 +97,9 @@ private slots:
     void escapeCancelsOpenAndKeepsCurrentFile();
     void acceptedPatternOpensTheFile();
     void absentFileOpensAWaitingTabWithNoDialog();
+    void anEmptyFileOpensATabInsteadOfAskingAboutNothing();
+    void aLogThatTurnsUpEmptyIsAskedAboutOnlyWhenItHasLines();
+    void aBackgroundTabIsNotToldAnEmptyFileHasAnUnrecognisedFormat();
     // The settings tree's three levels (M20): the DEFAULTS a log nothing matches is
     // tried with, and a FILE PATTERN covering a class of logs. These are the cases that
     // show each doing its job and knowing its limits.
@@ -231,6 +246,171 @@ void TestOpenFlow::absentFileOpensAWaitingTabWithNoDialog()
     QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() == 1, 5000);
     QVERIFY2(!d.seen, "Preferences was shown when the log arrived");
     QCOMPARE(w.windowTitle(), QStringLiteral("loftail — notyet.log"));
+    w.close();
+}
+
+// (iii) The direct open of a log that exists and is empty — `: > app.log; loftail
+// app.log`, which is what a service that has not logged yet leaves behind and the very
+// file somebody opens to watch it start. It used to be REFUSED: formatFits() is false by
+// construction over 0 bytes, so Preferences appeared previewing "No sample lines to
+// preview." with Detect greyed out, and the only sensible answer — Escape — cancelled the
+// open, leaving the status bar reading "Open cancelled" and no tab at all.
+void TestOpenFlow::anEmptyFileOpensATabInsteadOfAskingAboutNothing()
+{
+    const QString blank = m_dir.filePath(QStringLiteral("blank.log"));
+    QVERIFY(write(blank, QByteArray()));
+    QVERIFY(QFileInfo(blank).size() == 0);
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape); // fires only if a dialog appears, which it must not
+    w.openFile(blank);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QVERIFY2(!d.seen, "Preferences was shown for a log with no lines in it");
+    QCOMPARE(w.windowTitle(), QStringLiteral("loftail — blank.log"));
+
+    LogView *view = w.findChild<LogView *>(QStringLiteral("logView"));
+    QVERIFY(view);
+    QCOMPARE(view->recordCount(), 0);
+    // Nothing was judged, so nothing is reported: "format not recognised" about a file
+    // with no lines in it is an accusation nobody can act on.
+    DocumentView *dv = w.findChild<DocumentView *>();
+    QVERIFY(dv);
+    QVERIFY(dv->context()->formatNotice.isEmpty());
+    QVERIFY(!dv->context()->doc->formatSettled());
+
+    // The service starts logging. The real watcher brings the lines in, the format is
+    // judged against them for the first time, it fits, and nothing is asked.
+    QVERIFY(write(blank,
+        "2026-07-21 10:00:00,000 [main] INFO  net.io - starting\n"
+        "2026-07-21 10:00:01,000 [work] ERROR db.pool - boom\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() == 2, 5000);
+    QVERIFY2(!d.seen, "Preferences was shown when the first lines arrived and parsed");
+    QVERIFY(dv->context()->formatNotice.isEmpty());
+    QVERIFY(dv->context()->doc->formatSettled());
+    w.close();
+}
+
+// (i) The headline case, end to end through the window: a log that is not there, then
+// created EMPTY, then written to. The dialog the open owes is spent on the lines that
+// eventually arrive — not on the instant the file came into existence, where it
+// previewed nothing and could detect nothing.
+void TestOpenFlow::aLogThatTurnsUpEmptyIsAskedAboutOnlyWhenItHasLines()
+{
+    const QString later = m_dir.filePath(QStringLiteral("later.log"));
+    QFile::remove(later);
+    QVERIFY(!QFile::exists(later));
+
+    {
+        // Defaults that compile and match nothing here, so the arrival of real lines
+        // MUST produce the dialog — which is what makes "no dialog yet" meaningful
+        // rather than vacuous.
+        LogSettingsStore store(LogSettingsStore::defaultDir());
+        LogSettingsTree tree;
+        LogProfile root;
+        root.format.pattern = QStringLiteral("%p|%c|%m%n");
+        tree.setDefaults(root);
+        QVERIFY(store.save(tree));
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    // Not the shared dismisser: this one reads the dialog before dismissing it, because
+    // the whole complaint was that it appeared with nothing to show.
+    bool seen = false;
+    bool hadASample = false;
+    bool couldDetect = false;
+    QTimer timer;
+    timer.setInterval(10);
+    connect(&timer, &QTimer::timeout, [&]() {
+        auto *dlg = qobject_cast<PreferencesDialog *>(QApplication::activeModalWidget());
+        if (!dlg)
+            return;
+        seen = true;
+        timer.stop();
+        auto *empty = dlg->findChild<QLabel *>(QStringLiteral("formatPreviewEmptyLabel"));
+        auto *detect = dlg->findChild<QPushButton *>(QStringLiteral("formatDetectButton"));
+        hadASample = empty && empty->text().isEmpty();
+        couldDetect = detect && detect->isEnabled();
+        QTest::keyClick(dlg, Qt::Key_Escape);
+    });
+    timer.start();
+
+    w.openFile(later);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QVERIFY2(!seen, "Preferences was shown for a log that is not there");
+    LogView *view = w.findChild<LogView *>(QStringLiteral("logView"));
+    QVERIFY(view);
+    DocumentView *dv = w.findChild<DocumentView *>();
+    QVERIFY(dv);
+
+    // The file is CREATED, and that is all. It stops waiting, because it is there — but
+    // nothing about it has been judged, so nothing is asked and nothing is reported.
+    QVERIFY(write(later, QByteArray()));
+    QTRY_VERIFY_WITH_TIMEOUT(!dv->context()->doc->isWaiting(), 5000);
+    QTest::qWait(1200); // two poll ticks: a dialog would have had every chance
+    QVERIFY2(!seen, "Preferences was shown the instant the file existed");
+    QVERIFY(dv->context()->formatNotice.isEmpty());
+    QVERIFY(!dv->context()->doc->formatSettled());
+
+    // The first records. NOW there is something to judge, so the dialog the open owed
+    // appears — with lines in its preview and its Detect button live.
+    QVERIFY(write(later,
+        "03/12/26 11:50:47 DEBUG Vms::App [] - starting up\n"
+        "03/12/26 11:50:48 INFO  Vms::Http [7f2a] - listening on 8080\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(seen, 5000);
+    QVERIFY2(hadASample, "the dialog previewed no sample lines");
+    QVERIFY2(couldDetect, "Detect was greyed out, so there was nothing to detect from");
+    // Declined, so the log stays readable and the status bar says where to fix it —
+    // which is now an honest report about lines that really do not parse.
+    QTRY_VERIFY(!dv->context()->formatNotice.isEmpty());
+    w.close();
+}
+
+// (iv) The silent half of the same fault. A tab that is not on screen is never asked
+// anything, so what it got instead was the notice — latched, for the session, against a
+// file that had just been created and had nothing in it. Nothing later cleared it, and
+// with no dialog there was nothing to see it happen.
+void TestOpenFlow::aBackgroundTabIsNotToldAnEmptyFileHasAnUnrecognisedFormat()
+{
+    const QString behind = m_dir.filePath(QStringLiteral("behind.log"));
+    QFile::remove(behind);
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape);
+    w.openFile(behind);  // waiting, and about to be pushed into the background
+    w.openFile(m_good);  // parses with the built-in defaults: this tab is now the active one
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
+    QVERIFY2(!d.seen, "a dialog was shown for a log with no bytes");
+
+    DocumentView *dv = viewOf(w, behind);
+    QVERIFY2(dv, "the waiting tab is gone");
+
+    QVERIFY(write(behind, QByteArray()));
+    QTRY_VERIFY_WITH_TIMEOUT(!dv->context()->doc->isWaiting(), 5000);
+    QTest::qWait(1200);
+    // The whole point: no dialog was raised (it is a background tab, and §6.5 says
+    // nothing pops up on arrival) and no notice was written either.
+    QVERIFY2(!d.seen, "Preferences was shown for a background tab");
+    QVERIFY2(dv->context()->formatNotice.isEmpty(),
+             "a background tab was told its format was not recognised by an empty file");
+
+    QVERIFY(write(behind, "2026-07-21 10:00:00,000 [main] INFO  net.io - at last\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(dv->logView()->recordCount() == 1, 5000);
+    // Judged against real lines, silently, exactly as a background tab should be: the
+    // defaults fit, so there is nothing to say about them.
+    QVERIFY(dv->context()->doc->formatSettled());
+    QVERIFY(dv->context()->formatNotice.isEmpty());
+    QVERIFY2(!d.seen, "Preferences was shown for a background tab when its log arrived");
     w.close();
 }
 

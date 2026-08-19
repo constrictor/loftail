@@ -436,6 +436,27 @@ It is an **observation, not the guess invariant #5 forbids**. "The file is gone"
 
 **No dialog on arrival.** The log turns up on a watch tick, for a tab that may not be on screen, so raising Preferences there is the "behind the user's back" case `MainWindow::openFile()` already refuses for the archive member picker. The remembered pattern is applied; if it does not fit, the log reads as plain text and the status bar points at the dialog. Nothing is persisted in that case, so reopening still offers the dialog properly.
 
+**A log with no bytes is not the same state as a log that is not there, and only one of them is a wait.** The two look identical from the format's point of view — nothing to sample — and they are opposite from the user's: a path with nothing at it will be read the moment something appears, while a file created and left empty is *there*, may stay empty for as long as its service is quiet, and must not sit under "has not appeared yet". The spooled transport can tell them apart (`notReadyYet()` is false once the state is `Live`, empty or not, which is what `tst_waitingremote::anEmptyRemoteLogIsNotAWait` pins); a local `stat` cannot, because a file created a millisecond ago and one that will never be written to are byte-identical.
+
+So the cut is at the **decision, not at the resume**. Waiting still ends on existence, and what says whether anything has been *judged* is `formatSettled()` — which already meant "settled against real bytes" and is simply now read on the local path too. A document that opened empty, by either route, is an ordinary open document with an unsettled format:
+
+| How it opened | Waiting | `formatSettled()` |
+| --- | --- | --- |
+| The log is there with lines in it | no | **yes** |
+| The log is there and empty | no | **no** |
+| The log is not there / the fetcher has not got through | **yes** | no |
+
+**The first bytes are what settle it, and `LiveController` is what notices them.** `settleFirstBytes()` emits the *same* `resumeRequested()` the wait uses, because what it asks for is the same thing — `Document::resume()`: reopen, re-run `Decoder::detect()` and the provider over the new sample, re-index from the top. A second signal would only be a second wire to forget, and an owner that connected one but not the other would settle a format against an empty sample and keep it. Two call sites, and both are needed:
+
+- `checkNow()`, asked on the **size and not on growth** — the bytes may already be inside the baseline (below).
+- `start()`, **before `syncBaseline()`** and through `refreshSize()` rather than `size()`. The initial scan runs on a worker while a spool fills behind it, so the whole of an archived or remote log can land between the open and the watch starting; take the baseline first and there is no growth left to notice, and a source asked for its *latched* size answers 0 about a log every record of which is already indexed. This is the case `tst_archiveopen::theFormatAndTheSessionRememberAnArchivedPath` fails on.
+
+`settleFirstBytes()` **returns false when answering destroyed the controller**, and both callers obey it. Answering can end in the deferred dialog settling on a *different* format, which `applySettings()` applies by rebuilding the document — and `DocumentContext::stopWorkers()` deletes the `LiveController` outright, so the emit returns into a `this` that is gone. A `QPointer` notices. `checkWhileWaiting()` carries the same guard: the hazard was always there on that path, unreached only because no test has ever picked a new format out of a resume's dialog.
+
+It re-reads the log **inline on the GUI thread**, exactly as a resume from waiting does and for the same reason (`Document::resume()` indexes as it opens). The bytes are the first the log has had, so this is ordinarily nothing; for the archive case above it is a second pass over the member, which is the price of having decoded the first one under a format nobody had checked.
+
+**Above it, the whole judgement is gated on the same flag.** `MainWindow::openWithSettings()` defers the format prompt for `isWaiting() || !formatSettled()` rather than for `isWaiting()` alone — `formatFits()` is false by construction over 0 bytes, so a direct open of an empty log used to raise Preferences over an empty preview with Detect greyed out, and cancelling it (the only sensible answer) refused the open. `MainWindow::resumeOrSettleDocument()` runs its persist/ask/report block only when the resume actually settled something, so a resume with nothing behind it consumes no owed dialog, persists no pattern and latches no "format not recognised". The one owed dialog is then spent, later, on a sample with lines in it.
+
 **Waitable vs fatal** is decided in `Document::prepare()` by two questions, and both are needed. `logSourceAvailable()` is the "is it there" half; `logPathIsWellFormed()` is the "does it name a log at all" half. Without the second, `ssh://` — which parses into no host and never will — would open a tab that waits forever for something that cannot exist. Refusals (a changed host key, a rejected password, an archive naming no member, a dependency not built in) stay refusals with no tab.
 
 #### 6.5.1 The transport half

@@ -1417,14 +1417,24 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     // re-prompts rather than silently showing plain text).
     bool persist = !promptIfNoMatch;
 
-    // A log that is not there yet has no bytes to preview, autodetect from, or seed a
-    // dialog with — and asking about a format before anyone has seen a line of the file
-    // would be asking the user to guess too. It opens as a waiting tab and settles its
-    // format from the bytes that actually arrive (Document::resume). Nothing is
-    // persisted either: a pattern never checked against a line of the log is not
-    // knowledge, and remembering it would suppress the format prompt forever.
-    const bool deferFormatPrompt = doc->isWaiting() && promptIfNoMatch;
-    if (doc->isWaiting()) {
+    // A log with no bytes yet has nothing to preview, autodetect from, or seed a dialog
+    // with — and asking about a format before anyone has seen a line of the file would
+    // be asking the user to guess too. It opens anyway and settles its format from the
+    // bytes that actually arrive (Document::resume). Nothing is persisted either: a
+    // pattern never checked against a line of the log is not knowledge, and remembering
+    // it would suppress the format prompt forever.
+    //
+    // TWO KINDS OF NO BYTES, one rule. A log that is not there yet opens WAITING; a log
+    // that is there and EMPTY opens as an ordinary tab, because it exists and may stay
+    // empty for ever — that is the file a service that has not logged yet leaves behind,
+    // and the very one somebody opens to watch it start. Asking formatSettled() rather
+    // than isWaiting() is what covers the second: before this it went to offerFormat()
+    // with a 0-byte sample, so Preferences appeared over "No sample lines to preview."
+    // with Detect greyed out, and cancelling it — the only sensible answer — refused the
+    // open outright.
+    const bool nothingToJudgeYet = doc->isWaiting() || !doc->formatSettled();
+    const bool deferFormatPrompt = nothingToJudgeYet && promptIfNoMatch;
+    if (nothingToJudgeYet) {
         promptIfNoMatch = false;
         persist = false;
     }
@@ -1715,7 +1725,7 @@ void MainWindow::buildViewAndIndex(DocumentContext *ctx)
 //
 // ONE COPY, shared by the two moments this question arises: an ordinary open, and the
 // first time a log that opened WAITING has real bytes to judge against
-// (resumeWaitingDocument). Those two used to be a copy of each other with a comment
+// (resumeOrSettleDocument). Those two used to be a copy of each other with a comment
 // promising they agreed; since M17 every remote and archived log takes the second route,
 // so a divergence would mean the format prompt behaving differently for local and remote
 // logs — the sort of thing nobody would notice for a year.
@@ -2191,13 +2201,14 @@ void MainWindow::startWatching(DocumentContext *ctx)
                     ctx->sourceStatus = text;
                     updateStatus();
                 });
-        // The log this document is waiting for is back. The pattern lives here, not in
-        // core, so this is where the provider gets built and resume() gets called
-        // (invariant #3). resume() may decline — the log can go again between the
-        // check and the open — in which case the document stays waiting and the next
-        // tick tries once more.
+        // The log this document is waiting for is back — or a log that opened empty has
+        // just been written to for the first time, which asks for exactly the same thing
+        // and comes down the same signal. The pattern lives here, not in core, so this
+        // is where the provider gets built and resume() gets called (invariant #3).
+        // resume() may decline — the log can go again between the check and the open —
+        // in which case the document stays waiting and the next tick tries once more.
         connect(ctx->live, &LiveController::resumeRequested, this,
-                [this, ctx]() { resumeWaitingDocument(ctx); });
+                [this, ctx]() { resumeOrSettleDocument(ctx); });
         connect(ctx->live, &LiveController::waitingChanged, this,
                 [this, ctx](bool, const QString &reason) {
                     for (DocumentView *v : std::as_const(ctx->views))
@@ -2350,7 +2361,7 @@ void MainWindow::rebuildDocument(DocumentContext *ctx, KeepFormat keep)
     ctx->controller->start();
 }
 
-void MainWindow::resumeWaitingDocument(DocumentContext *ctx)
+void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
 {
     Document *doc = ctx->doc.get();
     const bool settleFormat = !doc->formatSettled();
@@ -2382,7 +2393,18 @@ void MainWindow::resumeWaitingDocument(DocumentContext *ctx)
             v->logView()->followTail();
     }
 
-    if (settleFormat) {
+    // `doc->formatSettled()` is the second half of the condition and the whole of the
+    // fix: resume() settles a format only where there were BYTES to settle it against,
+    // and a log that turned up empty — a file created a moment before its first record
+    // is written, which is what a real logging application does — leaves it false. The
+    // block below persists a pattern, raises Preferences and latches a notice, and every
+    // one of those against a 0-byte sample is a judgement about a log nobody has seen:
+    // the dialog previewed "No sample lines to preview." with Detect greyed out, and
+    // declining it (or being a background tab, where nothing is asked) latched "format
+    // not recognised" over a log whose every column then parsed perfectly. Doing none of
+    // it leaves the prompt still owed and the flag still false, so the first growth tick
+    // comes back through here with real bytes (LiveController::settleFirstBytes).
+    if (settleFormat && doc->formatSettled()) {
         // CONSUMED UNCONDITIONALLY, before anything is decided with it. A document can
         // wait and resume any number of times — a host that comes and goes — and the
         // dialog is owed once, for the open the user actually performed.

@@ -19,36 +19,18 @@ display-zone change re-pointed every time-bounded rule except the one the pane
 happened to be showing. Entry 6 has gone too: the Runs pane's Regex and Case
 boxes applied the pattern standing in the field the moment they were ticked, with
 no Apply pressed — re-splitting the log, persisting the half-typed pattern into
-its settings node and converting a pinned run back to "Last run".
+its settings node and converting a pinned run back to "Last run". And so has
+entry 7, a log read the instant it existed, so that its format and its encoding
+were settled against an empty file and could never be settled again — which took
+two further defects with it: an empty log could not be opened at all without
+accepting a format nobody had been shown anything to judge, and a background or
+restored tab was told silently that its format was not recognised.
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 7. A log that turns up is read the instant it exists, so its format is judged against an empty file
-
-`LiveController::checkWhileWaiting()` (`LiveController.cpp:260`) resumes a local
-waiting document on `logSourceAvailable(path)` — existence. For a real logging
-application that is true before the first record is written.
-
-Observed: open a path that does not exist (correct waiting tab), `touch` it, then
-append 40 well-formed records. A Preferences dialog appears whose preview says
-"No sample lines to preview." and whose Detect button is disabled, while the log
-behind it has 40 records that parse perfectly. Cancelling leaves the status bar
-reading `format not recognised — File ▸ Preferences…` for the rest of the
-session with every column correctly filled in. In a background tab there is no
-dialog at all and the tab keeps the same wrong notice silently.
-
-`CLAUDE.md` already records this trap for the spooled path — "a resume with
-nothing to read settles the format against an empty sample, leaves it unsettled
-forever" — and guards it with `notReadyYet()`. The local path has no such guard.
-
-Fix: make the local branch require bytes rather than existence — the local
-equivalent of `notReadyYet()`. Mind the M17 note that `resume()` cannot be undone,
-and that a log which genuinely stays empty must still open as an ordinary empty
-tab rather than waiting for ever.
 
 ### 8. The Priority column opens too narrow to say "Priority" — the exact failure SPEC says was fixed
 

@@ -131,11 +131,14 @@ public:
 
     // The user opened this log INTERACTIVELY and it has not yet been offered the Log
     // Format dialog, because when it opened there were no bytes to judge a pattern
-    // against (M17). Consumed by the first resume that has some.
+    // against (M17) — the log had not turned up, or it had and was empty. Consumed by
+    // the first settle that has some, and by nothing else: a resume with an empty file
+    // behind it must leave this armed, or the one dialog the open owes is spent on a
+    // sample of nothing.
     //
     // Without it, no remote or archived log would ever see that dialog again: every one
     // of them now opens waiting, openWithSettings() suppresses the prompt for a waiting
-    // document, and resumeWaitingDocument() deliberately raises no dialog. So the M8
+    // document, and resumeOrSettleDocument() deliberately raises no dialog. So the M8
     // autodetection would become unreachable for exactly the logs whose format is least
     // likely to be the default — silently, and on every reopen, since nothing would be
     // persisted either. Session restore never sets it: it opens with a saved pattern and
