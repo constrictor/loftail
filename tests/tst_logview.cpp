@@ -11,7 +11,10 @@
 #include <QHelpEvent>
 #include <QItemSelectionModel>
 #include <QProgressDialog>
+#include <QProxyStyle>
 #include <QSignalSpy>
+#include <QStyle>
+#include <QStyleOptionHeader>
 #include <QTemporaryFile>
 #include <QTextLayout>
 #include <QTimer>
@@ -248,6 +251,9 @@ private slots:
     void aWrappedMessageOffersNoTooltipAndAnUnwrappedOneDoes();
     void aHeaderCaptionTooNarrowToReadNamesItselfOnHover();
     void everyColumnStartsWideEnoughForItsOwnHeading();
+    void everyCaptionFitsTheRectTheStylePutsItIn();
+    void aFittedColumnFitsItsCaptionUnderAWideHeaderMargin();
+    void theTimeColumnOpensWideEnoughForItsOwnTimestampAtEveryZoom();
     void aColumnSeedsFromTheWidestInternedName();
     void aWidthTheUserDraggedSurvivesEverySeed();
     void aRestoredColumnLayoutIsNeverReseeded();
@@ -281,6 +287,7 @@ private slots:
     void aBiggerFontFitsFewerRecordsInTheSameViewport();
     void aZoomDropsTheWrappedHeightsMeasuredAtTheOldFont();
     void aZoomLeavesTheReaderOnTheRecordTheyWereReading();
+    void aZoomThatShrinksTheLineSpaceDoesNotStartFollowingAgain();
     void aZoomWidensTheSeededColumnsAndLeavesADraggedOneAlone();
     void ctrlWheelAsksForAZoomAndAPlainWheelStillScrolls();
 
@@ -1464,6 +1471,168 @@ void TestLogView::everyColumnStartsWideEnoughForItsOwnHeading()
     }
 }
 
+// The case the one above cannot see. A header section is not its label: the style
+// spends PM_HeaderMargin either side before the caption starts, and a caption that fits
+// the SECTION can still be the one painted "Priori…". Breeze — the style on the
+// reference KDE desktop — spends 6 px a side against Fusion's 2, and this suite resolves
+// Fusion, so the margin is forced here: without the proxy every assertion below passes
+// against the unfixed code, which is exactly how the bug survived nine milestones.
+
+namespace {
+
+class WideHeaderMarginStyle : public QProxyStyle
+{
+public:
+    int pixelMetric(PixelMetric metric, const QStyleOption *option,
+                    const QWidget *widget) const override
+    {
+        if (metric == PM_HeaderMargin)
+            return qMax(6, QProxyStyle::pixelMetric(metric, option, widget));
+        return QProxyStyle::pixelMetric(metric, option, widget);
+    }
+};
+
+// Empty when the caption fits the rect the STYLE leaves for it, and otherwise why not —
+// measured exactly as LogView::truncatedHeaderText() measures it, since that is the
+// function that decides whether the header is showing a truncation.
+QString captionOverflow(LogView &view, const LogModel &model, int column)
+{
+    QHeaderView *h = view.header();
+    if (h->isSectionHidden(column))
+        return {};
+    const QString text = model.headerData(column, Qt::Horizontal, Qt::DisplayRole).toString();
+    if (text.isEmpty())
+        return {};
+    QStyleOptionHeader opt;
+    opt.initFrom(h);
+    opt.orientation = Qt::Horizontal;
+    opt.section = column;
+    opt.text = text;
+    opt.rect = QRect(h->sectionViewportPosition(column), 0, h->sectionSize(column),
+                     qMax(1, h->height()));
+    const int label = h->style()->subElementRect(QStyle::SE_HeaderLabel, &opt, h).width();
+    const int caption = h->fontMetrics().horizontalAdvance(text);
+    if (caption <= label)
+        return {};
+    return QStringLiteral("column %1 (\"%2\") is %3 px wide, which leaves the style %4 px "
+                          "for a caption needing %5 — it renders as \"%6\"")
+        .arg(column)
+        .arg(text)
+        .arg(h->sectionSize(column))
+        .arg(label)
+        .arg(caption)
+        .arg(h->fontMetrics().elidedText(text, Qt::ElideRight, label));
+}
+
+} // namespace
+
+void TestLogView::everyCaptionFitsTheRectTheStylePutsItIn()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 3), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    WideHeaderMarginStyle style; // declared first, so it outlives the view using it
+    LogView view(&doc, &model);
+    view.header()->setStyle(&style);
+    view.seedColumnWidths(); // the seed MainWindow runs when the scan finishes
+
+    for (int c = 0; c < model.columnCount(); ++c)
+        QVERIFY2(captionOverflow(view, model, c).isEmpty(),
+                 qPrintable(captionOverflow(view, model, c)));
+
+    // Priority is the one the per-role allowance never rescues — "Priority" is 8
+    // characters against an allowance of 5 — so the caption term is the whole of its
+    // width and it is where the missing inset showed.
+    const int priority = columnOfRole(doc, FieldRole::Priority);
+    QVERIFY(priority >= 0);
+    QVERIFY(captionOverflow(view, model, priority).isEmpty());
+}
+
+// Fit to Contents asks the same question of contentWidthOf(), and a fix confined to the
+// seed would leave it: any column whose values are all shorter than its caption — Thread
+// over a log written by one thread, and an Elapsed or a Location over short values —
+// opens truncated immediately after being asked to show everything.
+void TestLogView::aFittedColumnFitsItsCaptionUnderAWideHeaderMargin()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 3), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    WideHeaderMarginStyle style;
+    LogView view(&doc, &model);
+    view.resize(900, 400);
+    view.header()->setStyle(&style);
+    view.fitColumnsToContents();
+
+    for (int c = 0; c < model.columnCount(); ++c)
+        QVERIFY2(captionOverflow(view, model, c).isEmpty(),
+                 qPrintable(captionOverflow(view, model, c)));
+
+    // And the claim is not vacuous: the Thread column's every value in this log is
+    // "main", four characters against a six-character caption, so its fitted width is
+    // the caption's and nothing else.
+    const int thread = columnOfRole(doc, FieldRole::Thread);
+    QVERIFY(thread >= 0);
+    QVERIFY(view.fontMetrics().horizontalAdvance(model.cellText(0, thread))
+            < view.fontMetrics().horizontalAdvance(
+                model.headerData(thread, Qt::Horizontal, Qt::DisplayRole).toString()));
+}
+
+namespace {
+struct LogFontRestore
+{
+    ~LogFontRestore() { resetLogFontPointSize(); }
+};
+} // namespace
+
+// The seed's whole premise is that the per-role allowance is "what a TYPICAL value of
+// the field takes", so a column that elides the very value it was seeded for is the
+// premise failing. It did, at four sizes: the allowance was one glyph's INTEGER advance
+// multiplied out, and 23 characters of that rounding came to a whole character — at
+// 29 pt the Time column opened one pixel narrower than its own timestamp. Style-
+// independent, unlike the caption half above.
+void TestLogView::theTimeColumnOpensWideEnoughForItsOwnTimestampAtEveryZoom()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; a point size buys no pixels here");
+    LogFontRestore restore;
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 3), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    const int time = columnOfRole(doc, FieldRole::Date);
+    QVERIFY(time >= 0);
+    const QString stamp = model.cellText(0, time);
+    QVERIFY(!stamp.isEmpty());
+
+    for (int pt = kMinLogFontPointSize; pt <= kMaxLogFontPointSize; ++pt) {
+        setLogFontPointSize(pt);
+        view.setFont(logTextFont()); // the one channel LogView notices; it re-seeds
+        const int section = view.header()->sectionSize(time);
+        const int text = view.fontMetrics().horizontalAdvance(stamp);
+        QVERIFY2(section >= text,
+                 qPrintable(QStringLiteral("at %1 pt the Time column opened at %2 px for a "
+                                           "timestamp %3 px wide, which draws as \"%4\"")
+                                .arg(pt)
+                                .arg(section)
+                                .arg(text)
+                                .arg(view.fontMetrics().elidedText(stamp, Qt::ElideRight,
+                                                                   section))));
+    }
+}
+
 // The second seed, the one that runs when the scan finishes: the intern table holds
 // every subsystem name in the file exactly once (invariant #4), so the Subsystem column
 // can be opened to the widest of them without touching a record.
@@ -2223,6 +2392,11 @@ void TestLogView::aRuleColouredRecordShowsItsColourAndTheMarkTogether()
     matcher.set(QStringLiteral("needle"), /*regex=*/false, Qt::CaseInsensitive);
     view.setFindMatcher(matcher);
 
+    // Rendered twice: a resize on an unshown widget reaches the viewport when it paints,
+    // so the first image is the pre-layout 640 px one and the rightmost pixel of it can
+    // land inside the message text rather than past it — which it does under a style
+    // with a wide header margin, since that pushes the message column's origin right.
+    renderViewport(view);
     const QImage img = renderViewport(view);
     const int lh = view.fontMetrics().height();
     const int cw = qMax(1, view.fontMetrics().averageCharWidth());
@@ -2491,6 +2665,46 @@ void TestLogView::aZoomLeavesTheReaderOnTheRecordTheyWereReading()
     zoomTo(view, 12);
     QCOMPARE(g.recordAtLine(sb->value()), topRecord);
     QVERIFY(!view.following());
+}
+
+// The other half of the anchor, and the one that shows only when the line space actually
+// SHRINKS. Under AlwaysOn a smaller font fits more characters across the message column,
+// so the whole estimated line space contracts — and Qt clamps the old scroll value into
+// the narrower range. That clamp lands at the bottom, which reads as the reader having
+// scrolled there, so a view they had deliberately detached starts following the tail and
+// the zoom throws them to the end of the log instead of leaving them where they were.
+void TestLogView::aZoomThatShrinksTheLineSpaceDoesNotStartFollowingAgain()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; no size change reaches the geometry");
+    FontSizeGuard guard;
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 200), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+    zoomTo(view, 20);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    view.measureBlockOfRecord(0);
+
+    QScrollBar *sb = view.verticalScrollBar();
+    sb->setValue(sb->maximum() / 2);
+    QVERIFY(!view.following());
+    const int parked = sb->value();
+
+    zoomTo(view, 12);
+    // The precondition is the whole point of the case, and it is a property of the font
+    // rather than of the code: with an 8 px advance at every size (a platform whose font
+    // database resolves nothing but is not empty) the column count does not move and
+    // there is no clamp to misread.
+    if (sb->maximum() >= parked)
+        QSKIP("this font's zoom did not narrow the range past the reader; nothing to clamp");
+    QVERIFY2(!view.following(),
+             "a zoom that narrowed the scroll range re-attached follow on a detached view");
+    QVERIFY2(sb->value() < sb->maximum(), "a zoom threw the reader to the end of the log");
 }
 
 // A zoom re-seeds the columns nobody has spoken for — they hold text, and the text just
