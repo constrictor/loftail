@@ -297,6 +297,16 @@ private:
                       const QSet<QString> &checked, const QSet<QString> &manual,
                       QSet<QString> &seen, ListRule rule, bool restrictive);
     static bool   allChecked(const QListWidget *list);
+    // What criteria() writes into MatchCriteria::loggerCoversAll / threadCoversAll:
+    // allChecked(), plus the one state the ticks cannot express. An axis that is
+    // switched OFF has no selection on screen — a stored one loads under
+    // ListRule::Unstated, which ticks nothing and records nothing as seen — so reading
+    // its empty ticks as "covers nothing" invents a narrowing the user never asked for
+    // and writes it into the rule, the session and every preset. Off with nothing
+    // ticked is therefore the default, `true`, which is also what the axis was built
+    // from and what fromJson() infers from an empty name list; the two answers are
+    // indistinguishable while the axis is off, and only this one round-trips.
+    bool          coversAllFor(ValueAxis axis) const;
     QSet<QString> checkedNames(const QListWidget *list) const;
     void          setAllChecked(QListWidget *list, bool checked);
     void          invertChecked(QListWidget *list);

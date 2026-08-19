@@ -15,11 +15,17 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 
+#include <QListWidget>
+
+#include "Document.h"
+#include "DocumentContext.h"
+#include "DocumentView.h"
 #include "FilterPane.h"
 #include "Highlight.h"
 #include "HighlighterPane.h"
 #include "MainWindow.h"
 #include "PaneTitleStyle.h"
+#include "RunPane.h"
 
 using namespace loftail;
 
@@ -80,6 +86,7 @@ private slots:
     void theClearFiltersItemIsLiveOnlyWhileThereIsSomethingToClear();
     void theClearFiltersItemFollowsTheTabInFront();
     void theHighlightersTabIsMarkedOnlyOnceTheRulesAreNotTheSeededOnes();
+    void aRunClickOrATimestampModeChangeIsNotAnEditToTheRules();
 };
 
 void TestPaneChrome::tabbedPanesSuppressTheirTitleText()
@@ -476,6 +483,71 @@ void TestPaneChrome::theHighlightersTabIsMarkedOnlyOnceTheRulesAreNotTheSeededOn
     QDockWidget *filters = paneDock(w, "filtersDock");
     QVERIFY(filters);
     QVERIFY(!filters->windowTitle().contains(QChar(0x2022)));
+}
+
+// The gesture the marker used to be lit by, with nothing on screen changing: picking a
+// run, and switching how the timestamp column reads. Both call
+// HighlighterPane::refreshTimeBounds(), which used to read the whole axis editor back
+// into the selected rule — and AxisEditor::criteria() is not the inverse of
+// setCriteria(), so a seeded rule came back with 2000-01-01 bounds and a value axis
+// claiming to cover nothing (bugs.md #5).
+//
+// The DOCUMENT's rules are what is asserted on, with the dock title beside them: the
+// marker alone would pass a patch that repaired only the bounds, because the coverage
+// flag is a difference all by itself.
+void TestPaneChrome::aRunClickOrATimestampModeChangeIsNotAnEditToTheRules()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("unedited.log"));
+    QVERIFY(writeDefaultLog(path));
+
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    w.openFile(path);
+    QTest::qWait(200);
+
+    auto *tabs = w.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs && tabs->count() == 1);
+    auto *view = qobject_cast<DocumentView *>(tabs->widget(0));
+    QVERIFY(view && view->context());
+    Document *doc = view->context()->doc.get();
+    QVERIFY(doc);
+
+    QDockWidget *highlighters = paneDock(w, "highlightersDock");
+    QVERIFY(highlighters);
+    const QString plain = highlighters->windowTitle();
+    QCOMPARE(doc->highlighters().rules, HighlighterSet::defaults().rules);
+    QVERIFY2(!plain.contains(QChar(0x2022)), qPrintable(plain));
+
+    // "All runs" — the row that needs no run-start pattern, and the same
+    // MainWindow::onRunSelected() a detected run's row reaches.
+    auto *runs = w.findChild<QListWidget *>(QStringLiteral("runList"));
+    QVERIFY(runs);
+    runs->setCurrentRow(RunPane::kAllRunsRow);
+    QTest::qWait(50);
+    QCOMPARE(doc->highlighters().rules, HighlighterSet::defaults().rules);
+    QCOMPARE(highlighters->windowTitle(), plain);
+
+    runs->setCurrentRow(RunPane::kLastRunRow);
+    QTest::qWait(50);
+    QCOMPARE(doc->highlighters().rules, HighlighterSet::defaults().rules);
+    QCOMPARE(highlighters->windowTitle(), plain);
+
+    // Every entry of the timestamp menu, including the two that genuinely move the
+    // display zone — the seeded rules name no time bound, so there is nothing to
+    // re-express and nothing to write.
+    for (const char *name : {"timeDisplaySecondsAction", "timeDisplayUtcAction",
+                             "timeDisplayLocalAction", "timeDisplayRunSecondsAction",
+                             "timeDisplayAsWrittenAction"}) {
+        auto *action = w.findChild<QAction *>(QString::fromLatin1(name));
+        QVERIFY2(action, name);
+        action->trigger();
+        QTest::qWait(20);
+        QVERIFY2(doc->highlighters().rules == HighlighterSet::defaults().rules, name);
+        QVERIFY2(highlighters->windowTitle() == plain, name);
+    }
 }
 
 int main(int argc, char *argv[])
