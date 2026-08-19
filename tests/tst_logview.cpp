@@ -10,6 +10,7 @@
 #include <QScrollBar>
 #include <QHelpEvent>
 #include <QItemSelectionModel>
+#include <QPaintEngine>
 #include <QProgressDialog>
 #include <QProxyStyle>
 #include <QSignalSpy>
@@ -35,6 +36,7 @@
 #include "RecordIndex.h"
 #include "UiColors.h"
 
+#include <limits>
 #include <utility>
 
 using namespace loftail;
@@ -281,6 +283,11 @@ private slots:
     // --- both wrapped-cell paths break lines the same way (bugs.md 4) -----------
     void aTabbedRecordBreaksWhereItAlwaysDidWhenFindIsArmed();
     void theSelectedRecordBreaksWhereItAlwaysDidWhenFindIsArmed();
+
+    // --- marking a cell costs one redraw of it, not one per match (bugs.md 12) ---
+    void aMarkedCellIsRedrawnOncePerCellAndNotOncePerMatch();
+    void everyMatchOfAWrappedCellIsMarkedWhenTheyAreBatched();
+    void anElidedMarkSitsOverTheGlyphsOfTheRunAndNotOverALogicalPrefix();
 
     // --- the wrap width is remeasured wherever the message origin moves (bugs.md 9) ---
     void aMovedColumnRemeasuresEveryRowUnderAlwaysOn();
@@ -3474,6 +3481,313 @@ void TestLogView::theSelectedRecordBreaksWhereItAlwaysDidWhenFindIsArmed()
     QCOMPARE(after, before);
     QVERIFY2(after.last() < band.right() - 8,
              "the record's last row is mid-text: arming Find dropped the end of it");
+}
+
+// --- marking a cell costs one redraw of it, not one per match (bugs.md 12) ---
+//
+// `paintMark()`'s contract is that the glyphs are redrawn by the SAME call that drew
+// them, merely clipped (§7.1.4) — and that call draws the WHOLE cell. Issued once per
+// matched run, a wrapped cell was therefore redrawn in full once per (display line x
+// intersecting run) pair: both multipliers are capped rather than small, at 64 runs
+// (`kMaxCellMarks`) over 100 display lines (`RecordIndex::kDisplayLineCap`), so a
+// single-letter query took one repaint of one record from 2 ms to 32 ms. The cap on the
+// number of runs is what makes the multiplier reachable, not what makes it cheap.
+//
+// The runs are collected into a QRegion and the redraw is issued ONCE through it, so the
+// cost is O(runs) rectangles and O(1) redraws. That is not observable in any value the
+// widget holds, and a wall clock on a shared runner is not a thing to assert on — so the
+// draws themselves are counted, through a paint device that does nothing but tally what
+// the painter asks of it.
+
+namespace {
+
+// A paint engine that records how many text runs and how many fills it was asked for and
+// draws none of them. Everything QPainter can decompose into something else is a no-op,
+// so nothing recurses back into the two counters.
+class DrawCounter : public QPaintEngine
+{
+public:
+    DrawCounter() : QPaintEngine(QPaintEngine::AllFeatures) {}
+
+    bool begin(QPaintDevice *) override { return true; }
+    bool end() override { return true; }
+    void updateState(const QPaintEngineState &) override {}
+    void drawPixmap(const QRectF &, const QPixmap &, const QRectF &) override {}
+    void drawImage(const QRectF &, const QImage &, const QRectF &,
+                   Qt::ImageConversionFlags) override {}
+    void drawRects(const QRect *, int n) override { fills += n; }
+    void drawRects(const QRectF *, int n) override { fills += n; }
+    void drawLines(const QLine *, int) override {}
+    void drawLines(const QLineF *, int) override {}
+    void drawPolygon(const QPoint *, int, PolygonDrawMode) override {}
+    void drawPolygon(const QPointF *, int, PolygonDrawMode) override {}
+    void drawPath(const QPainterPath &) override {}
+    void drawTextItem(const QPointF &, const QTextItem &) override { textRuns += 1; }
+    Type type() const override { return QPaintEngine::User; }
+
+    int textRuns = 0;
+    int fills = 0;
+};
+
+class CountingDevice : public QPaintDevice
+{
+public:
+    explicit CountingDevice(const QSize &size) : m_size(size) {}
+
+    QPaintEngine *paintEngine() const override { return &m_engine; }
+
+    int metric(PaintDeviceMetric m) const override
+    {
+        switch (m) {
+        case PdmWidth: return m_size.width();
+        case PdmHeight: return m_size.height();
+        case PdmWidthMM: return m_size.width() * 254 / 960;
+        case PdmHeightMM: return m_size.height() * 254 / 960;
+        case PdmNumColors: return 1 << 24;
+        case PdmDepth: return 32;
+        case PdmDpiX:
+        case PdmPhysicalDpiX: return 96;
+        case PdmDpiY:
+        case PdmPhysicalDpiY: return 96;
+        case PdmDevicePixelRatio: return 1;
+        case PdmDevicePixelRatioScaled: return int(devicePixelRatioFScale());
+        }
+        return 0;
+    }
+
+    mutable DrawCounter m_engine;
+
+private:
+    QSize m_size;
+};
+
+// One repaint of `view`'s viewport, counted rather than rendered.
+struct DrawTally
+{
+    int textRuns = 0;
+    int fills = 0;
+};
+
+DrawTally countOneRepaint(LogView &view)
+{
+    CountingDevice device(view.viewport()->size());
+    view.viewport()->render(&device, QPoint(), QRegion(), QWidget::DrawWindowBackground);
+    return DrawTally{ device.m_engine.textRuns, device.m_engine.fills };
+}
+
+// A view of one long record under Line Wrap ▸ Always On, wrapped to many display lines
+// with a run of `matches` matching "socket" spread down them.
+int prepareWrappedMarkView(LogView &view, int chars)
+{
+    useKnownPalette(view);
+    view.resize(900, 900);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    renderViewport(view);
+    aimWrapWidth(view, chars, 30);
+    renderViewport(view);
+    QTest::qWait(250); // the debounced resize re-keys the estimator to this width
+    view.measureBlockOfRecord(0);
+    return view.estimatedGeometry().recordHeightLines(0);
+}
+
+} // namespace
+
+void TestLogView::aMarkedCellIsRedrawnOncePerCellAndNotOncePerMatch()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; nothing wraps and nothing is marked");
+
+    constexpr int kChars = 3000;
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, makeOneLongRecord(kChars)));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 1);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    const int lines = prepareWrappedMarkView(view, kChars);
+    QVERIFY2(lines >= 10, "the record did not wrap far enough for the multiplier to show");
+
+    const int plain = countOneRepaint(view).textRuns;
+    QVERIFY2(plain > 0, "nothing was drawn at all; the counting device saw no text");
+
+    // "socket" occurs about once per 35 characters of this message, so the 64-run cap is
+    // reached and the runs are spread down most of the record's display lines.
+    TextMatcher matcher;
+    matcher.set(QStringLiteral("socket"), /*regex=*/false, Qt::CaseInsensitive);
+    QVERIFY2(matcher.spans(model.cellText(0, view.header()->count() - 1), 64).size() >= 40,
+             "the query did not match often enough for the multiplier to show");
+    view.setFindMatcher(matcher);
+
+    const DrawTally marked = countOneRepaint(view);
+    QVERIFY2(marked.textRuns > plain, "arming Find drew nothing extra: nothing was marked");
+    QVERIFY2(marked.fills > 0, "no run was filled: nothing was marked");
+
+    // One redraw of the cell per paragraph, whatever the number of runs — so at most a
+    // small multiple of the unmarked repaint. Redrawing per run costs the whole record
+    // once per matched run, tens of times this.
+    QVERIFY2(marked.textRuns <= 3 * plain,
+             qPrintable(QStringLiteral("marking cost %1 text runs against %2 unmarked: the "
+                                       "cell is being redrawn once per match")
+                            .arg(marked.textRuns)
+                            .arg(plain)));
+}
+
+// The other half of the same change: batching the runs into one region must not lose
+// any of them. A region filled after the redraw would erase its own glyphs, and a region
+// carrying only the last run would leave every earlier match unmarked — neither is
+// visible in any value the widget holds, so this reads the marks off the pixels.
+void TestLogView::everyMatchOfAWrappedCellIsMarkedWhenTheyAreBatched()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
+
+    constexpr int kChars = 3000;
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, makeOneLongRecord(kChars)));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    const int lines = prepareWrappedMarkView(view, kChars);
+    QVERIFY2(lines >= 10, "the record did not wrap far enough to hold marks on many lines");
+
+    const int lh = view.lineHeight();
+    const QRect band = messageBand(view, lines);
+    QVERIFY(view.viewport()->height() >= lines * lh);
+    const QColor text = view.palette().text().color();
+
+    TextMatcher matcher;
+    matcher.set(QStringLiteral("socket"), /*regex=*/false, Qt::CaseInsensitive);
+    view.setFindMatcher(matcher);
+    const QImage img = renderViewport(view);
+
+    // The runs are capped at 64 and this message holds more matches than that, so the
+    // marks stop partway down the record — but every line up to there carries one, and
+    // that is what a lost patch takes away. Count the lines that show a mark: the run is
+    // filled with the colour the text is drawn in, so a marked line inks whole columns
+    // of it where an unmarked one inks only glyph strokes.
+    int markedLines = 0;
+    int lastMarked = -1;
+    for (int i = 0; i < lines; ++i) {
+        if (markedColumns(img, QRect(band.left(), i * lh, band.width(), lh), text) >= 4) {
+            ++markedLines;
+            lastMarked = i;
+        }
+    }
+    QVERIFY2(markedLines >= 10,
+             qPrintable(QStringLiteral("only %1 of %2 display lines carried a mark")
+                            .arg(markedLines)
+                            .arg(lines)));
+    // Not merely the last one, and not merely the first: a region that kept one patch
+    // would show exactly one line here.
+    QVERIFY2(lastMarked > 0, "only the record's first display line was marked");
+}
+
+// A mark over an ELIDED cell is placed by a layout of the string as drawn, and the
+// difference only shows where the shaped run is not where the logical prefix ends: a sum
+// of per-character advances is the width of the first n characters, which is the run's
+// visual left edge for Latin and is somewhere else entirely for Arabic, Hebrew or Indic
+// text, where the bidi algorithm reorders the runs. It hits the message column in the
+// default wrap-off mode as well as every metadata column in both modes.
+void TestLogView::anElidedMarkSitsOverTheGlyphsOfTheRunAndNotOverALogicalPrefix()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
+
+    const QString message = QString::fromUtf8("log مرحبا بالعالم end");
+    const QString query = QString::fromUtf8("مرحبا");
+    const int at = message.indexOf(query);
+    QVERIFY(at > 0);
+
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, QByteArray("2026-07-21 14:32:05,123 [main] INFO  net.socket - ")
+                               + message.toUtf8() + "\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 1);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(1000, 200);
+    view.setWrapMode(LogView::WrapMode::Off); // the elided path, and the shipped default
+    renderViewport(view);
+
+    // The message column last and wide enough that nothing is elided away: what is being
+    // tested is where a run landed, not what the ellipsis took.
+    const int msgCol = view.header()->count() - 1;
+    aimWrapWidth(view, 400, 1);
+    view.header()->resizeSection(msgCol, 600);
+    renderViewport(view);
+
+    // Where the run actually is, asked of a layout of the very string the view draws —
+    // the oracle, and the thing the advance sum disagrees with.
+    QTextLayout layout(message, view.font());
+    QTextOption option;
+    option.setWrapMode(QTextOption::NoWrap);
+    layout.setTextOption(option);
+    layout.beginLayout();
+    QTextLine line = layout.createLine();
+    QVERIFY(line.isValid());
+    line.setLineWidth(std::numeric_limits<int>::max());
+    layout.endLayout();
+    const int shaped0 = int(qMin(line.cursorToX(at), line.cursorToX(at + query.size())));
+    const int shaped1 = int(qMax(line.cursorToX(at), line.cursorToX(at + query.size())));
+
+    const QFontMetrics fm(view.font());
+    const int logical1 = fm.horizontalAdvance(message, at + query.size());
+    if (qAbs(logical1 - shaped1) <= 2)
+        QSKIP("nothing here shapes Arabic; the reordered run cannot be told from the prefix");
+
+    const int lh = view.lineHeight();
+    const int left = view.header()->sectionViewportPosition(msgCol);
+    const QColor text = view.palette().text().color();
+
+    // A mark is told from a glyph by how much of the line box it inks, so a face that
+    // draws every character as a filled box — Qt's last-resort engine, which is what an
+    // empty font directory gets — leaves the two indistinguishable.
+    if (markedColumns(renderViewport(view), QRect(left, 0, 600, lh), text) > 0)
+        QSKIP("this face draws filled boxes; a mark cannot be told from a glyph");
+
+    TextMatcher matcher;
+    matcher.set(query, /*regex=*/false, Qt::CaseInsensitive);
+    view.setFindMatcher(matcher);
+    const QImage img = renderViewport(view);
+    int first = -1;
+    int last = -1;
+    for (int x = left; x < left + 600 && x < img.width(); ++x) {
+        if (markedColumns(img, QRect(x, 0, 1, lh), text) == 1) {
+            if (first < 0)
+                first = x;
+            last = x;
+        }
+    }
+    QVERIFY2(first >= 0, "the match was not marked at all");
+    QVERIFY2(qAbs(first - (left + shaped0)) <= 2,
+             qPrintable(QStringLiteral("the mark starts at %1, the run at %2")
+                            .arg(first - left)
+                            .arg(shaped0)));
+    QVERIFY2(qAbs(last - (left + shaped1)) <= 2,
+             qPrintable(QStringLiteral("the mark ends at %1, the run at %2 (the logical "
+                                       "prefix ends at %3)")
+                            .arg(last - left)
+                            .arg(shaped1)
+                            .arg(logical1)));
 }
 
 // --- the wrap width follows the message column's origin (bugs.md 9) ----------

@@ -25,6 +25,7 @@
 #include <QPaintEvent>
 #include <QPointer>
 #include <QProgressDialog>
+#include <QRegion>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStyle>
@@ -127,20 +128,48 @@ struct CellMark
     bool active() const { return find != nullptr; }
 };
 
-// Repaint the glyphs under `patch` in the mark's colours. The text is redrawn by the
+// Repaint the glyphs under `patches` in the mark's colours. The text is redrawn by the
 // SAME call that drew it, merely clipped — never re-positioned by hand — so the mark
 // cannot drift from the glyphs it is meant to be under.
+//
+// Every run of one cell is collected into ONE region and redrawn ONCE, because that
+// call draws the WHOLE cell and only the clip narrows it: per run it would be
+// O(runs x display lines) whole-paragraph redraws, and both multipliers are capped
+// rather than small — 64 runs over 100 lines (§7.1.4). A region is what keeps
+// "redrawn by the same call" true at O(1) calls per cell.
 template <class DrawFn>
-void paintMark(QPainter &p, const QRect &patch, const CellMark &mark, DrawFn &&draw)
+void paintMarks(QPainter &p, const QRegion &patches, const CellMark &mark, DrawFn &&draw)
 {
-    if (patch.isEmpty())
+    if (patches.isEmpty())
         return;
-    p.fillRect(patch, mark.bg);
+    // Every run is filled BEFORE anything is redrawn: a fill issued after a redraw
+    // would erase the glyphs of any run it touched.
+    for (const QRect &patch : patches)
+        p.fillRect(patch, mark.bg);
     p.save();
-    p.setClipRect(patch, Qt::IntersectClip);
+    p.setClipRegion(patches, Qt::IntersectClip);
     p.setPen(mark.fg);
     draw();
     p.restore();
+}
+
+// What `QPainter::drawText()` lays a single line out at: with no word wrap asked for it
+// gives the line an unbounded width rather than the rect's, so nothing it draws is ever
+// re-broken and a left-aligned run starts at the rect's left edge whatever its width.
+constexpr int kUnwrappedLineWidth = std::numeric_limits<int>::max();
+
+// The substitutions `QPainter::drawText()` makes for `Qt::TextSingleLine` before it lays
+// text out: a tab is one blank where no `Qt::TextExpandTabs` was asked for, and a line
+// break is one blank because the line is single. Each is one character for one, so every
+// `TextMatcher::Span` offset still means the character it meant — the same discipline
+// `paragraphForLayout()` keeps for the wrapped path.
+QString singleLineForLayout(const QString &text)
+{
+    QString s = text;
+    s.replace(QLatin1Char('\t'), QLatin1Char(' '));
+    s.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    s.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    return s;
 }
 
 // One fixed-height cell, ELIDED at the column's right edge rather than left to clip
@@ -160,14 +189,36 @@ void drawElidedCell(QPainter &p, const QRect &rect, const QString &text,
     // simply not marked: a match past the cut is not on screen, and the honest answer
     // to "where is it" is to say nothing rather than to point at the ellipsis.
     const QVector<TextMatcher::Span> spans = mark.find->spans(shown, kMaxCellMarks);
-    const QFontMetrics fm = p.fontMetrics();
+    if (spans.isEmpty())
+        return;
+
+    // Where each run LANDED — asked of a layout of the very string just drawn, exactly
+    // as the wrapped path asks its own layout. A sum of per-character advances is not
+    // the visual x of a shaped run: it is right for Latin and wrong for Arabic, Hebrew
+    // and Indic, where a mark placed that way covers the wrong glyphs. It is also the
+    // cheaper of the two, since a prefix advance per run end is a shaping pass per run.
+    QTextLayout layout(singleLineForLayout(shown), p.font());
+    QTextOption option;
+    option.setWrapMode(QTextOption::NoWrap);
+    layout.setTextOption(option);
+    layout.beginLayout();
+    QTextLine line = layout.createLine();
+    if (line.isValid())
+        line.setLineWidth(kUnwrappedLineWidth); // what QPainter::drawText lays a single line out at
+    layout.endLayout();
+    if (!line.isValid())
+        return;
+
+    QRegion patches;
     for (const TextMatcher::Span &span : spans) {
-        const int x0 = rect.left() + fm.horizontalAdvance(shown, span.start);
-        const int x1 = rect.left() + fm.horizontalAdvance(shown, span.start + span.length);
-        const QRect patch = QRect(x0, rect.top(), qMax(1, x1 - x0), rect.height())
+        const int x0 = int(line.cursorToX(span.start));
+        const int x1 = int(line.cursorToX(span.start + span.length));
+        const QRect patch = QRect(rect.left() + qMin(x0, x1), rect.top(),
+                                  qMax(1, qAbs(x1 - x0)), rect.height())
                                 .intersected(rect);
-        paintMark(p, patch, mark, [&] { p.drawText(rect, kFlags, shown); });
+        patches += patch;
     }
+    paintMarks(p, patches, mark, [&] { p.drawText(rect, kFlags, shown); });
 }
 
 // Wrapped text is laid out HERE, by the marked and the unmarked path alike, and that is
@@ -266,6 +317,10 @@ void drawWrappedCell(QPainter &p, const QRect &rect, const QString &text, int li
             if (spans.isEmpty())
                 return;
 
+            // Every run of every line of this paragraph, collected before anything is
+            // redrawn: `drawLayout` draws the whole paragraph, so one call per run would
+            // redraw up to 100 display lines up to 64 times over (§7.1.4).
+            QRegion patches;
             for (const QTextLine &line : lines) {
                 const int lineStart = line.textStart();
                 const int lineEnd = lineStart + line.textLength();
@@ -282,9 +337,10 @@ void drawWrappedCell(QPainter &p, const QRect &rect, const QString &text, int li
                         QRect(rect.left() + qMin(x0, x1), rect.top() + int(line.position().y()),
                               qMax(1, qAbs(x1 - x0)), lh)
                             .intersected(rect);
-                    paintMark(p, patch, mark, drawLayout);
+                    patches += patch;
                 }
             }
+            paintMarks(p, patches, mark, drawLayout);
         });
     p.restore();
 }

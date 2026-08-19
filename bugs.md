@@ -60,38 +60,22 @@ case-sensitively. The label now has a cell whose width comes from the bar and no
 from the text, and the report is elided into it with the whole of it on the
 tooltip.
 
+Entry 12 has gone too: a marked cell was redrawn in full once per matched run, and a
+cell's redraw is its WHOLE paragraph — so a wrapped record up to 100 display lines tall
+was drawn again up to 64 times over, which took one repaint of it from 1.4 ms to 17.4 ms
+on every scroll, resize, ingest tick and tab switch. The runs of one cell now go into a
+`QRegion` and the redraw is issued once through it, which is pixel-identical to what it
+replaced where a per-line redraw is not. The fix took an unreported defect with it: the
+elided path placed its marks by summing per-character advances, which is the logical
+width of a prefix and not the visual position of a shaped run, so a match in Arabic or
+Hebrew text was marked over the wrong glyphs — 48 px of a 77 px run in the case measured.
+
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 12. A marked wrapped cell redraws the whole record layout once per match
-
-`drawWrappedCell()`'s `drawLayout` (`LogView.cpp:227`) is
-`layout.draw(&p, rect.topLeft())` — every line of the paragraph — and `paintMark`
-(`:246`) calls it once per (display line × intersecting span) pair with only the
-clip changed. `spans()` is capped at 64 marks and a record at 100 display lines,
-so one matching message cell can cost 64 full 100-line layout draws per repaint.
-
-Benchmarked: a 94-line paragraph draws once in 2.2 ms; 64 clipped redraws take
-**50.4 ms**, for one cell of one record. A 20-line record is still ~11 ms, and
-every matching record on screen pays it, on every repaint — scroll, resize,
-ingest tick, tab switch. A single-letter query under wrap-always-on saturates the
-cap on most records, which is an ordinary thing to type.
-
-`60b4aa5`'s own contract is that marking costs "one `spans()` call per
-already-decoded string", and the 64 cap exists because "this is the paint path".
-The per-span cost was capped; the per-span work was not — the cap is what makes
-the 64× multiplier reachable rather than unbounded, not what makes it cheap.
-
-Fix: `paintMark` already knows which `QTextLine` the patch belongs to, so pass a
-callable that redraws only that line (`QTextLine::draw`) instead of the whole
-layout. The glyphs still come from the same layout at the same position, so the
-"redrawn by the SAME call that drew them" rule survives, and O(lines × spans)
-becomes O(spans). `drawElidedCell` has the same shape one order down and deserves
-the same treatment, though its string is bounded by the column width.
 
 ### 13. A refused archive member says "connecting…" in the view for ever
 
