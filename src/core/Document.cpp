@@ -260,6 +260,17 @@ void Document::enterWaiting(const QString &reason)
         m_source.reset();
 }
 
+void Document::restateWaitReason(const QString &reason)
+{
+    // Guarded on the state, not on the text: LiveController is what compares against
+    // waitReason() before calling here, because that string is what is actually on
+    // screen — its own m_lastStatusText is latched by start() before anything has
+    // compared it to the reason prepare() stored.
+    if (!m_waiting)
+        return;
+    m_waitReason = reason;
+}
+
 bool Document::resume(IFormatProvider &provider)
 {
     // Reuse, not Interactive: this is reached from the watch tick on the GUI thread,

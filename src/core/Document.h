@@ -161,6 +161,19 @@ public:
     // reset, exactly as it wraps rescan().
     void enterWaiting(const QString &reason);
 
+    // Restate why, WITHOUT re-entering the state. The reason a document waits for is
+    // not fixed at the transition: a spooled log opens on "connecting…" and the worker
+    // answers afterwards — refused, host down, no such member — so the sentence on
+    // screen has to follow (ARCHITECTURE.md §6.5). This is the whole of that, and it is
+    // deliberately NOT enterWaiting(): that clears the index inside a model reset, and
+    // a model reset per reason change would drop every view's anchor and selection
+    // while nothing about the visible set has moved. It touches m_waitReason and
+    // nothing else — not the index, not m_lastError, not the source.
+    //
+    // No-op when the document is not waiting, so a late tick cannot leave a sentence
+    // behind on a document that has since been resumed.
+    void restateWaitReason(const QString &reason);
+
     // Leave it: (re)open the source and index it. When the format has never been
     // settled, this is also where encoding detection and the provider run, over the
     // first 64 KB of the bytes that have now arrived — which is the whole reason this

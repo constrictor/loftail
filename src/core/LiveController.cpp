@@ -296,6 +296,10 @@ void LiveController::checkWhileWaiting()
     // Keep the status line current either way: a spooled source spends this whole time
     // publishing why it cannot reach the log, which is the one thing worth showing.
     publishSourceStatus();
+    // And keep the VIEW current with it. The status bar was the only surface that
+    // tracked a changing reason; the placeholder and the tab tooltip were written once,
+    // at the transition, and a spooled log transitions while it is still "connecting…".
+    republishWaitReason();
     if (!back) {
         // THE presence-retry line (DiagnosticLog.h), and the one place in loftail where
         // throttling is not a nicety but the only thing that makes the record possible at
@@ -403,6 +407,36 @@ void LiveController::beginWaiting(const QString &reason)
     // only thing making progress — stopping it here is how the log would never come
     // back (contrast completed(), where there is genuinely nothing left to look at).
     emit waitingChanged(true, reason);
+}
+
+// The reason a document is waiting for is not settled at the transition. Since M17 a
+// spooled open enters the wait on "connecting…" and the worker answers afterwards —
+// refused, host down, an archive holding no such member, an SFTP subsystem that timed
+// out — and SshFetcher republishes several different reasons over the life of one wait.
+// Announcing only the first left the view saying "connecting…" for ever with nothing
+// connecting (SPEC.md §3: the view says what it is waiting for).
+void LiveController::republishWaitReason()
+{
+    LogSource *src = m_document->source();
+    if (!src)
+        return; // a LOCAL wait: nothing to ask, and the transition's sentence stands
+
+    const QString text = sourceStatusText(*src, m_document->path());
+    // NEVER an empty one. sourceStatusText() is empty for every healthy state, and the
+    // receiver writes what arrives straight into the placeholder — so an unconditional
+    // re-emit would blank the view of any waiting document the moment its fetcher had
+    // nothing to complain about. Silence is not a new reason.
+    if (text.isEmpty())
+        return;
+    // Compared against what is ON SCREEN, not against m_lastStatusText: start() latches
+    // that one before anything has compared it to the reason prepare() stored, so
+    // piggybacking on publishSourceStatus()'s guard would silently skip the first
+    // correction — the one case this exists for.
+    if (text == m_document->waitReason())
+        return;
+
+    m_document->restateWaitReason(text);
+    emit waitingChanged(true, text);
 }
 
 void LiveController::publishSourceStatus()
