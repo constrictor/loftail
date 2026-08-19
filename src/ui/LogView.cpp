@@ -565,6 +565,44 @@ int LogView::messageColumn() const
     return -1;
 }
 
+bool LogView::columnIsOnScreen(int logical) const
+{
+    // A section of ZERO WIDTH counts as off, and not only for tidiness: QHeaderView
+    // resizes a section to 0 BEFORE it marks it hidden, and the sectionResized that
+    // reaches recomputeGeometry() is emitted from inside that resize — so asking
+    // isSectionHidden() alone answers "still visible" at the one moment the geometry
+    // has to change, and every record keeps the height its now-hidden message wanted.
+    return logical >= 0 && !m_header->isSectionHidden(logical)
+        && m_header->sectionSize(logical) > 0;
+}
+
+int LogView::wrappedMessageColumn() const
+{
+    // The message column WHEN THERE IS SOMETHING TO WRAP. A column the reader has
+    // switched off in the header menu is not on screen, so measuring its text is
+    // measuring nothing: AlwaysOn used to go on giving every record the height its
+    // hidden message wanted, and the paint then skipped the section and left three
+    // blank rows under every record with the scrollbar still spanning them. A hidden
+    // message column reads exactly like a format with no %m, which is what this asks.
+    const int c = messageColumn();
+    return columnIsOnScreen(c) ? c : -1;
+}
+
+bool LogView::messageIsLastVisibleColumn() const
+{
+    // Walked back from the END of the visual order past every hidden section, not
+    // compared against count() - 1: a column switched off after the message leaves the
+    // message last on screen, and one switched off before it moves nothing.
+    const int msgCol = wrappedMessageColumn();
+    if (msgCol < 0)
+        return false;
+    for (int vi = m_header->count() - 1; vi > m_header->visualIndex(msgCol); --vi) {
+        if (columnIsOnScreen(m_header->logicalIndex(vi)))
+            return false;
+    }
+    return true;
+}
+
 int LogView::selRecordForGeometry() const
 {
     if (m_wrapMode == WrapMode::SelectedRecordOnly && m_current >= 0 && m_current < recordCount())
@@ -613,9 +651,11 @@ int LogView::recordHeightLines(int r) const
 
 bool LogView::estimating() const
 {
-    // AlwaysOn with a message column to wrap. Without a message field there is
-    // nothing width-dependent to estimate, so we stay on the exact path.
-    return m_wrapMode == WrapMode::AlwaysOn && messageColumn() >= 0;
+    // AlwaysOn with a message column to wrap. Without a message field — or with the
+    // one there is switched off in the header menu — there is nothing width-dependent
+    // to estimate, so we stay on the exact path and every record is its own physical
+    // height.
+    return m_wrapMode == WrapMode::AlwaysOn && wrappedMessageColumn() >= 0;
 }
 
 qint64 LogView::mapTotalLines() const
@@ -683,7 +723,15 @@ int LogView::messageWrapWidth() const
     // left the wrap width at a single pixel, every record measuring the 100-line
     // display cap, and a 1400 px record against a 466 px viewport. The floor is in
     // characters and not pixels because log text zooms (Fonts.h).
-    const int msgCol = messageColumn();
+    const int msgCol = wrappedMessageColumn();
+    // Not the last visible column: the fields after it own the pixels past its divider,
+    // so the cell wraps WITHIN ITS OWN SECTION. To the right edge regardless — which is
+    // what shipped — and the message is laid out over every column after it and drawn
+    // under their text on the record's first line, unreadably (bugs.md 18). It needs no
+    // gesture to reach: `%d [%t] %-5p %m (%c)%n` is an ordinary pattern and puts the
+    // subsystem after the message.
+    if (msgCol >= 0 && !messageIsLastVisibleColumn())
+        return qMax(minWrapWidth(), m_header->sectionSize(msgCol));
     const int x = msgCol >= 0 ? m_header->sectionViewportPosition(msgCol) : 0;
     return qMax(minWrapWidth(), viewport()->width() - x);
 }
@@ -834,7 +882,7 @@ void LogView::recomputeGeometry()
 
     const int sel = selRecordForGeometry();
     if (sel >= 0) {
-        const int msgCol = messageColumn();
+        const int msgCol = wrappedMessageColumn();
         if (msgCol >= 0) {
             // The same width the paint lays the cell out in, from the same expression.
             // These used to floor independently — 50 px here against 10 px there — so
@@ -1235,8 +1283,11 @@ void LogView::paintEvent(QPaintEvent *event)
         const int vh = viewport()->height();
         const int vw = viewport()->width();
         // Constant for the whole paint, and the number the heights below were measured
-        // in: read once rather than per record on the paint path.
+        // in: read once rather than per record on the paint path. So is whether the
+        // message is the last thing on the row, which is what decides whether the width
+        // it was measured in is also the width it may be drawn in.
         const int msgW = messageWrapWidth();
+        const bool msgLast = messageIsLastVisibleColumn();
 
         while (r < n && y < vh) {
             const int hLines = qMax(1, m_estimated.recordHeightLines(r));
@@ -1258,10 +1309,24 @@ void LogView::paintEvent(QPaintEvent *event)
                 if (logical == msgCol) {
                     // The width the height was measured in, from the one expression.
                     const int availW = msgW;
+                    // Measured at the floor, CLIPPED at the section (§7.1.1). The two are
+                    // the same number whenever the message is last, and whenever its
+                    // section is at least kMinWrapCols wide; where they differ the tail
+                    // of each line is lost rather than drawn over the next column's text,
+                    // which is the trade SPEC.md §5 states. Clipped rather than laid out
+                    // narrower, because laying out at `w` would break the lines somewhere
+                    // else than the height was counted for.
+                    const bool clip = !msgLast && w < availW;
+                    if (clip) {
+                        p.save();
+                        p.setClipRect(QRect(x, y, w, rowH));
+                    }
                     // Character wrapping (WrapAnywhere) so the painted height
                     // matches the ceil(chars/cols) measurement model exactly.
                     drawWrappedCell(p, QRect(x, y, availW, rowH), m_model->cellText(r, logical),
                                     lh, /*wordWrap=*/false, mark);
+                    if (clip)
+                        p.restore();
                 } else {
                     drawElidedCell(p, QRect(x, y, w, lh), m_model->cellText(r, logical), mark);
                 }
@@ -1287,6 +1352,7 @@ void LogView::paintEvent(QPaintEvent *event)
     const int vh = viewport()->height();
     const int vw = viewport()->width();
     const int msgW = messageWrapWidth(); // what selWrapLines() measured in
+    const bool msgLast = messageIsLastVisibleColumn();
 
     while (r < n && y < vh) {
         const int hLines = recordHeightLines(r);
@@ -1311,8 +1377,19 @@ void LogView::paintEvent(QPaintEvent *event)
                 const QString msg = m_model->cellText(r, logical);
                 if (wrapThis) {
                     const int availW = msgW;
+                    // Measured at the floor, clipped at the section: the same rule as
+                    // the estimated path above, and the reason it is not scoped to
+                    // AlwaysOn is that a message column moved off the end is drawn over
+                    // the columns after it in either mode (bugs.md 18).
+                    const bool clip = !msgLast && w < availW;
+                    if (clip) {
+                        p.save();
+                        p.setClipRect(QRect(x, y, w, rowH));
+                    }
                     drawWrappedCell(p, QRect(x, y, availW, rowH), msg, lh,
                                     /*wordWrap=*/true, mark);
+                    if (clip)
+                        p.restore();
                 } else {
                     // Wrap off: each physical line of the record is a clipped line of
                     // its own (invariant #2), so each elides on its own too — and each

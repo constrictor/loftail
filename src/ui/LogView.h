@@ -261,12 +261,20 @@ public:
     // out at, not what QFontMetrics::height() rounds to.
     int lineHeight() const;
 
-    // The width a wrapped message is laid out in, in pixels: the message column's
-    // origin to the right edge of the viewport, floored at kMinWrapCols characters
-    // (ARCHITECTURE.md §7.1.1). ONE expression, used by the estimated column count,
-    // by the exact path's selected-record measurement and by both paint sites — the
-    // measure and the paint must derive the width identically or a record is given
+    // The width a wrapped message is laid out in, in pixels, floored at kMinWrapCols
+    // characters (ARCHITECTURE.md §7.1.1). ONE expression, used by the estimated column
+    // count, by the exact path's selected-record measurement and by both paint sites —
+    // the measure and the paint must derive the width identically or a record is given
     // rows the text does not fill, or fewer than it needs and is silently clipped.
+    //
+    // WHICH width depends on where the column is: the message column's origin to the
+    // right edge of the viewport while it is the last visible column, and its OWN
+    // SECTION otherwise. A message is only entitled to the space after it while there
+    // is nothing after it — the columns are movable and an ordinary log4cplus pattern
+    // may put a field after %m, and to the right edge regardless the message is drawn
+    // over every one of them on the record's first line (bugs.md 18). The paint clips
+    // at the section in that case, which is visible only where the section is narrower
+    // than the floor.
     //
     // The floor is in CHARACTERS because log text zooms across 27 point sizes: a
     // pixel constant would be 28 columns at 7 pt and 6 at 30 pt. Without it a message
@@ -438,6 +446,19 @@ private:
     // Measure how many visual lines the message text occupies at `width` px.
     int measureWrappedLines(const QString &text, int width) const;
     int messageColumn() const; // logical column of the Message field, or -1
+    // Whether a column has anything on screen: not hidden, and not resized to nothing.
+    bool columnIsOnScreen(int logical) const;
+    // The same column when there is something to wrap in it: -1 for a format with no
+    // %m AND for a message column the reader has switched off in the header menu, which
+    // is the same question as far as every height is concerned. Without it AlwaysOn went
+    // on measuring a hidden message and gave every record the rows it wanted, which the
+    // paint then left blank.
+    int wrappedMessageColumn() const;
+    // Whether the message column is the last one ON SCREEN — walked back from the end of
+    // the VISUAL order past hidden sections, since the columns are movable and any of
+    // them may be switched off. It is what decides how wide a wrapped message is laid
+    // out and how far it may be drawn.
+    bool messageIsLastVisibleColumn() const;
 
     // Resolve one row's background and text color for painting (M5). Selection wins;
     // otherwise the highlight rules speak through the model's Background/Foreground
