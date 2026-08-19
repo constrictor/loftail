@@ -218,10 +218,41 @@ line short and is not something either entry knew about.
 The numbers left behind are not reused: an entry keeps the number it was given, so it
 can still be referred to by one.
 
-**Nothing is left on the numbered list.** That is a statement about what has been
-confirmed, not about the program — every entry the 2026-08-18 pass raised has been
-fixed, and the next entry to be written here starts at 23. The section below is where
-a pass should start rather than from nothing.
+Everything the 2026-08-18 pass raised has been fixed. The list below starts again at
+23, which is where that pass left the numbering.
+
+---
+
+### 23. The Highlighters pane imposes a ~456 px minimum width on the whole pane dock under Breeze
+
+`HighlighterPane::minimumSizeHint()` measures 436×231 under Fusion and **456×255
+under Breeze**, against `FilterPane`'s 68×68 and 83×83. The width comes from the
+five-button row under the rule table — `New`, `Remove`, `Clear`, `Up`, `Down` — at
+5 × 80 = 400 px on Fusion and 5 × 84 = 420 px on Breeze, plus the spacing between
+them and the 2 × 6 px of `AxisEditor::kSideMargin` the row is indented by. Nothing
+in the row can give: five `QPushButton`s with five words in them, laid out
+side by side, and a button's size hint is a floor.
+
+Because the panes are **tabbed into one dock area** (`MainWindow.cpp`,
+`tabifyDockWidget`), that floor is the whole pane dock's floor — it applies while
+the Filters or Runs tab is the one on screen just as much as while the
+Highlighters tab is. So on a Breeze desktop, which is the reference KDE desktop
+and what the user runs, the pane dock cannot be dragged narrower than about
+456 px, and it takes those pixels from the log view for the whole session. The
+Filters pane, whose five axes live in a `QScrollArea`, imposes no such floor: its
+minimum is two orders smaller and it answers a narrow dock with a scrollbar.
+
+Present since M19 put the button row there. Not something to fix blind — the
+answers are all product decisions with costs: elide or iconise the five buttons
+(which loses the words that say what they do, and `AxisEditor` already reversed
+an auto-raise experiment on the argument that a frameless glyph does not read as
+a button), wrap the row onto two lines, put the less-used three behind a menu, or
+accept the floor and say so. Worth a decision rather than a patch.
+
+It interacts with entry 19's work on the log view's own width budget: the seed
+that keeps the message column on screen is measured against the viewport it is
+given, and a dock that cannot be narrowed below 456 px is the other half of how
+that viewport gets small in the first place.
 
 ---
 

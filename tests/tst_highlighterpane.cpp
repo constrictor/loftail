@@ -1660,48 +1660,84 @@ void TestHighlighterPane::noSectionClipsItsOwnTitle()
 //
 // Asserted against the Filters pane itself rather than against the number, because the
 // claim is that they agree, not that either is 6.
+//
+// It is the LEFT inset that is compared across the panes, and deliberately only that.
+// The two cannot give the axes the same content WIDTH and nothing promises they will:
+// this pane spends ~240 px above the editor on the rule table and its button row, so its
+// scroll area is that much shorter and needs a vertical scrollbar where the Filters
+// pane's does not — and the bar comes out of the right-hand side. Comparing the pair
+// pinned that coincidence instead of the claim, and it held only at the one height and
+// style the suite happened to run: under Fusion at 820 px the five axes clear the
+// viewport by 34 px, and at 700 px, or under Breeze (taller group-box frames, a 672 px
+// minimum against 551), they do not. The right inset is therefore checked per pane
+// against ITS OWN scrollbar, which says "inset symmetrically" without hard-coding
+// PM_ScrollBarExtent — 14 under Fusion, 21 under Breeze.
 void TestHighlighterPane::theAxesSitWhereTheFiltersPanesDo()
 {
     Document doc;
     QTemporaryFile file;
     QVERIFY(openLog(doc, file));
 
-    HighlighterPane highlighters;
-    highlighters.resize(460, 820);
-    highlighters.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&highlighters));
-    highlighters.setDocument(&doc);
-    button(highlighters, QStringLiteral("ruleNew"))->click();
+    // Two heights, because the interesting one is inside the band where this pane
+    // scrolls and the Filters pane does not: 820 is above it under the default style and
+    // 700 is inside it, so the assertions are exercised against a scrolling pane on a
+    // machine with no other style installed.
+    for (const int paneHeight : {820, 700}) {
+        HighlighterPane highlighters;
+        highlighters.resize(460, paneHeight);
+        highlighters.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&highlighters));
+        highlighters.setDocument(&doc);
+        button(highlighters, QStringLiteral("ruleNew"))->click();
 
-    FilterPane filters;
-    filters.resize(460, 820);
-    filters.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&filters));
-    filters.setDocument(&doc);
+        FilterPane filters;
+        filters.resize(460, paneHeight);
+        filters.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&filters));
+        filters.setDocument(&doc);
 
-    const auto inset = [](QWidget &pane, const char *name) {
-        auto *w = pane.findChild<QWidget *>(QString::fromLatin1(name));
-        if (!w)
-            return QPair<int, int>(-1, -1);
-        const int left = w->mapTo(&pane, QPoint(0, 0)).x();
-        return QPair<int, int>(left, pane.width() - (left + w->width()));
-    };
+        const auto inset = [](QWidget &pane, const char *name) {
+            auto *w = pane.findChild<QWidget *>(QString::fromLatin1(name));
+            if (!w)
+                return QPair<int, int>(-1, -1);
+            const int left = w->mapTo(&pane, QPoint(0, 0)).x();
+            return QPair<int, int>(left, pane.width() - (left + w->width()));
+        };
 
-    for (const char *name : {"subsystemGroup", "messageGroup", "timeGroup"}) {
-        const QPair<int, int> here = inset(highlighters, name);
-        const QPair<int, int> there = inset(filters, name);
-        QVERIFY2(here.first > 0, name); // and not flush against the dock edge either
-        QVERIFY2(here == there,
-                 qPrintable(QStringLiteral("%1: highlighters %2/%3, filters %4/%5")
-                                .arg(QLatin1String(name))
-                                .arg(here.first).arg(here.second)
-                                .arg(there.first).arg(there.second)));
+        // What the axes lose on the right when their scroll area needs a bar. Looked up
+        // by object name: the panes are told apart by their scroll areas' names, never
+        // by anything on screen.
+        const auto barWidth = [](QWidget &pane, const char *scrollName) {
+            auto *scroll = pane.findChild<QScrollArea *>(QString::fromLatin1(scrollName));
+            if (!scroll)
+                return -1;
+            QScrollBar *bar = scroll->verticalScrollBar();
+            return bar && bar->isVisible() ? bar->width() : 0;
+        };
+        const int hereBar = barWidth(highlighters, "highlighterScroll");
+        const int thereBar = barWidth(filters, "filterScroll");
+        QVERIFY(hereBar >= 0 && thereBar >= 0);
+
+        for (const char *name : {"subsystemGroup", "messageGroup", "timeGroup"}) {
+            const QPair<int, int> here = inset(highlighters, name);
+            const QPair<int, int> there = inset(filters, name);
+            const QString where = QStringLiteral("%1 at %2 px: highlighters %3/%4 (bar "
+                                                 "%5), filters %6/%7 (bar %8)")
+                                      .arg(QLatin1String(name))
+                                      .arg(paneHeight)
+                                      .arg(here.first).arg(here.second).arg(hereBar)
+                                      .arg(there.first).arg(there.second).arg(thereBar);
+            QVERIFY2(here.first > 0, qPrintable(where)); // nor flush against the dock edge
+            QVERIFY2(here.first == there.first, qPrintable(where));
+            QVERIFY2(here.second == here.first + hereBar, qPrintable(where));
+            QVERIFY2(there.second == there.first + thereBar, qPrintable(where));
+        }
+
+        // And the table above the axes shares their left edge, so the pane reads as one
+        // column rather than as a table with a differently indented editor under it.
+        QCOMPARE(ruleTable(highlighters)->mapTo(&highlighters, QPoint(0, 0)).x(),
+                 inset(highlighters, "subsystemGroup").first);
     }
-
-    // And the table above the axes shares their left edge, so the pane reads as one
-    // column rather than as a table with a differently indented editor under it.
-    QCOMPARE(ruleTable(highlighters)->mapTo(&highlighters, QPoint(0, 0)).x(),
-             inset(highlighters, "subsystemGroup").first);
 }
 
 // --- The empty table, which used to say nothing at all -----------------------
