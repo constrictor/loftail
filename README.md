@@ -40,7 +40,7 @@ loftail does **not** link log4cplus. It reads log files as text and has no compi
 loftail /var/log/myapp.log --pattern '%d{%Y-%m-%d %H:%M:%S} [%t] %-5p %c - %m%n'
 ```
 
-The file opens at its end and follows it. `--pattern` is only needed the first time — the format is remembered per file, and loftail will try to detect it anyway. There is deliberately no `--follow` flag: following is unconditional.
+The file opens at its end and follows it. `--pattern` is only needed the first time — once a pattern fits a log it is remembered for it, and loftail will try to detect it anyway. Pass it later and it overrides what was remembered, but only if it actually parses the file: if it does not, Preferences opens to correct it, and dismissing that leaves the log unopened with nothing saved. There is deliberately no `--follow` flag: following is unconditional.
 
 ## Building
 

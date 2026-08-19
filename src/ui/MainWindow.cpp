@@ -1376,24 +1376,22 @@ bool MainWindow::openFile(const QString &rawPath, const QString &pattern)
     // the defaults. The levels never mix: a node is taken entire, exactly as the
     // per-file cache and the default this replaced never merged.
     //
-    // An explicitly supplied pattern still overrides just the pattern, so a command
-    // line naming one keeps the resolved encoding and source zone rather than silently
-    // reverting them to auto-detect.
+    // An explicitly supplied pattern (--pattern) overrides just the pattern, so a
+    // command line naming one keeps the resolved encoding and source zone rather than
+    // silently reverting them to auto-detect. It WINS over every level — that is what
+    // the switch is for — but it is not BELIEVED: it goes on to be checked against the
+    // file exactly as a resolved node is, and openWithSettings() persists it only if it
+    // fits (SPEC.md §3, §4). An empty value carries no pattern and is the bare launch:
+    // there is nothing to override with, so the resolved levels stand.
     FormatSettings settings = m_logSettings.resolve(path).profile.format;
     if (!pattern.isEmpty())
         settings.pattern = pattern;
 
-    // Checked against the file at EVERY level, including a per-log node: applying a
-    // node silently is not a promise that it still parses, and a log whose writer was
-    // reconfigured should say so rather than show a wall of plain text. An
-    // explicitly-supplied pattern (command line) is taken as the user's intent instead,
-    // which keeps headless and scripted opens free of a blocking dialog.
-    const bool promptIfNoMatch = pattern.isEmpty();
-    return openWithSettings(path, settings, promptIfNoMatch);
+    return openWithSettings(path, settings);
 }
 
 bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
-                                  bool promptIfNoMatch, std::optional<RunRestore> runRestore)
+                                  std::optional<RunRestore> runRestore)
 {
     // Prepare the candidate document and settle its format BEFORE touching the
     // document currently on screen: cancelling the format dialog aborts the open
@@ -1413,11 +1411,20 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     }
     doc->setTimeDisplay(settings.timeDisplay);
 
-    // Decide whether to remember this format on close of the flow. A cached open, a
-    // dialog the user accepted, or a default that actually matched are all worth
-    // persisting; a non-matching default the user declined is not (so reopen
-    // re-prompts rather than silently showing plain text).
-    bool persist = !promptIfNoMatch;
+    // EVERY format is checked against the file, whatever supplied it — a resolved
+    // per-log node, a file pattern, the defaults, or --pattern (SPEC.md §4). This is a
+    // LOCAL and it starts true: it was a parameter, and the one caller that ever set it
+    // false was the command line, which is how `--pattern` came to overwrite a working
+    // remembered format with an unparseable one and SAVE it (bugs.md 15). A format that
+    // does not fit costs a dialog; it never costs a wall of plain text, and it never
+    // costs the settings that were already there.
+    bool promptIfNoMatch = true;
+
+    // Decide whether to remember this format on close of the flow. A dialog the user
+    // accepted, or a format that actually matched, are worth persisting; one the user
+    // declined is not (so reopen re-prompts rather than silently showing plain text),
+    // and neither is one nothing has been judged against yet.
+    bool persist = false;
 
     // A log with no bytes yet has nothing to preview, autodetect from, or seed a dialog
     // with — and asking about a format before anyone has seen a line of the file would

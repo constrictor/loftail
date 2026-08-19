@@ -96,32 +96,30 @@ over: once as the name half, since `QFileInfo::fileName()` on a pathless URL han
 back the whole userinfo, and once inside "Not a valid remote log address: %1".
 Both now go through one `RemoteLocation::withoutPassword()`.
 
+Entry 15 has gone too, and the product ruling on it went further than either fix
+the entry proposed: `--pattern` still overrides every level of the settings tree,
+but it is now judged against the log rather than believed. A pattern that parses
+is stored under that log's key (unless it is what the log already inherits, where
+the redundancy rule erases the node as it always has); a pattern that does not
+raises Preferences, and dismissing that opens no tab and writes nothing. The
+mechanism is one deleted parameter: `openWithSettings()`'s `promptIfNoMatch`,
+which the command line was the only caller ever to pass false. That single flag
+had also been switching off the persistence check, so the entry understated the
+defect — a mistyped switch did not merely show plain text for one run, it wrote
+the unparseable pattern into `logsettings.json` under the log's own key, after
+which every later launch with no switch at all resolved to it and raised the very
+dialog the switch had been exempted from; where the switch happened to equal the
+defaults it deleted the log's remembered format outright. A second, unreported
+defect went with it: an explicitly empty value (`--pattern "$FMT"` with `FMT`
+unset) is now stated to be the bare launch rather than left to fall out of
+`isEmpty()` meaning two different things on the same line.
+
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 15. `--pattern` overrides a remembered format, contradicting both `--help` and SPEC
-
-`MainWindow::openFile()` (`MainWindow.cpp:1382`) applies the switch
-unconditionally: `if (!pattern.isEmpty()) settings.pattern = pattern;`. With a
-saved `*.log` pattern node holding a working conversion pattern,
-`loftail --pattern "…" rotate.log` opens the log as unparsed plain text.
-
-`--help` (`CommandLine.cpp:9`) says the switch is "Used only for a file loftail
-has not seen before; a file with a remembered format ignores it", and `SPEC.md`
-§3 says the same. M20 made every level resolve on every open and the override was
-left unconditional, so the shipped text describes behaviour the shipped code does
-not have.
-
-Which side moves is a product call. Fix: either gate the override on the resolved
-node being the built-in default, or — more likely what is wanted — keep the
-override and rewrite both sentences to say the pattern applies to every file on
-that command line. Note the same `pattern.isEmpty()` also decides
-`promptIfNoMatch`, so the "no blocking dialog for a scripted open" property has
-to survive either way.
 
 ### 16. F3 with the Find bar closed answers into a bar nobody can see
 

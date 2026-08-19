@@ -15,7 +15,8 @@ namespace loftail {
 // The command-line contract (SPEC.md §3):
 //
 //   loftail [options] [file...]
-//     --pattern <p>   log4cplus ConversionPattern for a never-seen file
+//     --pattern <p>   log4cplus ConversionPattern for the files named, overriding
+//                     what is remembered for them — and judged against each
 //     --help, --version
 //
 // Split out of main() so it can be driven without launching a process: what is worth
@@ -56,6 +57,12 @@ public:
     // --pattern, or an empty string. ONE pattern covers every file named: it says how
     // a log is written, and someone passing a set of files on one command line is
     // passing a set written alike.
+    //
+    // An EMPTY string is what `--pattern "$FMT"` yields for an unset variable, and it
+    // names no format: the switch is then the bare launch and each log's own settings
+    // stand. Deliberately not an error — there is nothing to refuse, and a supplied
+    // pattern is judged against the log now rather than believed (SPEC.md §3), so an
+    // empty one cannot damage anything by being ignored.
     QString pattern() const;
 
 private:

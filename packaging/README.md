@@ -33,9 +33,11 @@ loftail [options] [file]
   file            Log file to open (optional). Opens at its end and follows it,
                   like tail -f — this is unconditional (SPEC.md §3), which is why
                   there is deliberately no --follow flag.
-  --pattern <p>   log4cplus ConversionPattern for a file loftail has not seen
-                  before. A file with a remembered format ignores it; a pattern
-                  that does not match opens the file as plain text.
+  --pattern <p>   log4cplus ConversionPattern for the files named. It overrides
+                  whatever is remembered for them, and is then checked against
+                  each: where it fits it is remembered for that log; where it
+                  does not, Preferences opens to correct it, and dismissing that
+                  leaves the log unopened and nothing saved.
   -h, --help      Show usage and exit.
   -v, --version   Show version and exit.
 ```
