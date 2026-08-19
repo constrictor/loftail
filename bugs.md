@@ -16,33 +16,16 @@ a wrapped record re-flowing to different line breaks the moment Find was armed.
 Entry 5 has gone the same way: selecting a run rewrote the log's seeded highlight
 rules and saved them, and the fix took a second, unreported defect with it — a
 display-zone change re-pointed every time-bounded rule except the one the pane
-happened to be showing.
+happened to be showing. Entry 6 has gone too: the Runs pane's Regex and Case
+boxes applied the pattern standing in the field the moment they were ticked, with
+no Apply pressed — re-splitting the log, persisting the half-typed pattern into
+its settings node and converting a pinned run back to "Last run".
 The numbers left behind are not reused: the entries below keep the ones they were
 given, so they can still be referred to by number.
 
 The rest are unfixed. Line numbers are as of commit 35e8cb9.
 
 ---
-
-### 6. The Runs pane's Regex and Case boxes apply a pattern the user has not pressed Apply for
-
-`RunPane::buildUi()` (`RunPane.cpp:95`) connects both checkboxes' `toggled` to
-`emitPattern`. Type a run-start pattern — the note under Apply correctly turns
-amber, "Edited — press Apply to re-read the runs" — then tick **Regex** without
-touching Apply, and the whole log is re-split on the spot: three run rows appear
-and the note reverts to its quiet wording.
-
-`SPEC.md` §3a is explicit: "the pattern **takes effect when Apply is pressed** —
-splitting the log again re-reads all of it — and the pane says so in a line under
-the button". `updateApplyNote()` itself counts the two boxes as part of the
-pattern in force, so the pane promises Apply-gating for exactly the control that
-bypasses it. The damage is the expensive one Apply exists to prevent: a half-typed
-pattern applied to the whole file by a click on an unrelated checkbox.
-
-Fix: drop the two `emitPattern` connections and leave Apply and Return as the
-only route, keeping the `updateApplyNote` connections so ticking a box still
-turns the note amber. `tst_runpane` has no case for it; one belongs beside
-`aTypedPatternMakesTheNoteAskForApply`.
 
 ### 7. A log that turns up is read the instant it exists, so its format is judged against an empty file
 

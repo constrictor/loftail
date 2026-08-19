@@ -185,3 +185,23 @@ at a chunk of 2 over ten records — a cancel raised between chunks, a
 clipboard is untouched, and an append that must *not* abandon. Making it settable
 is the whole of the extra work; `tst_logview`'s existing `singleShot`-into-the-
 dialog idiom covers the rest.
+
+### 9. The Runs pane's Apply note keeps its colour across a theme change
+
+`RunPane::updateApplyNote()`'s `state == m_noteState` guard (`RunPane.cpp:270`,
+line number as of the fix to `bugs.md` entry 6) returns early when its state has
+not moved, and that early return also guards the `setStyleSheet()` that paints the
+line — muted from the palette while the field agrees with the pattern in force,
+the caution amber once it does not. The guard is deliberate and is the right
+default: `rebuildRunList()` runs on every live append, and a `setStyleSheet()` per
+tick is a full style repolish.
+
+The consequence is that a system palette change — a light/dark switch while a log
+is open — repaints every other widget and leaves this one line in the colour it
+was given under the old palette, until something moves its state. No path to it
+was found from the running application (Qt re-polishes on `QEvent::PaletteChange`,
+which does not reach a stylesheet colour already resolved to a hex value), so this
+is recorded rather than filed as a defect: the next pass over the pane should not
+have to re-derive it. If it ever becomes reachable, the fix is a
+`changeEvent(QEvent::PaletteChange)` that clears `m_noteState` and calls
+`updateApplyNote()` — not the removal of the guard.

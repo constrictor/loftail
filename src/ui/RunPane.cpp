@@ -46,7 +46,9 @@ void RunPane::buildUi()
 
     auto *opts = new QHBoxLayout;
     m_regex = new QCheckBox(tr("Regex"), box);
+    m_regex->setObjectName(QStringLiteral("runStartRegex")); // test contract, never translated
     m_case = new QCheckBox(tr("Case sensitive"), box);
+    m_case->setObjectName(QStringLiteral("runStartCase")); // test contract, never translated
     opts->addWidget(m_regex);
     opts->addWidget(m_case);
     opts->addStretch(1);
@@ -90,17 +92,18 @@ void RunPane::buildUi()
     // pixels and pin the list to its floor with an empty gap under it.
     root->addWidget(runBox, 1);
 
+    // APPLY AND RETURN ARE THE ONLY ROUTE OUT OF THIS PANE. Both boxes were once wired
+    // to emitPattern as well, which meant ticking Regex applied whatever half-typed
+    // pattern was standing in the field — re-splitting and re-reading the whole log, and
+    // persisting that pattern into the log's settings node — for a gesture the user had
+    // not pressed Apply for, and which threw away a pinned run on the way (SPEC.md §3a).
+    // Nothing here may emit runStartChanged on an edit; a new control belongs on the
+    // note below, not on this list.
     connect(m_apply, &QPushButton::clicked, this, &RunPane::emitPattern);
     connect(m_patternEdit, &QLineEdit::returnPressed, this, &RunPane::emitPattern);
-    connect(m_regex, &QCheckBox::toggled, this, &RunPane::emitPattern);
-    connect(m_case, &QCheckBox::toggled, this, &RunPane::emitPattern);
-    // Typing is the one edit here that is NOT applied as it is made, so it is the one
-    // that has to say so. The checkboxes apply themselves through emitPattern above, and
-    // whatever they apply comes back through refresh() -> rebuildRunList() -> here.
+    // NOTHING in this pane is applied as it is edited, so every editable control has to
+    // say so — which is the whole of what these three connections do.
     connect(m_patternEdit, &QLineEdit::textChanged, this, &RunPane::updateApplyNote);
-    // The boxes apply themselves, so these fire AFTER emitPattern and are normally a
-    // no-op the state guard swallows. They are here for the case where the emit reaches
-    // nobody — no active context — and the pane must not then claim to be up to date.
     connect(m_regex, &QCheckBox::toggled, this, &RunPane::updateApplyNote);
     connect(m_case, &QCheckBox::toggled, this, &RunPane::updateApplyNote);
     // currentRowChanged, not itemClicked: a list is walked with the arrow keys as well
@@ -251,6 +254,10 @@ void RunPane::updateApplyNote()
     // against a remembered copy of the field: the pattern can change from under this
     // pane — a rebind to another log, a session restore, a settings node edited in
     // Preferences — and every one of those routes ends at rebuildRunList().
+    //
+    // All THREE clauses are load-bearing, and the two box clauses most of all: a tick is
+    // reported by nothing but this note, so dropping either one leaves a control whose
+    // change the pane never mentions and Apply then silently acts on.
     bool pending = false;
     if (m_document) {
         const TextMatcher &m = m_document->runStartMatcher();

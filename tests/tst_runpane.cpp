@@ -1,15 +1,24 @@
 #include <QtTest>
 
 #include <QApplication>
+#include <QCheckBox>
+#include <QFile>
 #include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPushButton>
 #include <QSignalSpy>
+#include <QTabWidget>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 
 #include "Document.h"
+#include "DocumentContext.h"
+#include "DocumentView.h"
 #include "LogFormat.h"
+#include "LogSettingsStore.h"
+#include "MainWindow.h"
 #include "RunPane.h"
 #include "UiColors.h"
 
@@ -67,6 +76,65 @@ private:
         return pane.findChild<QLabel *>(QString::fromLatin1(name));
     }
 
+    // The three cases below are WINDOW-level, and have to be: what they claim is that
+    // ticking a box reaches nothing, and the only place an emission would have an effect
+    // is where it is connected to MainWindow::onRunStartChanged() — which re-splits the
+    // log, persists the pattern into the settings tree and retargets the run selection.
+    // A pane on its own can only show that no signal left it.
+    QTemporaryDir m_dir;
+
+    // A real file carrying the same log the pane cases use, for MainWindow to open.
+    bool writeLog(const QString &path) const
+    {
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return false;
+        f.write(kLog);
+        f.close();
+        return true;
+    }
+
+    static QTabWidget *tabs(const MainWindow &w)
+    {
+        return w.findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    }
+
+    static Document *documentOf(const MainWindow &w)
+    {
+        auto *view = qobject_cast<DocumentView *>(tabs(w)->widget(0));
+        DocumentContext *ctx = view ? view->context() : nullptr;
+        return ctx ? ctx->doc.get() : nullptr;
+    }
+
+    static void waitUntilIndexed(const MainWindow &w)
+    {
+        QTRY_VERIFY([&w]() {
+            QTabWidget *t = tabs(w);
+            if (!t || t->count() == 0)
+                return false;
+            for (int i = 0; i < t->count(); ++i)
+                if (t->tabText(i).contains(QStringLiteral("indexing")))
+                    return false;
+            return true;
+        }());
+    }
+
+    // What logsettings.json says this log's run-start pattern is — read back through a
+    // second store over the same directory, so it is the file on disk being asked and
+    // not the tree the window is holding.
+    static QString storedRunStart(const QString &path)
+    {
+        LogSettingsStore store(LogSettingsStore::defaultDir());
+        return store.load().resolve(path).profile.format.runStartPattern;
+    }
+
+    // Every box is reached by object name and clicked as a user would: the labels are
+    // translated prose, and setChecked() would drive the connections without the widget.
+    static void tick(QCheckBox *box)
+    {
+        QTest::mouseClick(box, Qt::LeftButton, Qt::KeyboardModifiers(), box->rect().center());
+    }
+
 private slots:
     void theRunsAreAListWithTheSelectedRunOnIt();
     void theLastRunEntryIsFirstAndIsNotARun();
@@ -76,6 +144,9 @@ private slots:
     void repopulatingTheListIsNotAChoice();
     void thePaneSaysThatThePatternWaitsForApply();
     void aTypedPatternMakesTheNoteAskForApply();
+    void tickingABoxOnlyAsksForApply();
+    void tickingABoxNeitherResplitsTheLogNorPersistsThePattern();
+    void tickingABoxLeavesAPinnedRunPinned();
     void withNoLogOpenTheListStillExplainsItself();
 };
 
@@ -316,6 +387,135 @@ void TestRunPane::aTypedPatternMakesTheNoteAskForApply()
     QCOMPARE(edit->text(), QStringLiteral("RUN START o"));
 }
 
+void TestRunPane::tickingABoxOnlyAsksForApply()
+{
+    // Apply and Return are the only route out of this pane. Both boxes were once wired
+    // to emitPattern as well, so ticking Regex applied whatever was standing in the
+    // field — which is the one thing this pane exists to make deliberate (SPEC.md §3a).
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file), qPrintable(doc.lastError()));
+
+    RunPane pane;
+    pane.setDocument(&doc);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+
+    auto *edit = pane.findChild<QLineEdit *>(QStringLiteral("runStartPattern"));
+    auto *regex = pane.findChild<QCheckBox *>(QStringLiteral("runStartRegex"));
+    auto *caseBox = pane.findChild<QCheckBox *>(QStringLiteral("runStartCase"));
+    QLabel *note = label(pane, "runApplyNote");
+    QVERIFY(edit && regex && caseBox && note);
+
+    edit->setText(QStringLiteral("RUN START o")); // half typed, never applied
+    const QString asking = note->text();
+    QSignalSpy spy(&pane, &RunPane::runStartChanged);
+
+    tick(regex);
+    QVERIFY(regex->isChecked()); // the box itself moves...
+    QCOMPARE(spy.size(), 0);     // ...and reports to nobody
+    tick(caseBox);
+    QVERIFY(caseBox->isChecked());
+    QCOMPARE(spy.size(), 0);
+
+    // The note is the whole of what a tick does, so it must still be asking: a box that
+    // changes nothing and says nothing would be a control that had stopped working.
+    QCOMPARE(note->text(), asking);
+    QCOMPARE(note->styleSheet(),
+             QStringLiteral("color: %1;").arg(warningColor(pane.palette()).name()));
+
+    // Apply is what emits, and it carries the boxes as they now stand.
+    auto *apply = pane.findChild<QPushButton *>(QStringLiteral("runApply"));
+    QVERIFY(apply);
+    apply->click();
+    QCOMPARE(spy.size(), 1);
+    const QList<QVariant> args = spy.takeFirst();
+    QCOMPARE(args.at(0).toString(), QStringLiteral("RUN START o"));
+    QVERIFY(args.at(1).toBool());
+    QVERIFY(args.at(2).toBool());
+}
+
+void TestRunPane::tickingABoxNeitherResplitsTheLogNorPersistsThePattern()
+{
+    // The damage the pane's Apply gate exists to prevent, driven through a real window:
+    // an unapplied pattern re-read over the whole log, and written into its settings
+    // node so that it outlives the session that never asked for it.
+    const QString path = m_dir.filePath(QStringLiteral("unapplied.log"));
+    QVERIFY(writeLog(path));
+
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+    QVERIFY(w.openFile(path));
+    waitUntilIndexed(w);
+
+    Document *doc = documentOf(w);
+    auto *edit = w.findChild<QLineEdit *>(QStringLiteral("runStartPattern"));
+    auto *regex = w.findChild<QCheckBox *>(QStringLiteral("runStartRegex"));
+    auto *apply = w.findChild<QPushButton *>(QStringLiteral("runApply"));
+    auto *note = w.findChild<QLabel *>(QStringLiteral("runApplyNote"));
+    QVERIFY(doc && edit && regex && apply && note);
+    QCOMPARE(doc->runs().size(), 0);
+    QVERIFY(storedRunStart(path).isEmpty());
+
+    edit->setText(QStringLiteral("RUN START")); // typed, and NOT applied
+    const QString asking = note->text();
+
+    tick(regex);
+    QVERIFY(regex->isChecked());
+    QCOMPARE(doc->runs().size(), 0);              // the log was not re-read...
+    QVERIFY(storedRunStart(path).isEmpty());      // ...and nothing was written for it
+    QCOMPARE(note->text(), asking);               // ...and the pane still asks
+
+    // Pressing Apply is what does both, so neither is being reported missing because
+    // the wiring below the pane went with the connections.
+    apply->click();
+    QCOMPARE(doc->runs().size(), 4);              // preamble + three
+    QCOMPARE(storedRunStart(path), QStringLiteral("RUN START"));
+    QVERIFY(note->text() != asking);
+}
+
+void TestRunPane::tickingABoxLeavesAPinnedRunPinned()
+{
+    // A pinned run moves only when the user moves it (SPEC.md §3a). Applying a pattern
+    // re-detects and defaults back to the newest run, so a tick that applied one threw
+    // away the pin as well — silently, and for a gesture about something else.
+    const QString path = m_dir.filePath(QStringLiteral("pinned.log"));
+    QVERIFY(writeLog(path));
+
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+    QVERIFY(w.openFile(path));
+    waitUntilIndexed(w);
+
+    auto *edit = w.findChild<QLineEdit *>(QStringLiteral("runStartPattern"));
+    auto *caseBox = w.findChild<QCheckBox *>(QStringLiteral("runStartCase"));
+    auto *list = w.findChild<QListWidget *>(QStringLiteral("runList"));
+    QVERIFY(edit && caseBox && list);
+
+    edit->setText(QStringLiteral("RUN START"));
+    QTest::keyClick(edit, Qt::Key_Return); // Return applies, exactly as Apply does
+
+    Document *doc = documentOf(w);
+    QVERIFY(doc);
+    QCOMPARE(doc->runs().size(), 4);
+    list->setCurrentRow(RunPane::kFirstRunRow + 1); // pin run #1, which is not the last
+    QVERIFY(!doc->followingLastRun());
+    QCOMPARE(doc->selectedRun(), 1);
+
+    edit->setText(QStringLiteral("RUN START o")); // an edit the user has not applied
+    tick(caseBox);
+
+    QVERIFY(caseBox->isChecked());
+    QVERIFY(!doc->followingLastRun()); // the pin is still the user's
+    QCOMPARE(doc->selectedRun(), 1);
+    QCOMPARE(doc->runs().size(), 4);
+    QCOMPARE(list->currentRow(), RunPane::kFirstRunRow + 1);
+}
+
 void TestRunPane::withNoLogOpenTheListStillExplainsItself()
 {
     // The list keeps its two italic mode rows with no document bound, so it reads as
@@ -330,5 +530,24 @@ void TestRunPane::withNoLogOpenTheListStillExplainsItself()
     QCOMPARE(runList(pane)->count(), 2);
 }
 
-QTEST_MAIN(TestRunPane)
+int main(int argc, char *argv[])
+{
+    // The three Apply-gate cases build a real MainWindow, which restores a session and
+    // reads and writes logsettings.json — so every persistent store is isolated under a
+    // throwaway config home, exactly as tst_lastrun and tst_sessiongui do. Without it
+    // these cases would open the developer's own tabs and rewrite their settings tree.
+    QTemporaryDir configHome;
+    qputenv("XDG_CONFIG_HOME", configHome.path().toUtf8());
+    qputenv("XDG_DATA_HOME", configHome.path().toUtf8());
+    qputenv("HOME", configHome.path().toUtf8());
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+
+    QApplication app(argc, argv);
+    QApplication::setOrganizationName(QStringLiteral("loftail-test"));
+    QApplication::setApplicationName(QStringLiteral("loftail-test-runpane"));
+
+    TestRunPane tc;
+    return QTest::qExec(&tc, argc, argv);
+}
+
 #include "tst_runpane.moc"
