@@ -2,6 +2,7 @@
 
 #include "EstimatedGeometry.h"
 #include "Filter.h"
+#include "WrapMetrics.h"
 #include "WrapMode.h"
 
 #include <QAbstractScrollArea>
@@ -43,8 +44,10 @@ class RecordIndex;
 //   * AlwaysOn          — EVERY record wraps to the viewport width, so heights
 //     depend on width and cannot be known without measuring. Geometry is handled
 //     by EstimatedGeometry (ARCHITECTURE.md §7.1.1): visited blocks measured and
-//     cached keyed by column count, the rest estimated, the scrollbar refining as
-//     blocks are measured, and a debounced resize remeasuring once per drag.
+//     cached keyed by wrap width, the rest estimated, the scrollbar refining as
+//     blocks are measured, and a debounced resize remeasuring once per drag. What
+//     a record's height IS comes from WrapMetrics, this view's own font-keyed
+//     greedy fill; EstimatedGeometry only caches and sums the answers.
 //
 // Reused: QItemSelectionModel for selection, a QHeaderView for column geometry
 // (giving resize/reorder/hide and remembered layout for free), and LogModel for
@@ -242,6 +245,10 @@ public:
     // tests (measurement refinement, width-keyed invalidation, and that switching
     // to an exact mode leaves the cache untouched); meaningful only in AlwaysOn.
     const EstimatedGeometry &estimatedGeometry() const { return m_estimated; }
+    // The per-codepoint wrap model those heights are measured through, bound to this
+    // view's current font. Exposed const for tests, which hold it against a real
+    // QTextLayout at the same width.
+    const WrapMetrics &wrapMetrics() const { return m_wrapMetrics; }
     // Force the block containing `record` to be measured now (decodes the block's
     // records via LogModel and folds exact heights into m_estimated). Normally
     // driven lazily from painting; exposed so tests can drive it deterministically
@@ -407,14 +414,15 @@ private:
     int    mapRecordAtLine(qint64 line) const;
     int    mapRecordHeightLines(int r) const;
 
-    // AlwaysOn support: characters that fit across the message column, block
-    // measurement from decoded text, and keeping the visible blocks measured.
-    int viewportCols() const;
+    // AlwaysOn support: block measurement from decoded text, and keeping the visible
+    // blocks measured.
+    //
     // One character's advance, and the pixel floor kMinWrapCols of them come to. The
-    // advance is FRACTIONAL and must stay so: every integer advance Qt offers —
-    // QFontMetrics::averageCharWidth() and QFontMetrics::horizontalAdvance() alike —
-    // rounds, and a rounded-down advance overcounts the columns that fit, which costs a
-    // wrapped record a row and clips its tail (ARCHITECTURE.md §7.1.1).
+    // floor alone is what these two are for now — a record's height is a greedy fill
+    // over per-codepoint metrics (WrapMetrics) and divides nothing. The advance is
+    // still FRACTIONAL and must stay so: every integer advance Qt offers rounds, and a
+    // floor a pixel short of kMinWrapCols characters is one column of clipping
+    // (ARCHITECTURE.md §7.1.1).
     qreal charAdvance() const;
     int minWrapWidth() const;
     void ensureEstimatorBound();
@@ -619,6 +627,9 @@ private:
     // AlwaysOn; switching to an exact mode leaves it untouched so its cache
     // survives a round-trip through the exact modes.
     EstimatedGeometry m_estimated;
+    // The font-keyed per-codepoint metrics m_estimated's heights are measured through.
+    // Rebound (and dropped) on QEvent::FontChange and nowhere else.
+    WrapMetrics m_wrapMetrics;
     QTimer  *m_resizeTimer = nullptr; // debounces width-change remeasurement
 
     // Follow state (M6). Every open follows the tail; scrolling away detaches.

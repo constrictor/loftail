@@ -195,87 +195,33 @@ indistinguishable from one that had just missed a tick. A third, adjacent, went 
 same time: a log that exists but cannot be read said it "had not appeared yet",
 sending the reader to look for a file they can see in their file manager.
 
-The numbers left behind are not reused: the entries below keep the ones they were
-given, so they can still be referred to by number.
+Entries 21 and 22 have gone together, because they were one defect wearing two
+faces: the estimated height model was `ceil(chars / cols)`, and a column count is a
+thing two characters of one font need not agree on. A character the fixed-pitch face
+does not carry is drawn through a fallback one at up to 1.77x the advance — Han, Kana,
+Hangul and emoji — so a CJK log lost a line off 51.7% of its records, and a character
+whose ink overhangs its advance breaks a line one place earlier than the arithmetic
+predicts, so about one in seven window-and-zoom configurations quietly ate a row off
+the occasional ASCII record ending in a `W`. Neither said anything: a wrapped message
+is deliberately not elided and offers no tooltip, so the text simply was not there. A
+record's height is now measured rather than counted, by a greedy fill over a memoized
+per-codepoint advance and ink overhang that reproduces `QTextLine`'s own break test —
+0.34 ms per 4096-record block against the 1.4 ms that block already spends decoding,
+where laying every record out would have been 24 ms and up to 800 ms on payload
+records. The fix took two smaller things with it: the entries' own proposal to detect
+such records with `QFontMetricsF::inFont()` cannot work at all, since it resolves
+through the fallback chain and answers true for U+4E2D and U+1F600 alike; and a
+character of the Common script — `⚠`, `→`, `✓` — has no font of its own and is drawn
+by whatever face is carrying the run around it, which is a second way to measure a CJK
+line short and is not something either entry knew about.
 
-The rest are unfixed. Line numbers are as of commit 35e8cb9.
+The numbers left behind are not reused: an entry keeps the number it was given, so it
+can still be referred to by one.
 
----
-
-### 21. A record of CJK or emoji is clipped by the same height model, and the entry-17 fix does not reach it
-
-Found while confirming entry 17, and it is the same user-visible failure with a
-different cause. `EstimatedGeometry::measuredRecordLines()` is `ceil(chars / cols)`
-(`src/core/EstimatedGeometry.cpp:22`), and `cols` is one number for the whole view —
-which assumes every glyph is drawn at the PRIMARY face's advance. A character the
-fixed-pitch face does not carry resolves through a fallback face with a wider one:
-at the reference face at 9 pt a Latin character advances 7.21875 px and U+4E2D
-advances **12**. So a record of such text needs more lines than it is counted for,
-and `drawWrappedCell()` clips it to the rows it was given (`LogView.cpp:307`,
-`maxLines = rect.height() / lineHeight()`) — no ellipsis and no tooltip, because a
-wrapped message deliberately offers neither (`SPEC.md` §5). Same class as entry 17:
-text that exists nowhere on screen and nothing on screen saying so.
-
-Measured at 9 pt in a 379 px wrap width (an 880 px viewport, Line Wrap ▸ Always On),
-one record whose message is N × U+4E2D:
-
-```
-N=20 : 240 px, layout 1 line , model 1 row  — ok
-N=30 : 360 px, layout 1 line , model 1 row  — ok
-N=40 : 480 px, layout 2 lines, model 1 row  — CLIPPED, the second line is not drawn
-N=60 : 720 px, layout 2 lines, model 2 rows — ok again, both sides round to 2
-```
-
-The model's row count is `ceil(40/52)` with entry 17 fixed and `ceil(40/54)` without
-it, so the entry-17 work neither causes this nor helps it; the two are independent.
-`ARCHITECTURE.md` §7.1.1 states the fixed-pitch assumption for the primary face and
-§7.1.4 already notes fallback CJK/emoji overhang as the one case the mark region
-behaves differently, but nothing anywhere covers the height model losing text on such
-a record.
-
-There is no arithmetic answer, because the advance is per character and the model
-counts characters. The likely fix is to MEASURE such records rather than count them —
-`LogView::measureWrappedLines()` already lays a cell out exactly, and it is what the
-exact path uses — falling back to it when a record's text is not wholly in the
-primary face (`QFontMetricsF::inFont()` per character, or a cheaper "any character
-above U+02FF" screen at index time). That is a design decision, not a one-liner: it
-puts a text-shaping pass back on a path §7.1.1 exists to keep free of one, so what
-has to be settled is how such records are detected cheaply enough and whether the
-answer is cached per record or per block.
-
----
-
-### 22. The column count still overcounts by one on a line ending in an overhanging glyph
-
-Also found while fixing entry 17, and it is what remains after it. `QTextLine`'s
-break test allows for the last glyph's RIGHT BEARING, so where a glyph's ink
-overhangs its advance the line breaks one character earlier than any
-width-over-advance arithmetic predicts — and `viewportCols()` is exactly that
-arithmetic, `qFloor(messageWrapWidth() / advance)` (`src/ui/LogView.cpp:653,691`,
-as of the commit that fixed entry 17).
-The record is then given one row too few and clipped to it, silently, in the same
-way entry 17 was.
-
-Swept at the reference fixed-pitch face over widths 60–1400 px at all 27 point sizes,
-counting the widths at which `qFloor(w / advance)` exceeds what `QTextLine` places:
-
-```
-character:   '0'   'i'   '.'   'n'   'x'   'W'
-overcounts:    0     0     0     0   248    1590      (of 36,207 size x width pairs)
-```
-
-`'x'` misses only at 7 pt; `'W'` misses at 15 of the 27 sizes — 7, 9, 11, 13, 14, 15,
-18, 19, 20, 22, 24, 26, 28, 29, 30, which is the same set of sizes the truncated
-advance failed at, since it is the same fractional remainder that leaves room for the
-bearing to matter. At 9 pt with a 390 px column: the arithmetic says 54, a line of
-`'0'` holds 54, a line of `'W'` holds 53.
-
-The exposure is much narrower than entry 17's — it is one column, not up to 22, and
-only for a line that happens to end on such a glyph — but the failure is the same and
-so is its silence. It has the same shape as entry 21: the height model knows an
-advance and the layout knows glyphs, and where those differ the model is the one that
-is wrong. The same answer probably serves both, and `tst_logview::laidOutFit()`
-measures in DIGITS specifically to keep the entry-17 cases clear of this one.
+**Nothing is left on the numbered list.** That is a statement about what has been
+confirmed, not about the program — every entry the 2026-08-18 pass raised has been
+fixed, and the next entry to be written here starts at 23. The section below is where
+a pass should start rather than from nothing.
 
 ---
 

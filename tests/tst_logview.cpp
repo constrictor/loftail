@@ -36,6 +36,7 @@
 #include "Record.h"
 #include "RecordIndex.h"
 #include "UiColors.h"
+#include "WrapMetrics.h"
 
 #include <limits>
 #include <memory>
@@ -306,9 +307,14 @@ private slots:
     void theSelectedRecordIsLaidOutInTheWidthItWasMeasuredIn();
 
     // --- the column count is the characters that fit, unrounded (bugs.md 17) ---
-    void theColumnCountIsTheCharactersTheLayoutActuallyFits();
+    void theHeightsAreKeyedOnTheWidthTheLayoutIsGiven();
     void aRecordAsLongAsItsColumnFitsIsDrawnWholeAndSoAreTheOnesJustPastIt();
     void theFlooredWrapWidthHoldsEveryColumnItIsFlooredAt();
+
+    // --- the height is measured glyph by glyph, not divided (bugs.md 21, 22) ---
+    void aRecordOfWideOrOverhangingGlyphsIsDrawnWhole();
+    void aRecordEndingInASpaceThatFitsGainsNoBlankRow();
+    void theHeightModelCountsTheLinesTheLayoutPlaces();
 
     // --- Zoom (SPEC.md §5, ARCHITECTURE.md §7.1.5) ------------------------------
     void theLogTextSizeStopsAtBothBoundsAndComesBackOnReset();
@@ -474,7 +480,7 @@ void TestLogView::columnStateRoundTrips()
 
 // Every column renders in a fixed-pitch font, header included. This is load-bearing
 // for the estimated-geometry path, which models a wrapped record's height as
-// ceil(chars / cols) instead of shaping text (ARCHITECTURE.md §7.1.1), and it is
+// per-codepoint advances instead of shaping text (ARCHITECTURE.md §7.1.1), and it is
 // what makes columns line up vertically.
 void TestLogView::everyColumnRendersFixedPitch()
 {
@@ -561,7 +567,7 @@ void TestLogView::switchingToExactKeepsEstimationCache()
     view.measureBlockOfRecord(0);
     const EstimatedGeometry &g = view.estimatedGeometry();
     QVERIFY(g.isBlockMeasured(0));
-    const int cols = g.columns();
+    const int cols = g.wrapWidth();
     const int measured = g.measuredBlockCount();
     const qint64 total = g.totalLines();
 
@@ -569,14 +575,14 @@ void TestLogView::switchingToExactKeepsEstimationCache()
     view.setWrapMode(LogView::WrapMode::Off);
     QVERIFY(g.isBlockMeasured(0));
     QCOMPARE(g.measuredBlockCount(), measured);
-    QCOMPARE(g.columns(), cols);
+    QCOMPARE(g.wrapWidth(), cols);
     QCOMPARE(g.totalLines(), total);
 
     view.setWrapMode(LogView::WrapMode::SelectedRecordOnly);
     view.setCurrentRecord(5); // exercises the exact selected-record wrap path
     QVERIFY(g.isBlockMeasured(0));
     QCOMPARE(g.measuredBlockCount(), measured);
-    QCOMPARE(g.columns(), cols);
+    QCOMPARE(g.wrapWidth(), cols);
 
     // Returning to AlwaysOn at the same width keeps the measurements (no reset).
     view.setWrapMode(LogView::WrapMode::AlwaysOn);
@@ -2808,11 +2814,15 @@ void TestLogView::aBiggerFontFitsFewerRecordsInTheSameViewport()
     QCOMPARE(view.verticalScrollBar()->pageStep(), smallPage);
 }
 
-// THE ONE THAT CATCHES A STALE ESTIMATOR. Under AlwaysOn every measured height is keyed
-// by the column count, which is the message column's width divided by the character
-// advance — so a font change invalidates every one of them. ensureEstimatorBound() will
-// not notice: it rebinds on the index's ADDRESS and folds in tail growth, and a font
-// moves neither.
+// THE ONE THAT CATCHES A STALE ESTIMATOR, and it got sharper when the cache stopped being
+// keyed on a column count. Under AlwaysOn every measured height is the FONT's as much as
+// the width's, and the key is now the wrap width in PIXELS — which a zoom need not move at
+// all. This case pins the columns so that it does not: the message column is the same
+// number of pixels wide at 9 pt and at 20 pt, so setWrapWidth() answers false and the
+// unconditional drop in applyFontChange() is the only thing standing between the reader
+// and every height measured at the old face. ensureEstimatorBound() will not notice
+// either: it rebinds on the index's ADDRESS and folds in tail growth, and a font moves
+// neither.
 void TestLogView::aZoomDropsTheWrappedHeightsMeasuredAtTheOldFont()
 {
     if (QFontDatabase::families().isEmpty())
@@ -2826,12 +2836,16 @@ void TestLogView::aZoomDropsTheWrappedHeightsMeasuredAtTheOldFont()
     LogModel model(&doc);
     LogView view(&doc, &model);
     view.resize(700, 400);
+    // A hidden widget keeps the size it was born at until something renders it, and every
+    // width below is measured against the viewport — so settle it before, or the two
+    // readings straddle the pending resize and differ for that reason alone.
+    (void)renderViewport(view);
     zoomTo(view, 9);
     // Pin the columns before the message, which claims them from the zoom's re-seed:
-    // the message column then keeps the same PIXELS at both sizes, so the character
-    // count moves for the one reason this case is about. Left to the seed, a 20 pt
-    // re-seed pushes the message origin past the right edge and both counts come back
-    // as the kMinWrapCols floor (bugs.md 11), which says nothing about either font.
+    // the message column then keeps the same PIXELS at both sizes, which is exactly the
+    // case the width key cannot see. Left to the seed, a 20 pt re-seed pushes the message
+    // origin past the right edge and the width comes back as the kMinWrapCols floor
+    // (bugs.md 11), which would invalidate the cache for a reason that is not this one.
     view.header()->setMinimumSectionSize(4);
     for (int c = 0; c < view.header()->count() - 1; ++c)
         view.header()->resizeSection(c, 30);
@@ -2840,18 +2854,19 @@ void TestLogView::aZoomDropsTheWrappedHeightsMeasuredAtTheOldFont()
     const EstimatedGeometry &g = view.estimatedGeometry();
     view.measureBlockOfRecord(0);
     QVERIFY(g.isBlockMeasured(0));
-    const int smallCols = g.columns();
-    QVERIFY(smallCols > 0);
+    const int smallWidth = g.wrapWidth();
+    QVERIFY(smallWidth > 0);
 
     zoomTo(view, 20);
-    // Wider characters, so fewer of them across the same column...
-    QVERIFY2(g.columns() < smallCols, "the estimator kept the old character count");
-    // ...and every height measured at the old count is gone rather than being reported
-    // as fact at a width where it is wrong.
+    // The width did NOT move — that is the setup, not an accident — so nothing keyed on
+    // it could have noticed...
+    QCOMPARE(g.wrapWidth(), smallWidth);
+    // ...and every height measured at the old face is gone all the same, rather than
+    // being reported as fact at a size where it is wrong.
     QVERIFY2(!g.isBlockMeasured(0), "the estimator kept heights measured at the old font");
 
-    // Measuring again at the new size gives taller records: the same characters over
-    // fewer columns is more visual lines.
+    // Measuring again at the new size gives taller records: wider glyphs across the same
+    // pixels is more visual lines.
     const qint64 wideTotal = g.totalLines();
     view.measureBlockOfRecord(0);
     QVERIFY(g.isBlockMeasured(0));
@@ -3430,7 +3445,7 @@ void TestLogView::everyWrappedLineOfARecordIsDrawnInsideTheRowItWasGiven()
     for (int i = 1; i < ink.size(); ++i)
         QCOMPARE(ink.at(i).first - ink.at(i - 1).first, lh);
     // Every drawn line has a row of its own. The count may be one under the model's
-    // ceil(chars / cols) estimate — that estimate is what AlwaysOn is, §7.1.1 — but it
+    // measured estimate — that estimate is what AlwaysOn is, §7.1.1 — but it
     // can never be over it, which is what "the text was given fewer pixels than it needs"
     // looks like from here.
     QVERIFY2(ink.size() <= lines, "the text takes more lines than the record was given");
@@ -3589,7 +3604,7 @@ void useKnownPalette(LogView &view)
 } // namespace
 
 // Line Wrap ▸ Always On over a record carrying tabs. Arming Find must not move a single
-// break: the unmarked rendering is the one the ceil(chars / cols) height model was
+// break: the unmarked rendering is the one the greedy-fill height model was
 // measured against, and a tab worth eleven columns re-flows the record and pushes its
 // tail past the rows it was given, where the clip silently eats it.
 void TestLogView::aTabbedRecordBreaksWhereItAlwaysDidWhenFindIsArmed()
@@ -4024,7 +4039,7 @@ void TestLogView::anElidedMarkSitsOverTheGlyphsOfTheRunAndNotOverALogicalPrefix(
 
 // --- the wrap width follows the message column's origin (bugs.md 9) ----------
 //
-// Under Line Wrap ▸ Always On a record is given ceil(chars / cols) rows, and `cols` is
+// Under Line Wrap ▸ Always On a record is given the rows a greedy fill measures, and the width is
 // measured from the message column's ORIGIN to the right edge of the viewport (§7.1.1).
 // Three gestures move that origin and only one of them used to say so. A column resize
 // remeasured; a column MOVE across the message column did not, and neither did a
@@ -4054,14 +4069,14 @@ int blankTail(const QImage &img, const QRect &band, const QColor &fill)
 
 // Wait out the 120 ms remeasure debounce (§7.1.1) — the same delay a drag-resize pays,
 // and the reason a corrected height lands just after the gesture rather than during it.
-// On the column count rather than on the clock, so a loaded runner cannot decide the
+// On the wrap width rather than on the clock, so a loaded runner cannot decide the
 // case; a view that never remeasures at all arrives at the assertions with its old
-// count, which is exactly what they are about.
-void settleWrapWidth(const EstimatedGeometry &g, int wasCols)
+// width, which is exactly what they are about.
+void settleWrapWidth(const EstimatedGeometry &g, int wasWidth)
 {
     QElapsedTimer waited;
     waited.start();
-    while (g.columns() == wasCols && waited.elapsed() < 2000)
+    while (g.wrapWidth() == wasWidth && waited.elapsed() < 2000)
         QTest::qWait(20);
 }
 
@@ -4140,7 +4155,7 @@ void TestLogView::aMovedColumnRemeasuresEveryRowUnderAlwaysOn()
     const EstimatedGeometry &g = view.estimatedGeometry();
     const int lh = view.lineHeight();
     const QColor fill = view.palette().base().color(); // record 0 is an even row
-    const int wideCols = g.columns();
+    const int wideWidth = g.wrapWidth();
     const int wideLines = g.recordHeightLines(0);
     QVERIFY2(wideLines >= 2, "the message must wrap for the remeasure to show at all");
 
@@ -4155,9 +4170,9 @@ void TestLogView::aMovedColumnRemeasuresEveryRowUnderAlwaysOn()
     // the last thing on the row, so the space after it belongs to the column now sitting
     // there and the message wraps within its own divider.
     view.header()->moveSection(0, view.header()->count() - 1);
-    settleWrapWidth(g, wideCols);
+    settleWrapWidth(g, wideWidth);
     view.measureBlockOfRecord(0);
-    const int narrowCols = g.columns();
+    const int narrowWidth = g.wrapWidth();
     const int narrowLines = g.recordHeightLines(0);
 
     // The symptom, in pixels: whatever rows the record was given, its text has to reach
@@ -4166,14 +4181,14 @@ void TestLogView::aMovedColumnRemeasuresEveryRowUnderAlwaysOn()
     QCOMPARE(narrowBand.width(), view.header()->sectionSize(msg));
     QVERIFY2(blankTail(renderViewport(view), narrowBand, fill) < lh,
              "every record is drawn into rows measured against the old, wider column");
-    QVERIFY2(narrowCols < wideCols, "the move left the estimator on the old wrap width");
+    QVERIFY2(narrowWidth < wideWidth, "the move left the estimator on the old wrap width");
     QVERIFY(narrowLines > wideLines);
 
     // ...and back, which is the other symptom: rows measured at the narrow width are far
     // more than the wide one needs, and the record wears the difference as a blank band.
     view.header()->moveSection(view.header()->count() - 1, 0);
-    settleWrapWidth(g, narrowCols);
-    QCOMPARE(g.columns(), wideCols);
+    settleWrapWidth(g, narrowWidth);
+    QCOMPARE(g.wrapWidth(), wideWidth);
     view.measureBlockOfRecord(0);
     QCOMPARE(g.recordHeightLines(0), wideLines);
 
@@ -4266,7 +4281,7 @@ void TestLogView::aHorizontalScrollRemeasuresEveryRowUnderAlwaysOn()
     const EstimatedGeometry &g = view.estimatedGeometry();
     const int lh = view.lineHeight();
     const QColor fill = view.palette().base().color();
-    const int narrowCols = g.columns();
+    const int narrowWidth = g.wrapWidth();
     const int narrowLines = g.recordHeightLines(0);
     QVERIFY2(narrowLines >= 4, "the message must wrap to several rows for a gap to show");
 
@@ -4278,19 +4293,19 @@ void TestLogView::aHorizontalScrollRemeasuresEveryRowUnderAlwaysOn()
     const int msgX = view.header()->sectionViewportPosition(msg);
     hb->setValue(qMin(hb->maximum(), msgX - 40));
     QVERIFY(view.header()->sectionViewportPosition(msg) < msgX);
-    settleWrapWidth(g, narrowCols);
+    settleWrapWidth(g, narrowWidth);
     view.measureBlockOfRecord(0);
-    const int wideCols = g.columns();
+    const int wideWidth = g.wrapWidth();
     const int wideLines = g.recordHeightLines(0);
     QVERIFY2(blankTail(renderViewport(view), wrappedCellBand(view, msg, wideLines), fill) < lh,
              "every record keeps the height it was given at the left edge of the log");
-    QVERIFY2(wideCols > narrowCols, "the scroll left the estimator on the old wrap width");
+    QVERIFY2(wideWidth > narrowWidth, "the scroll left the estimator on the old wrap width");
     QVERIFY(wideLines < narrowLines);
 
     // ...and scrolling back is a round trip, exactly as the resize it behaves like is.
     hb->setValue(0);
-    settleWrapWidth(g, wideCols);
-    QCOMPARE(g.columns(), narrowCols);
+    settleWrapWidth(g, wideWidth);
+    QCOMPARE(g.wrapWidth(), narrowWidth);
     view.measureBlockOfRecord(0);
     QCOMPARE(g.recordHeightLines(0), narrowLines);
     QCOMPARE(renderViewport(view), baseline);
@@ -4364,8 +4379,8 @@ void TestLogView::aMessageColumnAtTheViewportEdgeStillFitsSeveralRecordsOnAScree
     const int lh = view.lineHeight();
     const int vh = view.viewport()->height();
     // No record of this length may be taller than this at ANY origin: the floor is the
-    // narrowest the text is ever laid out in, and one line of slack is the model's own
-    // ceil(chars / cols).
+    // narrowest the text is ever laid out in, and one line of slack is the greedy fill's
+    // own last, part-filled row.
     const int tallest = (kChars + LogView::kMinWrapCols - 1) / LogView::kMinWrapCols + 1;
     QVERIFY2(tallest * lh < vh, "the probe has to fit several records on a screen to begin with");
 
@@ -4374,7 +4389,7 @@ void TestLogView::aMessageColumnAtTheViewportEdgeStillFitsSeveralRecordsOnAScree
         settleRemeasure();
         view.measureBlockOfRecord(0);
 
-        QVERIFY2(g.columns() >= LogView::kMinWrapCols,
+        QVERIFY2(g.wrapWidth() >= floorWidth(view),
                  "the wrap width was taken below its floor");
         const int lines = g.recordHeightLines(0);
         QVERIFY2(lines <= tallest,
@@ -4502,7 +4517,7 @@ void TestLogView::theSelectedRecordIsLaidOutInTheWidthItWasMeasuredIn()
 
 // --- the column count is the characters that fit, unrounded (bugs.md 17) -----
 //
-// AlwaysOn gives a record ceil(chars / cols) rows and then CLIPS its text to them
+// AlwaysOn gives a record the rows the height model measures and then CLIPS its text to them
 // (§7.1.1), so `cols` may never be more than the characters Qt actually places on a line
 // of that width. It was `messageWrapWidth() / QFontMetrics::averageCharWidth()`, and every
 // integer advance Qt offers is a rounded one: at the reference face's shipped 9 pt both
@@ -4541,14 +4556,16 @@ int aPointSizeWhereTheAdvanceIsTruncated()
 }
 
 // The characters Qt actually places on one line `width` px wide — measured through a
-// layout with AlwaysOn's own wrap mode, so the answer is the paint's and not a division
-// restated. This is what `cols` has to be.
+// layout with AlwaysOn's own wrap mode, so the answer is the paint's and not arithmetic
+// restated. It is what the fixtures below compute their record lengths from.
 //
-// Measured in DIGITS, and that is not incidental: QTextLine's break test allows for the
-// last glyph's right bearing, so a face's overhanging glyphs ('W' at most sizes here, 'x'
-// at 7 pt) break one character earlier than their advance says while a digit never does.
-// The height model divides an advance and cannot know which glyph a line ends on
-// (bugs.md 22); what it CAN be held to is the geometry, which is what a digit measures.
+// Measured in DIGITS because the fixtures are written in digits: a run of one character
+// is what makes "the fold is at N" a length a record can be built to. It used to be
+// digits for a second reason as well — an overhanging glyph broke a line earlier than the
+// height model could predict, and a digit kept those cases clear of this one (bugs.md 22)
+// — and that reason is gone: the model walks per-codepoint metrics now and takes the
+// bearing into account, which theHeightModelCountsTheLinesTheLayoutPlaces sweeps in 'W',
+// in CJK and in emoji as well as in digits.
 int laidOutFit(const QFont &f, int width)
 {
     QTextLayout layout(QString(4000, QLatin1Char('0')), f);
@@ -4592,12 +4609,16 @@ int lastInkColumn(const QImage &img, const QRect &area, const QColor &fill)
 } // namespace
 
 // The claim in one line, at every size the zoom offers and at four widths apiece: the
-// count the height model divides by is the count Qt lays out. Against the truncated
-// advance it fails at 15 of the 27 sizes, by up to 22 columns.
-void TestLogView::theColumnCountIsTheCharactersTheLayoutActuallyFits()
+// width the height model measures at is the width the paint lays the cell out in, and at
+// that width the model counts the lines the layout places. The first half used to be
+// stated in COLUMNS — the height model divided the width by an advance — and it is stated
+// in pixels now, because two characters of one font need not be the same width (bugs.md
+// 21, 22); the second half is what the count used to stand in for, and is now asked
+// directly.
+void TestLogView::theHeightsAreKeyedOnTheWidthTheLayoutIsGiven()
 {
     if (QFontDatabase::families().isEmpty())
-        QSKIP("no fonts resolve on this platform; there is no advance to divide by");
+        QSKIP("no fonts resolve on this platform; there is nothing to lay text out with");
     FontSizeGuard guard;
 
     QTemporaryFile file;
@@ -4621,7 +4642,12 @@ void TestLogView::theColumnCountIsTheCharactersTheLayoutActuallyFits()
             const int width = view.messageWrapWidth();
             const int fits = laidOutFit(view.font(), width);
             QVERIFY(fits > 0);
-            QCOMPARE(view.estimatedGeometry().columns(), fits);
+            QCOMPARE(view.estimatedGeometry().wrapWidth(), width);
+            // And a line of exactly what the layout fits is one row, one character more
+            // is two. This is the entry-17 claim in the unit the model now works in.
+            const WrapMetrics &metrics = view.wrapMetrics();
+            QCOMPARE(metrics.linesForParagraph(QString(fits, QLatin1Char('0')), width), 1);
+            QCOMPARE(metrics.linesForParagraph(QString(fits + 1, QLatin1Char('0')), width), 2);
         }
     }
 }
@@ -4673,7 +4699,7 @@ void TestLogView::aRecordAsLongAsItsColumnFitsIsDrawnWholeAndSoAreTheOnesJustPas
     // The setup is the one the lengths were computed against.
     QCOMPARE(view.messageWrapWidth(), kAvail);
     QCOMPARE(laidOutFit(view.font(), kAvail), fit);
-    QCOMPARE(view.estimatedGeometry().columns(), fit);
+    QCOMPARE(view.estimatedGeometry().wrapWidth(), kAvail);
 
     const EstimatedGeometry &g = view.estimatedGeometry();
     const int lh = view.lineHeight();
@@ -4713,10 +4739,10 @@ void TestLogView::aRecordAsLongAsItsColumnFitsIsDrawnWholeAndSoAreTheOnesJustPas
     }
 }
 
-// The floor is the second half of the same divide and has to be fixed with it (bugs.md 17):
-// minWrapWidth() is the pixels kMinWrapCols characters come to, and a truncating multiply
-// leaves it a pixel or two short of them — so viewportCols()'s qMax() re-raises the count
-// to a width that cannot hold it and one column of clipping survives the fix above. At the
+// The floor is stated in CHARACTERS (SPEC.md §5) and has to come to that many of them
+// (bugs.md 17): minWrapWidth() is the pixels kMinWrapCols characters come to, and a
+// truncating multiply leaves it a pixel or two short — a width that cannot hold the twenty
+// columns it promises, which is one column of clipping at 15 of the 27 sizes. At the
 // message origin past the viewport's right edge the floor is the whole wrap width, so this
 // reads it directly, at every size the zoom offers.
 void TestLogView::theFlooredWrapWidthHoldsEveryColumnItIsFlooredAt()
@@ -4742,7 +4768,7 @@ void TestLogView::theFlooredWrapWidthHoldsEveryColumnItIsFlooredAt()
         zoomTo(view, pt);
         const int width = view.messageWrapWidth();
         QCOMPARE(width, floorWidth(view));
-        QCOMPARE(view.estimatedGeometry().columns(), LogView::kMinWrapCols);
+        QCOMPARE(view.estimatedGeometry().wrapWidth(), width);
         QCOMPARE(laidOutFit(view.font(), width), LogView::kMinWrapCols);
     }
 }
@@ -5095,6 +5121,382 @@ void TestLogView::aHiddenMessageColumnGivesEveryRecordItsPhysicalHeight()
     view.measureBlockOfRecord(0);
     QCOMPARE(view.estimatedGeometry().recordHeightLines(0), wrapped);
     QCOMPARE(view.verticalScrollBar()->maximum(), wrappedRange);
+}
+
+// --- a record's height is MEASURED, glyph by glyph (bugs.md 21, 22) ------------
+//
+// The height model was `ceil(chars / cols)`, one column count for the whole view, which
+// assumes every glyph is drawn at the primary face's advance. Two kinds of character are
+// not. A character the fixed-pitch face does not carry resolves through a FALLBACK face —
+// Han, Kana, Hangul and emoji advance 1.53x to 1.77x the Latin advance at the reference
+// face — and a character whose INK OVERHANGS its advance breaks a line one place earlier
+// than any width-over-advance arithmetic predicts, because QTextLine's break test allows
+// for the last glyph's right bearing ('W' at 15 of the 27 point sizes here, 'x' at 7 pt).
+// Either way the record was given fewer rows than its text needs and drawn into them, and
+// a QTextLayout clipped at a rect draws no ellipsis — the same silence entry 17 had.
+//
+// It is a greedy fill over per-codepoint metrics now (WrapMetrics), so the claim below is
+// the direct one: the model's row count is the layout's, and every one of those rows
+// carries ink.
+
+namespace {
+
+// The display lines a QTextLayout actually places for `text` at `width`, in AlwaysOn's own
+// wrap mode and through the same '\t'-for-blank substitution the paint makes. This is the
+// ground truth the model is held against; nothing here restates the model's arithmetic.
+int laidOutLines(const QString &text, const QFont &f, int width)
+{
+    int total = 0;
+    for (const QStringView &paragraph : QStringView(text).split(QLatin1Char('\n'))) {
+        QString s = paragraph.toString();
+        s.replace(QLatin1Char('\t'), QLatin1Char(' '));
+        QTextLayout layout(s, f);
+        QTextOption option;
+        option.setWrapMode(QTextOption::WrapAnywhere);
+        layout.setTextOption(option);
+        layout.beginLayout();
+        int n = 0;
+        while (true) {
+            QTextLine line = layout.createLine();
+            if (!line.isValid())
+                break;
+            line.setLineWidth(width);
+            ++n;
+        }
+        layout.endLayout();
+        total += qMax(1, n);
+    }
+    return qMax(1, total);
+}
+
+// What the height model USED to answer: ceil(chars / cols) per paragraph, with cols the
+// floored division of the wrap width by the primary face's own advance. Written out here
+// and nowhere in src/ any more, because a regression case for a model that has been
+// replaced has to be able to say what the replaced one said.
+int flooredDivisionLines(const QString &text, const QFont &f, int width)
+{
+    const qreal advance = qMax(qreal(1), QFontMetricsF(f).horizontalAdvance(QLatin1Char('0')));
+    const int cols = qMax(LogView::kMinWrapCols, qFloor(width / advance));
+    int lines = 0;
+    for (const QStringView &paragraph : QStringView(text).split(QLatin1Char('\n'))) {
+        const int chars = int(paragraph.size());
+        lines += chars <= cols ? 1 : (chars + cols - 1) / cols;
+    }
+    return qMax(1, qMin(lines, int(RecordIndex::kDisplayLineCap)));
+}
+
+// A point size and a wrap width at which the OLD model loses a line of `text` — it counts
+// fewer rows than the layout places — searched rather than written down, because which
+// sizes a face's advances go wrong at is the face's business and the reference face is not
+// the only one this runs on. Returns false where the resolved face makes the case
+// impossible, which is what the box-glyph font of a runner with no font database does:
+// every glyph one advance, and nothing for the count to be wrong about.
+bool findLostLineSetup(const QString &text, int &pointSize, int &wrapWidth, int &lines)
+{
+    // The shipped size first and the rest after it, the order
+    // aPointSizeWhereTheAdvanceIsTruncated() searches in and for the same reason: where the
+    // ordinary size reproduces the defect, that is the case worth reporting on a failure.
+    QVector<int> sizes;
+    for (int pt = 9; pt <= kMaxLogFontPointSize; ++pt)
+        sizes.append(pt);
+    for (int pt = kMinLogFontPointSize; pt < 9; ++pt)
+        sizes.append(pt);
+    for (int pt : sizes) {
+        QFont f = monospaceFont();
+        f.setPointSize(pt);
+        const QFontMetricsF fm(f);
+        const qreal advance = qMax(qreal(1), fm.horizontalAdvance(QLatin1Char('0')));
+        // Only the widths that can put this text on between two rows and a viewport's
+        // worth of them are worth laying out — the text's own natural width bounds them
+        // from both ends — because this runs per probe per size and a layout is not free.
+        const qreal natural = fm.horizontalAdvance(text);
+        const int rows = qMax(2, qMin(6, 300 / qMax(1, qCeil(fm.height()))));
+        const int first = qMax(qCeil(LogView::kMinWrapCols * advance), int(natural / rows) - 4);
+        const int last = qMin(820, int(natural) + 4);
+        for (int width = first; width <= last; ++width) {
+            const int real = laidOutLines(text, f, width);
+            if (real <= 1)
+                break; // wider still only ever fits it on one line
+            if (real * qCeil(fm.height()) > 300)
+                continue; // the band has to fit a modest viewport
+            if (flooredDivisionLines(text, f, width) >= real)
+                continue;
+            pointSize = pt;
+            wrapWidth = width;
+            lines = real;
+            return true;
+        }
+    }
+    return false;
+}
+
+// One record carrying `message`, in the pattern every case in this file opens with.
+QByteArray makeRecordWithMessage(const QString &message)
+{
+    return QByteArray("2026-07-21 14:32:05,123 [main] INFO  net.socket - ") + message.toUtf8()
+           + "\n";
+}
+
+QString repeated(char32_t cp, int n)
+{
+    QString s;
+    s.reserve(n * 2);
+    for (int i = 0; i < n; ++i)
+        s += QString::fromUcs4(&cp, 1);
+    return s;
+}
+
+// Open one record of `message` under Always On at `pointSize`, with the message column
+// exactly `wrapWidth` px wide, and hand back the rendered viewport with the band the
+// record was drawn into. Everything the cases below share.
+struct WrappedRender
+{
+    QImage image;
+    QRect band;
+    QColor fill;
+    int modelLines = 0;
+};
+
+void renderOneWrappedRecord(LogView &view, int pointSize, int wrapWidth, WrappedRender &out)
+{
+    view.resize(1000, 600);
+    settleLayout(view);
+    zoomTo(view, pointSize);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    putMessageOriginAt(view, wrapWidth);
+    settleRemeasure();
+    view.measureBlockOfRecord(0);
+    out.modelLines = view.estimatedGeometry().recordHeightLines(0);
+    out.band = messageBand(view, out.modelLines);
+    out.image = renderViewport(view);
+    // The band's own fill, sampled past the end of its last line rather than taken from
+    // the palette: record 0 may be drawn on the alternating band colour (§7.1).
+    out.fill = out.image.pixelColor(out.band.right(), out.band.bottom());
+}
+
+} // namespace
+
+// The four shapes of text the old model lost a line of, each at a size and width where it
+// did: wide fallback glyphs, a realistic Latin sentence ending in them, an overhanging
+// ASCII glyph, and the status emoji a log marks its lines with. Every one of them is given
+// the rows the layout places and every one of those rows is drawn into.
+void TestLogView::aRecordOfWideOrOverhangingGlyphsIsDrawnWhole()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; there is no advance to wrap at");
+    FontSizeGuard guard;
+
+    struct Probe
+    {
+        const char *name;
+        QString text;
+    };
+    const QVector<Probe> probes = {
+        // bugs.md 21's own case: forty Han characters, which at 9 pt in a 379 px column
+        // the layout puts on two lines and ceil(40/52) put on one.
+        {"forty Han characters", repeated(0x4E2D, 40)},
+        // ...and the realistic form of it, which is what makes it more than a curiosity:
+        // an ordinary English sentence that names something in Chinese.
+        {"Latin then Han", QStringLiteral("user login failed for ") + repeated(0x4E2D, 30)},
+        // bugs.md 22: an ASCII glyph whose ink overhangs its advance, so QTextLine breaks
+        // one character before the arithmetic does.
+        {"a line of W", QString(54, QLatin1Char('W'))},
+        // Kana and Hangul are the same fallback family as Han...
+        {"Kana", repeated(0x3042, 40)},
+        {"Hangul", repeated(0xD55C, 40)},
+        // ...and so, at 1.77x, is an emoji: a log that marks its lines with these is
+        // reading ordinary ASCII everywhere else. U+2705 and U+274C are the ones that
+        // reach this, and it is worth saying why the emoji BEYOND the BMP are not here:
+        // a surrogate pair counted TWO characters by the arithmetic model, which happens
+        // to more than pay for the fallback face's wider advance, so it overcounted them
+        // and lost nothing. theHeightModelCountsTheLinesTheLayoutPlaces covers them.
+        {"status emoji", [] {
+             QString s;
+             for (int i = 0; i < 6; ++i)
+                 s += QString(QChar(0x2705)) + QStringLiteral(" ok ") + QString(QChar(0x274C))
+                      + QStringLiteral(" fail ");
+             return s;
+         }()},
+    };
+
+    int exercised = 0;
+    for (const Probe &probe : probes) {
+        int pt = 0, width = 0, lines = 0;
+        if (!findLostLineSetup(probe.text, pt, width, lines))
+            continue; // this face draws it at one advance; there was never a line to lose
+        ++exercised;
+
+        QTemporaryFile file;
+        QVERIFY(writeLog(file, makeRecordWithMessage(probe.text)));
+        Document doc;
+        QVERIFY2(doc.open(file.fileName(),
+                          QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                          Encoding::Utf8, QTimeZone::utc()),
+                 qPrintable(doc.lastError()));
+        QCOMPARE(doc.index().records.size(), 1);
+
+        LogModel model(&doc);
+        LogView view(&doc, &model);
+        useKnownPalette(view);
+        WrappedRender rendered;
+        renderOneWrappedRecord(view, pt, width, rendered);
+
+        const QString where = QStringLiteral("%1 at %2 pt in %3 px")
+                                  .arg(QLatin1String(probe.name))
+                                  .arg(pt)
+                                  .arg(width);
+        QCOMPARE(view.messageWrapWidth(), width);
+        // The claim, in rows: the model counts what the layout places. Against the old
+        // model this is short by at least one, which is exactly how the setup was chosen.
+        QVERIFY2(rendered.modelLines == lines,
+                 qPrintable(QStringLiteral("%1: the record was given %2 rows where the "
+                                           "layout places %3")
+                                .arg(where)
+                                .arg(rendered.modelLines)
+                                .arg(lines)));
+        QVERIFY2(flooredDivisionLines(probe.text, view.font(), width) < lines,
+                 qPrintable(where + QStringLiteral(": the setup no longer reproduces the "
+                                                   "arithmetic model's undercount")));
+
+        // And in pixels: every row the record was given carries drawn text, so nothing was
+        // clipped away at the fold. This is the half no other kind of test can see — the
+        // widget holds the right value throughout and only the rows are wrong.
+        const QVector<int> ends =
+            lineEnds(rendered.image, rendered.band, view.lineHeight(), lines, rendered.fill);
+        for (int i = 0; i < lines; ++i)
+            QVERIFY2(ends.at(i) >= 0,
+                     qPrintable(QStringLiteral("%1: row %2 of the record is blank")
+                                    .arg(where)
+                                    .arg(i)));
+    }
+    if (exercised == 0)
+        QSKIP("this face draws every glyph at one advance; no width can lose a line");
+}
+
+// The benign direction, which the fix must not buy the other one with: a record whose text
+// and its trailing blank both fit is ONE row, not one row and an empty strip under it.
+// qCeil()ing the advance was the rejected fix that would have hung such a strip off every
+// wrapped record (§7.1.1), and a greedy fill that counted the blank twice would do it here.
+void TestLogView::aRecordEndingInASpaceThatFitsGainsNoBlankRow()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; there is no advance to wrap at");
+    FontSizeGuard guard;
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 4), qPrintable(doc.lastError()));
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(1000, 600);
+    settleLayout(view);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+
+    constexpr int kWidth = 400;
+    putMessageOriginAt(view, kWidth);
+    settleRemeasure();
+    for (int pt = kMinLogFontPointSize; pt <= kMaxLogFontPointSize; ++pt) {
+        zoomTo(view, pt);
+        const int width = view.messageWrapWidth();
+        const int fit = laidOutFit(view.font(), width);
+        if (fit < 4)
+            continue;
+        // Exactly what fits, with the last character a blank: the model must not read the
+        // blank as a character that did not fit and open a row for it.
+        const QString text = QString(fit - 1, QLatin1Char('a')) + QLatin1Char(' ');
+        const WrapMetrics &metrics = view.wrapMetrics();
+        QCOMPARE(metrics.linesForParagraph(text, width), 1);
+        QCOMPARE(metrics.linesForParagraph(text, width), laidOutLines(text, view.font(), width));
+        // And an empty message is still one row, not none.
+        QCOMPARE(metrics.recordLines(QString(), width, RecordIndex::kDisplayLineCap), 1);
+    }
+}
+
+// The whole claim, swept: at every point size the zoom offers, at eight widths apiece, over
+// text in nine scripts, the model counts the lines a real QTextLayout places.
+//
+// The two halves are asserted differently on purpose. NOTHING may be counted SHORT — that
+// is the clip, the defect, and it holds for every probe including the ones Qt shapes into
+// clusters. Equality holds for the scripts whose characters are laid out one glyph each,
+// which is every script a log is realistically written in; where Qt reorders, ligates or
+// stacks marks (Arabic, Devanagari, Thai, Hebrew, ZWJ emoji) a per-codepoint walk
+// necessarily counts the parts separately, and so does a line with a space in it, where
+// QTextLine absorbs the blank at a break rather than carrying it to the next row. Both are
+// overcounts: a row the record does not fill, never a row of text that is not there.
+void TestLogView::theHeightModelCountsTheLinesTheLayoutPlaces()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; there is nothing to lay text out with");
+
+    struct Probe
+    {
+        const char *name;
+        QString text;
+        bool exact; // false where Qt shapes the text into something other than one glyph
+                    // per codepoint, and the walk may only be held to "not short"
+    };
+    const QVector<Probe> probes = {
+        {"digits", QString(160, QLatin1Char('0')), true},
+        {"overhanging W", QString(160, QLatin1Char('W')), true},
+        {"narrow i", QString(160, QLatin1Char('i')), true},
+        {"mixed ASCII", QStringLiteral("GET/api/v1/orders?page=3;status=500;thread-7;id=8823;"
+                                       "took=142ms;retry;OutOfMemoryError;"), true},
+        {"Han", repeated(0x4E2D, 90), true},
+        {"Kana", repeated(0x3042, 90), true},
+        {"Hangul", repeated(0xD55C, 90), true},
+        // Not exact, and the reason is the FONT DATABASE rather than the model: where the
+        // face has no emoji at all, Qt draws an astral codepoint as its two surrogates and
+        // the model measures the pair as one thing. That is a difference about what a
+        // glyph IS, and only on a runner with no fonts (CLAUDE.md); the not-short claim
+        // holds there as everywhere.
+        {"emoji", repeated(0x1F600, 60), false},
+        {"Latin and Han", QStringLiteral("user-login-failed-for-") + repeated(0x4E2D, 60), true},
+        {"Cyrillic", repeated(0x0416, 120), true},
+        {"a message with blanks", QStringLiteral("connection reset by peer on socket 42 while "
+                                                 "flushing the buffer for tenant 771 "), false},
+        {"Arabic", QStringLiteral("مرحبا بالعالم هذا اختبار طويل جدا لسطر النص العربي "), false},
+        {"Devanagari", QStringLiteral("नमस्ते दुनिया यह एक लंबी पंक्ति है "), false},
+        {"Thai", QStringLiteral("สวัสดีชาวโลกนี่คือบรรทัดยาว "), false},
+        {"Hebrew", QStringLiteral("שלום עולם זו שורה ארוכה מאוד "), false},
+        {"a ZWJ family", QString::fromUcs4(U"\U0001F468‍\U0001F469‍\U0001F467").repeated(12),
+         false},
+        {"a flag", QString::fromUcs4(U"\U0001F1EF\U0001F1F5").repeated(20), false},
+        {"an fi ligature", QStringLiteral("fi").repeated(60) + QString::fromUcs4(U"ﬁ").repeated(20),
+         false},
+        {"combining marks", QStringLiteral("éàô").repeated(30), false},
+        {"a tab-indented trace",
+         QStringLiteral("\tat com.example.Service.run(Service.java:42)\n"
+                        "\tat com.example.Worker.loop(Worker.java:9)"),
+         false},
+    };
+
+    for (int pt = kMinLogFontPointSize; pt <= kMaxLogFontPointSize; ++pt) {
+        QFont f = monospaceFont();
+        f.setPointSize(pt);
+        WrapMetrics metrics;
+        metrics.setFont(f);
+        const qreal advance = qMax(qreal(1), QFontMetricsF(f).horizontalAdvance(QLatin1Char('0')));
+        const int floorWidth = qCeil(LogView::kMinWrapCols * advance);
+        for (int step = 0; step < 8; ++step) {
+            const int width = floorWidth + step * 53 + step * step * 29;
+            for (const Probe &probe : probes) {
+                const int model =
+                    metrics.recordLines(probe.text, width, RecordIndex::kDisplayLineCap);
+                const int real = qMin<int>(RecordIndex::kDisplayLineCap,
+                                           laidOutLines(probe.text, f, width));
+                const QString where = QStringLiteral("%1 at %2 pt in %3 px: model %4, layout %5")
+                                          .arg(QLatin1String(probe.name))
+                                          .arg(pt)
+                                          .arg(width)
+                                          .arg(model)
+                                          .arg(real);
+                QVERIFY2(model >= real, qPrintable(where + QStringLiteral(" — a line is CLIPPED")));
+                if (probe.exact)
+                    QVERIFY2(model == real, qPrintable(where));
+            }
+        }
+    }
 }
 
 #include "tst_logview.moc"

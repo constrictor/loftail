@@ -7,10 +7,15 @@
 using namespace loftail;
 
 // Pure estimated-geometry coverage (ARCHITECTURE.md §7.1.1), with NO QApplication
-// and no real file: the character-count height model, the per-block cache keyed by
-// column count (hit / invalidate on width change), and the estimate->measured
-// refinement that makes the scrollbar total converge to the exact height once
-// every block has been visited (the convergence property §10 calls out).
+// and no real file: the per-block cache keyed by WRAP WIDTH (hit / invalidate on a
+// width change), and the estimate->measured refinement that makes the scrollbar total
+// converge to the exact height once every block has been visited (the convergence
+// property §10 calls out).
+//
+// What a record's height IS is not this class's question and is not asked here: it is
+// measured view-side, from the font, by WrapMetrics — so the heights below come from a
+// synthetic "one character, one pixel" model whose only job is to be width-dependent.
+// The real one is held against a QTextLayout in tst_logview.
 class TestEstimatedGeometry : public QObject
 {
     Q_OBJECT
@@ -30,9 +35,19 @@ private:
         return idx;
     }
 
-    // Measure a block exactly the way LogView would, but from a synthetic
-    // "chars per physical line" model so the test needs no decoder: record r has
-    // `displayLines(r)` physical lines, each `charsPerLine` characters wide.
+    // The synthetic height model: one character to the pixel, ceil()ed, at least one
+    // line, and clamped to the shared display cap exactly as WrapMetrics::recordLines()
+    // clamps the real one.
+    static int syntheticLines(int physicalLines, int charsPerLine, int width)
+    {
+        const int per = (width <= 0 || charsPerLine <= width) ? 1
+                                                              : (charsPerLine + width - 1) / width;
+        return qBound(1, physicalLines * per, int(RecordIndex::kDisplayLineCap));
+    }
+
+    // Measure a block exactly the way LogView would, but from that model so the test
+    // needs no decoder and no font: record r has `displayLines(r)` physical lines, each
+    // `charsPerLine` characters wide.
     static void measureBlockSynthetic(EstimatedGeometry &g, const RecordIndex &idx,
                                       int block, int charsPerLine)
     {
@@ -42,64 +57,31 @@ private:
         lines.reserve(end - start);
         for (int r = start; r < end; ++r) {
             const int phys = RecordIndex::displayLines(idx.records.at(r));
-            QVector<int> lineChars(phys, charsPerLine);
-            lines.append(quint16(EstimatedGeometry::measuredRecordLines(
-                lineChars, g.columns(), RecordIndex::kDisplayLineCap)));
+            lines.append(quint16(syntheticLines(phys, charsPerLine, g.wrapWidth())));
         }
         g.measureBlock(block, lines);
     }
 
-    // The exact total display-line height at `cols`, computed directly from the
+    // The exact total display-line height at `width`, computed directly from the
     // same synthetic char model — the value estimation must converge to.
-    static qint64 exactTotal(const RecordIndex &idx, int cols, int charsPerLine)
+    static qint64 exactTotal(const RecordIndex &idx, int width, int charsPerLine)
     {
         qint64 total = 0;
-        for (const Record &rec : idx.records) {
-            const int phys = RecordIndex::displayLines(rec);
-            QVector<int> lineChars(phys, charsPerLine);
-            total += EstimatedGeometry::measuredRecordLines(lineChars, cols,
-                                                            RecordIndex::kDisplayLineCap);
-        }
+        for (const Record &rec : idx.records)
+            total += syntheticLines(RecordIndex::displayLines(rec), charsPerLine, width);
         return total;
     }
 
 private slots:
-    void charCountHeightModel();
-    void measuredRecordCapAndFloor();
     void blockCacheKeyedByWidth();
     void refinementConvergesToExactTotal();
     void mappingRoundTripsWhenFullyMeasured();
     void estimatedMappingIsMonotonicAndInBounds();
 };
 
-// ceil(chars/cols), at least one; the whole wrap model reduces to this.
-void TestEstimatedGeometry::charCountHeightModel()
-{
-    QCOMPARE(EstimatedGeometry::visualLinesForChars(0, 80), 1);
-    QCOMPARE(EstimatedGeometry::visualLinesForChars(80, 80), 1);
-    QCOMPARE(EstimatedGeometry::visualLinesForChars(81, 80), 2);
-    QCOMPARE(EstimatedGeometry::visualLinesForChars(160, 80), 2);
-    QCOMPARE(EstimatedGeometry::visualLinesForChars(161, 80), 3);
-    // Narrower viewport => more visual lines for the same text.
-    QCOMPARE(EstimatedGeometry::visualLinesForChars(160, 40), 4);
-    // Degenerate widths never divide by zero.
-    QCOMPARE(EstimatedGeometry::visualLinesForChars(500, 0), 1);
-}
-
-void TestEstimatedGeometry::measuredRecordCapAndFloor()
-{
-    // Two physical lines, each wrapping to 2 => 4 visual lines.
-    QCOMPARE(EstimatedGeometry::measuredRecordLines({120, 120}, 80, 100), 4);
-    // Empty record still occupies one line.
-    QCOMPARE(EstimatedGeometry::measuredRecordLines({}, 80, 100), 1);
-    QCOMPARE(EstimatedGeometry::measuredRecordLines({0}, 80, 100), 1);
-    // A pathologically tall record is clamped to the shared display cap.
-    QVector<int> many(1000, 200); // 1000 lines * 2 wraps each, capped at 100
-    QCOMPARE(EstimatedGeometry::measuredRecordLines(many, 80, 100), 100);
-}
-
-// The cache is keyed by column count: measuring at one width and then changing
-// width must invalidate every measurement.
+// The cache is keyed by the WRAP WIDTH: measuring at one width and then changing
+// width must invalidate every measurement — and so must a font change, which need not
+// move the width at all.
 void TestEstimatedGeometry::blockCacheKeyedByWidth()
 {
     const RecordIndex idx = makeIndex(RecordIndex::kBlockSize * 3 + 17);
@@ -117,15 +99,28 @@ void TestEstimatedGeometry::blockCacheKeyedByWidth()
     measureBlockSynthetic(g, idx, 0, 200);
     QCOMPARE(g.measuredBlockCount(), 1);
 
-    // Same width => setColumns is a no-op and keeps the cache.
-    QVERIFY(!g.setColumns(80));
+    // Same width => setWrapWidth is a no-op and keeps the cache.
+    QVERIFY(!g.setWrapWidth(80));
     QVERIFY(g.isBlockMeasured(0));
 
     // A width change drops every measurement and resets the running average.
-    QVERIFY(g.setColumns(40));
+    QVERIFY(g.setWrapWidth(40));
     QVERIFY(!g.isBlockMeasured(0));
     QCOMPARE(g.measuredBlockCount(), 0);
     QCOMPARE(g.expansionFactor(), 1.0);
+
+    // And the drop is reachable WITHOUT a width change, which is what a zoom on a view
+    // whose every column width was dragged or restored looks like: the origin does not
+    // move, so setWrapWidth() answers false, and every cached height is still the old
+    // face's (§7.1.5).
+    measureBlockSynthetic(g, idx, 0, 200);
+    QVERIFY(g.isBlockMeasured(0));
+    QVERIFY(!g.setWrapWidth(40));
+    g.invalidateMeasurements();
+    QVERIFY(!g.isBlockMeasured(0));
+    QCOMPARE(g.measuredBlockCount(), 0);
+    QCOMPARE(g.expansionFactor(), 1.0);
+    QCOMPARE(g.wrapWidth(), 40);
 }
 
 // The estimated total starts approximate and refines to the exact height as every
@@ -134,16 +129,16 @@ void TestEstimatedGeometry::refinementConvergesToExactTotal()
 {
     const int n = RecordIndex::kBlockSize * 3 + 100;
     const RecordIndex idx = makeIndex(n);
-    const int cols = 50;
+    const int width = 50;
     const int chars = 175; // each physical line wraps to ceil(175/50)=4 visual lines
 
     EstimatedGeometry g;
-    g.reset(&idx, cols);
+    g.reset(&idx, width);
 
     // Before any measurement the estimate assumes no wrapping (expansion 1.0), so
     // the total equals the physical line total — an underestimate here.
     QCOMPARE(g.totalLines(), idx.totalLines());
-    const qint64 exact = exactTotal(idx, cols, chars);
+    const qint64 exact = exactTotal(idx, width, chars);
     QVERIFY(exact > idx.totalLines());
 
     // Measure blocks one at a time; the total moves monotonically toward `exact`
@@ -164,11 +159,11 @@ void TestEstimatedGeometry::mappingRoundTripsWhenFullyMeasured()
 {
     const int n = RecordIndex::kBlockSize * 2 + 40;
     const RecordIndex idx = makeIndex(n);
-    const int cols = 60;
+    const int width = 60;
     const int chars = 130; // ceil(130/60) = 3 visual lines per physical line
 
     EstimatedGeometry g;
-    g.reset(&idx, cols);
+    g.reset(&idx, width);
     for (int b = 0; b < g.blockCount(); ++b)
         measureBlockSynthetic(g, idx, b, chars);
 

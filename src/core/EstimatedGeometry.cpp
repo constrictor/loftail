@@ -7,30 +7,6 @@
 namespace loftail {
 
 // ---------------------------------------------------------------------------
-// Pure wrap math
-// ---------------------------------------------------------------------------
-
-int EstimatedGeometry::visualLinesForChars(int chars, int cols)
-{
-    if (cols <= 0)
-        return 1;
-    if (chars <= cols)
-        return 1;
-    return (chars + cols - 1) / cols; // ceil(chars / cols)
-}
-
-int EstimatedGeometry::measuredRecordLines(const QVector<int> &lineChars, int cols, int cap)
-{
-    int lines = 0;
-    for (int chars : lineChars) {
-        lines += visualLinesForChars(chars, cols);
-        if (lines >= cap)
-            return cap;
-    }
-    return qMax(1, qMin(lines, cap));
-}
-
-// ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
@@ -50,11 +26,11 @@ void EstimatedGeometry::clear()
     m_tailLines = 0;
 }
 
-void EstimatedGeometry::reset(const RecordIndex *idx, int cols)
+void EstimatedGeometry::reset(const RecordIndex *idx, int wrapWidth)
 {
     clear();
     m_idx = idx;
-    m_cols = qMax(1, cols);
+    m_wrapWidth = qMax(1, wrapWidth);
     if (!m_idx)
         return;
 
@@ -131,15 +107,21 @@ double EstimatedGeometry::expansionFactor() const
 }
 
 // ---------------------------------------------------------------------------
-// Columns / invalidation
+// Wrap width / invalidation
 // ---------------------------------------------------------------------------
 
-bool EstimatedGeometry::setColumns(int cols)
+bool EstimatedGeometry::setWrapWidth(int wrapWidth)
 {
-    cols = qMax(1, cols);
-    if (cols == m_cols)
+    wrapWidth = qMax(1, wrapWidth);
+    if (wrapWidth == m_wrapWidth)
         return false;
-    m_cols = cols;
+    m_wrapWidth = wrapWidth;
+    invalidateMeasurements();
+    return true;
+}
+
+void EstimatedGeometry::invalidateMeasurements()
+{
     // Heights are width-dependent: drop every measurement and fall back to
     // estimates. The caller debounces so a drag-resize lands here once.
     m_blockLines.fill(-1); // keep size, drop every measurement
@@ -149,7 +131,6 @@ bool EstimatedGeometry::setColumns(int cols)
     m_measuredPhysical = 0;
     m_measuredBlocks = 0;
     rebuild();
-    return true;
 }
 
 // ---------------------------------------------------------------------------
