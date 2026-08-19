@@ -21,6 +21,7 @@
 #include <QTimer>
 #include <QToolTip>
 #include <QWheelEvent>
+#include <QtMath>
 
 #include "Document.h"
 #include "Filter.h"
@@ -298,6 +299,11 @@ private slots:
     void aMessageColumnAtTheViewportEdgeStillFitsSeveralRecordsOnAScreen();
     void aRecordWhoseColumnIsPastTheEdgeIsOneOfSeveralBandsOnScreen();
     void theSelectedRecordIsLaidOutInTheWidthItWasMeasuredIn();
+
+    // --- the column count is the characters that fit, unrounded (bugs.md 17) ---
+    void theColumnCountIsTheCharactersTheLayoutActuallyFits();
+    void aRecordAsLongAsItsColumnFitsIsDrawnWholeAndSoAreTheOnesJustPastIt();
+    void theFlooredWrapWidthHoldsEveryColumnItIsFlooredAt();
 
     // --- Zoom (SPEC.md §5, ARCHITECTURE.md §7.1.5) ------------------------------
     void theLogTextSizeStopsAtBothBoundsAndComesBackOnReset();
@@ -3206,9 +3212,13 @@ void TestLogView::everyWrappedLineOfARecordIsDrawnInsideTheRowItWasGiven()
     // can never be over it, which is what "the text was given fewer pixels than it needs"
     // looks like from here.
     QVERIFY2(ink.size() <= lines, "the text takes more lines than the record was given");
-    // ...and the last of them ends INSIDE the band rather than against its edge, which is
-    // where clipping leaves it.
-    QVERIFY2(ink.last().first + ink.last().second < band.bottom(), "the last line is cut off");
+    // ...and the last of them ends within the band's own rows rather than against the clip
+    // edge, which is where clipping leaves it: a run cut off by the clip reaches the band's
+    // bottom ROW, so its exclusive end is one past the bottom. The comparison is against
+    // that end and not a pixel short of it, because the count is exact now (bugs.md 17) —
+    // the record is given the lines its text takes and no spare one, so an unclipped last
+    // line's descenders may legitimately reach the row's last pixel.
+    QVERIFY2(ink.last().first + ink.last().second <= band.bottom(), "the last line is cut off");
 }
 
 // Line Wrap ▸ Selected record only — the mirror symptom, and the reason fixing one end
@@ -4077,10 +4087,14 @@ void putMessageOriginAt(LogView &view, int avail)
         h->resizeSection(c, c == 0 ? want - each * (msg - 1) : each);
 }
 
-// The pixel width kMinWrapCols characters come to at the size the view is drawn at.
+// The pixel width kMinWrapCols characters come to at the size the view is drawn at. The
+// advance is the fractional one and the product is rounded UP, exactly as minWrapWidth()
+// does it: an integer advance is a rounded one, and rounded down this width holds one
+// character fewer than the count it is floored at (bugs.md 17).
 int floorWidth(const LogView &view)
 {
-    return LogView::kMinWrapCols * qMax(1, view.fontMetrics().averageCharWidth());
+    return qCeil(LogView::kMinWrapCols
+                 * qMax(qreal(1), QFontMetricsF(view.font()).horizontalAdvance(QLatin1Char('0'))));
 }
 
 } // namespace
@@ -4243,6 +4257,253 @@ void TestLogView::theSelectedRecordIsLaidOutInTheWidthItWasMeasuredIn()
                    lines * narrow.lineHeight());
     QVERIFY(to.right() < narrow.viewport()->width());
     QCOMPARE(renderViewport(narrow).copy(to), renderViewport(wide).copy(from));
+}
+
+// --- the column count is the characters that fit, unrounded (bugs.md 17) -----
+//
+// AlwaysOn gives a record ceil(chars / cols) rows and then CLIPS its text to them
+// (§7.1.1), so `cols` may never be more than the characters Qt actually places on a line
+// of that width. It was `messageWrapWidth() / QFontMetrics::averageCharWidth()`, and every
+// integer advance Qt offers is a rounded one: at the reference face's shipped 9 pt both
+// averageCharWidth() and horizontalAdvance() answer 7 where the advance is 7.21875, so a
+// 379 px column counted 54 characters where 52 fit. The record was given one row too few
+// and everything past the fold was drawn nowhere — no ellipsis and no tooltip, because a
+// wrapped message deliberately offers neither (SPEC.md §5). Rounding up instead is the
+// mirror fault, a blank line hung off every wrapped record, so the advance stays
+// fractional and the division is floored.
+//
+// This is the horizontal sibling of the pitch cases above: QFontMetrics rounds and the
+// layout does not, one axis over.
+
+namespace {
+
+// A point size at which the integer advances Qt offers are BELOW the one it lays text out
+// at, or 0 where none in range is. At a size where they agree the defect cannot show, in
+// exactly the way aPointSizeWhereTheMetricsDisagree() records for the vertical axis.
+// Readable sizes are tried first, and the shipped default is one of the 15 that diverge.
+int aPointSizeWhereTheAdvanceIsTruncated()
+{
+    const auto truncates = [](int pt) {
+        QFont f = monospaceFont();
+        f.setPointSize(pt);
+        const qreal advF = QFontMetricsF(f).horizontalAdvance(QLatin1Char('0'));
+        const QFontMetrics fm(f);
+        return advF > qreal(fm.averageCharWidth()) && advF > qreal(fm.horizontalAdvance(QLatin1Char('0')));
+    };
+    for (int pt = 9; pt <= 16; ++pt)
+        if (truncates(pt))
+            return pt;
+    for (int pt = kMinLogFontPointSize; pt <= kMaxLogFontPointSize; ++pt)
+        if (truncates(pt))
+            return pt;
+    return 0;
+}
+
+// The characters Qt actually places on one line `width` px wide — measured through a
+// layout with AlwaysOn's own wrap mode, so the answer is the paint's and not a division
+// restated. This is what `cols` has to be.
+//
+// Measured in DIGITS, and that is not incidental: QTextLine's break test allows for the
+// last glyph's right bearing, so a face's overhanging glyphs ('W' at most sizes here, 'x'
+// at 7 pt) break one character earlier than their advance says while a digit never does.
+// The height model divides an advance and cannot know which glyph a line ends on
+// (bugs.md 22); what it CAN be held to is the geometry, which is what a digit measures.
+int laidOutFit(const QFont &f, int width)
+{
+    QTextLayout layout(QString(4000, QLatin1Char('0')), f);
+    QTextOption option;
+    option.setWrapMode(QTextOption::WrapAnywhere);
+    layout.setTextOption(option);
+    layout.beginLayout();
+    QTextLine line = layout.createLine();
+    if (!line.isValid()) {
+        layout.endLayout();
+        return 0;
+    }
+    line.setLineWidth(width);
+    layout.endLayout();
+    return int(line.textLength());
+}
+
+// One record whose message is `chars` digits: no space, so nothing but the width decides
+// where it breaks, and no overhanging glyph, so where it breaks is what laidOutFit()
+// measured. Every wrapped line carries ink to its end and the last one is a run the pixels
+// can be read for.
+QByteArray makeOneUnbrokenRecord(int chars)
+{
+    QByteArray msg;
+    while (msg.size() < chars)
+        msg += "0123456789";
+    msg.truncate(chars);
+    return "2026-07-21 14:32:05,123 [main] INFO  net.socket - " + msg + "\n";
+}
+
+// The last pixel column of `area` carrying anything but `fill`, or -1 where none does.
+int lastInkColumn(const QImage &img, const QRect &area, const QColor &fill)
+{
+    for (int x = area.right(); x >= area.left(); --x)
+        for (int y = area.top(); y <= area.bottom(); ++y)
+            if (img.pixel(x, y) != fill.rgb())
+                return x;
+    return -1;
+}
+
+} // namespace
+
+// The claim in one line, at every size the zoom offers and at four widths apiece: the
+// count the height model divides by is the count Qt lays out. Against the truncated
+// advance it fails at 15 of the 27 sizes, by up to 22 columns.
+void TestLogView::theColumnCountIsTheCharactersTheLayoutActuallyFits()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; there is no advance to divide by");
+    FontSizeGuard guard;
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 8), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(1000, 400);
+    settleLayout(view);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+
+    for (int avail : {160, 250, 400, 617}) {
+        putMessageOriginAt(view, avail);
+        settleRemeasure();
+        // A font change re-divides the width there and then, so the sweep inside needs no
+        // second wait: only the section widths go through the debounce.
+        for (int pt = kMinLogFontPointSize; pt <= kMaxLogFontPointSize; ++pt) {
+            zoomTo(view, pt);
+            const int width = view.messageWrapWidth();
+            const int fits = laidOutFit(view.font(), width);
+            QVERIFY(fits > 0);
+            QCOMPARE(view.estimatedGeometry().columns(), fits);
+        }
+    }
+}
+
+// And the same claim read off the pixels, at the three lengths that straddle the fold: a
+// record of exactly the characters that fit, one longer and two longer. Each is given the
+// rows its text takes and each is drawn whole. Against the truncated advance the first is
+// fine and the other two are given one row, drawn to it and cut off there — which is the
+// user-visible defect, a message whose tail exists nowhere on screen.
+void TestLogView::aRecordAsLongAsItsColumnFitsIsDrawnWholeAndSoAreTheOnesJustPastIt()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; there is no advance to wrap at");
+    const int pt = aPointSizeWhereTheAdvanceIsTruncated();
+    if (pt == 0)
+        QSKIP("every integer advance here is the one the layout uses; nothing can be lost");
+    FontSizeGuard guard;
+
+    constexpr int kAvail = 400; // the wrap width putMessageOriginAt() leaves the message
+    QFont probe = monospaceFont();
+    probe.setPointSize(pt);
+    const int fit = laidOutFit(probe, kAvail);
+    QVERIFY2(fit > 8, "the probe width has to hold a line worth reading");
+
+    QByteArray bytes;
+    for (int n : {fit, fit + 1, fit + 2})
+        bytes += makeOneUnbrokenRecord(n);
+
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, bytes));
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 3);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(900, 500);
+    settleLayout(view);
+    zoomTo(view, pt);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    putMessageOriginAt(view, kAvail);
+    settleRemeasure();
+    view.measureBlockOfRecord(0);
+
+    // The setup is the one the lengths were computed against.
+    QCOMPARE(view.messageWrapWidth(), kAvail);
+    QCOMPARE(laidOutFit(view.font(), kAvail), fit);
+    QCOMPARE(view.estimatedGeometry().columns(), fit);
+
+    const EstimatedGeometry &g = view.estimatedGeometry();
+    const int lh = view.lineHeight();
+    const int x = view.header()->sectionViewportPosition(view.header()->count() - 1);
+    QVERIFY(g.totalLines() * lh <= view.viewport()->height());
+
+    const QImage img = renderViewport(view);
+    for (int r = 0; r < 3; ++r) {
+        const int chars = fit + r;
+        const int needed = (chars + fit - 1) / fit; // AlwaysOn wraps ANYWHERE: `fit` a line
+        const int rows = g.recordHeightLines(r);
+        QCOMPARE(rows, needed);
+
+        const QRect band(x, int(g.firstLineOfRecord(r)) * lh, kAvail, rows * lh);
+        // The band's own fill, sampled from the corner past the end of its last line, and
+        // not the palette's Base: every other record is drawn on the alternating band
+        // colour (§7.1), which would otherwise read as ink over the whole rectangle.
+        const QColor fill = img.pixelColor(band.right(), band.bottom());
+        const QVector<std::pair<int, int>> ink = inkRuns(img, band, fill);
+        QCOMPARE(ink.size(), needed);
+        // Nothing was clipped away at the bottom of the band on the way: a run cut off by
+        // the clip reaches the band's bottom row, so its exclusive end is one past it.
+        // ...and the tail is on the LAST of them rather than nowhere: the first line runs
+        // the width of the column and the last carries only the characters left over, so
+        // reading the ink's right edge off both says the text was broken where it was
+        // measured to break and that every character of it landed somewhere.
+        const qreal advF = QFontMetricsF(view.font()).horizontalAdvance(QLatin1Char('0'));
+        const QRect firstRow(band.x(), band.y(), band.width(), lh);
+        const QRect lastRow(band.x(), band.y() + (needed - 1) * lh, band.width(), lh);
+        QVERIFY2(lastInkColumn(img, firstRow, fill) > band.x() + qRound((fit - 2) * advF),
+                 "the first line of the record does not fill the column");
+        const int tail = chars - fit * (needed - 1);
+        QVERIFY2(lastInkColumn(img, lastRow, fill) > band.x(),
+                 "the last line of the record was not drawn");
+        QVERIFY2(lastInkColumn(img, lastRow, fill) < band.x() + qRound((tail + 1) * advF),
+                 "the last line holds more than the characters left over");
+    }
+}
+
+// The floor is the second half of the same divide and has to be fixed with it (bugs.md 17):
+// minWrapWidth() is the pixels kMinWrapCols characters come to, and a truncating multiply
+// leaves it a pixel or two short of them — so viewportCols()'s qMax() re-raises the count
+// to a width that cannot hold it and one column of clipping survives the fix above. At the
+// message origin past the viewport's right edge the floor is the whole wrap width, so this
+// reads it directly, at every size the zoom offers.
+void TestLogView::theFlooredWrapWidthHoldsEveryColumnItIsFlooredAt()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; there is no advance to floor");
+    FontSizeGuard guard;
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 8), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(640, 400);
+    settleLayout(view);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    putMessageOriginAt(view, -60); // past the edge: the floor is the whole width
+    settleRemeasure();
+
+    for (int pt = kMinLogFontPointSize; pt <= kMaxLogFontPointSize; ++pt) {
+        zoomTo(view, pt);
+        const int width = view.messageWrapWidth();
+        QCOMPARE(width, floorWidth(view));
+        QCOMPARE(view.estimatedGeometry().columns(), LogView::kMinWrapCols);
+        QCOMPARE(laidOutFit(view.font(), width), LogView::kMinWrapCols);
+    }
 }
 
 #include "tst_logview.moc"

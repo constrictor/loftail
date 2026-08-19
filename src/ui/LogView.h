@@ -402,8 +402,12 @@ private:
     // AlwaysOn support: characters that fit across the message column, block
     // measurement from decoded text, and keeping the visible blocks measured.
     int viewportCols() const;
-    // One character's advance, and the pixel floor kMinWrapCols of them come to.
-    int charAdvance() const;
+    // One character's advance, and the pixel floor kMinWrapCols of them come to. The
+    // advance is FRACTIONAL and must stay so: every integer advance Qt offers —
+    // QFontMetrics::averageCharWidth() and QFontMetrics::horizontalAdvance() alike —
+    // rounds, and a rounded-down advance overcounts the columns that fit, which costs a
+    // wrapped record a row and clips its tail (ARCHITECTURE.md §7.1.1).
+    qreal charAdvance() const;
     int minWrapWidth() const;
     void ensureEstimatorBound();
     void measureBlock(int block);
