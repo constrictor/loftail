@@ -287,6 +287,11 @@ private slots:
     void aMovedColumnRemeasuresTheSelectedRecord();
     void aHorizontalScrollRemeasuresEveryRowUnderAlwaysOn();
 
+    // --- the wrap width has a floor, in characters (bugs.md 11) ----------------
+    void aMessageColumnAtTheViewportEdgeStillFitsSeveralRecordsOnAScreen();
+    void aRecordWhoseColumnIsPastTheEdgeIsOneOfSeveralBandsOnScreen();
+    void theSelectedRecordIsLaidOutInTheWidthItWasMeasuredIn();
+
     // --- Zoom (SPEC.md §5, ARCHITECTURE.md §7.1.5) ------------------------------
     void theLogTextSizeStopsAtBothBoundsAndComesBackOnReset();
     void aBiggerFontFitsFewerRecordsInTheSameViewport();
@@ -2605,6 +2610,14 @@ void TestLogView::aZoomDropsTheWrappedHeightsMeasuredAtTheOldFont()
     LogView view(&doc, &model);
     view.resize(700, 400);
     zoomTo(view, 9);
+    // Pin the columns before the message, which claims them from the zoom's re-seed:
+    // the message column then keeps the same PIXELS at both sizes, so the character
+    // count moves for the one reason this case is about. Left to the seed, a 20 pt
+    // re-seed pushes the message origin past the right edge and both counts come back
+    // as the kMinWrapCols floor (bugs.md 11), which says nothing about either font.
+    view.header()->setMinimumSectionSize(4);
+    for (int c = 0; c < view.header()->count() - 1; ++c)
+        view.header()->resizeSection(c, 30);
     view.setWrapMode(LogView::WrapMode::AlwaysOn);
 
     const EstimatedGeometry &g = view.estimatedGeometry();
@@ -3716,6 +3729,206 @@ void TestLogView::aHorizontalScrollRemeasuresEveryRowUnderAlwaysOn()
     view.measureBlockOfRecord(0);
     QCOMPARE(g.recordHeightLines(0), narrowLines);
     QCOMPARE(renderViewport(view), baseline);
+}
+
+// --- the wrap width has a floor, and it is in characters (bugs.md 11) --------
+//
+// A wrapped message is laid out from the message column's ORIGIN to the right edge of
+// the viewport (§7.1.1), and the columns before it are seeded from the intern tables
+// when the scan finishes — so on a narrow window their sum can reach or pass that edge.
+// The width was floored at one pixel, so every record wrapped at one character per line,
+// measured the 100-line display cap, and filled the whole viewport by itself: 1400 px of
+// record against a 466 px viewport, one record per screen at both ends of the file, and a
+// scrollbar whose whole travel was a hundredth of a record per notch.
+//
+// The floor is kMinWrapCols CHARACTERS because log text zooms (Fonts.h): a pixel constant
+// would be 28 columns at 7 pt and 6 at 30 pt. Nothing else in this file goes below 60 px
+// of available width, which is why the whole pathological range was unguarded.
+
+namespace {
+
+// Put the message column's origin `avail` pixels from the viewport's right edge by
+// widening everything before it. `avail` at or below zero is the origin AT or PAST the
+// edge, which is what a 34-character logger name and a 23-character thread name seed on
+// a 640 px document area. Resizing a section claims it, so the scan-completion re-seed
+// leaves these widths alone.
+void putMessageOriginAt(LogView &view, int avail)
+{
+    QHeaderView *h = view.header();
+    const int msg = h->count() - 1;
+    const int want = qMax(0, view.viewport()->width() - avail);
+    h->setMinimumSectionSize(4);
+    const int each = qMax(4, want / qMax(1, msg));
+    for (int c = 0; c < msg; ++c)
+        h->resizeSection(c, c == 0 ? want - each * (msg - 1) : each);
+}
+
+// The pixel width kMinWrapCols characters come to at the size the view is drawn at.
+int floorWidth(const LogView &view)
+{
+    return LogView::kMinWrapCols * qMax(1, view.fontMetrics().averageCharWidth());
+}
+
+} // namespace
+
+// Line Wrap ▸ Always On with the message column's origin at 40 px from the right edge, on
+// it, and 60 px past it. Whatever the columns before it do, a record of ordinary length
+// keeps a height a screen can hold several of — and the scrollbar keeps a range measured
+// in those heights rather than in hundreds of lines a record.
+void TestLogView::aMessageColumnAtTheViewportEdgeStillFitsSeveralRecordsOnAScreen()
+{
+    constexpr int kRecords = 60;
+    constexpr int kChars = 200; // makeLog()'s "payload " x 25
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kRecords), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(640, 500);
+    settleLayout(view);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+
+    const EstimatedGeometry &g = view.estimatedGeometry();
+    const int lh = view.lineHeight();
+    const int vh = view.viewport()->height();
+    // No record of this length may be taller than this at ANY origin: the floor is the
+    // narrowest the text is ever laid out in, and one line of slack is the model's own
+    // ceil(chars / cols).
+    const int tallest = (kChars + LogView::kMinWrapCols - 1) / LogView::kMinWrapCols + 1;
+    QVERIFY2(tallest * lh < vh, "the probe has to fit several records on a screen to begin with");
+
+    for (int avail : {40, 0, -60}) {
+        putMessageOriginAt(view, avail);
+        settleRemeasure();
+        view.measureBlockOfRecord(0);
+
+        QVERIFY2(g.columns() >= LogView::kMinWrapCols,
+                 "the wrap width was taken below its floor");
+        const int lines = g.recordHeightLines(0);
+        QVERIFY2(lines <= tallest,
+                 qPrintable(QStringLiteral("record 0 is %1 lines at avail %2; nothing this "
+                                           "long may exceed %3")
+                                .arg(lines)
+                                .arg(avail)
+                                .arg(tallest)));
+        QVERIFY2(lines < RecordIndex::kDisplayLineCap,
+                 "the record measured the display cap, which is the collapse itself");
+        QVERIFY2(lines * lh < vh / 2, "one record takes half the viewport or more");
+        // Which is the whole of it from the reader's side: several records on the screen,
+        // at the top of the log and at the end of it alike.
+        QVERIFY2(g.recordAtLine(qint64(vh / lh) - 1) > 0, "the first screen holds one record");
+        QVERIFY2(g.recordAtLine(g.totalLines() - 1) > g.recordAtLine(g.totalLines() - qint64(vh / lh)),
+                 "the last screen holds one record");
+
+        // And the scroll range is the sum of those heights rather than 100 lines apiece.
+        // (The int overflow the cap used to reach at 21 million records is clamped rather
+        // than cast, which no test can reach at this scale; what is asserted here is the
+        // total it is computed from.)
+        QVERIFY2(g.totalLines() <= qint64(kRecords) * tallest, "the total is the capped one");
+        QVERIFY(view.verticalScrollBar()->maximum() > 0);
+        QVERIFY(view.verticalScrollBar()->maximum() <= g.totalLines());
+    }
+}
+
+// The same collapse read off the pixels, at the one origin where nothing else can see it:
+// past the right edge the message is drawn wholly outside the viewport, so all that is on
+// screen is the records' own alternating bands. One band is one record filling the screen.
+void TestLogView::aRecordWhoseColumnIsPastTheEdgeIsOneOfSeveralBandsOnScreen()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; there is no advance to wrap at");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    useKnownPalette(view);
+    view.resize(640, 500);
+    settleLayout(view);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    putMessageOriginAt(view, -60);
+    settleRemeasure();
+    view.measureBlockOfRecord(0);
+
+    // The rightmost pixel column: past every section and past the message's own origin,
+    // so nothing is drawn there but the band each record is filled with.
+    const QImage img = renderViewport(view);
+    const int x = img.width() - 1;
+    int bands = 0;
+    for (int y = 0; y < img.height(); ++y)
+        if (y == 0 || img.pixel(x, y) != img.pixel(x, y - 1))
+            ++bands;
+    QVERIFY2(bands >= 3,
+             qPrintable(QStringLiteral("%1 record band(s) on a %2 px viewport: the record is "
+                                       "taller than the screen")
+                            .arg(bands)
+                            .arg(img.height())));
+}
+
+// Line Wrap ▸ Selected record only. The rows the record is GIVEN and the width its text is
+// laid out IN come from one expression, so below the floor the record is measured and
+// drawn at the floor — not measured at one width and painted at another, which dropped
+// the tail of the record with no ellipsis and no tooltip to say so.
+//
+// Two views over the same record: one wide enough that the floor's own width is entirely
+// on screen, one narrow enough that the floor binds. Both must give the record the same
+// rows, and the narrow one's visible strip must be pixel-identical to the same strip of
+// the reference — which is the paint's half of the claim, since a cell laid out in 80 px
+// rather than 140 breaks its lines in different places.
+void TestLogView::theSelectedRecordIsLaidOutInTheWidthItWasMeasuredIn()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; there is no advance to wrap at");
+
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, makeOneLongRecord(400)
+                         + "2026-07-21 14:32:06,000 [main] INFO  net.socket - done\n"));
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+
+    const auto prepare = [&](LogView &view, int avail) {
+        useKnownPalette(view);
+        settleLayout(view);
+        view.setWrapMode(LogView::WrapMode::SelectedRecordOnly);
+        putMessageOriginAt(view, avail);
+        view.setCurrentRecord(0);
+        settleRemeasure();
+    };
+
+    LogModel wideModel(&doc);
+    LogView wide(&doc, &wideModel);
+    wide.resize(900, 800);
+    const int floorPx = floorWidth(wide);
+    prepare(wide, floorPx); // the floor's own width, every pixel of it on screen
+
+    LogModel narrowModel(&doc);
+    LogView narrow(&doc, &narrowModel);
+    narrow.resize(640, 800);
+    const int strip = floorPx - 60; // below the floor: the width is taken up to it
+    QVERIFY(strip > 0);
+    prepare(narrow, strip);
+
+    const int lines = wide.selWrapLines();
+    QVERIFY2(lines > 3, "the record did not wrap; nothing here is being tested");
+    QVERIFY(lines < RecordIndex::kDisplayLineCap);
+    QVERIFY(wide.viewport()->height() >= lines * wide.lineHeight());
+    QCOMPARE(narrow.selWrapLines(), lines);
+
+    const int msg = wide.header()->count() - 1;
+    const QRect from(wide.header()->sectionViewportPosition(msg), 0, strip,
+                     lines * wide.lineHeight());
+    const QRect to(narrow.header()->sectionViewportPosition(msg), 0, strip,
+                   lines * narrow.lineHeight());
+    QVERIFY(to.right() < narrow.viewport()->width());
+    QCOMPARE(renderViewport(narrow).copy(to), renderViewport(wide).copy(from));
 }
 
 #include "tst_logview.moc"
