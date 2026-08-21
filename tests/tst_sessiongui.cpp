@@ -13,12 +13,14 @@
 
 #include <QDockWidget>
 
+#include "ConfigReset.h"
 #include "FilterPane.h"
 #include "Highlight.h"
 #include "HighlighterPane.h"
 #include "LogView.h"
 #include "MainWindow.h"
 #include "RunPane.h"
+#include "SessionStore.h"
 
 using namespace loftail;
 
@@ -91,7 +93,9 @@ private:
 
 private slots:
     void initTestCase();
+    void init();
     void roundTripRestoresFileFiltersHighlighters();
+    void aLogRemembersHowItWasBeingReadWithNoSessionAtAll();
     void missingLastFileRestoresAsWaiting();
     void runSelectionThroughUiAndPersists();
 
@@ -101,6 +105,19 @@ private slots:
     void aDeletedDefaultRuleStaysDeletedAcrossARelaunch();
     void aRunClickAndAZoneChangeLeaveTheSeedRestorable();
 };
+
+void TestSessionGui::init()
+{
+    // THE POOL ONLY, and deliberately NOT the session. Since M21 a log's filters, its
+    // rules and its run outlive the tab — that is the point of them — so a case that
+    // opens the same path as an earlier one would otherwise inherit what that one left
+    // behind and pass or fail on the order QtTest happened to run them in.
+    //
+    // The session group is left alone because the cases here CHAIN through it on purpose:
+    // one closes a window and the next relaunches into the session it wrote, which is the
+    // only way to drive a real restore. Wiping it makes those cases restore nothing.
+    clearLogSettings();
+}
 
 void TestSessionGui::initTestCase()
 {
@@ -178,6 +195,67 @@ void TestSessionGui::roundTripRestoresFileFiltersHighlighters()
         QCOMPARE(ff.value(QStringLiteral("contextAfter")).toInt(), 1);
 
         w.close(); // re-saves the session pointing at m_sample
+    }
+}
+
+// WHAT THE MOVE WAS FOR (SPEC.md §6, §7, §10). Filters and highlight rules used to live
+// in the session, which remembers a log only while it is open in a tab — so closing the
+// tab forgot how you were reading that log, while its FORMAT was remembered faithfully
+// one file over. They are per-file state now (M21), stored per log, so returning to a log
+// brings back how it was being read whether or not it was open when you quit.
+//
+// The tab is CLOSED and the session emptied before the relaunch, which is what makes this
+// case say something roundTripRestoresFileFiltersHighlighters() cannot: that one passes
+// on the session alone, and passed before any of this.
+void TestSessionGui::aLogRemembersHowItWasBeingReadWithNoSessionAtAll()
+{
+    {
+        MainWindow w;
+        w.resize(920, 640);
+        w.show();
+        w.openFile(m_sample);
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+        QTest::qWait(300);
+
+        w.findChild<HighlighterPane *>()->restoreState(highlightRulesJson());
+        w.findChild<FilterPane *>()->restoreState(filterJson());
+        QTest::qWait(300); // the pane's debounce, which is what persists a filter edit
+
+        // CLOSE THE TAB, so the session names no file at all and cannot be what carries
+        // any of this over.
+        closeEverything(w);
+        w.close();
+    }
+
+    QSettings check;
+    QVERIFY2(SessionStore::load(check).documents.isEmpty(),
+             "the session still named the log, so this case would prove nothing");
+
+    {
+        MainWindow w;
+        w.resize(920, 640);
+        w.show();
+        QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 0);
+
+        // Opened by hand, the way somebody comes back to a log a week later.
+        w.openFile(m_sample);
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+        QTest::qWait(300);
+
+        const QJsonArray rules =
+            w.findChild<HighlighterPane *>()->saveState().value(QStringLiteral("rules")).toArray();
+        QCOMPARE(rules.size(), 1);
+        QCOMPARE(rules.first().toObject().value(QStringLiteral("background")).toInt(), 0);
+
+        const QJsonObject ff = w.findChild<FilterPane *>()->saveState();
+        QCOMPARE(ff.value(QStringLiteral("textEnabled")).toBool(), true);
+        QCOMPARE(ff.value(QStringLiteral("text")).toString(), QStringLiteral("boom"));
+        QCOMPARE(ff.value(QStringLiteral("contextBefore")).toInt(), 3);
+
+        // Left OPEN, so this case hands on the same session the one above it did: the
+        // cases here chain, and missingLastFileRestoresAsWaiting() relaunches into a
+        // session that has to name m_sample.
+        w.close();
     }
 }
 

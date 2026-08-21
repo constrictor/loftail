@@ -30,7 +30,19 @@ namespace loftail {
 // multi-instance case needs (§8.1); the global keys are last-writer-wins (§10).
 struct SessionDocument
 {
-    QString     path;
+    QString path;
+
+    // ---- READ ONLY, AND ONLY ONCE (M21) ---------------------------------------------
+    //
+    // Everything below used to be this array's reason for existing: a log's filters, its
+    // highlight rules and which run it was on. They are per-FILE state, so they moved to
+    // one record per log (LogFileStore.h), which is what makes them survive closing the
+    // tab — the session only ever remembered a log while it was open in one.
+    //
+    // save() no longer writes any of them. load() still reads them, so the first launch
+    // after the upgrade can hand them to the pool; the first quit then takes them off the
+    // disk, and after that these are permanently empty. No schema bump came with the
+    // removal: a removed key is exactly what a backward read handles.
     QJsonObject filters;      // FilterPane portable state (names, not ids)
     QJsonObject highlighters; // { rules: [...] } — names + palette indices (§8)
 

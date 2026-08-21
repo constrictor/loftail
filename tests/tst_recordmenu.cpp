@@ -13,6 +13,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 
+#include "ConfigReset.h"
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
@@ -260,8 +261,14 @@ void TestRecordMenu::init()
 {
     QSettings s;
     s.remove(QStringLiteral("session"));
-    s.remove(QStringLiteral("formatCache"));
     s.sync();
+    // AND EVERY STORE A LOG'S SETTINGS CAN BE IN. `formatCache` was the QSettings key
+    // this used to clear and has not existed since M20; what matters now is that since
+    // M21 a log's FILTERS outlive the tab, so the "show only net.http" one case applies
+    // would come back for every later case that opens the same log — and the record menu
+    // is built from the record at a VIEW ROW, which a restored filter silently makes a
+    // different record.
+    clearLogSettings();
 }
 
 void TestRecordMenu::aParsedRecordOffersEveryAxisItCarries()

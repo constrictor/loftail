@@ -348,7 +348,7 @@ private:
     // re-resolved once indexing finishes. A normal open passes nullopt and defaults
     // to the newest run (§3a).
     bool openWithSettings(const QString &path, FormatSettings settings,
-                          std::optional<RunRestore> runRestore = std::nullopt);
+                          std::optional<RunSelection> runRestore = std::nullopt);
     // Build the model and the indexing controller for `ctx`. No views, no scan.
     void buildContext(DocumentContext *ctx);
     // The scanning half of buildContext(): the IndexController and its two connections.
@@ -413,6 +413,17 @@ private:
     // has reached ctx->fileSettings before it has reached the pool, and a second view
     // created in between must not open on the older answer.
     LogProfile resolvedProfile(const QString &address);
+
+    // Which run this log is showing, or nullopt while there is nothing to read — during
+    // the scan, and while a restore is still armed. Answering nullopt LEAVES THE STORED
+    // SECTION ALONE, which is the whole reason it exists: mid-scan, runs() is empty and
+    // selectedRun() is -1, and -1 with a run-start pattern set is the "all runs" answer —
+    // so a format change or a resume arriving then would silently unpin a run the user
+    // pinned, which SPEC.md §3a says only they move.
+    //
+    // saveSession()'s three-way branch, moved here so the quit path and every other
+    // write cannot come to disagree about what "last run" saves.
+    std::optional<RunSelection> runSelectionOf(const DocumentContext *ctx) const;
 
     // THE ONE PLACE A PER-LOG RECORD IS WRITTEN. Everything a gesture may have changed is
     // folded in from the context, compared against what this context last stored, and

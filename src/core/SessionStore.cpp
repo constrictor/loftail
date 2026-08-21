@@ -124,12 +124,16 @@ void SessionStore::save(QSettings &settings, const Session &session)
     for (int i = 0; i < session.documents.size(); ++i) {
         settings.setArrayIndex(i);
         const SessionDocument &d = session.documents.at(i);
+        // THE PATH, AND NOTHING ELSE. A log's filters, its highlight rules and its run
+        // are per-FILE state and live one record per log (M21, LogFileStore.h), so this
+        // array is now only "which logs were open, in which order". The five keys that
+        // used to be here are still READ by load(), once, to be migrated across.
+        //
+        // Removing them earns no schema bump — a removed key is exactly what a backward
+        // read handles, the same reasoning M20 used when it dropped the format group —
+        // and the remove() above is what makes it once-only: the first quit after the
+        // upgrade takes them off the disk, so nothing has to remember the drain ran.
         settings.setValue(QStringLiteral("path"), d.path);
-        settings.setValue(QStringLiteral("runAll"), d.runAll);
-        settings.setValue(QStringLiteral("selectedRunOffset"), d.selectedRunStartOffset);
-        settings.setValue(QStringLiteral("selectedRunTs"), d.selectedRunStartTimestamp);
-        settings.setValue(QStringLiteral("filters"), jsonToString(d.filters));
-        settings.setValue(QStringLiteral("highlighters"), jsonToString(d.highlighters));
     }
     settings.endArray();
 

@@ -18,17 +18,6 @@ class LogModel;
 class IndexController;
 class LiveController;
 
-// A run selection to re-resolve once the (async) index finishes, set only by
-// session restore. Runs are detected after indexing, so the saved run identity
-// (by start offset/timestamp, not ordinal) is re-resolved in onIndexFinished and
-// consumed there. Absent for a normal open, which defaults to the newest run.
-struct RunRestore
-{
-    bool   all = false;
-    qint64 startOffset = -1;
-    qint64 startTimestamp = 0;
-};
-
 // Everything the window owns for ONE open file: the Document itself (which holds
 // the per-file state proper, invariant #7) plus the machinery built around it —
 // the model, the indexing and live-tail controllers, the format choice, and the
@@ -95,14 +84,26 @@ public:
     // compares against — which is what keeps a resume of a remote log from rewriting an
     // identical record once per poll.
     //
-    // Its `profile` is kept POPULATED for as long as the tab is open, even when the log
-    // inherits every field, so that `settings` and the wrap seed always have somewhere
-    // whole to come from. Whether any of it is worth STORING is not asked here: that is
-    // LogFileSettings::reduce()'s question, asked once per write, inside the store.
+    // Held EXACTLY as it was read, and that is load-bearing: filling its profile in with
+    // the settings the open is about would make the very first write look like no change
+    // and the log's own settings would never be stored at all. A nullopt profile means
+    // "this log inherits", and MainWindow::resolvedProfile() is what turns that into a
+    // whole value. Whether any of it is worth storing is LogFileSettings::reduce()'s
+    // question, asked once per write, inside the store.
     LogFileSettings fileSettings;
 
-    // Set only by session restore; consumed once indexing finishes (§3a).
-    std::optional<RunRestore> pendingRunRestore;
+    // A run selection to re-resolve once the (async) index finishes. Runs are detected
+    // after indexing, so the stored identity — a start offset with its timestamp as a
+    // corroborating hint, never the ordinal, which shifts as the file grows — is
+    // re-resolved in onIndexFinished() and consumed there.
+    //
+    // Set by EVERY open since M21, not only by session restore: the run belongs to the
+    // log, so returning to a log restores the run it was left on. Absent means "follow
+    // whichever run is last", which is the mode a log opens in (SPEC.md §3a).
+    //
+    // While it is armed the run on the Document means nothing yet, which is why
+    // persistFileSettings() must not read one — see runSelectionOf().
+    std::optional<RunSelection> pendingRunRestore;
 
     // The Filters pane's widget state for THIS file. The pane is global and follows
     // the active document, but it does not itself hydrate from a Document — its
