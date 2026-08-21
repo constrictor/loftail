@@ -30,8 +30,8 @@ using namespace loftail;
 // that no dialog appeared. What is pinned here is the dialog's own contract — it applies
 // NOTHING, so Cancel is exact — and the things only a dialog can get wrong: which
 // editors a node offers, which buttons a node enables, that a rebuild reselects the NODE
-// rather than the row it used to occupy, and that the virtual "no pattern" parent cannot
-// be selected.
+// rather than the row it used to occupy, and that the file level lists the log that is
+// open and nothing else.
 //
 // Constructed on the stack and never exec()'d: a modal dialog in a test is a nested
 // event loop looking for somewhere to deadlock. Children are reached by OBJECT NAME,
@@ -58,7 +58,10 @@ private:
                "2026-08-05 00:00:02,000 [t1] WARN  logger.b - second\n";
     }
 
-    // A tree with one pattern, one log under it, and one log under nothing.
+    // A tree with one pattern, one log that matches it, and one log that matches
+    // nothing. BOTH log entries stay in the model throughout; at most one of them is
+    // ever LISTED, which is the contract this suite exists to pin — so the second one is
+    // here to be found in tree() and not to be found in the tree widget.
     static LogSettingsTree populated()
     {
         LogSettingsTree t;
@@ -111,22 +114,41 @@ private:
         return nullptr;
     }
 
-    // The virtual parent, identified by what hangs under it rather than by its prose.
-    static QTreeWidgetItem *virtualParentOf(QTreeWidget *tree, const QString &childLabel)
+    // The one per-log row, found by what it POINTS AT rather than by what it says. Its
+    // label is translated prose ("Current file") and its tooltip is itself asserted on
+    // elsewhere in this file, so neither can be the handle; the NodeRef the dialog keeps
+    // in Qt::UserRole is the row's identity and is what the dialog itself reselects by.
+    static QTreeWidgetItem *currentFileRow(QTreeWidget *tree)
     {
         for (QTreeWidgetItemIterator it(tree); *it; ++it) {
-            for (int i = 0; i < (*it)->childCount(); ++i) {
-                if (rowIdentity((*it)->child(i)) == childLabel)
-                    return *it;
-            }
+            if ((*it)->data(0, Qt::UserRole).toString().startsWith(QLatin1String("file:")))
+                return *it;
         }
         return nullptr;
     }
 
+    // The address that row stands for, straight out of its ref — so a test can say WHICH
+    // log is listed without going through the label or the tooltip.
+    static QString rowAddress(QTreeWidgetItem *item)
+    {
+        return item ? item->data(0, Qt::UserRole).toString().mid(5) : QString();
+    }
+
+    // What the dialog's two entry points both do: open it on a log. The seed is what the
+    // log already resolves to, which is showPreferences()'s call verbatim.
+    static void openOn(PreferencesDialog &dlg, const QString &address)
+    {
+        dlg.selectLog(address, dlg.tree().resolve(address).profile);
+    }
+
 private slots:
     void theTreeShowsThreeLevels();
-    void aLogWithNoPatternHangsUnderTheVirtualParent();
-    void theVirtualParentCannotBeSelected();
+    void onlyTheLogThatIsOpenGetsARow();
+    void withNoLogOpenTheTreeIsPatternsOnly();
+    void theCurrentFileRowIsNamedForItsRoleAndThePanelForTheLog();
+    void aLogNoPatternMatchesSitsUnderTheDefaultsAndSaysWhyItCannotBePromoted();
+    void theOpenLogsEntrySurvivesTheSweepUntilOk();
+    void deletingTheCurrentFileEntryLeavesTheRowShowingWhatItInherits();
     void thePatternEditorIsShownOnlyForAPattern();
     void editingAPatternRehomesItsLogsAndKeepsTheSelection();
     void reorderingChangesWhichPatternWins();
@@ -165,6 +187,7 @@ private slots:
 void TestPreferences::theTreeShowsThreeLevels()
 {
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
     QTreeWidget *tree = treeOf(dlg);
     QVERIFY(tree);
 
@@ -174,45 +197,168 @@ void TestPreferences::theTreeShowsThreeLevels()
     QVERIFY(pattern);
     QCOMPARE(pattern->parent(), root);
 
-    QTreeWidgetItem *log = rowNamed(tree, QStringLiteral("app.log"));
+    QTreeWidgetItem *log = currentFileRow(tree);
     QVERIFY(log);
     QCOMPARE(log->parent(), pattern);
 }
 
-void TestPreferences::aLogWithNoPatternHangsUnderTheVirtualParent()
+// THE HEADLINE CONTRACT. The file level used to list every entry in the store, which is a
+// list of logs nobody is looking at; it now lists the one the dialog was opened on. The
+// others are HIDDEN and not deleted — still in tree(), still resolving to what they say —
+// so the only thing lost is reaching another log's entry without opening that log.
+void TestPreferences::onlyTheLogThatIsOpenGetsARow()
 {
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
     QTreeWidget *tree = treeOf(dlg);
 
-    QTreeWidgetItem *orphanParent = virtualParentOf(tree, QStringLiteral("other.trace"));
-    QVERIFY2(orphanParent, "a log matched by no pattern was not given the virtual parent");
-    QCOMPARE(orphanParent->parent(), tree->topLevelItem(0));
+    int fileRows = 0;
+    for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+        if ((*it)->data(0, Qt::UserRole).toString().startsWith(QLatin1String("file:")))
+            ++fileRows;
+    }
+    QCOMPARE(fileRows, 1);
+    QCOMPARE(rowAddress(currentFileRow(tree)), logPath(QStringLiteral("app.log")));
 
-    // And it is not created when nothing needs one — otherwise it is a row saying "none
-    // of these", about nothing.
-    LogSettingsTree covered = populated();
-    covered.removeFile(logPath(QStringLiteral("other.trace")));
-    PreferencesDialog tidy(covered, QStringLiteral("app.log"), sample());
-    QTreeWidget *tidyTree = treeOf(tidy);
-    QCOMPARE(tidyTree->topLevelItem(0)->childCount(), 1); // the pattern, and nothing else
+    // The other log is nowhere in the widget and everywhere else: its entry is intact
+    // before OK and after it, and it still answers for its own log.
+    QVERIFY(dlg.tree().indexOfFile(logPath(QStringLiteral("other.trace"))) >= 0);
+    dlg.accept();
+    QVERIFY2(dlg.tree().indexOfFile(logPath(QStringLiteral("other.trace"))) >= 0,
+             "a log that was merely not listed lost its remembered settings");
+    QCOMPARE(dlg.tree().resolve(logPath(QStringLiteral("other.trace"))).profile.format.pattern,
+             QStringLiteral("ORPHAN"));
 }
 
-void TestPreferences::theVirtualParentCannotBeSelected()
+// Preferences is reachable from an empty window — which is when somebody most wants to
+// set the defaults up — and then there is no current file, so there is no row for one.
+void TestPreferences::withNoLogOpenTheTreeIsPatternsOnly()
 {
-    // It holds no settings and stores nothing — "no parent" is the absence of a match.
-    // Unselectable by FLAG rather than by a branch in the editor, so there is no state
-    // in which an editor could be shown for it.
-    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    PreferencesDialog dlg(populated(), QString(), QByteArray());
     QTreeWidget *tree = treeOf(dlg);
 
-    QTreeWidgetItem *orphanParent = virtualParentOf(tree, QStringLiteral("other.trace"));
-    QVERIFY(orphanParent);
-    QVERIFY(!(orphanParent->flags() & Qt::ItemIsSelectable));
+    QVERIFY(!currentFileRow(tree));
+    QCOMPARE(tree->topLevelItem(0)->childCount(), 1); // the pattern, and nothing else
+    // And nothing was invented on the way in.
+    QCOMPARE(dlg.tree().files().size(), populated().files().size());
+}
+
+// The row is named for its ROLE and the panel for the LOG, deliberately: with one row
+// there is nothing to tell it apart from, so a file name would be a shorter way of
+// saying "the file" — while the panel is where the reader checks WHICH log they are
+// about to change, and the address is a hover away from both.
+void TestPreferences::theCurrentFileRowIsNamedForItsRoleAndThePanelForTheLog()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
+    QTreeWidget *tree = treeOf(dlg);
+
+    QTreeWidgetItem *row = currentFileRow(tree);
+    QVERIFY(row);
+    QVERIFY2(row->text(0) != QStringLiteral("app.log"),
+             "the row still names the log rather than its role");
+    QCOMPARE(row->toolTip(0), logPath(QStringLiteral("app.log")));
+
+    auto *name = dlg.findChild<QLabel *>(QStringLiteral("nodeNameLabel"));
+    auto *level = dlg.findChild<QLabel *>(QStringLiteral("nodeLevelLabel"));
+    QVERIFY(name);
+    QVERIFY(level);
+    QCOMPARE(name->text(), QStringLiteral("app.log"));
+    QVERIFY(!level->text().isEmpty());
+    QCOMPARE(name->toolTip(), logPath(QStringLiteral("app.log")));
+}
+
+// The virtual "Logs with no matching pattern" parent is gone: it was a grouping row, and
+// one row does not need grouping. The absence of a match is the row's POSITION now — it
+// hangs under the defaults, which is the level it inherits from. What that heading used
+// to explain has to survive it, so the panel says it where the reader is already looking.
+void TestPreferences::aLogNoPatternMatchesSitsUnderTheDefaultsAndSaysWhyItCannotBePromoted()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("other.trace"), sample());
+    openOn(dlg, logPath(QStringLiteral("other.trace")));
+    QTreeWidget *tree = treeOf(dlg);
+
+    QTreeWidgetItem *row = currentFileRow(tree);
+    QVERIFY(row);
+    QCOMPARE(row->parent(), tree->topLevelItem(0));
+
+    auto *promote = dlg.findChild<QPushButton *>(QStringLiteral("promoteToParentButton"));
+    QVERIFY(promote);
+    QVERIFY2(!promote->isEnabled(),
+             "a log with no pattern was offered a promotion to a pattern that is not there");
+
+    auto *title = dlg.findChild<QLabel *>(QStringLiteral("nodeTitleLabel"));
+    QVERIFY(title);
+    QVERIFY2(!title->isHidden() && !title->text().isEmpty(),
+             "nothing on screen said why the promotion is refused");
+
+    // A log the pattern DOES claim says nothing extra: it has a level above it, and the
+    // heading would be a sentence about a case that is not this one.
+    PreferencesDialog claimed(populated(), QStringLiteral("app.log"), sample());
+    openOn(claimed, logPath(QStringLiteral("app.log")));
+    QVERIFY(claimed.findChild<QLabel *>(QStringLiteral("nodeTitleLabel"))->text().isEmpty());
+}
+
+// The sweep in rebuildTree() spares the OPEN LOG's node, and it is about the log rather
+// than about who created the node — which is what this pins. A log whose stored entry
+// agrees with the pattern above it is exactly the node that sweep eats, and with only one
+// file row in the tree that left the reader looking at no row at all for the log in front
+// of them. accept() still prunes it, so nothing redundant is stored.
+void TestPreferences::theOpenLogsEntrySurvivesTheSweepUntilOk()
+{
+    LogSettingsTree loaded = populated();
+    LogProfile agrees;
+    agrees.format.pattern = QStringLiteral("PATTERN"); // exactly what *.log says
+    loaded.insertFileProfile(logPath(QStringLiteral("agrees.log")), agrees);
+
+    PreferencesDialog dlg(loaded, QStringLiteral("agrees.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("agrees.log")));
+    QTreeWidget *tree = treeOf(dlg);
+
+    QTreeWidgetItem *row = currentFileRow(tree);
+    QVERIFY2(row, "the open log's row was swept away before it could be edited");
+    QCOMPARE(rowAddress(row), logPath(QStringLiteral("agrees.log")));
+
+    // And it survives a rebuild provoked by an unrelated mutation, which is where the
+    // sweep actually runs.
+    dlg.findChild<QToolButton *>(QStringLiteral("addPatternButton"))->click();
+    QVERIFY2(currentFileRow(tree), "the open log's row went on the next rebuild");
+
+    dlg.accept();
+    QCOMPARE(dlg.tree().indexOfFile(logPath(QStringLiteral("agrees.log"))), -1);
+}
+
+// Delete on the one file row does not take the row away — it takes away what the log said
+// of its OWN, leaving it following what it inherits. The row is the whole file level of
+// this tree, so removing it would take the only route to the open log's settings off the
+// screen for the rest of the visit.
+void TestPreferences::deletingTheCurrentFileEntryLeavesTheRowShowingWhatItInherits()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
+    QTreeWidget *tree = treeOf(dlg);
+    auto *format = dlg.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
+    QVERIFY(format);
+    QCOMPARE(format->text(), QStringLiteral("MINE")); // its own, to start with
+
+    dlg.findChild<QToolButton *>(QStringLiteral("deleteNodeButton"))->click();
+
+    QTreeWidgetItem *row = currentFileRow(tree);
+    QVERIFY2(row, "deleting the entry took the current file's row with it");
+    QCOMPARE(tree->currentItem(), row);
+    QCOMPARE(format->text(), QStringLiteral("PATTERN")); // what *.log gives it now
+
+    // Untouched afterwards, it says nothing its parent does not, so OK keeps nothing.
+    dlg.accept();
+    QCOMPARE(dlg.tree().indexOfFile(logPath(QStringLiteral("app.log"))), -1);
+    QCOMPARE(dlg.tree().resolve(logPath(QStringLiteral("app.log"))).profile.format.pattern,
+             QStringLiteral("PATTERN"));
 }
 
 void TestPreferences::thePatternEditorIsShownOnlyForAPattern()
 {
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
     QTreeWidget *tree = treeOf(dlg);
     auto *group = dlg.findChild<QWidget *>(QStringLiteral("patternGroup"));
     // The GROUP, not a field inside it: what is shown and hidden per node is the whole
@@ -230,9 +376,11 @@ void TestPreferences::thePatternEditorIsShownOnlyForAPattern()
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
     QVERIFY(!group->isHidden());
 
-    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    tree->setCurrentItem(currentFileRow(tree));
     QVERIFY(group->isHidden());
     QVERIFY(!identity->isHidden());
+    // The panel names the LOG even where the row names its role — see
+    // theCurrentFileRowIsNamedForItsRoleAndThePanelForTheLog.
     QCOMPARE(name->text(), QStringLiteral("app.log"));
 }
 
@@ -244,6 +392,7 @@ void TestPreferences::eachLevelIsHeadedByItsOwnNameWithTheLevelUnderIt()
     // panel and the LEVEL is the muted line, on all three, because a heading that says
     // the same three words whatever is selected identifies nothing.
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
     QTreeWidget *tree = treeOf(dlg);
     auto *name = dlg.findChild<QLabel *>(QStringLiteral("nodeNameLabel"));
     auto *level = dlg.findChild<QLabel *>(QStringLiteral("nodeLevelLabel"));
@@ -262,7 +411,7 @@ void TestPreferences::eachLevelIsHeadedByItsOwnNameWithTheLevelUnderIt()
 
     // The log's readable name, not its address — and the address a hover away, on both
     // lines, since either is what a pointer aimed at the heading lands on.
-    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    tree->setCurrentItem(currentFileRow(tree));
     QCOMPARE(name->text(), QStringLiteral("app.log"));
     QCOMPARE(level->text(), QStringLiteral("This log only"));
     QCOMPARE(name->toolTip(), logPath(QStringLiteral("app.log")));
@@ -299,7 +448,10 @@ void TestPreferences::aPatternHeadingFollowsTheFieldAsItIsTyped()
 
 void TestPreferences::editingAPatternRehomesItsLogsAndKeepsTheSelection()
 {
-    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    // Opened on other.trace, the log the edited pattern is about to CLAIM: it is the one
+    // that gets a row, so it is the one whose re-homing can be seen in the widget.
+    PreferencesDialog dlg(populated(), QStringLiteral("other.trace"), sample());
+    openOn(dlg, logPath(QStringLiteral("other.trace")));
     QTreeWidget *tree = treeOf(dlg);
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
 
@@ -312,8 +464,10 @@ void TestPreferences::editingAPatternRehomesItsLogsAndKeepsTheSelection()
     // update anywhere, because a log's parent is DERIVED by running the matcher.
     QTreeWidgetItem *pattern = rowNamed(tree, QStringLiteral("*.trace"));
     QVERIFY(pattern);
-    QCOMPARE(rowNamed(tree, QStringLiteral("other.trace"))->parent(), pattern);
-    QVERIFY(rowNamed(tree, QStringLiteral("app.log"))->parent() != pattern);
+    // The open log is other.trace here, so the re-homing is visible in the widget; what
+    // happened to app.log is a MODEL claim, since only one log is ever listed.
+    QCOMPARE(currentFileRow(tree)->parent(), pattern);
+    QCOMPARE(dlg.tree().resolve(logPath(QStringLiteral("app.log"))).patternIndex, -1);
 
     // The rebuild reselected the NODE, not the row it used to occupy.
     QCOMPARE(tree->currentItem(), pattern);
@@ -364,7 +518,10 @@ void TestPreferences::everyMnemonicHasABuddyAndNoLetterIsClaimedTwice()
     treeOf(dlg)->setCurrentItem(rowNamed(treeOf(dlg), QStringLiteral("*.log")));
 
     QString why;
-    QVERIFY2(loftail_test::mnemonicsAreSound(&dlg, &why, 6), qPrintable(why));
+    // Five, not six: "&Forget Individual Files" is gone with the bulk command, and F
+    // with it. The count is a MINIMUM, so it is what stops a mnemonic quietly going
+    // missing rather than a tally of what is on screen.
+    QVERIFY2(loftail_test::mnemonicsAreSound(&dlg, &why, 5), qPrintable(why));
 }
 
 // Add Pattern creates a row that matches NOTHING until it is named. It used to seed the
@@ -375,6 +532,7 @@ void TestPreferences::everyMnemonicHasABuddyAndNoLetterIsClaimedTwice()
 void TestPreferences::aNewPatternStartsEmptyAndClaimsNoLogs()
 {
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
     QTreeWidget *tree = treeOf(dlg);
     auto *add = dlg.findChild<QToolButton *>(QStringLiteral("addPatternButton"));
     auto *match = dlg.findChild<QLineEdit *>(QStringLiteral("patternMatchEdit"));
@@ -382,7 +540,7 @@ void TestPreferences::aNewPatternStartsEmptyAndClaimsNoLogs()
     QVERIFY(match);
 
     // From a selected log, which is where a derived "*.log" used to come from.
-    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    tree->setCurrentItem(currentFileRow(tree));
     add->click();
 
     QCOMPARE(dlg.tree().patterns().size(), 2);
@@ -408,11 +566,12 @@ void TestPreferences::aNewPatternStartsEmptyAndClaimsNoLogs()
 void TestPreferences::promotingIsOfferedOnlyWithAParentPattern()
 {
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
     QTreeWidget *tree = treeOf(dlg);
     auto *promote = dlg.findChild<QPushButton *>(QStringLiteral("promoteToParentButton"));
     QVERIFY(promote);
 
-    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    tree->setCurrentItem(currentFileRow(tree));
     QVERIFY(promote->isEnabled());
 
     // A pattern's parent is the defaults, so it promotes too — and the button says which
@@ -420,17 +579,23 @@ void TestPreferences::promotingIsOfferedOnlyWithAParentPattern()
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
     QVERIFY(promote->isEnabled());
     QVERIFY(promote->text().contains(QStringLiteral("Default")));
-    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    tree->setCurrentItem(currentFileRow(tree));
     QVERIFY(promote->text().contains(QStringLiteral("Pattern")));
-
-    // Under the virtual parent there is nothing above but the defaults, and handing one
-    // log's settings to every log in the world is not a level up but a level skipped.
-    tree->setCurrentItem(rowNamed(tree, QStringLiteral("other.trace")));
-    QVERIFY(!promote->isEnabled());
 
     // The defaults are the top: nothing above them to promote to.
     tree->setCurrentItem(tree->topLevelItem(0));
     QVERIFY(!promote->isEnabled());
+
+    // A log no pattern claims has nothing above it but the defaults, and handing one
+    // log's settings to every log in the world is not a level up but a level skipped.
+    // Its own case, since only one log is listed at a time —
+    // aLogNoPatternMatchesSitsUnderTheDefaultsAndSaysWhyItCannotBePromoted carries the
+    // rest of what that state has to say.
+    PreferencesDialog unmatched(populated(), QStringLiteral("other.trace"), sample());
+    openOn(unmatched, logPath(QStringLiteral("other.trace")));
+    treeOf(unmatched)->setCurrentItem(currentFileRow(treeOf(unmatched)));
+    QVERIFY(!unmatched.findChild<QPushButton *>(QStringLiteral("promoteToParentButton"))
+                 ->isEnabled());
 }
 
 // A pattern promotes its settings to the DEFAULTS, and stays where it is. It is not only
@@ -466,17 +631,25 @@ void TestPreferences::promotingAPatternMovesItsSettingsIntoTheDefaults()
 void TestPreferences::promotingMovesTheSettingsUpAndRemovesTheLogEntry()
 {
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
     QTreeWidget *tree = treeOf(dlg);
-    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    tree->setCurrentItem(currentFileRow(tree));
     dlg.findChild<QPushButton *>(QStringLiteral("promoteToParentButton"))->click();
 
-    const LogSettingsTree &out = dlg.tree();
-    QCOMPARE(out.patterns().at(0).profile.format.pattern, QStringLiteral("MINE"));
+    QCOMPARE(dlg.tree().patterns().at(0).profile.format.pattern, QStringLiteral("MINE"));
     // The log now says exactly what the pattern says, so its own entry has nothing left
-    // to say — and it is gone, rather than left as a duplicate that would stop tracking
-    // the pattern the moment the pattern changed.
+    // to say — and it goes, rather than staying as a duplicate that would stop tracking
+    // the pattern the moment the pattern changed. It goes at OK rather than at the click,
+    // because the open log's node is spared by the mid-dialog sweep so that its row
+    // cannot vanish from under the reader; the row is back and showing the promoted
+    // settings, which is the same thing the log now inherits.
+    QTreeWidgetItem *row = currentFileRow(tree);
+    QVERIFY2(row, "promoting took the open log's row away");
+    QCOMPARE(rowAddress(row), logPath(QStringLiteral("app.log")));
+
+    dlg.accept();
+    const LogSettingsTree &out = dlg.tree();
     QCOMPARE(out.indexOfFile(logPath(QStringLiteral("app.log"))), -1);
-    QVERIFY(!rowNamed(tree, QStringLiteral("app.log")));
     QCOMPARE(out.resolve(logPath(QStringLiteral("app.log"))).profile.format.pattern,
              QStringLiteral("MINE"));
 }
@@ -495,16 +668,19 @@ void TestPreferences::aLogEntryGoesWhenItsPatternCatchesUpWithIt()
     agrees.format.pattern = QStringLiteral("PATTERN"); // exactly what *.log says
     loaded.insertFileProfile(logPath(QStringLiteral("agrees.log")), agrees);
 
-    PreferencesDialog opened(loaded, QStringLiteral("app.log"), sample());
-    QVERIFY2(!rowNamed(treeOf(opened), QStringLiteral("agrees.log")),
-             "a log entry saying what its pattern says was still listed");
+    // NOT opened on any of these logs, deliberately: the open log's node is exempt from
+    // the mid-dialog sweep so that its row cannot vanish under the reader
+    // (theOpenLogsEntrySurvivesTheSweepUntilOk pins that), and this case is about every
+    // OTHER node, which is now the model's business alone — none of them has a row to be
+    // seen going.
+    PreferencesDialog opened(loaded, QString(), QByteArray());
     QCOMPARE(opened.tree().indexOfFile(logPath(QStringLiteral("agrees.log"))), -1);
     // And only that one: an entry that still differs is nobody's business but its own.
-    QVERIFY(rowNamed(treeOf(opened), QStringLiteral("app.log")));
+    QVERIFY(opened.tree().indexOfFile(logPath(QStringLiteral("app.log"))) >= 0);
 
     // Taught mid-dialog, which is the gesture this is really about: give the pattern
     // what the log's own entry said, and the entry goes as the tree is rebuilt.
-    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    PreferencesDialog dlg(populated(), QString(), QByteArray());
     QTreeWidget *tree = treeOf(dlg);
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
     auto *format = dlg.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
@@ -514,18 +690,16 @@ void TestPreferences::aLogEntryGoesWhenItsPatternCatchesUpWithIt()
     format->setText(QStringLiteral("MINE"));
     emit match->editingFinished(); // any commit-and-rebuild gesture
 
-    QVERIFY2(!rowNamed(tree, QStringLiteral("app.log")),
-             "the log kept an entry saying exactly what its pattern now says");
     QCOMPARE(dlg.tree().indexOfFile(logPath(QStringLiteral("app.log"))), -1);
     // It opens on exactly what it opened on — through the pattern it now follows.
     QCOMPARE(dlg.tree().resolve(logPath(QStringLiteral("app.log"))).profile.format.pattern,
              QStringLiteral("MINE"));
     // The log under no pattern still differs from the defaults, so it stays.
-    QVERIFY(rowNamed(tree, QStringLiteral("other.trace")));
+    QVERIFY(dlg.tree().indexOfFile(logPath(QStringLiteral("other.trace"))) >= 0);
 
     // And on OK, for an edit that never provoked a rebuild: commitCurrent() writes the
     // node, so the sweep has to run once more after it.
-    PreferencesDialog closed(populated(), QStringLiteral("app.log"), sample());
+    PreferencesDialog closed(populated(), QString(), QByteArray());
     treeOf(closed)->setCurrentItem(rowNamed(treeOf(closed), QStringLiteral("*.log")));
     closed.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"))
         ->setText(QStringLiteral("MINE"));
@@ -549,8 +723,9 @@ void TestPreferences::aScratchNodeSayingNothingNewIsNotKept()
     // eat this node the moment it was created — it says nothing new, which is exactly
     // the state it is meant to be edited out of — and the selection would fall back to
     // the root, which is a current item too.
-    QTreeWidgetItem *scratch = rowNamed(treeOf(kept), QStringLiteral("fresh.log"));
+    QTreeWidgetItem *scratch = currentFileRow(treeOf(kept));
     QVERIFY2(scratch, "the scratch node was pruned before it could be edited");
+    QCOMPARE(rowAddress(scratch), logPath(QStringLiteral("fresh.log")));
     QCOMPARE(treeOf(kept)->currentItem(), scratch);
     kept.accept();
     QCOMPARE(kept.tree().indexOfFile(logPath(QStringLiteral("fresh.log"))), -1);
@@ -893,12 +1068,18 @@ void TestPreferences::theDetectedEncodingIsReportedOnlyForTheLogItRead()
     QVERIFY2(detected->text().contains(QStringLiteral("sample")),
              "the label must name what it looked at, not just what it found");
 
-    // Another concrete file is still somebody else's: the sample is not its bytes.
-    tree->setCurrentItem(rowNamed(tree, QStringLiteral("other.trace")));
-    QVERIFY2(detected->text().isEmpty(), "another log's node claimed this log's detection");
+    // Back to a pattern: the reading is a fact about one file, and this level is about a
+    // class of them. ANOTHER CONCRETE FILE used to be the case here and cannot be any
+    // more — only the open log is listed, and that is by construction the log the bytes
+    // came from — so what is left to be told apart is the log from the levels above it.
+    // The comparison in loadNode() stays all the same: it is the statement of the rule,
+    // and a rule stated only in the one arrangement that can violate it is a rule that
+    // comes back the next time the arrangement changes.
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+    QVERIFY2(detected->text().isEmpty(), "a pattern claimed this log's detection");
 
     // And nothing to report once the encoding is stated outright rather than guessed.
-    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    tree->setCurrentItem(currentFileRow(tree));
     QVERIFY(!detected->text().isEmpty());
     encoding->setCurrentIndex(encoding->findText(QStringLiteral("UTF-16 LE")));
     QVERIFY(detected->text().isEmpty());
@@ -962,11 +1143,30 @@ void TestPreferences::theTreePaneOpensWideEnoughForItsLongestRow()
     // enough for a desktop whose font is larger, which is the difference between this
     // test and the eye that saw the bug. Both sizes stay under the pane's cap, so what
     // fails here is a width that does not follow the labels rather than the cap biting.
+    //
+    // The row that reported it is gone with the virtual parent, and every row populated()
+    // has left is short enough for the pane's 220 px FLOOR to cover it — which would pass
+    // this test without measuring anything at all. So a long PATTERN takes its place: a
+    // pattern is a line the user types, so it makes the same argument.
+    //
+    // And the dialog is widened first, which is the other half of not testing the wrong
+    // thing. The floor and the 40% cap are ~220 px apart at the dialog's own size, so a
+    // label long enough to clear the floor at scale 1.0 is into the cap at 1.5 — and this
+    // case would then be failing on the cap, which is
+    // oneEnormousPatternDoesNotHandTheTreeTheDialog's subject and not this one's. A wider
+    // dialog moves the cap out of the way and leaves the claim here about the labels.
     if (QFontDatabase::families().isEmpty())
         QSKIP("no fonts resolve here, so no width measured from them means anything");
 
+    LogSettingsTree wide = populated();
+    LogPatternNode longName;
+    longName.match = QStringLiteral("*.audit-trail-archive-rotated-nightly.log");
+    wide.addPattern(longName);
+
     for (const double scale : {1.0, 1.5}) {
-        PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+        PreferencesDialog dlg(wide, QStringLiteral("app.log"), sample());
+        openOn(dlg, logPath(QStringLiteral("app.log")));
+        dlg.resize(1500, 700);
         QFont font = dlg.font();
         if (font.pointSizeF() > 0)
             font.setPointSizeF(font.pointSizeF() * scale);
@@ -1048,25 +1248,26 @@ void TestPreferences::aSplitAlreadySettledIsNotRecomputed()
 void TestPreferences::everyTreeRowSaysItsWholeSelfOnHover()
 {
     // A row the widget elides is readable only if the rest is one hover away, and the
-    // pane is narrow on purpose whenever the user drags it there. A log says the full
-    // ADDRESS its name is short for — the same thing the panel's heading says on hover.
+    // pane is narrow on purpose whenever the user drags it there. The log's row does the
+    // most work of the three, because its label is now a ROLE — "Current file" — and so
+    // is not even short for the thing it names: the address is the only place the row
+    // says WHICH log it is about.
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
     QTreeWidget *tree = treeOf(dlg);
     QVERIFY(tree);
 
     QTreeWidgetItem *root = tree->topLevelItem(0);
     QTreeWidgetItem *pattern = rowNamed(tree, QStringLiteral("*.log"));
-    QTreeWidgetItem *log = rowNamed(tree, QStringLiteral("app.log"));
-    QTreeWidgetItem *orphan = virtualParentOf(tree, QStringLiteral("other.trace"));
+    QTreeWidgetItem *log = currentFileRow(tree);
     QVERIFY(pattern);
     QVERIFY(log);
-    QVERIFY(orphan);
 
-    // Its own full text, for the two rows a narrow pane cuts short.
+    // Its own full text, for the row a narrow pane cuts short.
     QCOMPARE(pattern->toolTip(0), pattern->text(0));
-    QCOMPARE(orphan->toolTip(0), orphan->text(0));
-    // The address, not the name — a tooltip repeating the label says nothing.
+    // The address, not the label — a tooltip repeating the label says nothing.
     QCOMPARE(log->toolTip(0), logPath(QStringLiteral("app.log")));
+    QVERIFY(log->toolTip(0) != log->text(0));
     // And the defaults, whose label is whole at any width, say what they cover instead.
     QVERIFY(!root->toolTip(0).isEmpty());
     QVERIFY(root->toolTip(0) != root->text(0));
@@ -1199,16 +1400,20 @@ void TestPreferences::thePreviewKeepsTheFormatSectionsMargins()
 void TestPreferences::aPatternRowIsQuotedAndALogRowIsNot()
 {
     // The two kinds of row sit at neighbouring indents and one of them is not a name:
-    // `*.log` above `app.log` reads as a file with an odd spelling until the quotes say
-    // otherwise. A log's address is a name and stays bare.
+    // `*.log` over a row of ordinary words reads as a file with an odd spelling until
+    // the quotes say otherwise. The log's row is prose and stays bare for the same
+    // reason an empty pattern does, below: quotes round something that is not a name
+    // are quotes round nothing.
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
     QTreeWidget *tree = treeOf(dlg);
     QTreeWidgetItem *pattern = rowNamed(tree, QStringLiteral("*.log"));
-    QTreeWidgetItem *log = rowNamed(tree, QStringLiteral("app.log"));
+    QTreeWidgetItem *log = currentFileRow(tree);
     QVERIFY(pattern);
     QVERIFY(log);
     QCOMPARE(pattern->text(0), QStringLiteral("\"*.log\""));
-    QCOMPARE(log->text(0), QStringLiteral("app.log"));
+    QVERIFY(!log->text(0).contains(QLatin1Char('"')));
+    QVERIFY(!log->text(0).isEmpty());
 
     // A pattern that says nothing yet is prose about the absence of one, so it is NOT
     // quoted: an empty pair of quotes is a row wearing a name of no characters.
@@ -1267,7 +1472,10 @@ void TestPreferences::whatTheNodeIsSitsAboveTheHeadingWithARuleBetweenThem()
     // A log node has NO heading under the rule, because the block above already says
     // which level this is and a second bold line saying so at greater length is the
     // caption twice.
-    tree->setCurrentItem(rowNamed(tree, QStringLiteral("app.log")));
+    // app.log, which the *.log pattern DOES claim — a log no pattern claims heads itself
+    // with the one sentence a log node has to say, which is a different case
+    // (aLogNoPatternMatchesSitsUnderTheDefaultsAndSaysWhyItCannotBePromoted).
+    tree->setCurrentItem(currentFileRow(tree));
     QCoreApplication::processEvents();
     QVERIFY2(!title->isVisible(), "a log node drew a heading as well as its identity");
     // And no rule either. It earns its place on a pattern node, where the match fields

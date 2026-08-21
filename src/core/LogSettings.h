@@ -15,9 +15,13 @@ namespace loftail {
 //   pattern   an ORDERED list of file patterns; the FIRST match wins
 //   file      one concrete log, local or remote, keyed by its normalized address
 //
-// A file that matches no pattern is shown in Preferences under a virtual "No pattern"
-// node. That node exists only in the tree widget: nothing here represents it, because
-// "no parent" is the absence of a match and not a thing to store.
+// A file that matches no pattern is shown in Preferences directly under the root, which
+// is the level it inherits from. Nothing here represents "no parent" and nothing needs
+// to: it is the absence of a match, not a thing to store.
+//
+// PREFERENCES LISTS ONE FILE NODE — the log that is open — and this array is why that is
+// only a display rule. Every node in it is still resolved, still swept by
+// pruneRedundantFiles() and still written back, whether or not it was on screen.
 //
 // A FILE NODE STORES NO PARENT LINK. Its parent is derived by running the matcher, so
 // deleting or reordering a pattern re-homes its files automatically and there is no
@@ -103,17 +107,16 @@ public:
     // to say what a hundred logs' own entries said leaves those hundred entries behind,
     // shadowing it for ever: the pattern is then editable and they no longer follow it.
     //
-    // `except` names one address to leave alone whatever it says, for the scratch node
-    // Preferences creates so that a log HAS a row to be selected and edited in.
+    // `except` names one address to leave alone whatever it says: the log Preferences is
+    // open on, which needs a node whatever it says so that it HAS a row to be selected
+    // and edited in. The dialog's OK sweeps with no exception, so nothing redundant is
+    // stored either way.
     //
     // Returns whether anything went, so a caller can write the file only when it did.
     bool pruneRedundantFiles(const QString &except = QString());
 
-    // Drop every per-log node, so each log falls back to its pattern or the defaults.
-    void clearFiles() { m_files.clear(); }
-
     // Remove the pattern at `index`. Its files are NOT touched: they re-home under
-    // whichever pattern now matches them, or under "No pattern".
+    // whichever pattern now matches them, or under the root defaults.
     void removePattern(int index);
 
     // Move the pattern at `index` one place earlier or later, changing which of two
