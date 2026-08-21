@@ -154,7 +154,7 @@ A single log file often contains the output of several application runs, one aft
 - **Last run.** The first entry in the list, and the one every log opens on, is **Last run** — not a run but a standing instruction to show whichever run is last. It is what the user usually means: the run the application is in *now*. A log with no runs detected — no pattern, or a pattern nothing has matched yet — is the whole file under it, exactly as a log with no run-start pattern has always been, so it is never a way to see nothing; an empty file shows nothing because it holds nothing.
 - **Runs compose with filters and highlighters.** The run restriction narrows *which* records are in view; filters and highlighters then apply within it, exactly as they do to the whole file.
 - **Live files keep working, and which run is watched is the user's choice.** Under **Last run**, an application that restarts and writes a new run into the same file takes the view with it — the new run is what is being watched now, with no click. Picking a specific run instead **pins** it: the new run appears in the list to switch to and the view stays where it was put, whether or not the run pinned was the last one at the time. Selecting an earlier, finished run detaches follow so its history stays put while the file keeps growing.
-- **Remembered per file.** The run-start pattern is remembered for a file the same way its format is, and the session restores which run was being viewed — including **Last run** as itself, so a log left following its newest run comes back following whichever run is newest *then*, not pinned to the one that was newest when the session was saved. A file with no run-start pattern behaves exactly as before — one continuous view.
+- **Remembered per file.** The run-start pattern is remembered for a file the same way its format is, and so is which run was being viewed — by the log rather than by the session, so opening it again brings back the run you were on whether or not it was open when you quit. **Last run** comes back as itself, so a log left following its newest run follows whichever run is newest *then*, and is never pinned to the one that was newest when you left. A file with no run-start pattern behaves exactly as before — one continuous view.
 
 ## 4. Log format configuration
 
@@ -204,6 +204,8 @@ Each level holds the same complete set: the conversion pattern, the character en
 - Nothing is written until **OK**, and nothing reaches an open log until then either. Cancel discards every edit, including a pattern added, an entry deleted and an apply asked for.
 
 **Settings are never applied silently to a log they cannot parse.** Whichever level answered, loftail checks the result against the file it just opened; if not one record parses, Preferences appears with an entry for that log, pre-filled with the autodetected pattern. A wrong entry costs a dialog, never a mis-split table.
+
+**Up to 500 logs are remembered individually.** What a log says of its own — its settings, its filters, its highlight rules and which run it was on — is kept per log, and the number of logs kept is capped. Past the cap the log you opened longest ago gives up its entry, so a machine that has seen thousands of logs does not accumulate settings for all of them; a log open in a tab is never the one dropped. Losing an entry costs only what that log said of its own: it opens on whatever its file pattern or the defaults give it, exactly as a log that has never been configured does. The two levels above — the defaults and the file patterns — are not capped and are never dropped.
 
 Out of the box the defaults are log4cplus's own conventional layout. Clearing the pattern entirely is a valid answer, and means "ask me about every log".
 
@@ -390,6 +392,8 @@ Searching the messages for one string also hides everything that led up to it, w
 - Overlapping windows do not repeat a record, and a record that is itself a match is shown as a match even when it also falls inside a neighbour's window.
 - Context never reaches **outside the selected run** (§3a): the lead-up to the first error of a run is what that run logged, not the tail of the run before it.
 - Both values are **per file**, like the filters themselves, and travel with a saved preset and a restored session (§9, §10).
+
+**Filters are remembered for the log, not for the session.** Close the tab, quit, come back a week later and open that log again: it comes up filtered the way you left it. Clearing the filters clears what is remembered — a log filtered by nothing keeps nothing.
 - With context on, the record count in the status bar says how much of what is shown is context rather than match.
 
 ## 7. Highlighting
@@ -437,6 +441,7 @@ Highlighting colors matching records without removing anything, for spotting eve
   A slot keeps its tone in both themes and shifts only enough to sit correctly against the surrounding background, so a rule looks like itself whichever theme it is read in. Every colour has a partner that reads on it — picking a background and then Ink or Paper for the text always gives legible text, on either theme. The hues are the usual severity associations (reds, ambers, greens) plus enough distinguishing ones to tell a handful of rules apart at a glance.
 - **A highlight made from the record menu picks both colors**, cycling the hues so a second one-click rule is distinguishable from the first, and pairing each background with the text colour that reads on it.
 - Rules saved before the palette grew still load and still match the same records; they keep their entry and so take its new colour.
+- **A log's rules are remembered for the log**, not for the session: open it again, in a week or after a restart, and it comes up coloured the way you left it. Deleting every rule is remembered too, so a log you deliberately left uncoloured stays that way — it does not quietly get the level colours back on the next launch.
 
 ## 8. Side panes
 
@@ -466,18 +471,18 @@ Filters, highlighters, and runs (§3) are each presented in a side pane — and 
 On relaunch, loftail restores:
 
 - Every file that was open — each reopened at its end and following, like any open (§3), so follow state is never a remembered choice
-- Which run of each file was being viewed (§3)
-- Active filters and highlighters per file, including which were enabled
 - Every view: how many views each file had, each one's column layout and wrap mode, and which view was active
 - Saved presets, where the build has them (§9)
 - Window geometry, the order of the tabs, and the arrangement of the side panes (§5a, §8)
 - The log text size (§5)
 
-**Scoping:** active filters, active highlighters and the run selection are remembered **per file**, so returning to a given log restores how you were reading *that* log. Column layout and wrap mode are remembered **per view**, so a second view showing wide messages and one showing just timestamps each keep their shape. Presets, the log text size and the window/pane layout are global — and the text size is written the moment it changes rather than at close, so a second window started meanwhile comes up at it.
+**Scoping:** active filters, active highlighters and the run selection are remembered **per file** — and *for the file*, not for the session, so they come back when you open that log again whether or not it was open when you quit. What the session itself restores is which logs were open and in what order. Column layout and wrap mode are remembered **per view**, so a second view showing wide messages and one showing just timestamps each keep their shape. Presets, the log text size and the window/pane layout are global — and the text size is written the moment it changes rather than at close, so a second window started meanwhile comes up at it.
 
-The log format, the encoding, the source time zone, the timestamp display mode and the run-start pattern are **not** part of the session at all: they are settings (§4), resolved from the file's own entry, its file pattern or the defaults every time it is opened. That is what makes a change in Preferences reach a tab that was restored from a previous session rather than only a freshly opened one.
+Because they are the log's own, they are subject to the same cap as its settings (§4): past 500 remembered logs the one opened longest ago is dropped, and it then opens unfiltered, with the default highlighting, on its newest run.
 
-**Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is keyed by file, so instances viewing different logs never conflict. For genuinely global state — window layout, and which files to restore on next launch — **the last instance to close wins**.
+What a log says about **itself** is not part of the session at all: its format, encoding, source time zone, timestamp display mode and run-start pattern (§4), and equally its filters, its highlight rules and which run it was on. All of those are resolved from the log every time it is opened — from its own entry, its file pattern or the defaults. Two things follow. A change in Preferences reaches a tab restored from a previous session and not only a freshly opened one; and opening a log by hand restores how it was being read just as fully as a session restore does, because the session was never what was carrying it.
+
+**Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is kept per file, so instances viewing different logs never conflict. For genuinely global state — window layout, which files to restore on next launch, and the file patterns and defaults (§4) — **the last instance to close wins**.
 
 If a file from the last session is not there, its tab comes back **waiting for it** (§3) — so a log on an unmounted share, or a host that is down for an afternoon, keeps its place and is picked up when it returns rather than being quietly forgotten. Only a file that is actively refused — an address that names no log, an archive without a chosen log inside it — is left out, and those are listed with their reasons in the message strip above the log (§3) rather than raising an error dialog on every launch; the list stays until you dismiss it. If none can be opened, loftail starts with an empty view.
 
