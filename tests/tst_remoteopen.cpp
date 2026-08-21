@@ -148,9 +148,11 @@ void TestRemoteOpen::opensARemoteUrlAsATab()
     settle();
 
     QCOMPARE(tabCount(window), 1);
-    // The host is what tells two same-named logs from different machines apart, in
-    // the tab and in the title bar alike.
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log (web1)"));
+    // The host is what tells two same-named logs from different machines apart — so a
+    // TAB carries it only when there is another tab to be told from (TabLabels.h), and
+    // with one log open there is not. The title bar and the status line are not a set
+    // of anything, so they name the log in full and always have.
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log"));
     QCOMPARE(window.windowTitle(), QStringLiteral("loftail — app.log (web1)"));
     QVERIFY(statusText(window).contains(QStringLiteral("app.log (web1)")));
     QVERIFY(statusText(window).contains(QStringLiteral("2 records")));
@@ -197,7 +199,7 @@ void TestRemoteOpen::dropOfAnSshUrlOpens()
     settle();
 
     QCOMPARE(tabCount(window), 1);
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log (web1)"));
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log"));
 }
 
 void TestRemoteOpen::remoteOpenIsRemembered()
@@ -244,7 +246,7 @@ void TestRemoteOpen::sessionRoundTripsARemoteDocument()
         MainWindow window; // the constructor restores the session
         settle();
         QCOMPARE(tabCount(window), 1);
-        QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log (web1)"));
+        QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log"));
         QVERIFY(statusText(window).contains(QStringLiteral("2 records")));
     }
 }
@@ -339,7 +341,7 @@ void TestRemoteOpen::unreachableRemoteOpensAWaitingTab()
 
     QCOMPARE(tabCount(window), 1);
     // Marked in the tab bar, so a log that is not there is tellable from an empty one.
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log (web1)"));
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log"));
     QVERIFY(statusText(window).contains(QStringLiteral("Connection refused")));
 
     auto *view = window.findChild<LogView *>(QStringLiteral("logView"));
@@ -351,7 +353,7 @@ void TestRemoteOpen::unreachableRemoteOpensAWaitingTab()
     // brings the log in with no reopening and no dialog.
     remote->becomeAvailable();
     QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() > 0, 5000);
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log (web1)"));
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log"));
     QVERIFY(statusText(window).contains(QStringLiteral("2 records")));
 }
 
@@ -438,7 +440,7 @@ void TestRemoteOpen::aTransportRefusalKeepsTheTabAndSaysWhy()
     settle(200);
 
     QCOMPARE(tabCount(window), 1);
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log (web1)"));
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log"));
     QVERIFY(statusText(window).contains(QStringLiteral("Authentication")));
 
     auto *view = window.findChild<LogView *>(QStringLiteral("logView"));

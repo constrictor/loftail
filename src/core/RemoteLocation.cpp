@@ -174,19 +174,47 @@ QString orTailOf(const QString &name, const QString &whole)
     return name.isEmpty() ? tailName(whole) : name;
 }
 
-QString plainDisplayName(const QString &path)
+// A display name taken apart: the log's own name, and what is bracketed onto it to say
+// WHERE that log is — a host, or an archive container. logSourceDisplayName() is the two
+// put back together, and is what almost everything asks for; logSourceBareName() is the
+// first half alone, which is what a tab groups on (TabLabels.h) before deciding which of
+// several ranked things actually tells two same-named logs apart.
+struct NameParts
+{
+    QString bare;      // never empty, never a separator, never a credential
+    QString qualifier; // empty when the address says nothing about where the log is
+};
+
+QString composeName(const NameParts &parts)
+{
+    // The two-argument arg(), never .arg(bare).arg(qualifier): a log literally named
+    // "%2" would otherwise eat the second substitution.
+    return parts.qualifier.isEmpty()
+        ? parts.bare
+        : QStringLiteral("%1 (%2)").arg(parts.bare, parts.qualifier);
+}
+
+NameParts plainNameParts(const QString &path)
 {
     if (const auto loc = RemoteLocation::parse(path)) {
-        const QString name = QFileInfo(loc->path).fileName();
-        return QStringLiteral("%1 (%2)").arg(name.isEmpty() ? loc->path : name,
-                                             loc->displayHost());
+        // A remote address with no file-name part — `ssh://h/var/log/` — falls back to
+        // its deepest segment exactly as a local one does. It used to fall back to the
+        // whole remote path, which put a SEPARATOR into a name this file promises has
+        // none: "/var/log/ (h)". The property test below never caught it because its
+        // table had no remote-directory row, and nothing else looked.
+        return {orTailOf(QFileInfo(loc->path).fileName(), loc->path), loc->displayHost()};
     }
     // A remote-shaped address that did NOT parse never goes near QFileInfo: its last
     // path component is the authority — `ssh://deploy:hunter2@web1` has no path at all
     // and fileName() hands back the whole userinfo, password included.
     if (RemoteLocation::isRemote(path))
-        return tailName(path);
-    return orTailOf(QFileInfo(path).fileName(), path);
+        return {tailName(path), QString()};
+    return {orTailOf(QFileInfo(path).fileName(), path), QString()};
+}
+
+QString plainDisplayName(const QString &path)
+{
+    return composeName(plainNameParts(path));
 }
 
 // Likewise: a container path is itself an archive address, so the archive branch must
@@ -252,7 +280,9 @@ QString logMatchTarget(const QString &path, bool fullPath)
     return QFileInfo(normalized).fileName();
 }
 
-QString logSourceDisplayName(const QString &path)
+namespace {
+
+NameParts nameParts(const QString &path)
 {
     if (const auto loc = ArchiveLocation::split(path)) {
         // The member name gets the same guarantee as everything else: a member written
@@ -265,17 +295,33 @@ QString logSourceDisplayName(const QString &path)
         // not "app.log (app.log.gz)", which would name the same thing twice.
         if (loc->isSingleStream()) {
             if (RemoteLocation::isRemote(loc->container)) {
-                if (const auto url = RemoteLocation::parse(loc->container)) {
-                    return QStringLiteral("%1 (%2)").arg(member, url->displayHost());
-                }
+                if (const auto url = RemoteLocation::parse(loc->container))
+                    return {member, url->displayHost()};
             }
-            return member;
+            return {member, QString()};
         }
         if (loc->member.isEmpty())
-            return plainDisplayName(loc->container);
-        return QStringLiteral("%1 (%2)").arg(member, plainDisplayName(loc->container));
+            return plainNameParts(loc->container);
+        // The qualifier is one opaque string, which is what keeps a member inside a
+        // REMOTE container reading "app.log (bundle.tar.gz (h))" exactly as it always
+        // has. A tab renders that same address flat — "app.log (h, bundle.tar.gz)" —
+        // which is why TabLabels.cpp builds its ranked components from
+        // RemoteLocation/ArchiveLocation itself rather than taking this string apart.
+        return {member, plainDisplayName(loc->container)};
     }
-    return plainDisplayName(path);
+    return plainNameParts(path);
+}
+
+} // namespace
+
+QString logSourceDisplayName(const QString &path)
+{
+    return composeName(nameParts(path));
+}
+
+QString logSourceBareName(const QString &path)
+{
+    return nameParts(path).bare;
 }
 
 QString logSourceDisplayPath(const QString &path)
