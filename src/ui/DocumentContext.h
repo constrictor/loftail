@@ -2,6 +2,7 @@
 
 #include "AlertPolicy.h"
 #include "FormatSettings.h"
+#include "LogFileSettings.h"
 
 #include <QJsonObject>
 #include <QVector>
@@ -84,9 +85,21 @@ public:
     AlertPolicy      alerts;
 
     // The format choice for this file (SPEC.md §4). Held here as UI configuration;
-    // the source of truth across sessions is the settings tree (M20). The pattern
+    // the source of truth across sessions is the per-log record below (M21). The pattern
     // never reaches the view, filters, or highlighters (invariant #3).
     FormatSettings settings;
+
+    // WHAT IS STORED FOR THIS LOG, as this window last wrote or read it (M21,
+    // LogFileStore.h). Read when the log is opened, written through
+    // MainWindow::persistFileSettings(), and the baseline that funnel's change gate
+    // compares against — which is what keeps a resume of a remote log from rewriting an
+    // identical record once per poll.
+    //
+    // Its `profile` is kept POPULATED for as long as the tab is open, even when the log
+    // inherits every field, so that `settings` and the wrap seed always have somewhere
+    // whole to come from. Whether any of it is worth STORING is not asked here: that is
+    // LogFileSettings::reduce()'s question, asked once per write, inside the store.
+    LogFileSettings fileSettings;
 
     // Set only by session restore; consumed once indexing finishes (§3a).
     std::optional<RunRestore> pendingRunRestore;

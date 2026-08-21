@@ -14,6 +14,7 @@
 #include "ArchiveFixtures.h"
 #include "MainWindow.h"
 #include "OpenArchiveDialog.h"
+#include "LogFileStore.h"
 #include "LogSettingsStore.h"
 #include "SessionStore.h"
 
@@ -227,18 +228,18 @@ void TestArchiveOpen::theFormatAndTheSessionRememberAnArchivedPath()
         window.close();
     }
 
-    // The settings tree keyed on the archived address, not on a mangled one — the bug
+    // The per-log record keyed on the archived address, not on a mangled one — the bug
     // M11 fixed for URLs, in its archived form.
     QSettings settings;
     const Session session = SessionStore::load(settings);
     QCOMPARE(session.documents.size(), 1);
     QCOMPARE(session.documents.at(0).path, address);
 
-    LogSettingsStore store(LogSettingsStore::defaultDir());
-    const LogSettingsTree tree = store.load();
-    const auto hit = tree.resolve(address);
-    QVERIFY2(hit.fileIndex >= 0, "no per-log node was written for the archived address");
-    QCOMPARE(hit.profile.format.pattern, QString::fromLatin1(kPattern));
+    LogFileStore store(LogFileStore::defaultDir());
+    store.load();
+    const LogFileSettings hit = store.read(address);
+    QVERIFY2(hit.profile.has_value(), "no per-log record was written for the archived address");
+    QCOMPARE(hit.profile->format.pattern, QString::fromLatin1(kPattern));
 
     {
         // Restored WITHOUT a pattern argument: it opens correctly only because the

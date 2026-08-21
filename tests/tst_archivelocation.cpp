@@ -4,7 +4,7 @@
 #include <QTemporaryDir>
 
 #include "ArchiveLocation.h"
-#include "LogSettings.h"
+#include "LogFileStore.h"
 #include "LogSource.h"
 #include "RemoteLocation.h"
 
@@ -266,14 +266,23 @@ void TestArchiveLocation::theSettingsKeyKeepsAnArchivedPathUnmangled()
     QVERIFY(QDir::setCurrent(previous));
     QCOMPARE(elsewhere, key);
 
-    // And settings saved against it come back.
-    LogSettingsTree tree;
-    LogProfile saved;
-    saved.format.pattern = QStringLiteral("%d %p %c - %m%n");
-    tree.setFileProfile(path, saved);
-    const auto hit = tree.resolve(path);
-    QVERIFY(hit.fileIndex >= 0);
-    QCOMPARE(hit.profile.format.pattern, saved.format.pattern);
+    // And settings saved against it come back — through the per-log pool (M21), which
+    // is where the file level lives now. The key function is unchanged, so what this
+    // asserts is unchanged; only the store it asks has moved.
+    QTemporaryDir configDir;
+    QVERIFY(configDir.isValid());
+    LogFileStore store(configDir.path());
+    store.load();
+
+    LogFileSettings saved;
+    saved.address = path;
+    saved.profile = LogProfile::builtIn();
+    saved.profile->format.pattern = QStringLiteral("%d %p %c - %m%n");
+    QVERIFY(store.save(saved, LogProfile::builtIn()));
+
+    const LogFileSettings hit = store.read(path);
+    QVERIFY(hit.profile.has_value());
+    QCOMPARE(hit.profile->format.pattern, saved.profile->format.pattern);
 }
 
 void TestArchiveLocation::aPlainPathIsUntouchedByAllOfIt()

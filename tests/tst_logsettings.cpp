@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QSettings>
 #include <QTemporaryDir>
@@ -30,13 +31,9 @@ private slots:
     void anInvalidRegexNeverMatches();
     void aRemoteAddressMatchesOnItsFileName();
     void anArchiveMemberMatchesOnTheMemberName();
-    void aFileNodeOutranksItsPattern();
-    void aProfileEqualToWhatItInheritsStoresNoFileNode();
-    void bringingAFileBackIntoLineRemovesItsNode();
-    void aPatternTaughtWhatItsLogsSayLeavesThemNothingToSay();
     void deletingAPatternReHomesItsFiles();
     void theTreeRoundTripsThroughJson();
-    void aLoadedFileNodeIsKeptEvenWhenItMatchesItsParent();
+    void aLegacyFileLevelIsDrainedOnceAndThenNoLongerWritten();
     void anEmptyPatternIsStillAnAnswer();
     void legacyStoresMigrateOnceAndAreRemoved();
     void aNewerSchemaLoadsEmptyAndRefusesToSave();
@@ -64,6 +61,14 @@ LogSettingsTree treeWithRoot(const QString &rootPattern)
     return t;
 }
 
+// The file on disk, for the assertions that are about what was WRITTEN rather than about
+// what load() makes of it.
+QByteArray readAll(const QString &path)
+{
+    QFile f(path);
+    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
+
 } // namespace
 
 void TestLogSettings::theRootAnswersForAFileNoPatternMatches()
@@ -71,11 +76,12 @@ void TestLogSettings::theRootAnswersForAFileNoPatternMatches()
     LogSettingsTree t = treeWithRoot(QStringLiteral("ROOT"));
     t.addPattern(wildcard(QStringLiteral("*.audit"), QStringLiteral("AUDIT")));
 
-    const auto r = t.resolve(QStringLiteral("/var/log/app.log"));
-    QCOMPARE(r.profile.format.pattern, QStringLiteral("ROOT"));
-    QCOMPARE(r.patternIndex, -1);
-    QCOMPARE(r.fileIndex, -1);
-    QVERIFY(!r.fromNode()); // this is what "no pattern matched" is asked with
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app.log")).format.pattern,
+             QStringLiteral("ROOT"));
+    // -1 is what "no pattern matched" is asked with, and the whole of what a log with no
+    // pattern over it means: the defaults are the level it takes, not a level it can be
+    // promoted to.
+    QCOMPARE(t.matchingPattern(QStringLiteral("/var/log/app.log")), -1);
 }
 
 void TestLogSettings::theFirstMatchingPatternWins()
@@ -84,12 +90,12 @@ void TestLogSettings::theFirstMatchingPatternWins()
     t.addPattern(wildcard(QStringLiteral("app.*"), QStringLiteral("FIRST")));
     t.addPattern(wildcard(QStringLiteral("*.log"), QStringLiteral("SECOND")));
 
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app.log")).format.pattern,
              QStringLiteral("FIRST"));
 
     // Order is the only tie-break there is, so reordering changes the answer.
     t.movePattern(0, 1);
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app.log")).format.pattern,
              QStringLiteral("SECOND"));
 }
 
@@ -98,15 +104,15 @@ void TestLogSettings::aWildcardMatchesNameAndExtensionOnly()
     LogSettingsTree t = treeWithRoot(QStringLiteral("ROOT"));
     t.addPattern(wildcard(QStringLiteral("*.log"), QStringLiteral("BY-NAME")));
 
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app.log")).format.pattern,
              QStringLiteral("BY-NAME"));
-    QCOMPARE(t.resolve(QStringLiteral("/somewhere/else/other.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/somewhere/else/other.log")).format.pattern,
              QStringLiteral("BY-NAME"));
 
     // The directory is not part of what is matched by default, so a pattern naming one
     // matches nothing at all.
     t.patternAt(0).match = QStringLiteral("/var/log/*");
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app.log")).format.pattern,
              QStringLiteral("ROOT"));
 }
 
@@ -117,9 +123,9 @@ void TestLogSettings::aFullPathPatternSeesTheWholeAddress()
     n.matchFullPath = true;
     t.addPattern(n);
 
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app.log")).format.pattern,
              QStringLiteral("BY-PATH"));
-    QCOMPARE(t.resolve(QStringLiteral("/opt/app.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/opt/app.log")).format.pattern,
              QStringLiteral("ROOT"));
 }
 
@@ -132,7 +138,7 @@ void TestLogSettings::aWildcardStarCrossesPathSeparators()
     n.matchFullPath = true;
     t.addPattern(n);
 
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/nested/app.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/nested/app.log")).format.pattern,
              QStringLiteral("CROSSED"));
 }
 
@@ -142,13 +148,13 @@ void TestLogSettings::caseSensitivityIsPerPattern()
     t.addPattern(wildcard(QStringLiteral("APP.log"), QStringLiteral("MATCHED")));
 
     // Insensitive by default.
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app.log")).format.pattern,
              QStringLiteral("MATCHED"));
 
     t.patternAt(0).caseSensitive = true;
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app.log")).format.pattern,
              QStringLiteral("ROOT"));
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/APP.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/APP.log")).format.pattern,
              QStringLiteral("MATCHED"));
 }
 
@@ -160,12 +166,12 @@ void TestLogSettings::anInvalidRegexNeverMatches()
     t.addPattern(n);
 
     // A half-typed pattern in the dialog must not start claiming files.
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app.log")).format.pattern,
              QStringLiteral("ROOT"));
 
     // And a valid one matches UNANCHORED — it is a search, not a whole-name test.
     t.patternAt(0).match = QStringLiteral("app-\\d+");
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app-42.log")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app-42.log")).format.pattern,
              QStringLiteral("BROKEN"));
 }
 
@@ -176,7 +182,7 @@ void TestLogSettings::aRemoteAddressMatchesOnItsFileName()
 
     const QString remote = QStringLiteral("ssh://deploy@web1/var/log/app.log");
     QCOMPARE(logMatchTarget(remote, false), QStringLiteral("app.log"));
-    QCOMPARE(t.resolve(remote).profile.format.pattern, QStringLiteral("BY-NAME"));
+    QCOMPARE(t.inherited(remote).format.pattern, QStringLiteral("BY-NAME"));
 
     // The full-path form keeps the whole normal-form address, port and all.
     QVERIFY(logMatchTarget(remote, true).startsWith(QLatin1String("ssh://deploy@web1:22/")));
@@ -191,126 +197,20 @@ void TestLogSettings::anArchiveMemberMatchesOnTheMemberName()
     // called it.
     QCOMPARE(logMatchTarget(QStringLiteral("/logs/bundle.tar.gz/var/log/app.log"), false),
              QStringLiteral("app.log"));
-    QCOMPARE(t.resolve(QStringLiteral("/logs/bundle.tar.gz/var/log/app.log"))
-                 .profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/logs/bundle.tar.gz/var/log/app.log"))
+                 .format.pattern,
              QStringLiteral("BY-NAME"));
 
     // A bare compressed stream is the log with its suffix taken off.
     QCOMPARE(logMatchTarget(QStringLiteral("/logs/app.log.gz"), false),
              QStringLiteral("app.log"));
-    QCOMPARE(t.resolve(QStringLiteral("/logs/app.log.gz")).profile.format.pattern,
+    QCOMPARE(t.inherited(QStringLiteral("/logs/app.log.gz")).format.pattern,
              QStringLiteral("BY-NAME"));
 }
 
-void TestLogSettings::aFileNodeOutranksItsPattern()
-{
-    LogSettingsTree t = treeWithRoot(QStringLiteral("ROOT"));
-    t.addPattern(wildcard(QStringLiteral("*.log"), QStringLiteral("PATTERN")));
 
-    LogProfile mine;
-    mine.format.pattern = QStringLiteral("MINE");
-    t.setFileProfile(QStringLiteral("/var/log/app.log"), mine);
 
-    const auto r = t.resolve(QStringLiteral("/var/log/app.log"));
-    QCOMPARE(r.profile.format.pattern, QStringLiteral("MINE"));
-    QCOMPARE(r.patternIndex, 0); // still knows which pattern is its parent
-    QVERIFY(r.fileIndex >= 0);
 
-    // A sibling that the pattern also matches is unaffected.
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/other.log")).profile.format.pattern,
-             QStringLiteral("PATTERN"));
-}
-
-void TestLogSettings::aProfileEqualToWhatItInheritsStoresNoFileNode()
-{
-    LogSettingsTree t = treeWithRoot(QStringLiteral("ROOT"));
-    t.addPattern(wildcard(QStringLiteral("*.log"), QStringLiteral("PATTERN")));
-
-    // Every open writes back what it used; storing that would leave a node behind for
-    // every file the user ever looked at.
-    t.setFileProfile(QStringLiteral("/var/log/app.log"), t.inherited(QStringLiteral("/var/log/app.log")));
-    QCOMPARE(t.files().size(), 0);
-
-    // And the same for a file with no pattern over it, against the root.
-    t.setFileProfile(QStringLiteral("/var/log/app.other"), t.defaults());
-    QCOMPARE(t.files().size(), 0);
-}
-
-void TestLogSettings::bringingAFileBackIntoLineRemovesItsNode()
-{
-    LogSettingsTree t = treeWithRoot(QStringLiteral("ROOT"));
-    t.addPattern(wildcard(QStringLiteral("*.log"), QStringLiteral("PATTERN")));
-
-    LogProfile mine;
-    mine.format.pattern = QStringLiteral("MINE");
-    t.setFileProfile(QStringLiteral("/var/log/app.log"), mine);
-    QCOMPARE(t.files().size(), 1);
-
-    // This is what "Promote to Parent Pattern" leaves behind: the pattern now says what
-    // the file said, so the file node has nothing left to say.
-    t.patternAt(0).profile = mine;
-    t.setFileProfile(QStringLiteral("/var/log/app.log"), mine);
-    QCOMPARE(t.files().size(), 0);
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
-             QStringLiteral("MINE"));
-}
-
-// The half setFileProfile() cannot see. It re-tests the node it is WRITING; a node stops
-// saying anything of its own just as surely when the pattern above it is edited, and
-// nothing writes that node. Left behind, the entries shadow the pattern for ever — it is
-// still editable and they no longer follow it.
-void TestLogSettings::aPatternTaughtWhatItsLogsSayLeavesThemNothingToSay()
-{
-    LogSettingsTree t = treeWithRoot(QStringLiteral("ROOT"));
-    t.addPattern(wildcard(QStringLiteral("*.log"), QStringLiteral("PATTERN")));
-
-    LogProfile mine;
-    mine.format.pattern = QStringLiteral("MINE");
-    t.setFileProfile(QStringLiteral("/var/log/app.log"), mine);
-    t.setFileProfile(QStringLiteral("/var/log/other.log"), mine);
-
-    LogProfile theirs;
-    theirs.format.pattern = QStringLiteral("THEIRS");
-    t.setFileProfile(QStringLiteral("/var/log/third.log"), theirs);
-    QCOMPARE(t.files().size(), 3);
-
-    // The pattern now says what the first two said, and nothing wrote them.
-    t.patternAt(0).profile = mine;
-    QVERIFY(t.pruneRedundantFiles());
-    QCOMPARE(t.files().size(), 1);
-    QCOMPARE(t.indexOfFile(QStringLiteral("/var/log/app.log")), -1);
-    QCOMPARE(t.indexOfFile(QStringLiteral("/var/log/other.log")), -1);
-    // They still open on exactly what they opened on — through the pattern, which they
-    // now follow, rather than through a copy of it that has stopped tracking.
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).profile.format.pattern,
-             QStringLiteral("MINE"));
-    // And the one that still differs is untouched.
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/third.log")).profile.format.pattern,
-             QStringLiteral("THEIRS"));
-
-    // Nothing left to do, and it says so — the caller writes the file only when it did
-    // something, which is what keeps a resume of a remote log off the disk.
-    QVERIFY(!t.pruneRedundantFiles());
-
-    // The DEFAULTS are a parent too, for a log no pattern claims.
-    LogProfile root;
-    root.format.pattern = QStringLiteral("ROOT");
-    t.setFileProfile(QStringLiteral("/var/log/app.trace"), theirs);
-    t.setDefaults(theirs);
-    QVERIFY(t.pruneRedundantFiles());
-    QCOMPARE(t.indexOfFile(QStringLiteral("/var/log/app.trace")), -1);
-
-    // One address can be spared whatever it says: the scratch node Preferences creates
-    // so that a log with nothing of its own has a row to be edited in.
-    t.setDefaults(root);
-    // insertFileProfile, because `mine` is what the pattern already says: this is a node
-    // that exists in order to be edited, which is the whole reason it can be spared.
-    t.insertFileProfile(QStringLiteral("/var/log/scratch.log"), mine);
-    QVERIFY(!t.pruneRedundantFiles(QStringLiteral("/var/log/scratch.log")));
-    QVERIFY(t.indexOfFile(QStringLiteral("/var/log/scratch.log")) >= 0);
-    QVERIFY(t.pruneRedundantFiles());
-    QCOMPARE(t.indexOfFile(QStringLiteral("/var/log/scratch.log")), -1);
-}
 
 void TestLogSettings::deletingAPatternReHomesItsFiles()
 {
@@ -318,19 +218,19 @@ void TestLogSettings::deletingAPatternReHomesItsFiles()
     t.addPattern(wildcard(QStringLiteral("app.*"), QStringLiteral("FIRST")));
     t.addPattern(wildcard(QStringLiteral("*.log"), QStringLiteral("SECOND")));
 
-    LogProfile mine;
-    mine.format.pattern = QStringLiteral("MINE");
-    t.setFileProfile(QStringLiteral("/var/log/app.log"), mine);
+    QCOMPARE(t.matchingPattern(QStringLiteral("/var/log/app.log")), 0);
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app.log")).format.pattern,
+             QStringLiteral("FIRST"));
 
-    QCOMPARE(t.resolve(QStringLiteral("/var/log/app.log")).patternIndex, 0);
-
-    // Nothing stores a parent link, so the file simply re-homes under whatever matches
-    // next — no dangling reference to clean up.
+    // Nothing stores a parent link, so a log simply re-homes under whatever matches next
+    // — no dangling reference to clean up. What that costs is the pool sweep
+    // (LogFileStore::pruneAgainst): a record that agreed with the pattern just deleted
+    // now agrees with a different one, and nothing writes it.
     t.removePattern(0);
-    const auto r = t.resolve(QStringLiteral("/var/log/app.log"));
-    QCOMPARE(r.patternIndex, 0); // now the *.log one
+    QCOMPARE(t.matchingPattern(QStringLiteral("/var/log/app.log")), 0); // now the *.log one
     QCOMPARE(t.patternAt(0).match, QStringLiteral("*.log"));
-    QCOMPARE(r.profile.format.pattern, QStringLiteral("MINE")); // its own node still wins
+    QCOMPARE(t.inherited(QStringLiteral("/var/log/app.log")).format.pattern,
+             QStringLiteral("SECOND"));
 }
 
 void TestLogSettings::theTreeRoundTripsThroughJson()
@@ -353,11 +253,6 @@ void TestLogSettings::theTreeRoundTripsThroughJson()
     n.profile.format.runStartCaseSensitive = true;
     n.profile.wrapMode = WrapMode::AlwaysOn;
     t.addPattern(n);
-
-    LogProfile mine;
-    mine.format.pattern = QStringLiteral("MINE");
-    mine.wrapMode = WrapMode::SelectedRecordOnly;
-    t.setFileProfile(QStringLiteral("ssh://deploy@web1/var/log/app.log"), mine);
 
     LogSettingsStore store(dir.path());
     QVERIFY(store.save(t));
@@ -382,36 +277,56 @@ void TestLogSettings::theTreeRoundTripsThroughJson()
     QVERIFY(p.profile.format.runStartCaseSensitive);
     QVERIFY(p.profile.wrapMode == WrapMode::AlwaysOn);
 
-    QCOMPARE(back.files().size(), 1);
-    // Keyed by the NORMAL form, so the ":22" spelling and this one are one entry.
-    QCOMPARE(back.resolve(QStringLiteral("ssh://deploy@web1:22/var/log/app.log"))
-                 .profile.format.pattern,
-             QStringLiteral("MINE"));
-    QVERIFY(back.resolve(QStringLiteral("ssh://deploy@web1:22/var/log/app.log"))
-                .profile.wrapMode == WrapMode::SelectedRecordOnly);
+    // NOTHING ABOUT ONE CONCRETE LOG is written here any more (M21): what survives is the
+    // pair of INHERITED levels, and a log's own settings are one record per log in the
+    // pool. The round trip of a per-log record, including that an `ssh://` address and
+    // its `:22` spelling are one of them, is tst_logfilestore's.
+    QVERIFY(!QJsonDocument::fromJson(readAll(store.filePath()))
+                 .object()
+                 .contains(QStringLiteral("files")));
 }
 
-void TestLogSettings::aLoadedFileNodeIsKeptEvenWhenItMatchesItsParent()
+// The other half of that removal. A file written by an older build still carries
+// `files[]`, and those entries are somebody's whole per-log format configuration — so
+// they are read one last time, handed over, and then gone from this file for good. Being
+// gone is what makes the migration once-only, with no flag anywhere to remember it by.
+void TestLogSettings::aLegacyFileLevelIsDrainedOnceAndThenNoLongerWritten()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
 
-    LogSettingsTree t = treeWithRoot(QStringLiteral("ROOT"));
-    LogProfile mine;
-    mine.format.pattern = QStringLiteral("MINE");
-    t.setFileProfile(QStringLiteral("/var/log/app.log"), mine);
-
-    // A pattern added later says exactly what the file node already said. On load the
-    // node is now redundant — but dropping it would be a change the user never made.
-    t.addPattern(wildcard(QStringLiteral("*.log"), QStringLiteral("MINE")));
+    // Hand-written in the shape a pre-M21 build wrote, since nothing can produce it now.
+    QJsonObject profile;
+    profile.insert(QStringLiteral("pattern"), QStringLiteral("MINE"));
+    QJsonObject node;
+    node.insert(QStringLiteral("path"), QStringLiteral("/var/log/app.log"));
+    node.insert(QStringLiteral("profile"), profile);
+    QJsonObject root;
+    root.insert(QStringLiteral("schemaVersion"), LogSettingsStore::kSchemaVersion);
+    root.insert(QStringLiteral("files"), QJsonArray{node});
 
     LogSettingsStore store(dir.path());
-    QVERIFY(store.save(t));
+    QFile out(store.filePath());
+    QVERIFY(out.open(QIODevice::WriteOnly));
+    out.write(QJsonDocument(root).toJson());
+    out.close();
 
+    const LogSettingsTree tree = store.load();
+    const auto legacy = store.takeLegacyFiles();
+    QCOMPARE(legacy.size(), 1);
+    QCOMPARE(legacy.at(0).path, QStringLiteral("/var/log/app.log"));
+    QCOMPARE(legacy.at(0).profile.format.pattern, QStringLiteral("MINE"));
+    // A TAKE, because it is a drain: the caller has adopted them, so asking again yields
+    // nothing and a second adoption cannot duplicate what the first stored.
+    QVERIFY(store.takeLegacyFiles().isEmpty());
+
+    // Rewriting the file is what closes the drain — nothing else records that it ran.
+    QVERIFY(store.save(tree));
     LogSettingsStore reader(dir.path());
-    const LogSettingsTree back = reader.load();
-    QCOMPARE(back.files().size(), 1);
+    reader.load();
+    QVERIFY(reader.takeLegacyFiles().isEmpty());
 }
+
 
 void TestLogSettings::anEmptyPatternIsStillAnAnswer()
 {
@@ -463,10 +378,15 @@ void TestLogSettings::legacyStoresMigrateOnceAndAreRemoved()
     const LogSettingsTree t = store.load();
     QCOMPARE(t.defaults().format.pattern, QStringLiteral("OLD-DEFAULT"));
     QVERIFY(t.defaults().format.encoding == Encoding::Utf8);
-    QCOMPARE(t.files().size(), 1);
-    const auto r = t.resolve(QStringLiteral("/var/log/app.log"));
-    QCOMPARE(r.profile.format.pattern, QStringLiteral("OLD-FILE"));
-    QVERIFY(r.profile.format.timeDisplay == TimeDisplay::Utc);
+
+    // The PER-LOG half goes to the drain rather than into the tree (M21) — through the
+    // same takeLegacyFiles() that carries M20's `files[]`, so two upgrade paths reach the
+    // pool by one route. The old display-zone key must still read on the way.
+    const auto legacy = store.takeLegacyFiles();
+    QCOMPARE(legacy.size(), 1);
+    QCOMPARE(legacy.at(0).path, QStringLiteral("/var/log/app.log"));
+    QCOMPARE(legacy.at(0).profile.format.pattern, QStringLiteral("OLD-FILE"));
+    QVERIFY(legacy.at(0).profile.format.timeDisplay == TimeDisplay::Utc);
 
     // One home for a setting, not two that can disagree.
     QSettings check(ini, QSettings::IniFormat);

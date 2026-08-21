@@ -51,40 +51,10 @@ int LogSettingsTree::indexOfPatternId(const QString &id) const
     return -1;
 }
 
-int LogSettingsTree::indexOfFile(const QString &address) const
-{
-    const QString key = logSettingsKey(address);
-    for (int i = 0; i < m_files.size(); ++i) {
-        if (m_files.at(i).path == key)
-            return i;
-    }
-    return -1;
-}
-
-LogSettingsTree::Resolution LogSettingsTree::resolve(const QString &address) const
-{
-    Resolution r;
-    r.profile = m_defaults;
-
-    // First match wins, so the order of the list is the order of precedence and the
-    // user's reordering is the only tie-break there is.
-    for (int i = 0; i < m_patterns.size(); ++i) {
-        if (m_patterns.at(i).matches(address)) {
-            r.patternIndex = i;
-            r.profile = m_patterns.at(i).profile;
-            break;
-        }
-    }
-
-    if (const int f = indexOfFile(address); f >= 0) {
-        r.fileIndex = f;
-        r.profile = m_files.at(f).profile;
-    }
-    return r;
-}
-
 LogProfile LogSettingsTree::inherited(const QString &address) const
 {
+    // First match wins, so the order of the list is the order of precedence and the
+    // user's reordering is the only tie-break there is.
     for (const LogPatternNode &p : m_patterns) {
         if (p.matches(address))
             return p.profile;
@@ -92,62 +62,42 @@ LogProfile LogSettingsTree::inherited(const QString &address) const
     return m_defaults;
 }
 
-bool LogSettingsTree::setFileProfile(const QString &address, const LogProfile &p)
+int LogSettingsTree::matchingPattern(const QString &address) const
 {
-    // Equal to what it already inherits: there is nothing for a node to say, so there
-    // is no node. This is the rule that keeps the tree free of entries the user never
-    // asked for — every open would otherwise leave one behind.
-    if (p == inherited(address))
-        return removeFile(address);
-
-    if (const int i = indexOfFile(address); i >= 0 && m_files.at(i).profile == p)
-        return false;
-
-    insertFileProfile(address, p);
-    return true;
-}
-
-void LogSettingsTree::insertFileProfile(const QString &address, const LogProfile &p)
-{
-    const QString key = logSettingsKey(address);
-    if (const int i = indexOfFile(key); i >= 0) {
-        m_files[i].profile = p;
-        return;
+    for (int i = 0; i < m_patterns.size(); ++i) {
+        if (m_patterns.at(i).matches(address))
+            return i;
     }
-    m_files.push_back(LogFileNode{key, p});
+    return -1;
 }
 
-bool LogSettingsTree::removeFile(const QString &address)
+bool LogSettingsTree::operator==(const LogSettingsTree &o) const
 {
-    const int i = indexOfFile(address);
-    if (i < 0)
+    if (m_defaults != o.m_defaults || m_patterns.size() != o.m_patterns.size())
         return false;
-    m_files.remove(i);
-    return true;
-}
-
-bool LogSettingsTree::pruneRedundantFiles(const QString &except)
-{
-    const QString spared = except.isEmpty() ? QString() : logSettingsKey(except);
-    bool removed = false;
-    // Backwards, so removing one node does not step over the next.
-    for (int i = m_files.size() - 1; i >= 0; --i) {
-        if (!spared.isEmpty() && m_files.at(i).path == spared)
-            continue;
-        if (m_files.at(i).profile == inherited(m_files.at(i).path)) {
-            m_files.remove(i);
-            removed = true;
-        }
+    for (int i = 0; i < m_patterns.size(); ++i) {
+        const LogPatternNode &a = m_patterns.at(i);
+        const LogPatternNode &b = o.m_patterns.at(i);
+        // The id is deliberately NOT compared: it is an identity for the dialog's own
+        // reselection and says nothing about what any log gets, so a tree that only
+        // renumbered would spend a sweep of the whole pool for no change in any answer.
+        // POSITION is compared, by walking in order, because first-match-wins makes the
+        // order part of the answer.
+        if (a.kind != b.kind || a.match != b.match || a.caseSensitive != b.caseSensitive
+            || a.matchFullPath != b.matchFullPath || a.profile != b.profile)
+            return false;
     }
-    return removed;
+    return true;
 }
 
 void LogSettingsTree::removePattern(int index)
 {
     if (index < 0 || index >= m_patterns.size())
         return;
-    // Its files are left alone on purpose. Nothing stores a parent link, so they simply
-    // re-home under whichever pattern matches them next — or under none.
+    // The logs under it are left alone on purpose. Nothing stores a parent link, so they
+    // simply re-home under whichever pattern matches them next — or under none. What that
+    // costs is the pool sweep (LogFileStore::pruneAgainst): a record that agreed with this
+    // pattern now agrees with a different one, or with the defaults, and nothing writes it.
     m_patterns.remove(index);
 }
 

@@ -4,6 +4,8 @@
 
 #include <QString>
 
+#include <utility>
+
 QT_BEGIN_NAMESPACE
 class QSettings;
 QT_END_NAMESPACE
@@ -38,6 +40,23 @@ public:
     // file is absent, unparseable, or written by a version this build cannot read.
     LogSettingsTree load();
 
+    // The per-log profiles this store has seen but no longer keeps: the `files[]` array
+    // read by load(), and M18's `formatCache` drained by migrateLegacy(). Handed to
+    // LogFileStore::adoptLegacy() on the first launch after M21 moved the file level into
+    // its own pool. EMPTY for anything this build wrote, because save() no longer emits
+    // the key — which is what closes the migration with nothing to remember it by.
+    //
+    // A TAKE, because it is a drain: the caller has to be able to say the entries have
+    // been adopted, and load() is called again by showPreferences() every time the dialog
+    // is opened. Both sources ACCUMULATE here rather than replacing each other, so the
+    // order migrateLegacy() and load() run in does not have to be remembered.
+    //
+    // No schema bump came with the removal: a removed key is exactly what a backward read
+    // handles, which is the rule SessionStore states for its own file and M20 already used
+    // when it dropped the format group from the session. A bump would be destructive here
+    // — this file is the only copy of a user's whole format configuration.
+    QVector<LegacyFileNode> takeLegacyFiles() { return std::exchange(m_legacyFiles, {}); }
+
     // Replace the file. Returns false on a write failure, or when the file on disk was
     // written by a LATER schema version — see readOnly().
     bool save(const LogSettingsTree &tree, QString *error = nullptr);
@@ -56,8 +75,9 @@ public:
     bool migrateLegacy(QSettings &settings);
 
 private:
-    QString m_dir;
-    bool    m_readOnly = false;
+    QString                 m_dir;
+    bool                    m_readOnly = false;
+    QVector<LegacyFileNode> m_legacyFiles;
 };
 
 } // namespace loftail

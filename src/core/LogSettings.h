@@ -19,13 +19,19 @@ namespace loftail {
 // is the level it inherits from. Nothing here represents "no parent" and nothing needs
 // to: it is the absence of a match, not a thing to store.
 //
-// PREFERENCES LISTS ONE FILE NODE — the log that is open — and this array is why that is
-// only a display rule. Every node in it is still resolved, still swept by
-// pruneRedundantFiles() and still written back, whether or not it was on screen.
+// THE FILE LEVEL IS NOT IN THIS FILE, and that is M21's whole shape. One log's settings
+// are per-file state, so they live one per file — LogFileStore.h, a bounded pool under
+// <config>/fileSettings — while the two INHERITED levels stay here, in one document, read
+// once at startup. What decided the split is that the pattern list is ORDERED: order is
+// free in a JSON array and would otherwise need an index file or an order field in every
+// node, whereas a per-log record has no order at all and every reason to be reached
+// without loading every other log's.
 //
-// A FILE NODE STORES NO PARENT LINK. Its parent is derived by running the matcher, so
-// deleting or reordering a pattern re-homes its files automatically and there is no
-// stored reference that can go stale.
+// A FILE RECORD STORES NO PARENT LINK. Its parent is derived by running the matcher, so
+// deleting or reordering a pattern re-homes its logs automatically and there is no stored
+// reference that can go stale. That is also why the pool has to be swept when a pattern
+// moves (LogFileStore::pruneAgainst): nothing writes a record when the level above it
+// changes underneath.
 
 // One file-pattern node: a wildcard or a regular expression, matched against either the
 // log's file name or its whole address.
@@ -52,8 +58,11 @@ struct LogPatternNode
     bool matches(const QString &address) const;
 };
 
-// One concrete log. `path` is a normalized address run through logSettingsKey().
-struct LogFileNode
+// One concrete log's stored profile, as read from a `files[]` array written before M21
+// moved the file level into its own pool. Exists ONLY to be drained by
+// LogFileStore::adoptLegacy() on the first launch after the upgrade — see
+// LogSettingsStore::legacyFiles(). Nothing writes one.
+struct LegacyFileNode
 {
     QString    path;
     LogProfile profile;
@@ -62,60 +71,22 @@ struct LogFileNode
 class LogSettingsTree
 {
 public:
-    // Which node answered for an address, and what it said.
-    struct Resolution
-    {
-        int        patternIndex = -1; // -1: no pattern matched
-        int        fileIndex    = -1; // -1: no node for this file
-        LogProfile profile;
-
-        // Whether anything below the root claimed this log.
-        bool fromNode() const { return fileIndex >= 0 || patternIndex >= 0; }
-    };
-
-    // The winning node's profile, taken whole.
-    Resolution resolve(const QString &address) const;
-
-    // What `address` would resolve to if it had no file node of its own — the value a
-    // file node has to differ from in order to be worth storing.
+    // What `address` inherits: the first pattern that matches it, or the defaults. Taken
+    // WHOLE — the levels are never merged field by field (ARCHITECTURE.md §8).
+    //
+    // This used to be one of a pair, with resolve() answering the same question and then
+    // letting the log's own node override. With the file level in its own store the two
+    // collapsed into this one, and the name that survived is the one that says what it
+    // means from the log's point of view: the value a record has to differ from in order
+    // to be worth storing at all.
     LogProfile inherited(const QString &address) const;
 
-    // Store `p` for `address`, or REMOVE its file node when `p` is exactly what the
-    // address already inherits. That is the whole of "a per-file node is not created
-    // unless the user changes something", and it is also what leaves a clean tree after
-    // a profile is promoted to its parent pattern.
-    //
-    // Returns whether the tree actually changed. The caller writes the file only then:
-    // every resume of a remote or archived log persists what it used, and without the
-    // gate that is one atomic rewrite per poll of an identical tree.
-    bool setFileProfile(const QString &address, const LogProfile &p);
+    // Which pattern claims `address`, or -1 when none does. Preferences needs it to know
+    // where to hang the log's row and whether Promote to Parent Pattern has a parent to
+    // promote into; nothing else asks.
+    int matchingPattern(const QString &address) const;
 
-    // Store `p` for `address` unconditionally, keeping the node even when it matches
-    // what the address inherits. For LOADING only: a file node written before the
-    // pattern that now covers it is exactly such a node, and dropping it on load would
-    // be a change the user never made.
-    void insertFileProfile(const QString &address, const LogProfile &p);
-
-    // Drop the file node for `address`, if there is one. Returns whether there was.
-    bool removeFile(const QString &address);
-
-    // Drop EVERY file node that says exactly what its address already inherits — the
-    // same rule setFileProfile() applies to one node, applied to the whole list.
-    // setFileProfile() can only notice a node that is being written; a node stops saying
-    // something of its own just as surely when the PATTERN above it is edited, added,
-    // reordered or deleted, and nothing writes that node. Without this, a pattern taught
-    // to say what a hundred logs' own entries said leaves those hundred entries behind,
-    // shadowing it for ever: the pattern is then editable and they no longer follow it.
-    //
-    // `except` names one address to leave alone whatever it says: the log Preferences is
-    // open on, which needs a node whatever it says so that it HAS a row to be selected
-    // and edited in. The dialog's OK sweeps with no exception, so nothing redundant is
-    // stored either way.
-    //
-    // Returns whether anything went, so a caller can write the file only when it did.
-    bool pruneRedundantFiles(const QString &except = QString());
-
-    // Remove the pattern at `index`. Its files are NOT touched: they re-home under
+    // Remove the pattern at `index`. The logs under it are NOT touched: they re-home under
     // whichever pattern now matches them, or under the root defaults.
     void removePattern(int index);
 
@@ -127,7 +98,12 @@ public:
     int addPattern(LogPatternNode node);
 
     int indexOfPatternId(const QString &id) const;
-    int indexOfFile(const QString &address) const;
+
+    // Whether two trees would give every log the same answer. The caller's gate for the
+    // pool sweep: re-reading every stored record is worth doing when a pattern has moved
+    // and is pure waste when the visit only changed one log.
+    bool operator==(const LogSettingsTree &o) const;
+    bool operator!=(const LogSettingsTree &o) const { return !(*this == o); }
 
     const LogProfile &defaults() const { return m_defaults; }
     void setDefaults(const LogProfile &p) { m_defaults = p; }
@@ -135,13 +111,9 @@ public:
     const QVector<LogPatternNode> &patterns() const { return m_patterns; }
     LogPatternNode &patternAt(int index) { return m_patterns[index]; }
 
-    const QVector<LogFileNode> &files() const { return m_files; }
-    LogFileNode &fileAt(int index) { return m_files[index]; }
-
 private:
     LogProfile              m_defaults = LogProfile::builtIn();
     QVector<LogPatternNode> m_patterns;
-    QVector<LogFileNode>    m_files;
 };
 
 // The glob dialect a Wildcard pattern speaks, as an anchored regular expression:

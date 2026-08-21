@@ -7,6 +7,7 @@
 #include <QSettings>
 #include <QTemporaryDir>
 
+#include "ConfigReset.h"
 #include "LogSettingsStore.h"
 #include "LogView.h"
 #include "MainWindow.h"
@@ -103,7 +104,7 @@ void TestRecentFiles::init()
     settings.remove(QStringLiteral("session")); // a window here must open nothing of its own
     settings.remove(QStringLiteral("recentFiles"));
     settings.sync();
-    QFile::remove(LogSettingsStore(LogSettingsStore::defaultDir()).filePath());
+    clearLogSettings();
 }
 
 void TestRecentFiles::anEntryIsNamedLikeATabRatherThanShownWhole()

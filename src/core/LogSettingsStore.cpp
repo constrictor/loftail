@@ -115,17 +115,19 @@ LogSettingsTree LogSettingsStore::load()
         tree.addPattern(n); // regenerates a missing or duplicated id
     }
 
+    // The file level, read one last time. It is NOT put into the tree — the tree has no
+    // file level any more (M21) — but handed to the caller through legacyFiles() so
+    // LogFileStore::adoptLegacy() can drain it into the per-log pool. Kept rather than
+    // discarded because it is somebody's whole per-log format configuration, and the
+    // upgrade must not be the thing that loses it.
     const QJsonArray files = root.value(QLatin1String(kFilesKey)).toArray();
     for (const QJsonValue &v : files) {
         const QJsonObject o = v.toObject();
         const QString path = o.value(QLatin1String(kPathKey)).toString();
         if (path.isEmpty())
             continue;
-        // insertFileProfile, NOT setFileProfile: the latter drops an entry equal to
-        // what it inherits, and a file node written before a pattern was added is
-        // exactly that. Dropping it on load would be a change the user never made.
-        tree.insertFileProfile(
-            path, logProfileFromJson(o.value(QLatin1String(kProfileKey)).toObject()));
+        m_legacyFiles.push_back(LegacyFileNode{
+            path, logProfileFromJson(o.value(QLatin1String(kProfileKey)).toObject())});
     }
 
     return tree;
@@ -158,15 +160,10 @@ bool LogSettingsStore::save(const LogSettingsTree &tree, QString *error)
     }
     root.insert(QLatin1String(kPatternsKey), patterns);
 
-    QJsonArray files;
-    for (const LogFileNode &n : tree.files()) {
-        QJsonObject o;
-        o.insert(QLatin1String(kPathKey), n.path);
-        o.insert(QLatin1String(kProfileKey), logProfileToJson(n.profile));
-        files.append(o);
-    }
-    root.insert(QLatin1String(kFilesKey), files);
-
+    // NO `files[]`. The file level lives one record per log under fileSettings/ (M21,
+    // LogFileStore.h). Writing the key here is what closes the drain: once this file has
+    // been rewritten without it, legacyFiles() is empty on every later launch and the
+    // migration is over with nothing to remember that it happened.
     return AtomicJson::write(filePath(), QJsonDocument(root), error);
 }
 
@@ -200,7 +197,10 @@ bool LogSettingsStore::migrateLegacy(QSettings &settings)
             continue;
         LogProfile p;
         p.format = legacyFormatAt(settings);
-        tree.insertFileProfile(path, p);
+        // Into the drain, not into the tree: since M21 the tree has no file level, and
+        // these go to the per-log pool through the same adoptLegacy() pass that takes
+        // M20's `files[]`. Two upgrade paths, one destination.
+        m_legacyFiles.push_back(LegacyFileNode{path, p});
     }
     settings.endArray();
 

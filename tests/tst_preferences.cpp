@@ -58,10 +58,10 @@ private:
                "2026-08-05 00:00:02,000 [t1] WARN  logger.b - second\n";
     }
 
-    // A tree with one pattern, one log that matches it, and one log that matches
-    // nothing. BOTH log entries stay in the model throughout; at most one of them is
-    // ever LISTED, which is the contract this suite exists to pin — so the second one is
-    // here to be found in tree() and not to be found in the tree widget.
+    // The two INHERITED levels: distinguishable defaults and one pattern that claims
+    // `*.log` and nothing else. A log's OWN settings are no longer in here at all (M21) —
+    // they are one record per log in the pool, handed to the dialog through selectLog()
+    // and taken back through fileProfile(), which is why the two helpers below exist.
     static LogSettingsTree populated()
     {
         LogSettingsTree t;
@@ -73,15 +73,14 @@ private:
         n.match = QStringLiteral("*.log");
         n.profile.format.pattern = QStringLiteral("PATTERN");
         t.addPattern(n);
-
-        LogProfile mine;
-        mine.format.pattern = QStringLiteral("MINE");
-        t.setFileProfile(logPath(QStringLiteral("app.log")), mine);
-
-        LogProfile orphan;
-        orphan.format.pattern = QStringLiteral("ORPHAN");
-        t.setFileProfile(logPath(QStringLiteral("other.trace")), orphan);
         return t;
+    }
+
+    static LogProfile profileWith(const QString &pattern)
+    {
+        LogProfile p;
+        p.format.pattern = pattern;
+        return p;
     }
 
     static QTreeWidget *treeOf(PreferencesDialog &dlg)
@@ -134,11 +133,20 @@ private:
         return item ? item->data(0, Qt::UserRole).toString().mid(5) : QString();
     }
 
-    // What the dialog's two entry points both do: open it on a log. The seed is what the
-    // log already resolves to, which is showPreferences()'s call verbatim.
+    // What File ▸ Preferences does: open the dialog on a log that has nothing stored, so
+    // the row shows what it inherits. showPreferences()'s call verbatim.
     static void openOn(PreferencesDialog &dlg, const QString &address)
     {
-        dlg.selectLog(address, dlg.tree().resolve(address).profile);
+        dlg.selectLog(address, std::nullopt, dlg.tree().inherited(address));
+    }
+
+    // The same for a log that HAS settings of its own — what the pool would have handed
+    // back. The seed is unreachable in this case and is passed as the inherited value to
+    // say so.
+    static void openOnStored(PreferencesDialog &dlg, const QString &address,
+                             const LogProfile &own)
+    {
+        dlg.selectLog(address, own, dlg.tree().inherited(address));
     }
 
 private slots:
@@ -220,14 +228,13 @@ void TestPreferences::onlyTheLogThatIsOpenGetsARow()
     QCOMPARE(fileRows, 1);
     QCOMPARE(rowAddress(currentFileRow(tree)), logPath(QStringLiteral("app.log")));
 
-    // The other log is nowhere in the widget and everywhere else: its entry is intact
-    // before OK and after it, and it still answers for its own log.
-    QVERIFY(dlg.tree().indexOfFile(logPath(QStringLiteral("other.trace"))) >= 0);
+    // Every other log's settings are in the pool and this dialog cannot reach them at
+    // all (M21) — which is a stronger form of the same guarantee than the one this case
+    // used to make, when they were in the working copy and merely not drawn. What it
+    // hands back is one log's settings and the two inherited levels, and nothing else.
     dlg.accept();
-    QVERIFY2(dlg.tree().indexOfFile(logPath(QStringLiteral("other.trace"))) >= 0,
-             "a log that was merely not listed lost its remembered settings");
-    QCOMPARE(dlg.tree().resolve(logPath(QStringLiteral("other.trace"))).profile.format.pattern,
-             QStringLiteral("ORPHAN"));
+    QCOMPARE(dlg.tree().patterns().size(), 1);
+    QCOMPARE(dlg.tree().defaults().format.pattern, QStringLiteral("ROOT"));
 }
 
 // Preferences is reachable from an empty window — which is when somebody most wants to
@@ -239,8 +246,8 @@ void TestPreferences::withNoLogOpenTheTreeIsPatternsOnly()
 
     QVERIFY(!currentFileRow(tree));
     QCOMPARE(tree->topLevelItem(0)->childCount(), 1); // the pattern, and nothing else
-    // And nothing was invented on the way in.
-    QCOMPARE(dlg.tree().files().size(), populated().files().size());
+    // And with no log named there is nothing for a log to have stored either.
+    QVERIFY(!dlg.fileProfile().has_value());
 }
 
 // The row is named for its ROLE and the panel for the LOG, deliberately: with one row
@@ -299,20 +306,17 @@ void TestPreferences::aLogNoPatternMatchesSitsUnderTheDefaultsAndSaysWhyItCannot
     QVERIFY(claimed.findChild<QLabel *>(QStringLiteral("nodeTitleLabel"))->text().isEmpty());
 }
 
-// The sweep in rebuildTree() spares the OPEN LOG's node, and it is about the log rather
-// than about who created the node — which is what this pins. A log whose stored entry
-// agrees with the pattern above it is exactly the node that sweep eats, and with only one
-// file row in the tree that left the reader looking at no row at all for the log in front
-// of them. accept() still prunes it, so nothing redundant is stored.
+// THE ROW IS A FACT, not something a rebuild has to keep putting back. A log whose stored
+// settings happen to agree with the pattern above it is exactly the node the old sweep ate,
+// which left the reader looking at no row at all for the log in front of them; there is
+// nothing to sweep here now, so the row cannot go — and OK still stores nothing, because
+// what it says is what the log inherits anyway.
 void TestPreferences::theOpenLogsEntrySurvivesTheSweepUntilOk()
 {
-    LogSettingsTree loaded = populated();
-    LogProfile agrees;
-    agrees.format.pattern = QStringLiteral("PATTERN"); // exactly what *.log says
-    loaded.insertFileProfile(logPath(QStringLiteral("agrees.log")), agrees);
-
-    PreferencesDialog dlg(loaded, QStringLiteral("agrees.log"), sample());
-    openOn(dlg, logPath(QStringLiteral("agrees.log")));
+    PreferencesDialog dlg(populated(), QStringLiteral("agrees.log"), sample());
+    // Stored settings that say exactly what *.log says.
+    openOnStored(dlg, logPath(QStringLiteral("agrees.log")),
+                 profileWith(QStringLiteral("PATTERN")));
     QTreeWidget *tree = treeOf(dlg);
 
     QTreeWidgetItem *row = currentFileRow(tree);
@@ -320,12 +324,12 @@ void TestPreferences::theOpenLogsEntrySurvivesTheSweepUntilOk()
     QCOMPARE(rowAddress(row), logPath(QStringLiteral("agrees.log")));
 
     // And it survives a rebuild provoked by an unrelated mutation, which is where the
-    // sweep actually runs.
+    // sweep used to run.
     dlg.findChild<QToolButton *>(QStringLiteral("addPatternButton"))->click();
     QVERIFY2(currentFileRow(tree), "the open log's row went on the next rebuild");
 
     dlg.accept();
-    QCOMPARE(dlg.tree().indexOfFile(logPath(QStringLiteral("agrees.log"))), -1);
+    QVERIFY(!dlg.fileProfile().has_value());
 }
 
 // Delete on the one file row does not take the row away — it takes away what the log said
@@ -335,7 +339,8 @@ void TestPreferences::theOpenLogsEntrySurvivesTheSweepUntilOk()
 void TestPreferences::deletingTheCurrentFileEntryLeavesTheRowShowingWhatItInherits()
 {
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
-    openOn(dlg, logPath(QStringLiteral("app.log")));
+    openOnStored(dlg, logPath(QStringLiteral("app.log")),
+                 profileWith(QStringLiteral("MINE")));
     QTreeWidget *tree = treeOf(dlg);
     auto *format = dlg.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
     QVERIFY(format);
@@ -350,8 +355,8 @@ void TestPreferences::deletingTheCurrentFileEntryLeavesTheRowShowingWhatItInheri
 
     // Untouched afterwards, it says nothing its parent does not, so OK keeps nothing.
     dlg.accept();
-    QCOMPARE(dlg.tree().indexOfFile(logPath(QStringLiteral("app.log"))), -1);
-    QCOMPARE(dlg.tree().resolve(logPath(QStringLiteral("app.log"))).profile.format.pattern,
+    QVERIFY(!dlg.fileProfile().has_value());
+    QCOMPARE(dlg.tree().inherited(logPath(QStringLiteral("app.log"))).format.pattern,
              QStringLiteral("PATTERN"));
 }
 
@@ -467,7 +472,7 @@ void TestPreferences::editingAPatternRehomesItsLogsAndKeepsTheSelection()
     // The open log is other.trace here, so the re-homing is visible in the widget; what
     // happened to app.log is a MODEL claim, since only one log is ever listed.
     QCOMPARE(currentFileRow(tree)->parent(), pattern);
-    QCOMPARE(dlg.tree().resolve(logPath(QStringLiteral("app.log"))).patternIndex, -1);
+    QCOMPARE(dlg.tree().matchingPattern(logPath(QStringLiteral("app.log"))), -1);
 
     // The rebuild reselected the NODE, not the row it used to occupy.
     QCOMPARE(tree->currentItem(), pattern);
@@ -499,7 +504,7 @@ void TestPreferences::reorderingChangesWhichPatternWins()
     down->click();
 
     QCOMPARE(dlg.tree().patterns().at(0).match, QStringLiteral("*.log"));
-    QCOMPARE(dlg.tree().resolve(logPath(QStringLiteral("app.log"))).profile.format.pattern,
+    QCOMPARE(dlg.tree().inherited(logPath(QStringLiteral("app.log"))).format.pattern,
              QStringLiteral("SECOND"));
     // Still on the pattern that moved, not on whatever now occupies its old row.
     QCOMPARE(tree->currentItem(), rowNamed(tree, QStringLiteral("app.*")));
@@ -532,7 +537,8 @@ void TestPreferences::everyMnemonicHasABuddyAndNoLetterIsClaimedTwice()
 void TestPreferences::aNewPatternStartsEmptyAndClaimsNoLogs()
 {
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
-    openOn(dlg, logPath(QStringLiteral("app.log")));
+    openOnStored(dlg, logPath(QStringLiteral("app.log")),
+                 profileWith(QStringLiteral("MINE")));
     QTreeWidget *tree = treeOf(dlg);
     auto *add = dlg.findChild<QToolButton *>(QStringLiteral("addPatternButton"));
     auto *match = dlg.findChild<QLineEdit *>(QStringLiteral("patternMatchEdit"));
@@ -550,10 +556,10 @@ void TestPreferences::aNewPatternStartsEmptyAndClaimsNoLogs()
     // Seeded from the log it was added from: that is what makes it worth adding there.
     QCOMPARE(added.profile.format.pattern, QStringLiteral("MINE"));
 
-    // Nothing moved under it — the orphan is still an orphan and the existing pattern
-    // still owns its log.
-    QCOMPARE(dlg.tree().resolve(logPath(QStringLiteral("other.trace"))).patternIndex, -1);
-    QCOMPARE(dlg.tree().resolve(QStringLiteral("/etc/never/seen.log")).profile.format.pattern,
+    // Nothing moved under it — a log matching nothing still matches nothing, and the
+    // existing pattern still owns its logs.
+    QCOMPARE(dlg.tree().matchingPattern(logPath(QStringLiteral("other.trace"))), -1);
+    QCOMPARE(dlg.tree().inherited(QStringLiteral("/etc/never/seen.log")).format.pattern,
              QStringLiteral("PATTERN")); // *.log, the pattern that was already there
 
     // And from a non-file node, which is where the "*.log" constant used to come from.
@@ -617,21 +623,20 @@ void TestPreferences::promotingAPatternMovesItsSettingsIntoTheDefaults()
     QVERIFY(rowNamed(tree, QStringLiteral("*.log")));
     QCOMPARE(tree->currentItem(), rowNamed(tree, QStringLiteral("*.log")));
 
-    // A log that matched nothing now opens on what the pattern said.
-    QCOMPARE(out.resolve(logPath(QStringLiteral("other.trace"))).profile.format.pattern,
-             QStringLiteral("ORPHAN")); // its own entry still outranks the defaults
-    QCOMPARE(out.resolve(QStringLiteral("/etc/never/seen.trace")).profile.format.pattern,
+    // A log that matched nothing now inherits what the pattern said.
+    QCOMPARE(out.inherited(QStringLiteral("/etc/never/seen.trace")).format.pattern,
              QStringLiteral("PATTERN"));
-    // And the log under the pattern is untouched: it inherits from the pattern, which
-    // has not changed, so there is nothing to re-prune.
-    QCOMPARE(out.resolve(logPath(QStringLiteral("app.log"))).profile.format.pattern,
-             QStringLiteral("MINE"));
+    // And a log the pattern claims is untouched: it inherits from the pattern, which has
+    // not changed, so the caller's sweep finds nothing to do under it either.
+    QCOMPARE(out.inherited(logPath(QStringLiteral("app.log"))).format.pattern,
+             QStringLiteral("PATTERN"));
 }
 
 void TestPreferences::promotingMovesTheSettingsUpAndRemovesTheLogEntry()
 {
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
-    openOn(dlg, logPath(QStringLiteral("app.log")));
+    openOnStored(dlg, logPath(QStringLiteral("app.log")),
+                 profileWith(QStringLiteral("MINE")));
     QTreeWidget *tree = treeOf(dlg);
     tree->setCurrentItem(currentFileRow(tree));
     dlg.findChild<QPushButton *>(QStringLiteral("promoteToParentButton"))->click();
@@ -639,48 +644,41 @@ void TestPreferences::promotingMovesTheSettingsUpAndRemovesTheLogEntry()
     QCOMPARE(dlg.tree().patterns().at(0).profile.format.pattern, QStringLiteral("MINE"));
     // The log now says exactly what the pattern says, so its own entry has nothing left
     // to say — and it goes, rather than staying as a duplicate that would stop tracking
-    // the pattern the moment the pattern changed. It goes at OK rather than at the click,
-    // because the open log's node is spared by the mid-dialog sweep so that its row
-    // cannot vanish from under the reader; the row is back and showing the promoted
-    // settings, which is the same thing the log now inherits.
+    // the pattern the moment the pattern changed. The ROW stays, showing the promoted
+    // settings, which is the same thing the log now inherits: promoting is not a way of
+    // taking the log off the screen.
     QTreeWidgetItem *row = currentFileRow(tree);
     QVERIFY2(row, "promoting took the open log's row away");
     QCOMPARE(rowAddress(row), logPath(QStringLiteral("app.log")));
 
     dlg.accept();
-    const LogSettingsTree &out = dlg.tree();
-    QCOMPARE(out.indexOfFile(logPath(QStringLiteral("app.log"))), -1);
-    QCOMPARE(out.resolve(logPath(QStringLiteral("app.log"))).profile.format.pattern,
+    QVERIFY2(!dlg.fileProfile().has_value(),
+             "the promoted log kept a copy of what its pattern now says");
+    QCOMPARE(dlg.tree().inherited(logPath(QStringLiteral("app.log"))).format.pattern,
              QStringLiteral("MINE"));
 }
 
-// A per-log entry lasts only as long as it says something its parent does not — and the
-// half setFileProfile() cannot see is the one where the PARENT moved. Nothing writes
-// those log nodes, so before this they sat under the pattern shadowing it for ever: the
-// pattern was editable and its logs no longer followed it.
+// A per-log entry lasts only as long as it says something its parent does not, and the
+// half a WRITE cannot see is the one where the PARENT moved: nothing writes those records,
+// so before the rule existed they sat under the pattern shadowing it for ever — the pattern
+// was still editable and its logs no longer followed it.
+//
+// The OPEN LOG's half is here, where the dialog can answer it; every other log's is
+// LogFileStore::pruneAgainst(), which MainWindow drives once per visit
+// (tst_logfilestore::aPatternTaughtWhatItsLogsSaidLeavesThemNothingToSay).
 void TestPreferences::aLogEntryGoesWhenItsPatternCatchesUpWithIt()
 {
-    // Redundant on arrival: written before the pattern that now covers it. The STORE
-    // keeps such a node, because dropping it on load would be a change the user never
-    // made; here the user is looking at the tree, so it is shown gone.
-    LogSettingsTree loaded = populated();
-    LogProfile agrees;
-    agrees.format.pattern = QStringLiteral("PATTERN"); // exactly what *.log says
-    loaded.insertFileProfile(logPath(QStringLiteral("agrees.log")), agrees);
+    // Redundant on arrival: settings written before the pattern that now covers them.
+    PreferencesDialog opened(populated(), QStringLiteral("agrees.log"), sample());
+    openOnStored(opened, logPath(QStringLiteral("agrees.log")),
+                 profileWith(QStringLiteral("PATTERN")));
+    QVERIFY2(!opened.fileProfile().has_value(),
+             "a log whose stored settings already agreed with its pattern kept them");
 
-    // NOT opened on any of these logs, deliberately: the open log's node is exempt from
-    // the mid-dialog sweep so that its row cannot vanish under the reader
-    // (theOpenLogsEntrySurvivesTheSweepUntilOk pins that), and this case is about every
-    // OTHER node, which is now the model's business alone — none of them has a row to be
-    // seen going.
-    PreferencesDialog opened(loaded, QString(), QByteArray());
-    QCOMPARE(opened.tree().indexOfFile(logPath(QStringLiteral("agrees.log"))), -1);
-    // And only that one: an entry that still differs is nobody's business but its own.
-    QVERIFY(opened.tree().indexOfFile(logPath(QStringLiteral("app.log"))) >= 0);
-
-    // Taught mid-dialog, which is the gesture this is really about: give the pattern
-    // what the log's own entry said, and the entry goes as the tree is rebuilt.
-    PreferencesDialog dlg(populated(), QString(), QByteArray());
+    // Taught mid-dialog, which is the gesture this is really about: give the pattern what
+    // the log's own entry said, and the entry has nothing left to say.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOnStored(dlg, logPath(QStringLiteral("app.log")), profileWith(QStringLiteral("MINE")));
     QTreeWidget *tree = treeOf(dlg);
     tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
     auto *format = dlg.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
@@ -690,54 +688,60 @@ void TestPreferences::aLogEntryGoesWhenItsPatternCatchesUpWithIt()
     format->setText(QStringLiteral("MINE"));
     emit match->editingFinished(); // any commit-and-rebuild gesture
 
-    QCOMPARE(dlg.tree().indexOfFile(logPath(QStringLiteral("app.log"))), -1);
+    QVERIFY(!dlg.fileProfile().has_value());
     // It opens on exactly what it opened on — through the pattern it now follows.
-    QCOMPARE(dlg.tree().resolve(logPath(QStringLiteral("app.log"))).profile.format.pattern,
+    QCOMPARE(dlg.tree().inherited(logPath(QStringLiteral("app.log"))).format.pattern,
              QStringLiteral("MINE"));
-    // The log under no pattern still differs from the defaults, so it stays.
-    QVERIFY(dlg.tree().indexOfFile(logPath(QStringLiteral("other.trace"))) >= 0);
+
+    // A log under NO pattern still differs from the defaults, so it stays.
+    PreferencesDialog orphan(populated(), QStringLiteral("other.trace"), sample());
+    openOnStored(orphan, logPath(QStringLiteral("other.trace")),
+                 profileWith(QStringLiteral("ORPHAN")));
+    QVERIFY(orphan.fileProfile().has_value());
 
     // And on OK, for an edit that never provoked a rebuild: commitCurrent() writes the
-    // node, so the sweep has to run once more after it.
-    PreferencesDialog closed(populated(), QString(), QByteArray());
+    // panel back, so the comparison has to see the last keystroke.
+    PreferencesDialog closed(populated(), QStringLiteral("app.log"), sample());
+    openOnStored(closed, logPath(QStringLiteral("app.log")),
+                 profileWith(QStringLiteral("MINE")));
     treeOf(closed)->setCurrentItem(rowNamed(treeOf(closed), QStringLiteral("*.log")));
     closed.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"))
         ->setText(QStringLiteral("MINE"));
     closed.accept();
-    QCOMPARE(closed.tree().indexOfFile(logPath(QStringLiteral("app.log"))), -1);
-    QCOMPARE(closed.tree().resolve(logPath(QStringLiteral("app.log"))).profile.format.pattern,
+    QVERIFY(!closed.fileProfile().has_value());
+    QCOMPARE(closed.tree().inherited(logPath(QStringLiteral("app.log"))).format.pattern,
              QStringLiteral("MINE"));
 }
 
 void TestPreferences::aScratchNodeSayingNothingNewIsNotKept()
 {
-    // selectLog() creates a node so there is something to select and edit. If the user
-    // leaves it saying what the log already inherits, OK must not keep it — otherwise
-    // merely being ASKED about a log leaves an entry behind for ever.
+    // A log with nothing stored still gets a row, so there is something to select and
+    // edit. If the user leaves it saying what the log already inherits, OK must store
+    // nothing — otherwise merely being ASKED about a log leaves an entry behind for ever.
     const LogSettingsTree base = populated();
-    const LogProfile inherited = base.resolve(logPath(QStringLiteral("fresh.log"))).profile;
+    const LogProfile inherited = base.inherited(logPath(QStringLiteral("fresh.log")));
 
     PreferencesDialog kept(base, QStringLiteral("fresh.log"), sample());
-    kept.selectLog(logPath(QStringLiteral("fresh.log")), inherited);
-    // The ROW, not merely a current item: the sweep every rebuild runs would otherwise
-    // eat this node the moment it was created — it says nothing new, which is exactly
-    // the state it is meant to be edited out of — and the selection would fall back to
-    // the root, which is a current item too.
+    kept.selectLog(logPath(QStringLiteral("fresh.log")), std::nullopt, inherited);
+    // The ROW, not merely a current item: the sweep every rebuild used to run would eat
+    // such a node the moment it was created — it says nothing new, which is exactly the
+    // state it is meant to be edited out of — and the selection would fall back to the
+    // root, which is a current item too.
     QTreeWidgetItem *scratch = currentFileRow(treeOf(kept));
-    QVERIFY2(scratch, "the scratch node was pruned before it could be edited");
+    QVERIFY2(scratch, "the log with nothing stored was given no row to be edited in");
     QCOMPARE(rowAddress(scratch), logPath(QStringLiteral("fresh.log")));
     QCOMPARE(treeOf(kept)->currentItem(), scratch);
     kept.accept();
-    QCOMPARE(kept.tree().indexOfFile(logPath(QStringLiteral("fresh.log"))), -1);
+    QVERIFY(!kept.fileProfile().has_value());
 
-    // Changed, and it stays.
+    // Changed, and it is stored.
     PreferencesDialog edited(base, QStringLiteral("fresh.log"), sample());
     LogProfile changed = inherited;
     changed.format.pattern = QStringLiteral("SOMETHING ELSE");
-    edited.selectLog(logPath(QStringLiteral("fresh.log")), changed);
+    edited.selectLog(logPath(QStringLiteral("fresh.log")), std::nullopt, changed);
     edited.accept();
-    QCOMPARE(edited.tree().resolve(logPath(QStringLiteral("fresh.log"))).profile.format.pattern,
-             QStringLiteral("SOMETHING ELSE"));
+    QVERIFY(edited.fileProfile().has_value());
+    QCOMPARE(edited.fileProfile()->format.pattern, QStringLiteral("SOMETHING ELSE"));
 }
 
 void TestPreferences::applyToCurrentIsReportedNeverApplied()
@@ -769,7 +773,7 @@ void TestPreferences::askingToApplyLeavesTheDialogOpenAndSaysWhatIsStillToHappen
     // OK along with every other edit — so what has to be pinned is that the press is
     // still unmistakable: the button stays down and a notice says when it happens.
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
-    dlg.selectLog(logPath(QStringLiteral("app.log")),
+    dlg.selectLog(logPath(QStringLiteral("app.log")), LogProfile{},
                   LogProfile{}); // as MainWindow does before naming the target
     dlg.setApplyTarget(QStringLiteral("app.log"));
 
@@ -813,7 +817,7 @@ void TestPreferences::askingAgainOnTheSameEntryWithdrawsTheRequest()
     // A button that no longer closes the dialog needs a way back that is not Cancel —
     // which would discard every other edit made in the same visit.
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
-    dlg.selectLog(logPath(QStringLiteral("app.log")), LogProfile{});
+    dlg.selectLog(logPath(QStringLiteral("app.log")), LogProfile{}, LogProfile{});
     dlg.setApplyTarget(QStringLiteral("app.log"));
 
     auto *apply = dlg.findChild<QPushButton *>(QStringLiteral("applyToCurrentButton"));
@@ -841,7 +845,8 @@ void TestPreferences::theSettingsAppliedAreWhatTheEntrySaysWhenOkIsPressed()
     // were three keystrokes ago, silently, and only to the log — the tree would hold the
     // other ones.
     PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
-    dlg.selectLog(logPath(QStringLiteral("app.log")), LogProfile{});
+    openOnStored(dlg, logPath(QStringLiteral("app.log")),
+                 profileWith(QStringLiteral("MINE")));
     dlg.setApplyTarget(QStringLiteral("app.log"));
 
     auto *apply = dlg.findChild<QPushButton *>(QStringLiteral("applyToCurrentButton"));
@@ -857,9 +862,10 @@ void TestPreferences::theSettingsAppliedAreWhatTheEntrySaysWhenOkIsPressed()
 
     QVERIFY(dlg.applyRequested());
     QCOMPARE(dlg.applyProfile().format.pattern, QStringLiteral("EDITED AFTER ASKING"));
-    // And the tree agrees with what was applied, which is the other half of the same
-    // claim: one gesture, not two answers.
-    QCOMPARE(dlg.tree().resolve(logPath(QStringLiteral("app.log"))).profile.format.pattern,
+    // And the log's own entry agrees with what was applied, which is the other half of
+    // the same claim: one gesture, not two answers.
+    QVERIFY(dlg.fileProfile().has_value());
+    QCOMPARE(dlg.fileProfile()->format.pattern,
              QStringLiteral("EDITED AFTER ASKING"));
 }
 
@@ -1063,7 +1069,7 @@ void TestPreferences::theDetectedEncodingIsReportedOnlyForTheLogItRead()
 
     // The log the bytes came from — which is the one selectLog() names, the call both of
     // MainWindow's entry points make.
-    dlg.selectLog(logPath(QStringLiteral("app.log")), LogProfile{});
+    dlg.selectLog(logPath(QStringLiteral("app.log")), LogProfile{}, LogProfile{});
     QVERIFY(detected->text().contains(QStringLiteral("UTF-8")));
     QVERIFY2(detected->text().contains(QStringLiteral("sample")),
              "the label must name what it looked at, not just what it found");

@@ -17,6 +17,7 @@
 #include "DocumentContext.h"
 #include "DocumentView.h"
 #include "LogFormat.h"
+#include "LogFileStore.h"
 #include "LogSettingsStore.h"
 #include "MainWindow.h"
 #include "RunPane.h"
@@ -119,13 +120,16 @@ private:
         }());
     }
 
-    // What logsettings.json says this log's run-start pattern is — read back through a
-    // second store over the same directory, so it is the file on disk being asked and
-    // not the tree the window is holding.
+    // What this log's own stored record says its run-start pattern is — read back through
+    // a second store over the same directory, so it is the file on disk being asked and
+    // not the copy the window is holding. Empty when the log has no record at all, which
+    // is what "Apply has not been pressed" looks like.
     static QString storedRunStart(const QString &path)
     {
-        LogSettingsStore store(LogSettingsStore::defaultDir());
-        return store.load().resolve(path).profile.format.runStartPattern;
+        LogFileStore store(LogFileStore::defaultDir());
+        store.load();
+        const LogFileSettings s = store.read(path);
+        return s.profile ? s.profile->format.runStartPattern : QString();
     }
 
     // Every box is reached by object name and clicked as a user would: the labels are

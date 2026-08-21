@@ -5,7 +5,7 @@
 #include <QFileInfo>
 #include <QTemporaryDir>
 
-#include "LogSettings.h"
+#include "LogFileStore.h"
 #include "RemoteLocation.h"
 
 using namespace loftail;
@@ -401,18 +401,25 @@ void TestRemoteLocation::settingsKeyIsWorkingDirectoryIndependent()
 
 void TestRemoteLocation::theSettingsTreeRoundTripsARemotePath()
 {
-    LogSettingsTree tree;
-    LogProfile p;
-    p.format.pattern = QStringLiteral("%d{ISO8601} [%t] %-5p %c - %m%n");
-    tree.setFileProfile(QStringLiteral("ssh://deploy@web1/var/log/app.log"), p);
+    // Through the per-log pool (M21), which is where the file level lives now.
+    QTemporaryDir configDir;
+    QVERIFY(configDir.isValid());
+    LogFileStore store(configDir.path());
+    store.load();
 
-    // Reopened by a different spelling of the same file: still one node, found.
-    const auto hit = tree.resolve(QStringLiteral("ssh://deploy@web1:22/var/log/app.log"));
-    QVERIFY(hit.fileIndex >= 0);
-    QCOMPARE(hit.profile.format.pattern, p.format.pattern);
+    LogFileSettings s;
+    s.address = QStringLiteral("ssh://deploy@web1/var/log/app.log");
+    s.profile = LogProfile::builtIn();
+    s.profile->format.pattern = QStringLiteral("%d{ISO8601} [%t] %-5p %c - %m%n");
+    QVERIFY(store.save(s, LogProfile::builtIn()));
+
+    // Reopened by a different spelling of the same file: still one record, found.
+    const LogFileSettings hit = store.read(QStringLiteral("ssh://deploy@web1:22/var/log/app.log"));
+    QVERIFY(hit.profile.has_value());
+    QCOMPARE(hit.profile->format.pattern, s.profile->format.pattern);
 
     // A different remote file is not confused with it.
-    QVERIFY(tree.resolve(QStringLiteral("ssh://deploy@web2/var/log/app.log")).fileIndex < 0);
+    QVERIFY(!store.read(QStringLiteral("ssh://deploy@web2/var/log/app.log")).saysSomething());
 }
 
 QTEST_APPLESS_MAIN(TestRemoteLocation)
