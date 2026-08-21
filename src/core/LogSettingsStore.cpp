@@ -16,9 +16,12 @@ namespace {
 
 constexpr auto kFileName = "logsettings.json";
 
-// JSON keys. Never translated (ARCHITECTURE.md §9.1). The profile keys are the ones
-// the QSettings stores this replaced already used for the same fields, so a value can
-// still move between here and the session with no mapping table.
+// JSON keys. Never translated (ARCHITECTURE.md §9.1). The PROFILE's own keys are not
+// here: they are logProfileToJson()/logProfileFromJson()'s, in LogProfile.cpp, because a
+// profile lives in two stores at once — this file's defaults and pattern nodes, and the
+// per-log records (LogFileStore.h) — and moves between them every time somebody presses
+// Promote to Parent Pattern. Two serializers would have to agree key for key and would
+// drift the first time a field was added to only one of them.
 constexpr auto kSchemaVersionKey = "schemaVersion";
 constexpr auto kDefaultsKey      = "defaults";
 constexpr auto kPatternsKey      = "patterns";
@@ -32,54 +35,8 @@ constexpr auto kFullPathKey      = "fullPath";
 constexpr auto kProfileKey       = "profile";
 constexpr auto kPathKey          = "path";
 
-constexpr auto kPatternKey       = "pattern";
-constexpr auto kEncodingKey      = "encoding";
-constexpr auto kSourceZoneKey    = "sourceZone";
-constexpr auto kTimeDisplayKey   = "timeDisplay";
-constexpr auto kRunStartKey      = "runStartPattern";
-constexpr auto kRunStartRegexKey = "runStartRegex";
-constexpr auto kRunStartCaseKey  = "runStartCase";
-constexpr auto kWrapModeKey      = "wrapMode";
-
 constexpr auto kKindWildcard = "wildcard";
 constexpr auto kKindRegex    = "regex";
-
-QJsonObject profileToJson(const LogProfile &p)
-{
-    QJsonObject o;
-    o.insert(QLatin1String(kPatternKey), p.format.pattern);
-    o.insert(QLatin1String(kEncodingKey), int(p.format.encoding));
-    o.insert(QLatin1String(kSourceZoneKey), p.format.sourceZone.toString());
-    o.insert(QLatin1String(kTimeDisplayKey), timeDisplayToString(p.format.timeDisplay));
-    o.insert(QLatin1String(kRunStartKey), p.format.runStartPattern);
-    o.insert(QLatin1String(kRunStartRegexKey), p.format.runStartIsRegex);
-    o.insert(QLatin1String(kRunStartCaseKey), p.format.runStartCaseSensitive);
-    o.insert(QLatin1String(kWrapModeKey), int(p.wrapMode));
-    return o;
-}
-
-LogProfile profileFromJson(const QJsonObject &o)
-{
-    LogProfile p;
-    // PRESENCE, NOT EMPTINESS. An empty saved pattern is a real answer — it parses
-    // nothing, so every log it applies to reaches the format dialog, which is how a
-    // user asks to be consulted about each one. Reading empty as "nothing saved" would
-    // silently reinstate the built-in and make that setting unreachable.
-    p.format.pattern = o.contains(QLatin1String(kPatternKey))
-        ? o.value(QLatin1String(kPatternKey)).toString()
-        : LogProfile::builtIn().format.pattern;
-    p.format.encoding =
-        static_cast<Encoding>(o.value(QLatin1String(kEncodingKey)).toInt(int(Encoding::Auto)));
-    p.format.sourceZone =
-        ZoneChoice::fromString(o.value(QLatin1String(kSourceZoneKey)).toString());
-    p.format.timeDisplay =
-        timeDisplayFromString(o.value(QLatin1String(kTimeDisplayKey)).toString());
-    p.format.runStartPattern = o.value(QLatin1String(kRunStartKey)).toString();
-    p.format.runStartIsRegex = o.value(QLatin1String(kRunStartRegexKey)).toBool();
-    p.format.runStartCaseSensitive = o.value(QLatin1String(kRunStartCaseKey)).toBool();
-    p.wrapMode = static_cast<WrapMode>(o.value(QLatin1String(kWrapModeKey)).toInt(0));
-    return p;
-}
 
 // --- The two QSettings stores this replaced, read one last time. -----------------
 //
@@ -141,7 +98,7 @@ LogSettingsTree LogSettingsStore::load()
     }
 
     if (root.contains(QLatin1String(kDefaultsKey)))
-        tree.setDefaults(profileFromJson(root.value(QLatin1String(kDefaultsKey)).toObject()));
+        tree.setDefaults(logProfileFromJson(root.value(QLatin1String(kDefaultsKey)).toObject()));
 
     const QJsonArray patterns = root.value(QLatin1String(kPatternsKey)).toArray();
     for (const QJsonValue &v : patterns) {
@@ -154,7 +111,7 @@ LogSettingsTree LogSettingsStore::load()
         n.match = o.value(QLatin1String(kMatchKey)).toString();
         n.caseSensitive = o.value(QLatin1String(kCaseKey)).toBool();
         n.matchFullPath = o.value(QLatin1String(kFullPathKey)).toBool();
-        n.profile = profileFromJson(o.value(QLatin1String(kProfileKey)).toObject());
+        n.profile = logProfileFromJson(o.value(QLatin1String(kProfileKey)).toObject());
         tree.addPattern(n); // regenerates a missing or duplicated id
     }
 
@@ -168,7 +125,7 @@ LogSettingsTree LogSettingsStore::load()
         // what it inherits, and a file node written before a pattern was added is
         // exactly that. Dropping it on load would be a change the user never made.
         tree.insertFileProfile(
-            path, profileFromJson(o.value(QLatin1String(kProfileKey)).toObject()));
+            path, logProfileFromJson(o.value(QLatin1String(kProfileKey)).toObject()));
     }
 
     return tree;
@@ -184,7 +141,7 @@ bool LogSettingsStore::save(const LogSettingsTree &tree, QString *error)
 
     QJsonObject root;
     root.insert(QLatin1String(kSchemaVersionKey), kSchemaVersion);
-    root.insert(QLatin1String(kDefaultsKey), profileToJson(tree.defaults()));
+    root.insert(QLatin1String(kDefaultsKey), logProfileToJson(tree.defaults()));
 
     QJsonArray patterns;
     for (const LogPatternNode &n : tree.patterns()) {
@@ -196,7 +153,7 @@ bool LogSettingsStore::save(const LogSettingsTree &tree, QString *error)
         o.insert(QLatin1String(kMatchKey), n.match);
         o.insert(QLatin1String(kCaseKey), n.caseSensitive);
         o.insert(QLatin1String(kFullPathKey), n.matchFullPath);
-        o.insert(QLatin1String(kProfileKey), profileToJson(n.profile));
+        o.insert(QLatin1String(kProfileKey), logProfileToJson(n.profile));
         patterns.append(o);
     }
     root.insert(QLatin1String(kPatternsKey), patterns);
@@ -205,7 +162,7 @@ bool LogSettingsStore::save(const LogSettingsTree &tree, QString *error)
     for (const LogFileNode &n : tree.files()) {
         QJsonObject o;
         o.insert(QLatin1String(kPathKey), n.path);
-        o.insert(QLatin1String(kProfileKey), profileToJson(n.profile));
+        o.insert(QLatin1String(kProfileKey), logProfileToJson(n.profile));
         files.append(o);
     }
     root.insert(QLatin1String(kFilesKey), files);

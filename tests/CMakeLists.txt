@@ -227,6 +227,16 @@ qt_add_executable(tst_logsettings tst_logsettings.cpp)
 target_link_libraries(tst_logsettings PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_logsettings COMMAND tst_logsettings)
 
+# M21 — the per-log settings POOL: one JSON record per log under fileSettings/, indexed by
+# a map, bounded at 500 slots and reused least-recently-opened. What is pinned here is the
+# part that has no other witness: the redundancy rule that decides a record exists at all,
+# the presence-not-emptiness reading of a stored rule list, and the two robustness rules a
+# crash or a second instance can reach — a slot whose file names a DIFFERENT log is never
+# served, and a lost map is rebuilt from the records rather than surrendered. Core only.
+qt_add_executable(tst_logfilestore tst_logfilestore.cpp)
+target_link_libraries(tst_logfilestore PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_logfilestore COMMAND tst_logfilestore)
+
 # M14 — the seam a remembered password goes through. UNGATED, and for the same reason
 # tst_sshexec is: what it pins is a rule about CONSENT — a keychain that refuses is
 # reported, never quietly downgraded to a plain-text file — and a rule tested in one build
