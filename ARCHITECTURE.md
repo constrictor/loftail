@@ -890,12 +890,15 @@ Four things about it are easy to undo. The equality operators are **new and in c
 
 ## 8. Persistence
 
-- `QSettings` for window geometry, `QMainWindow::saveState()` output (the pane layout), the open files and the views onto them in tab order, per-view column layout and wrap mode, and per-file filters/highlighters. The highlighters entry is the one whose ABSENCE means something: a document with no `"rules"` key at all is seeded with `HighlighterSet::defaults()`, a document with an empty one is not (§7.5.4). **Not** the format, encoding, source zone, timestamp display or run-start pattern: those are settings, resolved from the tree below on every open, which is what lets a Preferences edit reach a restored tab. Removing them earned no schema bump — a removed key is exactly what a backward read handles, and bumps are earned. Follow state is **not** persisted: every file opens at its end, following (`SPEC.md` §3), so there is nothing to restore. The schema is at version 3; see §12.3 for its shape, the two migrations, and the restore ordering.
+- `QSettings` for window geometry, `QMainWindow::saveState()` output (the pane layout), and the open files and the views onto them in tab order with each view's column layout and wrap mode. **Nothing a log says about itself**: not its format, encoding, source zone, timestamp display or run-start pattern, and since M21 not its filters, its highlight rules or its run selection either. Those are all per-FILE state and live one record per log (§8.2), resolved on every open — which is what lets a Preferences edit reach a restored tab, and what makes a log opened by hand come back read the way it was left. Removing keys earned no schema bump in either round: a removed key is exactly what a backward read handles, and bumps are earned. Follow state is **not** persisted: every file opens at its end, following (`SPEC.md` §3), so there is nothing to restore. The schema is at version 3; see §12.3 for its shape, the two migrations, and the restore ordering.
 - Presets as JSON under `QStandardPaths::AppConfigLocation` — a discrete file format, since `SPEC.md` §9 proposes export/import. Compiled only under `LOFTAIL_WITH_PRESETS`; see below.
-- The **settings tree** as one JSON file, `logsettings.json`, under `QStandardPaths::AppConfigLocation` (M20): the defaults, an ordered list of file patterns, and per-log entries. It supersedes M3's path-keyed `FormatCache` and M18's `DefaultFormatStore`, whose contents it migrates in once and whose `QSettings` groups it then removes; see below.
+- The **two inherited levels of the settings tree** as one JSON file, `logsettings.json`, under `QStandardPaths::AppConfigLocation` (M20): the defaults and an ordered list of file patterns. It supersedes M3's path-keyed `FormatCache` and M18's `DefaultFormatStore`, whose contents it migrates in once and whose `QSettings` groups it then removes; see below. It carried a per-log `files[]` array until M21 moved that level out (§8.2), and still reads one so the upgrade can drain it.
+- **Everything one log says about itself** as one JSON file per log, in a bounded pool under `<AppConfigLocation>/fileSettings/` (M21): its profile, its filters, its highlight rules and its run. See §8.2.
 - Schema version field in both settings and preset files from day one; migrating unversioned user data later is unpleasant.
 
-**The settings tree is one file with three levels, and the deepest one that names a log wins WHOLE** (`SPEC.md` §4). M3 answered "what did the user choose for *this* file" with a path-keyed `FormatCache`; M18 answered "what should a file nobody has configured be tried with" with a pathless `DefaultFormatStore`. There was nothing between them, so a house layout shared by a hundred files was confirmed a hundred times. M20 adds the missing middle — an ordered list of **file patterns** — and, having done so, keeps all three levels in one place rather than three.
+**The settings tree is three levels, and the deepest one that names a log wins WHOLE** (`SPEC.md` §4). M3 answered "what did the user choose for *this* file" with a path-keyed `FormatCache`; M18 answered "what should a file nobody has configured be tried with" with a pathless `DefaultFormatStore`. There was nothing between them, so a house layout shared by a hundred files was confirmed a hundred times. M20 added the missing middle — an ordered list of **file patterns** — and kept all three levels in one file.
+
+**The file level then moved out again (M21), and the split is by SCOPE.** The defaults and the pattern list are global — an ordered list, read once at startup, where order is free in a JSON array and would otherwise need an index file or an order field per node. A log's own settings are per-FILE state: every open resolves one of them and no other, so keeping them in the same document meant every open touching a file that grows with every log ever configured, and two instances reading different logs contending over it (§8.1). They are one record per log now, and the level is unchanged in meaning — deepest match, taken whole, no per-field merging.
 
 **Whole-node values, not per-field merging.** Each node carries a complete `LogProfile`: the seven `FormatSettings` fields plus the wrap mode a new view starts in. That is deliberately the rule the two stores already had ("a cached entry is taken whole, and the default is consulted only when there is none"), generalised rather than replaced. Per-field inheritance would need an "unset" representation for every field, and there is none to be had: `Encoding::Auto` and `ZoneChoice::Kind::Default` are *values*, and an empty pattern is the meaningful answer "ask me about every log". The cost is real and is the right one to pay — a per-log node differing in one field snapshots the rest, which is what **Promote to Parent Pattern** exists to undo.
 
@@ -915,23 +918,25 @@ Four things about it are easy to undo. The equality operators are **new and in c
 
 **Every open is checked against the file, at every level, and there is no longer a way to ask for one that is not.** `promptIfNoMatch` used to be `!cached && pattern.isEmpty()` — a file with a remembered format was never re-examined — and then `pattern.isEmpty()`, so a log whose writer was reconfigured says so instead of showing a wall of plain text. That second spelling was still an exemption for the command line, and it cost exactly what an exemption costs: `--pattern` overrode the resolved node *and* skipped the check *and* was persisted unchecked, so one mistyped switch wrote an unparseable pattern under the log's own key and every later launch, with no switch at all, resolved to it and raised the dialog the switch had been exempted from. Where the switch happened to equal the defaults, the redundancy rule below *deleted* the log's remembered format instead.
 
-So the flag is gone as a parameter: `openWithSettings()` declares it `true` and the only mutation left is the deferral for a log with no bytes yet. An overriding pattern is a **claim about the log, not a licence** — it wins over every level of the tree, and is then judged like every other level. Fits: persisted through the same `setFileProfile()` funnel, which erases the node if the log inherited that answer anyway. Does not: Preferences, whose Declined already means "abort the open", so "the file is not opened and nothing is saved" needed no new path. The cost is the property the exemption bought — an unattended launch naming a pattern that does not fit now blocks on a modal dialog instead of silently opening plain text — and that is the ruling: a wall of unparsed text that also overwrites the settings is not a better answer for a script than a dialog.
+So the flag is gone as a parameter: `openWithSettings()` declares it `true` and the only mutation left is the deferral for a log with no bytes yet. An overriding pattern is a **claim about the log, not a licence** — it wins over every level of the tree, and is then judged like every other level. Fits: persisted through the same write funnel as every other level, which erases the entry if the log inherited that answer anyway. Does not: Preferences, whose Declined already means "abort the open", so "the file is not opened and nothing is saved" needed no new path. The cost is the property the exemption bought — an unattended launch naming a pattern that does not fit now blocks on a modal dialog instead of silently opening plain text — and that is the ruling: a wall of unparsed text that also overwrites the settings is not a better answer for a script than a dialog.
 
-**A per-log node exists only while it says something its parent does not.** `LogSettingsTree::setFileProfile()` erases the node when the profile equals what the address inherits, and it is the single funnel every write goes through — the format dialog, the timestamp header menu, the Run pane, the wrap menu. That one rule is why opening a log leaves nothing behind, why "Promote to Parent Pattern" is self-cleaning, and why the store is written only when it actually changed rather than on every resume of a remote log.
+**A per-log record exists only while it says something its parents do not.** `LogFileSettings::reduce()` drops each section that has fallen back into line — the profile against what the address inherits, the filters against a pane that narrows nothing, the rules against `HighlighterSet::defaults()`, the run against "follow the last one" — and `LogFileStore::save()` deletes the record and frees its slot when nothing survives. It is applied inside the store, so no caller can forget it. That one rule is why opening a log leaves nothing behind, why "Promote to Parent Pattern" is self-cleaning, and why the pool does not silt up with a record per log anybody has ever glanced at. `MainWindow::persistFileSettings()` is the single funnel every write goes through, with a change gate on top of the rule: it is reached on every resume of a remote log, and without the gate that is one atomic write per poll.
 
-**`setFileProfile()` can only see the half where the CHILD moved, so the other half is a sweep.** A node stops saying anything of its own just as surely when the pattern above it is edited, added, reordered or deleted — and nothing writes that node, so nothing re-tests it. Left behind, a hundred entries that agree with a house pattern go on shadowing it: the pattern is still editable and its logs no longer follow it, which is precisely the state the middle level exists to remove. `LogSettingsTree::pruneRedundantFiles()` applies the same equality to the whole list, and `PreferencesDialog` runs it in **`rebuildTree()`** — the funnel every mutation there already ends in, and the one place where "the parent moved" is a thing that can happen — plus once more in `accept()`, because `commitCurrent()` writes a node that has had no rebuild since. It is not a new rule but the existing one made total; the tree's *resolution* is unchanged by every removal it makes, which is what makes it safe to run unasked.
+**A write can only see the half where the CHILD moved, so the other half is a sweep.** A record stops saying anything of its own just as surely when the pattern above it is edited, added, reordered or deleted — and nothing writes that record, so nothing re-tests it. Left behind, a hundred entries that agree with a house pattern go on shadowing it: the pattern is still editable and its logs no longer follow it, which is precisely the state the middle level exists to remove. `LogFileStore::pruneAgainst()` applies `reduce()` to every record in the pool, and it is not a new rule but the existing one made total; the resolution of every log is unchanged by every removal it makes, which is what makes it safe to run unasked.
 
-Two exceptions keep it honest. The **open log's node** is spared by name (`pruneRedundantFiles(m_currentAddress)`) for as long as the dialog is open. It began narrower — the scratch node `selectLog()` creates exists in order to be edited, and starts out saying exactly what the log inherits, so an unexempted sweep would delete it between its creation and its first keystroke — and widened to the log itself when the tree came to list one file row: a log whose *stored* entry happens to agree with the pattern above it is the same shape of node, and sweeping that one left the reader looking at a tree with no row for the log in front of them. `accept()` sweeps with no exception either way, so what is persisted is unchanged. And the **store still loads with `insertFileProfile()`**: a file written before the pattern that now covers it stays in the file until a person opens Preferences, because dropping it during a load nobody asked for is a change the user cannot see happening. The dialog is where they can.
+**Where it runs moved with the level, and had to.** Its predecessor lived in `PreferencesDialog::rebuildTree()`, the funnel every mutation there ends in — which runs on every keystroke that provokes a commit, and re-testing now means reading every record in the pool. It is `MainWindow::commitPreferences()` instead: once per visit, after the tree has been written, and **only when the tree actually moved**. That gate is `LogSettingsTree::operator==`, which ignores pattern *ids* — a tree that only renumbered would spend the whole sweep for no change in any answer — and compares positions by walking in order, because first-match-wins makes order part of the answer. The common visit, changing one log's pattern, sweeps nothing.
 
-**The Preferences tree lists ONE per-log row, and it is the log that is open.** The file level used to carry a row per entry in the store, which grows with every log ever given settings of its own and is a list of logs nobody is looking at; the errand is nearly always the log in front of the reader. The cut is in the **widget and nowhere else** — every other entry is still resolved on an open, still swept by both prunes and still written back — so the only thing lost is reaching another log's entry without opening that log, and the bulk "Forget Individual Files" command went with it for want of anything to be bulk about.
+**The exceptions the sweep used to need are gone with the level, and that is the point.** It had to spare the open log's node by name, because the dialog's one file row *was* a node in the tree and a sweep would delete it between its creation and its first keystroke. The dialog now holds one `LogProfile` of its own and draws a row because an address is open, so there is nothing in the swept set for it to protect: `pruneAgainst()` spares nobody. The open log's own answer is `PreferencesDialog::fileProfile()`, one comparison against what it inherits, asked once when OK is pressed — which is also how Delete and Promote finish, both of them assigning the inherited value and letting that comparison turn it into "the entry is removed".
 
-Three things about it are easy to undo. The key is **`m_currentAddress`**, set unconditionally by `selectLog()` and never cleared, and not the `m_scratchAddress` it replaced, which was filled only when the node had to be created — a log that already had an entry would leave it empty and the tree would list no file row at all. The row is a **fixture**: `rebuildTree()` re-creates the node from `inherited()` whenever something has removed it, so Delete and Promote both read as "put this log back on the level above" rather than taking the file level off the screen for the rest of the visit; it is there rather than in either slot because it is a property of the tree and not of one press. And the label is a **role**, `Current file`, while the panel beside it still heads itself with the log's own name — with one row there is nothing to tell apart, so a file name would be a shorter way of saying "the file", but the panel is where the reader checks *which* log they are about to change. `nodeDisplayName()` is the third label site and deliberately does **not** move: it feeds the apply notice, which says "the settings for app.log" about a node that may not be the one on screen.
+**The Preferences tree lists ONE per-log row, and it is the log that is open.** The file level used to carry a row per entry in the store, which grows with every log ever given settings of its own and is a list of logs nobody is looking at; the errand is nearly always the log in front of the reader. The cut began in the **widget and nowhere else** — every other entry was still resolved on an open, still swept and still written back — so the only thing lost was reaching another log's entry without opening that log, and the bulk "Forget Individual Files" command went with it for want of anything to be bulk about. M21 then made the cut structural: the dialog holds ONE `LogProfile` and the other entries are in the pool, out of its reach entirely (§8.2).
+
+Three things about it are easy to undo. The key is **`m_currentAddress`**, set unconditionally by `selectLog()` and never cleared, and not the `m_scratchAddress` it replaced, which was filled only when the node had to be created — a log that already had an entry would leave it empty and the tree would list no file row at all. The row is a **fact**, which is what M21 bought: it exists because an address is open, so nothing can take it away mid-visit and nothing has to keep putting it back. It was a *fixture* while the file level was in the tree — `rebuildTree()` spared its node from the sweep and re-created it from `inherited()` whenever a gesture had removed it — and both halves are gone with the level. Delete and Promote still read as "put this log back on the level above", now by assigning `m_fileProfile = inherited()` and letting `fileProfile()`'s one comparison turn that into "the entry is removed". And the label is a **role**, `Current file`, while the panel beside it still heads itself with the log's own name — with one row there is nothing to tell apart, so a file name would be a shorter way of saying "the file", but the panel is where the reader checks *which* log they are about to change. `nodeDisplayName()` is the third label site and deliberately does **not** move: it feeds the apply notice, which says "the settings for app.log" about a node that may not be the one on screen.
 
 **"Apply to current file" is a REQUEST the dialog carries, and `accept()` is what performs it.** The dialog applies nothing — applying reindexes the log and destroys the very `Document` its preview is reading — so the button records `applyRequested()`/`applyProfile()` and `MainWindow::showPreferences()` acts on them once `exec()` has returned Accepted. It used to call `accept()` itself, which is how the recorded request got carried out at all, and made it the one control on a panel of in-place edits whose press ended the session, next to Promote, whose press does not. It now arms the request and leaves the dialog standing; deferring costs nothing, because the caller only ever reads the request after Accepted and a request left armed when the user cancels goes with the working copy like every other edit.
 
 Two consequences. The request names a **`NodeRef`, not a snapshot of a profile**: the press no longer ends the session, so the node may be edited a dozen times afterwards, and `accept()` re-reads its settings (before the prune, and leaving the copy taken at the press if the node has since gone). And the press needs a **mark on screen**, which a press that closed the dialog did not — the button is checkable and stays down on the node the request names, with a muted notice saying which log will be re-read and when. `updateButtons()` derives the checked state from `m_applyNode == currentRef()`, so pressing it on another node arms *that* one rather than reading as a second press on the first, and a second press on the same node withdraws it — the only other way back is Cancel, which discards every other edit too.
 
-**Promotion at the pattern level is deliberately NOT self-cleaning, and that asymmetry is the point.** A file node promoted into its pattern is then erased by the same `setFileProfile()` rule, because a file node is nothing but settings and it now says what its parent says. A **pattern** promoted into the defaults **stays**: it is also a matcher, and its position in the ordered list is what keeps a later pattern off the logs it claims, so deleting it for having redundant settings would silently re-home every log under it onto whatever matched next. Nothing under it needs re-pruning either — its file nodes inherit from the pattern, which has not changed. A **file** node no pattern claims stays unpromotable for the reason the virtual node it used to hang under always was: its only parent is the defaults, which is a level skipped rather than a level up. The gate is `resolve(key).patternIndex >= 0` in `updateButtons()` and always was; what moved with the virtual node is where the reason is *said*, which is now the log's own panel, plus the greyed button's tooltip.
+**Promotion at the pattern level is deliberately NOT self-cleaning, and that asymmetry is the point.** A log's settings promoted into its pattern are then erased by the same redundancy rule, because a log's entry is nothing but settings and it now says what its parent says. A **pattern** promoted into the defaults **stays**: it is also a matcher, and its position in the ordered list is what keeps a later pattern off the logs it claims, so deleting it for having redundant settings would silently re-home every log under it onto whatever matched next. Nothing under it needs re-pruning either — the logs it claims inherit from the pattern, which has not changed. A **log** no pattern claims stays unpromotable for the reason the virtual node it used to hang under always was: its only parent is the defaults, which is a level skipped rather than a level up. The gate is `matchingPattern(key) >= 0` in `updateButtons()` and always was (as `resolve(key).patternIndex`, before the file level left the tree); what moved with the virtual node is where the reason is *said*, which is now the log's own panel, plus the greyed button's tooltip.
 
 **The Preferences splitter opens at a width derived from the TREE'S OWN ROWS, and is settled exactly once.** A fraction of the dialog knows nothing about the labels: at the 1:2 stretch the pane shipped with, the virtual "Logs with no matching pattern" row was elided on a window with room to spare on the other side, and it stayed elided at any desktop font larger than the developer's. That row is gone — only the open log is listed now — but a pattern is a line the user types and makes the same argument at any length, which is what the regression test measures instead. `PreferencesDialog::treeContentWidth()` measures the widest row the way the delegate lays one out — one indentation per level plus one for the root decoration `rootIsDecorated` adds, plus the label at the tree's own font metrics — and `applyInitialSplit()` bounds that (plus the frame, the panel gap and room for a scrollbar) between a floor and 40% of the splitter. **The cap is the half that matters**: a pattern is a line the user types, so one long enough would otherwise hand the tree most of the dialog and squeeze the settings the tree exists to reach.
 
@@ -976,12 +981,105 @@ Two consequences worth keeping straight. `all()` drops later duplicates rather t
 `SPEC.md` §3 allows multiple instances at once, which makes settings a shared mutable resource across processes. Three consequences:
 
 - **Write atomically.** Preset and settings files are written to a temp file and renamed, so an instance crashing or two writing at once can never leave a truncated file. `QSettings` handles this for its own store; the JSON preset file is ours to get right.
-- **Per-file state is keyed by file path**, so instances viewing different logs never contend. `logsettings.json` is the exception in shape but not in rule: it is one file holding every log's settings, written whole and atomically, so it is last-writer-wins like any other global. `showPreferences()` therefore re-reads it before showing the dialog rather than trusting the copy the window started with. This is the main reason the per-file scoping in `SPEC.md` §10 is worth having beyond its UX merit.
+- **Per-file state is one file per log** (§8.2), so instances viewing different logs never contend — which since M21 is true in shape as well as in rule. `logsettings.json` used to be the exception: one file holding every log's settings, written whole, so two instances reading different logs were last-writer-wins over each other's. What is left in it is genuinely global — the defaults and the pattern list — and is last-writer-wins by nature; `showPreferences()` re-reads it before showing the dialog rather than trusting the copy the window started with. This is the main reason the per-file scoping in `SPEC.md` §10 is worth having beyond its UX merit.
 - **Global state is last-writer-wins** (`SPEC.md` §10), since instances have no coordination channel. Write on change rather than only at exit, to narrow the window in which one instance's state is lost.
 
 Deliberately *not* doing: a lock file, a single-instance server, or inter-instance IPC. Each adds a failure mode (stale locks, port conflicts) far more annoying than the state loss it prevents.
 
-### 8.2 Chrome colours, and the placeholder Qt forgets
+### 8.2 One file per log, in a bounded pool
+
+Everything a log says about itself is one JSON record (M21, `LogFileSettings`), stored in a
+pool under `<AppConfigLocation>/fileSettings/`: a `map` indexing address → slot, and the
+records themselves in slots numbered `0` … `499`.
+
+**Why a slot number and not the address as the file name.** An address is a path, a URL or
+an archive address: it carries `/`, `:` and `*`, it outruns `NAME_MAX` on a deep tree, and
+its case folding differs per platform. It would have to be hashed — and a hash needs the
+address stored inside the record anyway, to tell a hit from a collision. The slot is that
+indirection made explicit, and made **bounded**: nothing ever deleted a per-log entry
+except the redundancy rule, so the `files[]` array this replaced grew for the life of the
+installation. The cap turns "remembered for ever" into a promise loftail can keep for the
+logs that matter rather than a directory nobody prunes. Eviction is least-recently-OPENED
+— the tick moves on an open and on nothing else, so a log tailed for a week in a
+background tab does not outrank one its reader opens daily — and never takes a log that is
+open in a tab, which would pull settings out from under a tab still using them.
+`MainWindow::relabelTabs()`, whose whole definition is "the set of open logs changed", is
+what tells the pool which those are.
+
+**Every crash ends at an orphan, and the two write orders are opposite for that.** Both
+files go through `AtomicJson`, so neither is ever torn; what is not atomic is the PAIR. A
+**write** goes slot file first and map second; a **remove** goes map first and slot file
+second. Either way what survives the gap is a slot file no entry points at — one small
+file, invisible to every read, overwritten whole when its number is reallocated, which is
+why there is no reclamation pass and does not need to be. The forbidden direction is a map
+entry naming a slot holding a **different log's** record: that is one log opening with
+another's format, filters and highlight rules, which is worse than losing the settings
+outright.
+
+**A stale slot is settled by the file, never by the map.** Every record names its own
+address in the slot file as well as in the index, so a read checks that name and refuses a
+slot answering to somebody else. The map is a hint that is always verified and never
+trusted — which is what makes the multi-instance case safe, two instances racing on an
+allocation being able to produce only an entry the reader refuses — and it is what lets a
+lost or unparseable map be **rebuilt** from the records rather than surrendered. The map's
+entries are an array and not an address-keyed object for the same reason: a duplicate is
+then something the loader can see and settle, instead of something JSON collapses to
+whichever came last.
+
+**The `inherited` mark is a string where an object would be**, not an absent key. A record
+kept for its filters alone still says something deliberate about its format rather than
+reading as a file that was half written — and the two are told apart on the read side,
+where "absent" has to keep meaning what it means for the rule list.
+
+**Presence, not emptiness, for the rules** — the trap `HighlightRule::fromJson` records for
+`"actions"` and `logProfileFromJson` for `"pattern"`, now four stores deep. Absent seeds
+`HighlighterSet::defaults()`; an EMPTY array is the user having deleted every rule and must
+stay deleted. It is a `std::optional<QJsonArray>` so the distinction cannot be lost by
+accident.
+
+**"The filters say nothing" is not a value comparison, and that is the one worth writing
+down.** Every discovered subsystem starts ticked (`SPEC.md` §6), so an untouched pane over
+an indexed log lists every name in the file; and a `QDateTimeEdit` always holds a datetime,
+so an untouched time axis reads back as a valid `2000-01-01` bound — the
+`AxisEditor::criteria()` non-inverse that used to rewrite a log's seeded highlight rules on
+a bare run click (§7.5.4). Comparing values against a default-constructed `MatchCriteria`
+would therefore give a record to every log that has finished scanning.
+`filterStateSaysNothing()` asks whether any axis **narrows** anything instead, which is
+`MatchCriteria::resolve()`'s own `NoOpAxes::Collapse` rule with the intern-table lookup
+left out — so an axis added to that collapse logic belongs here in the same commit.
+
+**The run is not read while there is nothing to read.** `MainWindow::runSelectionOf()`
+answers `nullopt` while the scan is running or a restore is still armed, which leaves the
+stored section exactly as it was. Mid-scan `runs()` is empty and `selectedRun()` is -1, and
+-1 with a run-start pattern set is the "all runs" answer — so a format change or a remote
+resume arriving then would silently unpin a run the user pinned, which `SPEC.md` §3a says
+only they move. It carries `saveSession()`'s three-way branch verbatim, one function over,
+so the quit path and every other write cannot come to disagree about what "last run" saves:
+nothing, deliberately, since storing the run it resolves to now would bring the log back
+pinned to one that has since finished.
+
+**Nothing here may be reachable from the ingest path.** `persistFileSettings()` builds a
+whole record and compares it, and on a miss writes two files. `followLastRunIfMoved()`
+retargets the run on every tick of a restarting log and `HighlighterPane::refreshTimeBounds()`
+runs there too; the first is answered by "last run" storing no offset, the second by that
+function's existing rule that it calls `commit()` only when a rule actually moved — which
+is now load-bearing for a file write as well as for the tab's marker. Filters are persisted
+from `applyActiveFilters()`, the pane's own debounced notification, and never from
+`applyFiltersFor()`, which four other things reach.
+
+**The migration has one destination and two sources.** M20's `files[]` and M18's
+`formatCache` both drain through `LogSettingsStore::takeLegacyFiles()` into
+`LogFileStore::adoptLegacy()`, from the `MainWindow` constructor — before
+`restoreSession()`, for the reason the M20 migration already sat there: restore resolves
+each tab through the pool, so draining afterwards opens every restored tab on the built-in
+defaults, once. Rewriting `logsettings.json` without the key is what closes it; there is no
+flag anywhere saying it ran. An existing record **wins** over a legacy node, so a downgrade
+and a second upgrade cannot roll a newer record back. The session's five per-document keys
+drain separately, in `prepareContext()`, section by section and only where the record is
+silent — and `save()` removes both arrays before rewriting, so the first quit takes them
+off the disk for good.
+
+### 8.3 Chrome colours, and the placeholder Qt forgets
 
 A log's own colours have been theme-aware since M5: highlight rules reference a `HighlightPalette` slot by index, and each slot carries a light and a dark variant (§8). The **chrome** around them was not. An invalid pattern's red, a caution's amber, a muted aside and the grey of placeholder text were each a hex literal chosen against a light theme — `#c0392b`, `#b9770e`, `#b04a00`, `color: gray` — and on a dark palette they ranged from dim to unreadable. `UiColors` gives those four the same treatment, as plain functions of a `QPalette` so they need no `QApplication` and track whatever theme the widget is actually in. It is deliberately *not* part of `HighlightPalette`: those slots are a user-facing palette that rules reference by index and presets round-trip through, while these four are internal and nothing persists them.
 
@@ -1132,7 +1230,7 @@ The cost is deliberate: **logs no longer split, tear off, or float.** Two views 
 - The bracket **nests**, because `openFile()` opens an archive's picked members through `openFiles()`. Only the outermost close renders, or picking three members out of an archive would produce a message per member.
 - `restoreSession()` is bracketed too, so a launch that cannot reopen four logs says so once, with a reason each. `prepareContext()` takes an out-parameter for that reason; without it the restore listed paths and dropped every "why", which is the half the reader needs.
 - A render **replaces** the strip's contents and clears the pending list, and the list is capped when it is drawn. That is the whole of "the message does not accumulate": nothing appends, and only the dismiss button and a later gesture ever change what is there — not an ingest tick, not a tab switch, not a successful open.
-- The strip's colour is taken from `errorColor(palette())` at **render** time rather than at construction, so it follows a theme changed under a running window (§8.2).
+- The strip's colour is taken from `errorColor(palette())` at **render** time rather than at construction, so it follows a theme changed under a running window (§8.3).
 
 Two properties of the loop are load-bearing. It must stay **non-blocking per address**: `openFile()` returns with a tab that says it is connecting rather than one that has connected (§6.3.3), so N unreachable hosts on one command line still put N tabs up at once instead of serialising into N connect timeouts before the window is usable. And **the last one opened is the tab left in front**, because each open calls `showView()` — an emergent property of opening them one at a time, kept rather than overridden, so a set of files behaves like the same files typed one after another.
 
@@ -1143,12 +1241,14 @@ The command line itself lives in `src/ui/CommandLine.h` rather than in `main()`,
 ```json
 { "schemaVersion": 3,
   "geometry": "...", "windowState": "...",
-  "documents": [ { "path": "...", "format": "...", "timeDisplay": "utc", "filters": {}, "highlighters": {}, "runAll": false } ],
+  "documents": [ { "path": "..." } ],
   "views":     [ { "document": 0, "columnState": "...", "wrapMode": 0 } ],
   "activeView": 0 }
 ```
 
 Two arrays, matching the two scopes: N files, and N views pointing back at them. **The `views` array is in tab order**, which is all the layout an open file has now; `windowState` is `QMainWindow::saveState()` and carries the pane arrangement alone.
+
+**A `documents` entry is a path, and that is the shape two rounds of removal left.** M20 took out the format group — `format`, `timeDisplay`, `sourceZone`, the run-start triple — because those are settings and belong to the log. M21 took out the rest for the same reason one step further: `filters`, `highlighters` and the three run keys are per-FILE state, and a store that remembers a log only while it is open in a tab was the wrong place for them (§8.2). Neither round bumped the version, and neither could have: `load()` gates on exact version equality for anything it does not list, so a bump discards every session it does not recognise — while a removed key is exactly what a backward read handles. `load()` still reads all five, once, so the upgrade can hand them to the pool; `save()` writes none of them, and because it `remove()`s both arrays before rewriting, the first quit after the upgrade takes them off the disk and there is nothing left to remember that the drain ran.
 
 **Restore order:**
 

@@ -308,10 +308,15 @@ private:
     void onIndexProgress(DocumentContext *ctx, qint64 done, qint64 total);
     void onIndexFinished(DocumentContext *ctx, bool cancelled);
 
-    // Full session persistence (SPEC.md §10, ARCHITECTURE.md §12.4): write the active
-    // document's per-file state (format, filters, highlighters, columns) into the
-    // `documents` array plus global geometry/pane layout on close; restore it on
-    // launch. A missing last file yields an empty view with an inline notice.
+    // Session persistence (SPEC.md §10, ARCHITECTURE.md §12.3): WHICH LOGS were open and
+    // in what order, each view's column layout and wrap mode, and the global geometry and
+    // pane layout — written on close, restored on launch. A missing last file comes back
+    // as a waiting tab rather than being dropped.
+    //
+    // Nothing a log says about ITSELF is here. Its format, filters, highlight rules and
+    // run are per-file state and live one record per log (§8.2); saveSession() flushes
+    // each of them through persistFileSettings() on the way past, which is what makes a
+    // quit store what the panes were holding.
     void saveSession();
     void restoreSession();
 
