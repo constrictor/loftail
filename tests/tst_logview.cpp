@@ -277,6 +277,9 @@ private slots:
     void aDoubleClickReportsTheRecordAndColumnUnderThePointer();
     void aDoubleClickBelowTheLastRecordReportsNothing();
     void aDoubleClickLeavesNoDragArmedBehindIt();
+    void theFilterChordsReportTheRecordAndColumnUnderThePointer();
+    void aFilterChordBelowTheLastRecordReportsNothing();
+    void aFilterChordMovesNothingAndArmsNoDrag();
     void selectAllTakesEveryRecordAndLeavesTheReaderWhereTheyAre();
     void selectAllStopsAtWhatTheFilterLeftVisible();
     void whatFindMatchedIsMarkedInsideTheRecordsOnScreen();
@@ -2380,6 +2383,130 @@ void TestLogView::aDoubleClickLeavesNoDragArmedBehindIt()
     dragMoveTo(view.viewport(), rowAt(7));
     QCOMPARE(selectedRows(view), QVector<int>({2}));
     QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(2));
+}
+
+// --- the two filter chords (SPEC.md §5) ---------------------------------------------
+//
+// The view answers only WHERE, exactly as it does for the menu and the double-click.
+// What these pin is the seam and the modifier gating: which chord is which, that the two
+// chords are matched by EXACT equality so Shift keeps outranking them, and that the press
+// is taken — nothing selected, nothing focused, no drag armed.
+
+void TestLogView::theFilterChordsReportTheRecordAndColumnUnderThePointer()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 20), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(900, 400);
+
+    const int logger = columnOfRole(doc, FieldRole::Logger);
+    QVERIFY(logger >= 0);
+    QHeaderView *header = view.header();
+    const int x = header->sectionViewportPosition(logger) + header->sectionSize(logger) / 2;
+    const int lh = view.fontMetrics().height();
+    const QPoint pos(x, 3 * lh + lh / 2);
+
+    QSignalSpy only(&view, &LogView::recordShowOnlyRequested);
+    QSignalSpy hide(&view, &LogView::recordHideRequested);
+
+    QTest::mouseClick(view.viewport(), Qt::LeftButton,
+                      Qt::ControlModifier | Qt::AltModifier, pos);
+    QCOMPARE(only.count(), 1);
+    QCOMPARE(hide.count(), 0);
+    QList<QVariant> args = only.takeFirst();
+    QCOMPARE(args.at(0).toInt(), 3);
+    QCOMPARE(args.at(1).toInt(), logger);
+
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::AltModifier, pos);
+    QCOMPARE(hide.count(), 1);
+    QCOMPARE(only.count(), 0);
+    args = hide.takeFirst();
+    QCOMPARE(args.at(0).toInt(), 3);
+    QCOMPARE(args.at(1).toInt(), logger);
+
+    // A second chord-click in quick succession arrives as a double-click, and is taken
+    // there too, so the chord answers every time rather than every other time.
+    QTest::mouseDClick(view.viewport(), Qt::LeftButton,
+                       Qt::ControlModifier | Qt::AltModifier, pos);
+    QCOMPARE(only.count(), 1);
+    only.clear();
+
+    // Exact equality: adding Shift is not this chord, it is Shift's own "extend to
+    // here". Ctrl alone and Alt+right are not it either.
+    QTest::mouseClick(view.viewport(), Qt::LeftButton,
+                      Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier, pos);
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ControlModifier, pos);
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), pos);
+    QTest::mouseClick(view.viewport(), Qt::RightButton, Qt::AltModifier, pos);
+    QCOMPARE(only.count(), 0);
+    QCOMPARE(hide.count(), 0);
+}
+
+void TestLogView::aFilterChordBelowTheLastRecordReportsNothing()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 3), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(900, 400);
+
+    const int lh = view.fontMetrics().height();
+    QVERIFY(view.viewport()->height() > 10 * lh); // there really is empty space below
+    const QPoint below(50, view.viewport()->height() - lh / 2);
+
+    QSignalSpy only(&view, &LogView::recordShowOnlyRequested);
+    QSignalSpy hide(&view, &LogView::recordHideRequested);
+    QTest::mouseClick(view.viewport(), Qt::LeftButton,
+                      Qt::ControlModifier | Qt::AltModifier, below);
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::AltModifier, below);
+    QCOMPARE(only.count(), 0);
+    QCOMPARE(hide.count(), 0);
+}
+
+// The press is spent entirely on the filter: it selects nothing, moves nothing, and
+// leaves no drag behind it. Read against a two-record selection built beforehand, which
+// a fall-through would collapse onto the record the chord landed on.
+void TestLogView::aFilterChordMovesNothingAndArmsNoDrag()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openMixedLog(doc, file, 60), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(900, 400);
+
+    const int lh = view.fontMetrics().height();
+    const auto rowAt = [&](int row) { return QPoint(50, row * lh + lh / 2); };
+
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), rowAt(2));
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, rowAt(3));
+    QCOMPARE(selectedRows(view), QVector<int>({2, 3}));
+    const int current = view.currentRecord();
+    const int scroll = view.verticalScrollBar()->value();
+
+    for (Qt::KeyboardModifiers mods :
+         {Qt::KeyboardModifiers(Qt::ControlModifier | Qt::AltModifier),
+          Qt::KeyboardModifiers(Qt::AltModifier)}) {
+        QTest::mousePress(view.viewport(), Qt::LeftButton, mods, rowAt(9));
+        QCOMPARE(selectedRows(view), QVector<int>({2, 3}));
+        QCOMPARE(view.currentRecord(), current);
+        QCOMPARE(view.verticalScrollBar()->value(), scroll);
+
+        // No drag armed: a move with the button still down extends nothing.
+        dragMoveTo(view.viewport(), rowAt(14));
+        QCOMPARE(selectedRows(view), QVector<int>({2, 3}));
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, mods, rowAt(14));
+        QCOMPARE(selectedRows(view), QVector<int>({2, 3}));
+    }
 }
 
 // --- Select All (SPEC.md §5) --------------------------------------------------------

@@ -6,6 +6,7 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMenu>
 #include <QScrollBar>
 #include <QSettings>
@@ -13,6 +14,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 
+#include "AxisEditor.h"
 #include "ConfigReset.h"
 #include "Document.h"
 #include "DocumentContext.h"
@@ -196,6 +198,28 @@ private:
         QTest::mouseDClick(log->viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), pos);
     }
 
+    // One press-and-release on a cell with whatever modifiers are held — the two filter
+    // chords, and the plain, Ctrl and Shift clicks they must leave alone.
+    static void clickCell(const MainWindow &w, int viewRow, FieldRole role,
+                          Qt::KeyboardModifiers mods)
+    {
+        LogView *log = activeView(w)->logView();
+        const QPoint pos = cellCentre(w, viewRow, role);
+        QVERIFY(pos.x() >= 0 && pos.y() >= 0);
+        QVERIFY(log->viewport()->rect().contains(pos));
+        QTest::mouseClick(log->viewport(), Qt::LeftButton, mods, pos);
+    }
+
+    static constexpr Qt::KeyboardModifiers kShowOnlyChord =
+        Qt::ControlModifier | Qt::AltModifier;
+    static constexpr Qt::KeyboardModifiers kHideChord = Qt::AltModifier;
+
+    static int selectedRecords(const MainWindow &w)
+    {
+        DocumentView *v = activeView(w);
+        return v ? v->logView()->selectionModel()->selectedRows(0).size() : -1;
+    }
+
     // The interned ids an axis is narrowed to, as names, so a case can say what the
     // filter came out as rather than what its bit pattern is (invariant #4).
     static QStringList filteredNames(const MainWindow &w, bool logger)
@@ -241,6 +265,21 @@ private slots:
     void doubleClickingAnyOtherColumnDoesNothingAtAll();
     void doubleClickingACellTheRecordCannotAnswerForDoesNothing();
     void doubleClickingTheSameCellAgainLeavesTheFilterWhereItIs();
+
+    // The two filter chords (SPEC.md §5): Ctrl+Alt+click is *Show Only*, Alt+click is
+    // *Hide*. Driven with real mouse events at the viewport for the reason the
+    // double-click cases are — the modifier gating is the whole of what was added, and
+    // every one of these passes against applyRecordFilter() called directly.
+    void ctrlAltClickingASubsystemCellShowsOnlyThatSubsystem();
+    void ctrlAltClickingAThreadCellShowsOnlyThatThread();
+    void altClickingASubsystemCellHidesItAndKeepsDiscovering();
+    void altClickingAThreadCellHidesIt();
+    void ctrlAltClickingAPriorityCellSetsTheFloor();
+    void altClickingAPriorityCellDoesNothing();
+    void theChordsDoNothingOnTheOtherColumns();
+    void aCellTheRecordCannotAnswerForIsInertUnderBothChords();
+    void theChordsLeaveTheSelectionExactlyWhereItWas();
+    void theOrdinarySelectionChordsAreUntouched();
 };
 
 void TestRecordMenu::initTestCase()
@@ -713,6 +752,210 @@ void TestRecordMenu::doubleClickingTheSameCellAgainLeavesTheFilterWhereItIs()
     doubleClickCell(w, 1, FieldRole::Logger);
     QCOMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("net.io")});
     QCOMPARE(visibleRecords(w), 3);
+}
+
+// --- the two filter chords (SPEC.md §5) ---------------------------------------
+//
+// Ctrl+Alt+click is the Filters pane's own Ctrl+click — "show only this one" — reached
+// from the record, and Alt+click is unticking that value. Both are the record menu's own
+// items, so what these pin is that the chord lands on the SAME per-file filter state, is
+// offered exactly where the menu offers the item, and spends the click entirely on the
+// filter: the selection must not move.
+
+void TestRecordMenu::ctrlAltClickingASubsystemCellShowsOnlyThatSubsystem()
+{
+    MainWindow w;
+    openShown(w, m_log);
+    QCOMPARE(visibleRecords(w), 4);
+
+    clickCell(w, kWorker, FieldRole::Logger, kShowOnlyChord); // db.pool
+
+    const Document *doc = activeView(w)->context()->doc.get();
+    QVERIFY(doc->filters().loggerEnabled);
+    QCOMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("db.pool")});
+    QVERIFY(!doc->filters().threadEnabled);
+    // db.pool's one record, plus the unparsed line no subsystem filter may hide (§6).
+    QCOMPARE(visibleRecords(w), 2);
+}
+
+void TestRecordMenu::ctrlAltClickingAThreadCellShowsOnlyThatThread()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    clickCell(w, kWorker, FieldRole::Thread, kShowOnlyChord); // worker
+
+    const Document *doc = activeView(w)->context()->doc.get();
+    QVERIFY(doc->filters().threadEnabled);
+    QCOMPARE(filteredNames(w, /*logger=*/false), QStringList{QStringLiteral("worker")});
+    QVERIFY(!doc->filters().loggerEnabled);
+    QCOMPARE(visibleRecords(w), 2);
+}
+
+// Hide unticks ONE value and says nothing about the next name the scan turns up, which
+// is the whole difference from Show Only — the discovery rule stays armed.
+void TestRecordMenu::altClickingASubsystemCellHidesItAndKeepsDiscovering()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    clickCell(w, kMain, FieldRole::Logger, kHideChord); // net.io
+
+    const Document *doc = activeView(w)->context()->doc.get();
+    QVERIFY(doc->filters().loggerEnabled);
+    QCOMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("db.pool")});
+    // net.io's two records gone; db.pool's one and the unparsed line left.
+    QCOMPARE(visibleRecords(w), 2);
+
+    auto *pane = w.findChild<FilterPane *>();
+    QVERIFY(pane);
+    auto *list = pane->findChild<QListWidget *>(QStringLiteral("subsystemList"));
+    QVERIFY(list);
+    QVERIFY(AxisEditor::isOthersRow(list->item(0)));
+    QCOMPARE(list->item(0)->checkState(), Qt::Checked); // still discovering
+}
+
+void TestRecordMenu::altClickingAThreadCellHidesIt()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    clickCell(w, kWorker, FieldRole::Thread, kHideChord); // worker
+
+    const Document *doc = activeView(w)->context()->doc.get();
+    QVERIFY(doc->filters().threadEnabled);
+    QCOMPARE(filteredNames(w, /*logger=*/false), QStringList{QStringLiteral("main")});
+    QCOMPARE(visibleRecords(w), 3); // the two main records + the unparsed line
+}
+
+// The priority axis is a MINIMUM level, so Show Only means "this level and above" — the
+// menu's own recordPriorityFloor, and the one column double-click still leaves alone.
+void TestRecordMenu::ctrlAltClickingAPriorityCellSetsTheFloor()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    clickCell(w, kError, FieldRole::Priority, kShowOnlyChord);
+
+    QCOMPARE(visibleRecords(w), 2); // the ERROR record + the unparsed line
+}
+
+// And there is no "hide this level": a floor cannot exclude one rung, so the chord that
+// would ask for it does nothing rather than something invented.
+void TestRecordMenu::altClickingAPriorityCellDoesNothing()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    clickCell(w, kError, FieldRole::Priority, kHideChord);
+
+    QVERIFY(!activeView(w)->context()->doc->filters().anyActive());
+    QCOMPARE(visibleRecords(w), 4);
+}
+
+void TestRecordMenu::theChordsDoNothingOnTheOtherColumns()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    for (FieldRole role : {FieldRole::Message, FieldRole::Date}) {
+        for (Qt::KeyboardModifiers mods : {kShowOnlyChord, kHideChord}) {
+            clickCell(w, kWorker, role, mods);
+            QVERIFY2(!activeView(w)->context()->doc->filters().anyActive(),
+                     "a chord outside the three filterable columns filtered something");
+            QCOMPARE(visibleRecords(w), 4);
+        }
+    }
+}
+
+// Nothing that cannot be answered: an unparsed plain-text line has no subsystem, so the
+// menu offers no item and both chords are inert — with no gate of their own to fall out
+// of step with the menu's. The empty space below the last record answers "nothing" too.
+void TestRecordMenu::aCellTheRecordCannotAnswerForIsInertUnderBothChords()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    for (Qt::KeyboardModifiers mods : {kShowOnlyChord, kHideChord}) {
+        clickCell(w, kPlain, FieldRole::Logger, mods);
+        QVERIFY(!activeView(w)->context()->doc->filters().loggerEnabled);
+        QCOMPARE(visibleRecords(w), 4);
+
+        LogView *log = activeView(w)->logView();
+        const int lh = qMax(1, log->fontMetrics().height());
+        QTest::mouseClick(log->viewport(), Qt::LeftButton, mods,
+                          QPoint(cellCentre(w, 0, FieldRole::Logger).x(),
+                                 log->viewport()->height() - lh / 2));
+        QVERIFY(!activeView(w)->context()->doc->filters().loggerEnabled);
+        QCOMPARE(visibleRecords(w), 4);
+    }
+}
+
+// The press is TAKEN: the click is spent entirely on the filter and moves nothing.
+//
+// Read on a chord that filters NOTHING, which is the only place the claim is visible —
+// where the chord does apply a filter, the re-filter's own model reset clears the
+// selection (QItemSelectionModel clears itself from modelReset), exactly as the record
+// menu's Show Only has always done, so a fall-through there is indistinguishable. Here
+// it is not: a press that fell through would collapse a two-record selection onto the
+// record it landed on, and both of these leave the filters untouched.
+void TestRecordMenu::theChordsLeaveTheSelectionExactlyWhereItWas()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    LogView *log = activeView(w)->logView();
+    clickCell(w, kMain, FieldRole::Message, Qt::NoModifier);
+    clickCell(w, kWorker, FieldRole::Message, Qt::ShiftModifier);
+    QCOMPARE(selectedRecords(w), 2);
+    QCOMPARE(log->currentRecord(), int(kWorker));
+
+    // A Message cell: neither chord means anything there, and both land on a record
+    // that is not in the selection.
+    for (Qt::KeyboardModifiers mods : {kShowOnlyChord, kHideChord}) {
+        clickCell(w, kError, FieldRole::Message, mods);
+        QVERIFY(!activeView(w)->context()->doc->filters().anyActive());
+        QCOMPARE(selectedRecords(w), 2);
+        QCOMPARE(log->currentRecord(), int(kWorker));
+    }
+
+    // And the unparsed line's Subsystem cell, where the chord is aimed at a real axis
+    // and the record simply cannot answer for it.
+    for (Qt::KeyboardModifiers mods : {kShowOnlyChord, kHideChord}) {
+        clickCell(w, kPlain, FieldRole::Logger, mods);
+        QVERIFY(!activeView(w)->context()->doc->filters().anyActive());
+        QCOMPARE(selectedRecords(w), 2);
+        QCOMPARE(log->currentRecord(), int(kWorker));
+    }
+}
+
+// Ctrl+Alt was chosen over the pane's bare Ctrl precisely because Ctrl+click here means
+// something already, and it goes on meaning it — on the filterable columns too. The
+// modifiers are matched by exact equality, so Ctrl+Alt+Shift is still Shift's.
+void TestRecordMenu::theOrdinarySelectionChordsAreUntouched()
+{
+    MainWindow w;
+    openShown(w, m_log);
+    LogView *log = activeView(w)->logView();
+
+    clickCell(w, kPlain, FieldRole::Logger, Qt::NoModifier);
+    QCOMPARE(selectedRecords(w), 1);
+
+    // Ctrl+click on a SUBSYSTEM cell still takes a record in, and filters nothing.
+    clickCell(w, kWorker, FieldRole::Logger, Qt::ControlModifier);
+    QCOMPARE(selectedRecords(w), 2);
+    QVERIFY(!activeView(w)->context()->doc->filters().anyActive());
+
+    // Ctrl+click again takes it back out.
+    clickCell(w, kWorker, FieldRole::Logger, Qt::ControlModifier);
+    QCOMPARE(selectedRecords(w), 1);
+
+    // Ctrl+Alt+SHIFT is not the chord: Shift outranks it and extends, filtering nothing.
+    clickCell(w, kError, FieldRole::Logger,
+              Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier);
+    QVERIFY(!activeView(w)->context()->doc->filters().anyActive());
+    QCOMPARE(log->currentRecord(), int(kError));
+    QVERIFY(selectedRecords(w) > 1);
 }
 
 int main(int argc, char *argv[])

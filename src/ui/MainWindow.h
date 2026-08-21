@@ -125,6 +125,11 @@ protected:
     // model resolves the right variant of each palette slot (SPEC.md §7).
     void changeEvent(QEvent *event) override;
 
+private:
+    // Which of the two filter chords (SPEC.md §5) a cell click was. A plain parameter
+    // type and never a signal argument, so nothing needs Q_ENUM registration.
+    enum class RecordFilterCommand { ShowOnly, Hide };
+
 private slots:
     void chooseFileToOpen();
     // Open a log on another machine (SPEC.md §3, M11): the Open Remote dialog, and
@@ -152,6 +157,20 @@ private slots:
     // record or a format that cannot speak for the axis (which offers no item) makes it
     // do nothing with no second gate to keep in step.
     void activateRecordColumn(DocumentView *view, int viewRow, int column);
+    // What the two filter chords do (SPEC.md §5): Ctrl+Alt+click is *Show Only* on a
+    // Subsystem or Thread cell and the level floor on a Priority one; Alt+click is
+    // *Hide* on the two value axes, and nothing on Priority, whose axis is a minimum
+    // rather than a set. Same route as activateRecordColumn() above and for the same
+    // reasons — the record menu's own item, triggered by object name, so the gating,
+    // the persistence and the undo story are the menu's rather than a second copy.
+    void applyRecordFilter(DocumentView *view, int viewRow, int column,
+                           RecordFilterCommand command);
+    // Build the record menu for this cell and trigger the item with this object name,
+    // if it has one. The shared tail of both gestures above: an item the menu left out
+    // because the record cannot speak for its axis simply is not found, which is what
+    // makes every gesture inert exactly where the menu is with no gate of its own.
+    void triggerRecordMenuItem(DocumentView *view, int viewRow, int column,
+                               const char *objectName);
     // Recompute the visible subset from the active document's filters and refresh
     // its views + status counts (M4). Wrapped in a model reset.
     void applyActiveFilters();
