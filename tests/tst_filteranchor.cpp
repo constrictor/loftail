@@ -12,6 +12,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 
+#include "ConfigReset.h"
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
@@ -147,8 +148,12 @@ void TestFilterAnchor::init()
 {
     QSettings s;
     s.remove(QStringLiteral("session"));
-    s.remove(QStringLiteral("formatCache"));
     s.sync();
+    // AND EVERY STORE A LOG'S SETTINGS CAN BE IN. Since M21 a log's filters, its rules
+    // and its run outlive the tab — that is the point of them — so a case that opens the
+    // same path as an earlier one would otherwise inherit whatever that one left behind,
+    // and pass or fail on the order QtTest happened to run them in.
+    clearLogSettings();
 }
 
 void TestFilterAnchor::changingAFilterInThePaneKeepsTheViewWhereItWas()

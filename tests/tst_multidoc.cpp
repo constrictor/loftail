@@ -19,6 +19,7 @@
 #include <QListWidget>
 #include <QAbstractButton>
 
+#include "ConfigReset.h"
 #include "AxisEditor.h"
 #include "Document.h"
 #include "DocumentContext.h"
@@ -264,11 +265,12 @@ void TestMultiDoc::init()
 {
     QSettings s;
     s.remove(QStringLiteral("session"));
-    // The per-file format cache is keyed by path and outlives a window, so a
-    // timestamp mode chosen in one case would otherwise reappear in the next one
-    // that opens the same file.
-    s.remove(QStringLiteral("formatCache"));
     s.sync();
+    // AND EVERY STORE A LOG'S SETTINGS CAN BE IN. Since M21 a log's filters, its rules
+    // and its run outlive the tab — that is the point of them — so a case that opens the
+    // same path as an earlier one would otherwise inherit whatever that one left behind,
+    // and pass or fail on the order QtTest happened to run them in.
+    clearLogSettings();
 }
 
 void TestMultiDoc::documentsAndPanesLiveInSeparateShells()

@@ -37,6 +37,41 @@ private slots:
     void highlightActionsRoundTripWithoutASchemaBump();
 };
 
+namespace {
+
+// One `documents` entry in the shape a build BEFORE M21 wrote: the path plus the five
+// per-log keys. save() cannot produce this any more — that is the change — so the
+// migration's read side has to be arranged by hand.
+void writeLegacyDocument(const QString &ini, const QString &path,
+                         const QJsonObject &filters = QJsonObject(),
+                         const QJsonObject &highlighters = QJsonObject(),
+                         bool runAll = false, qint64 runOffset = -1, qint64 runTs = 0)
+{
+    QSettings s(ini, QSettings::IniFormat);
+    s.beginGroup(QStringLiteral("session"));
+    s.setValue(QStringLiteral("schemaVersion"), SessionStore::kSchemaVersion);
+    s.setValue(QStringLiteral("activeView"), 0);
+    s.beginWriteArray(QStringLiteral("documents"), 1);
+    s.setArrayIndex(0);
+    s.setValue(QStringLiteral("path"), path);
+    s.setValue(QStringLiteral("runAll"), runAll);
+    s.setValue(QStringLiteral("selectedRunOffset"), runOffset);
+    s.setValue(QStringLiteral("selectedRunTs"), runTs);
+    s.setValue(QStringLiteral("filters"),
+               QString::fromUtf8(QJsonDocument(filters).toJson(QJsonDocument::Compact)));
+    s.setValue(QStringLiteral("highlighters"),
+               QString::fromUtf8(QJsonDocument(highlighters).toJson(QJsonDocument::Compact)));
+    s.endArray();
+    s.beginWriteArray(QStringLiteral("views"), 1);
+    s.setArrayIndex(0);
+    s.setValue(QStringLiteral("document"), 0);
+    s.endArray();
+    s.endGroup();
+    s.sync();
+}
+
+} // namespace
+
 void TestSession::documentsArrayRoundTrip()
 {
     QTemporaryDir dir;
@@ -81,7 +116,6 @@ void TestSession::documentsArrayRoundTrip()
     QCOMPARE(out.documents.size(), 1);
     const SessionDocument &od = out.documents.first();
     QCOMPARE(od.path, d.path);
-    QCOMPARE(od.filters.value(QStringLiteral("priorityEnabled")).toBool(), true);
 
     // The view's own state: which file it shows, its columns and its wrap mode (§5).
     QCOMPARE(out.views.size(), 1);
@@ -90,9 +124,6 @@ void TestSession::documentsArrayRoundTrip()
     QCOMPARE(ov.columnState, QByteArrayLiteral("COLS"));
     QCOMPARE(ov.wrapMode, 2);
     QCOMPARE(out.documentFor(ov)->path, d.path);
-    QCOMPARE(od.highlighters.value(QStringLiteral("rules")).toArray()
-                 .first().toObject().value(QStringLiteral("background")).toInt(),
-             3);
 }
 
 void TestSession::emptyOnFirstLaunch()
@@ -180,10 +211,8 @@ void TestSession::perFileScopingSurvivesMultipleDocuments()
     QSettings s(ini, QSettings::IniFormat);
     const Session out = SessionStore::load(s);
     QCOMPARE(out.documents.size(), 2);
-    QCOMPARE(out.documents.at(0).filters.value(QStringLiteral("priorityEnabled")).toBool(),
-             true);
-    QCOMPARE(out.documents.at(1).filters.value(QStringLiteral("priorityEnabled")).toBool(),
-             false);
+    QCOMPARE(out.documents.at(0).path, QStringLiteral("/a.log"));
+    QCOMPARE(out.documents.at(1).path, QStringLiteral("/b.log"));
     // activeView indexes the views array, and that view names its own file.
     QCOMPARE(out.documentFor(out.views.at(out.activeView))->path, QStringLiteral("/b.log"));
 }
@@ -344,37 +373,63 @@ void TestSession::v2SessionMigratesWithoutItsWindowState()
     QCOMPARE(out.activeView, 1);
 }
 
+// THE FIVE PER-LOG KEYS ARE READ AND NO LONGER WRITTEN (M21). A log's filters, its
+// highlight rules and which run it was on are per-FILE state and live one record per log
+// (LogFileStore.h) — which is what makes them survive closing the tab, where the session
+// only ever remembered them while the log was open in one.
+//
+// load() still reads all five, so the first launch after the upgrade can hand them over;
+// save() writes none of them, and because both arrays are removed before being rewritten,
+// the first quit takes them off the disk for good. That is what makes the migration
+// once-only with no flag anywhere saying it ran. No schema bump came with it: a removed
+// key is exactly what a backward read handles.
 void TestSession::runSelectionRoundTrip()
 {
     QTemporaryDir dir;
     const QString ini = dir.filePath(QStringLiteral("s.ini"));
 
-    Session in;
-    SessionDocument d;
-    d.path = QStringLiteral("/logs/multi.log");
-    // The run-start PATTERN belongs to the settings tree (M20). What the session
-    // records is WHICH run was being viewed (§3a).
-    // A specific run selected, keyed by its stable start offset + timestamp.
-    d.runAll = false;
-    d.selectedRunStartOffset = 4096;
-    d.selectedRunStartTimestamp = 1700000000000LL;
-    in.documents = {d};
+    QJsonObject filters;
+    filters.insert(QStringLiteral("priorityEnabled"), true);
+    QJsonArray rules;
+    QJsonObject rule;
+    rule.insert(QStringLiteral("background"), 3);
+    rules.append(rule);
+    QJsonObject hl;
+    hl.insert(QStringLiteral("rules"), rules);
+
+    writeLegacyDocument(ini, QStringLiteral("/tmp/a.log"), filters, hl,
+                        /*runAll=*/false, /*runOffset=*/4096, /*runTs=*/1700000000000LL);
 
     {
         QSettings s(ini, QSettings::IniFormat);
-        SessionStore::save(s, in);
-    }
-    QSettings s(ini, QSettings::IniFormat);
-    // Hold the Session, not a reference into a temporary one: load() returns by value and
-    // documents.first() hands back a reference INTO it, which lifetime extension does not
-    // reach through — the Session would die at the semicolon and every QCOMPARE below
-    // would read freed memory. Every other load() call site in this file binds by value.
-    const Session          out = SessionStore::load(s);
-    const SessionDocument &od = out.documents.first();
+        const Session out = SessionStore::load(s);
+        QCOMPARE(out.documents.size(), 1);
+        const SessionDocument &od = out.documents.first();
+        // All five arrive, which is the whole of what the migration needs.
+        QCOMPARE(od.filters.value(QStringLiteral("priorityEnabled")).toBool(), true);
+        QCOMPARE(od.highlighters.value(QStringLiteral("rules")).toArray()
+                     .first().toObject().value(QStringLiteral("background")).toInt(),
+                 3);
+        QCOMPARE(od.runAll, false);
+        QCOMPARE(od.selectedRunStartOffset, qint64(4096));
+        QCOMPARE(od.selectedRunStartTimestamp, qint64(1700000000000LL));
 
-    QCOMPARE(od.runAll, false);
-    QCOMPARE(od.selectedRunStartOffset, qint64(4096));
-    QCOMPARE(od.selectedRunStartTimestamp, qint64(1700000000000LL));
+        // And writing the same session back takes every one of them off the disk.
+        SessionStore::save(s, out);
+    }
+
+    QSettings check(ini, QSettings::IniFormat);
+    check.beginGroup(QStringLiteral("session"));
+    QCOMPARE(check.beginReadArray(QStringLiteral("documents")), 1);
+    check.setArrayIndex(0);
+    QCOMPARE(check.value(QStringLiteral("path")).toString(), QStringLiteral("/tmp/a.log"));
+    for (const char *key : {"filters", "highlighters", "runAll", "selectedRunOffset",
+                            "selectedRunTs"}) {
+        QVERIFY2(!check.contains(QLatin1String(key)),
+                 QByteArray("the session still writes ") + key);
+    }
+    check.endArray();
+    check.endGroup();
 }
 
 void TestSession::runSelectionAbsentInOldSession()
@@ -431,20 +486,14 @@ void TestSession::highlightActionsRoundTripWithoutASchemaBump()
     HighlighterSet set;
     set.rules = {colouring, digestOnly, parked};
 
-    Session in;
-    SessionDocument d;
-    d.path = QStringLiteral("/tmp/a.log");
     QJsonObject hl;
     hl.insert(QStringLiteral("rules"), set.toJson());
-    d.highlighters = hl;
-    in.documents = {d};
-    SessionView v;
-    in.views = {v};
+    // Written in the pre-M21 shape, because that is the only thing this case can still be
+    // about: the actions ride inside an opaque `highlighters` blob, and what has to keep
+    // working is READING one — which is both the migration and, one store over, exactly
+    // what LogFileStore does with the same array.
+    writeLegacyDocument(ini, QStringLiteral("/tmp/a.log"), QJsonObject(), hl);
 
-    {
-        QSettings s(ini, QSettings::IniFormat);
-        SessionStore::save(s, in);
-    }
     QSettings s(ini, QSettings::IniFormat);
     const Session out = SessionStore::load(s);
 

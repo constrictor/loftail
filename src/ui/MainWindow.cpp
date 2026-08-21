@@ -1029,8 +1029,13 @@ void MainWindow::setActiveView(DocumentView *view)
 
 void MainWindow::stashPaneState(DocumentContext *ctx)
 {
-    if (ctx && m_filterPane)
-        ctx->filterState = m_filterPane->saveState();
+    if (!ctx || !m_filterPane)
+        return;
+    ctx->filterState = m_filterPane->saveState();
+    // A tab switched away persists what its pane held. applyActiveFilters() has usually
+    // done it already — this is the case it cannot cover, where the pane's debounce had
+    // not fired before the reader moved on.
+    persistFileSettings(ctx);
 }
 
 void MainWindow::hydratePanes(DocumentContext *ctx)
@@ -1429,7 +1434,7 @@ bool MainWindow::openFile(const QString &rawPath, const QString &pattern)
 }
 
 bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
-                                  std::optional<RunRestore> runRestore)
+                                  std::optional<RunSelection> runRestore)
 {
     // Prepare the candidate document and settle its format BEFORE touching the
     // document currently on screen: cancelling the format dialog aborts the open
@@ -1526,10 +1531,23 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     // the very first write look like no change — which is how a fitting `--pattern`
     // silently stopped being remembered.
     ctx->fileSettings = m_fileStore.read(path);
+    // HOW THIS LOG WAS BEING READ, back from where it was left (SPEC.md §10). An ordinary
+    // open restores it now, not only a session restore: the filters belong to the log, so
+    // returning to a log a week later shows it the way it was being read rather than
+    // unfiltered. Empty means the pane's defaults, which is what a log nobody has
+    // filtered gets.
+    ctx->filterState = ctx->fileSettings.filters;
     // AN OPEN is what the MRU counts, and this is one. In memory only; the map rides out
     // with endOpenBatch().
     m_fileStore.touch(path);
+    // The caller's explicit choice wins; otherwise the log's own stored run, which is
+    // why an ordinary open now restores one and not only a session restore. Inert
+    // until a run-start pattern actually splits the log, so it costs nothing on a log
+    // that has no runs.
     ctx->pendingRunRestore = std::move(runRestore);
+    if (!ctx->pendingRunRestore && !settings.runStartPattern.isEmpty()
+        && !ctx->fileSettings.run.saysNothing())
+        ctx->pendingRunRestore = ctx->fileSettings.run;
     // The prompt this open could not raise, deferred to the first resume that has bytes.
     ctx->pendingFormatPrompt = deferFormatPrompt;
 
@@ -1544,7 +1562,14 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     //
     // AFTER the format has settled, never before: a rule is resolved against a format,
     // and the FormatOutcome::Chosen branch above re-prepares the document.
-    ctx->doc->highlighters() = HighlighterSet::defaults();
+    //
+    // PRESENCE, NEVER EMPTINESS. A record that has never spoken about rules gets the
+    // seed; one carrying an EMPTY list is the user having deleted every rule, and it
+    // stays deleted. Reading the emptiness instead re-seeds the level colours on every
+    // launch, which is the shape of a bug nobody can get rid of.
+    ctx->doc->highlighters() = ctx->fileSettings.highlighters
+        ? HighlighterSet::fromJson(*ctx->fileSettings.highlighters)
+        : HighlighterSet::defaults();
     ctx->doc->resolveHighlighters();
 
     m_contexts.push_back(std::move(ctx));
@@ -1682,10 +1707,21 @@ DocumentContext *MainWindow::prepareContext(const SessionDocument &d, QString *e
     // only two routes to a new Document, and both have to ask (M21).
     ctx->fileSettings = m_fileStore.read(d.path);
     m_fileStore.touch(d.path);
-    ctx->filterState = d.filters;
+
+    // The log's own record answers; the SESSION's copy is consulted only where it says
+    // nothing, which is the one-time migration off the old home (M21). A session written
+    // by an older build still carries these keys and this build no longer writes them, so
+    // the first quit after upgrade takes them away and there is nothing to remember that
+    // the migration ran. A record that already speaks WINS, so a crash before that quit
+    // re-adopts the same values harmlessly and a later edit is never overwritten.
+    ctx->filterState = ctx->fileSettings.filters.isEmpty() ? d.filters
+                                                           : ctx->fileSettings.filters;
     if (!format.runStartPattern.isEmpty()) {
-        ctx->pendingRunRestore =
-            RunRestore{d.runAll, d.selectedRunStartOffset, d.selectedRunStartTimestamp};
+        // The record answers; the session's copy is the one-time migration, consulted
+        // only where the record says nothing (see the filters above).
+        ctx->pendingRunRestore = ctx->fileSettings.run.saysNothing()
+            ? RunSelection{d.runAll, d.selectedRunStartOffset, d.selectedRunStartTimestamp}
+            : ctx->fileSettings.run;
     }
     m_contexts.push_back(std::move(owned));
     // Restore builds its contexts one at a time, so every one of them relabels the set:
@@ -1697,18 +1733,22 @@ DocumentContext *MainWindow::prepareContext(const SessionDocument &d, QString *e
     // the pane holds one file's rules at a time, and every restored file needs its
     // own. HighlighterPane::setDocument reads them back out when this file is shown.
     //
-    // contains(), NEVER the array's emptiness — the same rule HighlightRule::fromJson
-    // applies one level down to "actions" and LogSettingsStore to "pattern". A stored
-    // EMPTY list is the user having deleted every rule, which must stay deleted; only a
-    // session that says nothing about this file's rules at all gets the level colours
-    // seeded, exactly as a first open does. Read empty as absent and a deleted default
-    // comes back on every launch, which is the shape of a bug nobody can get rid of.
-    // saveSession() always writes the key, so the seeded case is a session written
-    // before this build — or none.
-    ctx->doc->highlighters() =
-        d.highlighters.contains(QStringLiteral("rules"))
-            ? HighlighterSet::fromJson(d.highlighters.value(QStringLiteral("rules")).toArray())
-            : HighlighterSet::defaults();
+    // PRESENCE, NEVER the array's emptiness — the same rule HighlightRule::fromJson
+    // applies one level down to "actions" and LogProfile to "pattern". A stored EMPTY
+    // list is the user having deleted every rule, which must stay deleted; only a store
+    // that says nothing about this file's rules AT ALL gets the level colours seeded,
+    // exactly as a first open does. Read empty as absent and a deleted default comes back
+    // on every launch, which is the shape of a bug nobody can get rid of.
+    //
+    // The log's own record answers first; the session's copy is the one-time migration
+    // (see the filters above), and asks the same question of the key it used to own.
+    if (ctx->fileSettings.highlighters)
+        ctx->doc->highlighters() = HighlighterSet::fromJson(*ctx->fileSettings.highlighters);
+    else if (d.highlighters.contains(QStringLiteral("rules")))
+        ctx->doc->highlighters() =
+            HighlighterSet::fromJson(d.highlighters.value(QStringLiteral("rules")).toArray());
+    else
+        ctx->doc->highlighters() = HighlighterSet::defaults();
     // Rules match nothing until they have been resolved once. Indexing has not run
     // yet, so this binds only the format and display zone (and compiles each text
     // axis) — the intern-table pass follows when the scan reports names.
@@ -2088,6 +2128,38 @@ LogProfile MainWindow::resolvedProfile(const QString &address)
     return m_logSettings.inherited(address);
 }
 
+std::optional<RunSelection> MainWindow::runSelectionOf(const DocumentContext *ctx) const
+{
+    // NOTHING TO READ YET, so nothing is written and the stored section is left exactly
+    // as it was. While the scan is running — or while a restore is still armed, which is
+    // the same thing one step later — runs() is empty and selectedRun() is -1, and -1
+    // with a run-start pattern set is the "all runs" branch below. So a format change or
+    // a resume arriving mid-scan would silently overwrite a PINNED run with "all runs",
+    // which is the one state SPEC.md §3a says only the user moves.
+    if (!ctx || !ctx->doc || ctx->indexing || ctx->pendingRunRestore)
+        return std::nullopt;
+
+    const Document *doc = ctx->doc.get();
+    RunSelection out;
+
+    // "LAST RUN" IS ASKED FIRST and names no run, so it saves no offset at all: storing
+    // the run it currently resolves to would bring the log back PINNED to a run that has
+    // since finished, which is the one thing the mode exists not to do.
+    const int sel = doc->selectedRun();
+    if (doc->followingLastRun()) {
+        out.all = false;
+        out.startOffset = -1;
+    } else if (sel >= 0 && sel < doc->runs().size()) {
+        out.all = false;
+        out.startOffset = doc->runs().at(sel).startOffset;
+        out.startTimestamp = doc->runs().at(sel).startTimestamp;
+    } else {
+        out.all = !ctx->settings.runStartPattern.isEmpty();
+        out.startOffset = -1;
+    }
+    return out;
+}
+
 void MainWindow::persistFileSettings(DocumentContext *ctx)
 {
     if (!ctx || !ctx->doc)
@@ -2101,6 +2173,23 @@ void MainWindow::persistFileSettings(DocumentContext *ctx)
     LogProfile p = next.profile.value_or(m_logSettings.inherited(next.address));
     p.format = ctx->settings;
     next.profile = p;
+
+    // THE PANE ONLY WHERE IT IS THIS LOG'S. The Filters pane is global and follows the
+    // active document, so reading it for a BACKGROUND context would persist the tab on
+    // screen wearing another log's filters. Every other context is answered by its stash,
+    // which is what stashPaneState() keeps up to date — the same split saveSession()
+    // already makes.
+    next.filters = (ctx == activeContext() && m_filterPane) ? m_filterPane->saveState()
+                                                            : ctx->filterState;
+
+    // Straight off the Document, which HighlighterPane keeps authoritative — it syncs on
+    // every edit — so this is right for a background file just as much as for the one on
+    // screen, and needs no stash of its own.
+    next.highlighters = ctx->doc->highlighters().toJson();
+
+    // Left exactly as stored while there is nothing to read: see runSelectionOf().
+    if (const auto run = runSelectionOf(ctx))
+        next.run = *run;
 
     // THE CHANGE GATE, and it is not an optimisation. This is reached on every resume of
     // a remote or archived log, so without it an identical record is rewritten — and the
@@ -2660,7 +2749,17 @@ void MainWindow::applyFiltersFor(DocumentContext *ctx, KeepPosition keep)
 
 void MainWindow::applyActiveFilters()
 {
-    applyFiltersFor(activeContext());
+    DocumentContext *ctx = activeContext();
+    applyFiltersFor(ctx);
+    // The pane's own DEBOUNCED notification, and the only signal that a filter edit has
+    // landed. Persisting here is what makes a filter durable without waiting for a tab
+    // switch or a clean quit; the debounce is what keeps it off every keystroke, and the
+    // funnel's change gate absorbs the rest.
+    //
+    // Here and NOT in applyFiltersFor(), which is reached from onIndexFinished(),
+    // onRunSelected(), followLastRunIfMoved() and the record menu — none of which is a
+    // filter edit, and the third of which runs on every ingest tick of a restarting log.
+    persistFileSettings(ctx);
 }
 
 void MainWindow::applyActiveHighlighters()
@@ -2681,6 +2780,11 @@ void MainWindow::applyActiveHighlighters()
         v->logView()->viewport()->update();
     // Whether any rule still asks to be notified may have changed with that edit.
     updateTrayPresence();
+    // The pane's own notification that a rule edit has landed, and the only one there is.
+    // NOT in refreshHighlighting() or on the ingest path: HighlighterPane::refreshTime-
+    // Bounds() runs there and already writes nothing unless a rule actually moved, and
+    // that guard is now load-bearing for a file write as well as for the tab's marker.
+    persistFileSettings(ctx);
 }
 
 // --- Highlight actions beyond colour (M19, SPEC.md §7, ARCHITECTURE.md §7.5) ------
@@ -2875,6 +2979,10 @@ void MainWindow::onRunSelected(int runIndex)
         doc->selectLastRun();
     else
         doc->selectRun(runIndex);
+    // The user PINNING a run, or letting go of one, is a choice about this log and is
+    // remembered as one. Here and not in applyFiltersFor() below, which
+    // followLastRunIfMoved() reaches on every ingest tick of a restarting log.
+    persistFileSettings(ctx);
     // No anchor: every view is positioned explicitly at the end of this function, so
     // anchoring first would measure a wrapped selection and scroll to a place the very
     // next statement overwrites — one wasted pass and one visible jump.
@@ -3718,47 +3826,26 @@ void MainWindow::saveSession()
     // while the docks still exist, i.e. before any teardown.
     session.windowState = saveState();
 
-    // Every open file goes into the documents array; every view into the views array,
-    // pointing back at its file (invariant #7 / §12.4). Everything here is portable
-    // name/index JSON, so restore is the same path as applying a preset.
+    // WHICH LOGS WERE OPEN, and in the views array which view showed which — and that is
+    // all the session says about a file now (invariant #7 / §12.4). Its filters, its
+    // highlight rules and its run are per-FILE state and live in its own record (M21),
+    // which is what makes them survive closing the tab: the session only ever remembered
+    // them while the log was open in one.
+    //
+    // The last flush of each record goes here, so a quit stores what the panes were
+    // holding. It carries the three-way run branch that used to be written out in this
+    // loop, one function over (runSelectionOf()), so the two cannot drift.
     QHash<const DocumentContext *, int> documentIndex;
     for (const auto &ctx : m_contexts) {
-        Document *doc = ctx->doc.get();
+        persistFileSettings(ctx.get());
+
         SessionDocument d;
-        d.path = doc->path();
-        d.filters = ctx->filterState;
-        // Highlighter rules are read straight off the Document, which HighlighterPane
-        // keeps authoritative (it syncs on every edit) — so this is correct for a
-        // background file just as much as for the active one.
-        d.highlighters.insert(QStringLiteral("rules"), doc->highlighters().toJson());
-
-        // Run selection (§3a). The run-start pattern belongs to the settings tree; here
-        // we save WHICH run was viewed by its stable start offset/timestamp (not the ordinal,
-        // which shifts as the file grows). selectedRun() == -1 means "all runs" when a
-        // pattern is set, otherwise nothing meaningful (restore falls back to the last run).
-        //
-        // "Last run" is asked FIRST and saves no offset at all, because it names no run:
-        // saving the run it currently resolves to would restore it PINNED to a run that
-        // is finished by the next launch, which is the one thing it exists not to do. It
-        // rides the existing schema — runAll false with no offset was already "nothing
-        // meaningful, fall back to the last run", which is precisely this — so neither
-        // store's version moves and an older binary reads the file unchanged.
-        const int sel = doc->selectedRun();
-        if (doc->followingLastRun()) {
-            d.runAll = false;
-            d.selectedRunStartOffset = -1;
-        } else if (sel >= 0 && sel < doc->runs().size()) {
-            d.runAll = false;
-            d.selectedRunStartOffset = doc->runs().at(sel).startOffset;
-            d.selectedRunStartTimestamp = doc->runs().at(sel).startTimestamp;
-        } else {
-            d.runAll = !ctx->settings.runStartPattern.isEmpty();
-            d.selectedRunStartOffset = -1;
-        }
-
+        d.path = ctx->doc->path();
         documentIndex.insert(ctx.get(), int(session.documents.size()));
         session.documents.append(d);
     }
+    // Once for the gesture, after every record has had its say.
+    m_fileStore.flush();
 
     // m_views is kept in tab order, so saving it in order is what puts the tabs back
     // left to right — including after the user has dragged them around.
