@@ -33,7 +33,15 @@ using namespace loftail;
 //       neither of which moves the inode or drops the size below what was indexed, so
 //       both were read as appends until the content check landed (HeadWitness.h) — and
 //       an ordinary append across the witness boundary still is not one;
-//   (e) appended records pass through an active filter and highlight rule unchanged.
+//   (e) appended records pass through an active filter and highlight rule unchanged;
+//   (f) each of (b)-(d) reports the right ReloadCause, which is the notice's whole
+//       content (SPEC.md §3). Every case asserts on BOTH signals, and that the nullary
+//       `rescanned` counters are untouched M6 code is the point: `reloaded` was added
+//       BESIDE that signal, not instead of it, so a change that broke the old lambdas
+//       would mean the seam had stopped being inert. (d) is where the classification is
+//       actually decided — a rewrite in place sets wasTruncated() while the file grows,
+//       so reading the cause off that flag would announce a truncation about a log that
+//       got longer.
 //
 // Linux only for the mmap + rename identity behavior; Windows file-sharing/rotation
 // semantics differ and must be exercised on Windows separately (not done here).
@@ -264,6 +272,8 @@ void TestTail::truncateTriggersRescan()
 
     int rescans = 0;
     connect(&live, &LiveController::rescanned, &live, [&] { ++rescans; });
+    QVector<ReloadCause> causes;
+    connect(&live, &LiveController::reloaded, &live, [&](ReloadCause c) { causes.append(c); });
 
     // The writer truncates and rewrites two fresh records (copytruncate-style).
     QByteArray fresh;
@@ -273,6 +283,10 @@ void TestTail::truncateTriggersRescan()
     live.checkNow();
 
     QCOMPARE(rescans, 1);
+    // The one honest truncation: this same file got shorter. It is also the ONLY shape
+    // that reports itself this way — see the two rewrite cases below.
+    QCOMPARE(causes.size(), 1);
+    QVERIFY(causes.value(0) == ReloadCause::Truncated);
     QCOMPARE(model.rowCount(), 2);
     QCOMPARE(doc.index().records.size(), 2);
     QCOMPARE(doc.index().records.at(0).priorityEnum(), Priority::Fatal);
@@ -303,6 +317,8 @@ void TestTail::rotateTriggersReindex()
 
     int rescans = 0;
     connect(&live, &LiveController::rescanned, &live, [&] { ++rescans; });
+    QVector<ReloadCause> causes;
+    connect(&live, &LiveController::reloaded, &live, [&](ReloadCause c) { causes.append(c); });
 
     // Rotation: move the current file aside and create a NEW file (new inode) at the
     // path with fresh content — logrotate's default create mode.
@@ -315,6 +331,11 @@ void TestTail::rotateTriggersReindex()
     live.checkNow();
 
     QCOMPARE(rescans, 1);
+    // A different inode is at the path. Note the new file is SHORTER than the one it
+    // replaced, which is the ordinary case for a rotation and the reason `replaced` is
+    // tested before the shrink: the other order calls almost every rotation a truncation.
+    QCOMPARE(causes.size(), 1);
+    QVERIFY(causes.value(0) == ReloadCause::Replaced);
     QCOMPARE(model.rowCount(), 3);
     QCOMPARE(doc.index().records.size(), 3);
 
@@ -349,6 +370,8 @@ void TestTail::overwriteInPlaceTriggersRescan()
 
     int rescans = 0;
     connect(&live, &LiveController::rescanned, &live, [&] { ++rescans; });
+    QVector<ReloadCause> causes;
+    connect(&live, &LiveController::reloaded, &live, [&](ReloadCause c) { causes.append(c); });
 
     QByteArray fresh;
     for (int i = 0; i < 6; ++i)
@@ -359,6 +382,12 @@ void TestTail::overwriteInPlaceTriggersRescan()
     live.checkNow();
 
     QCOMPARE(rescans, 1);
+    // Replaced, NOT Truncated, and this is the case that decides it: the file GREW.
+    // wasTruncated() is true here — the HeadWitness latches it — so classifying on that
+    // flag would announce "was truncated" about a log that got longer. SPEC.md §3 is
+    // what settles the wording: rewriting a log in place counts as replacing it.
+    QCOMPARE(causes.size(), 1);
+    QVERIFY(causes.value(0) == ReloadCause::Replaced);
     QCOMPARE(model.rowCount(), 6);
     QCOMPARE(doc.index().records.at(0).priorityEnum(), Priority::Warn);
     QVERIFY(!doc.index().loggers.names().contains(QStringLiteral("logger.old")));
@@ -393,6 +422,8 @@ void TestTail::sameSizeOverwriteTriggersRescan()
 
     int rescans = 0;
     connect(&live, &LiveController::rescanned, &live, [&] { ++rescans; });
+    QVector<ReloadCause> causes;
+    connect(&live, &LiveController::reloaded, &live, [&](ReloadCause c) { causes.append(c); });
 
     QByteArray fresh;
     for (int i = 0; i < 3; ++i)
@@ -402,6 +433,10 @@ void TestTail::sameSizeOverwriteTriggersRescan()
     live.checkNow();
 
     QCOMPARE(rescans, 1);
+    // The same rewrite at exactly the old length: nothing in the metadata moved at all,
+    // so this too is a replacement rather than a truncation.
+    QCOMPARE(causes.size(), 1);
+    QVERIFY(causes.value(0) == ReloadCause::Replaced);
     QCOMPARE(model.rowCount(), 3);
     QVERIFY(doc.index().loggers.names().contains(QStringLiteral("logger.bbb")));
     QVERIFY(!doc.index().loggers.names().contains(QStringLiteral("logger.aaa")));
@@ -433,6 +468,8 @@ void TestTail::aPlainAppendNeverRescans()
 
     int rescans = 0;
     connect(&live, &LiveController::rescanned, &live, [&] { ++rescans; });
+    QVector<ReloadCause> causes;
+    connect(&live, &LiveController::reloaded, &live, [&](ReloadCause c) { causes.append(c); });
 
     for (int i = 3; i < 40; ++i) {
         QVERIFY(append(path, rec(i % 60, "t0", "INFO ", "logger.a",
@@ -441,6 +478,9 @@ void TestTail::aPlainAppendNeverRescans()
     }
 
     QCOMPARE(rescans, 0);
+    // And nothing is announced either. An append is what a log DOES; a reader told about
+    // one would be told about every log they ever open, twice a second.
+    QVERIFY(causes.isEmpty());
     QCOMPARE(model.rowCount(), 40);
     QVERIFY(QFileInfo(path).size() > 1024); // the witness was extended past its cap
 

@@ -187,8 +187,12 @@ void LiveController::checkNow()
     if (!src) {
         // No source and not waiting: a rescan failed for a reason other than the log
         // being absent (it is there but unreadable). Retry on the next tick, as before.
+        // Retry and NOT Replaced: this runs on EVERY tick until the log becomes
+        // readable, so announcing here would repeat one sentence twice a second for as
+        // long as the permission stands. The rotation that led here has already been
+        // announced, or failed to re-read and deliberately said nothing.
         if (logSourceAvailable(m_document->path()))
-            doRescan();
+            doRescan(ReloadCause::Retry);
         return;
     }
 
@@ -213,7 +217,18 @@ void LiveController::checkNow()
 
     if (replaced || truncated) {
         m_vanishedSince.invalidate(); // something IS at the origin: a rotation, not a deletion
-        doRescan();
+        // Which of the two the reader is told, and it is classified HERE from the finer
+        // facts rather than from `truncated`, which is a catch-all (ReloadCause).
+        // `replaced` first, and that order is load-bearing: a rename-and-recreate
+        // rotation almost always lands a smaller file at the path, so testing the shrink
+        // first would call nearly every real rotation a truncation. A shrink that is not
+        // a replacement is a copytruncate; anything left is a rewrite in place, which
+        // SPEC.md §3 says counts as replacing it. A spooled source answers `replaced`
+        // for all three — it re-fetches into a new generation and cannot tell them
+        // apart — so Truncated is structurally unreachable for a remote log, which
+        // SPEC.md §3 says out loud rather than leaving to be discovered.
+        doRescan(!replaced && newSize < m_lastSize ? ReloadCause::Truncated
+                                                   : ReloadCause::Replaced);
         return;
     }
 
@@ -461,9 +476,10 @@ void LiveController::publishSourceStatus()
     emit sourceStatusChanged(text);
 }
 
-void LiveController::doRescan()
+void LiveController::doRescan(ReloadCause cause)
 {
-    // Silent reload (SPEC.md §3: no dialog, no notice). A full model reset is the
+    // Reload in place (SPEC.md §3: no dialog, nothing to press, nothing lost — only a
+    // passing note in the status bar, emitted at the bottom). A full model reset is the
     // right signal — the visible set is wholesale replaced — with the re-index and
     // any active-filter recompute done between begin/end so rowCount() is consistent.
     m_model->beginFilterReset();
@@ -485,14 +501,27 @@ void LiveController::doRescan()
     m_model->endFilterReset();
 
     syncBaseline();
-    // Silent to the USER (SPEC.md §3 promises no dialog and no notice), and precisely for
-    // that reason not silent here: a reload the user is deliberately not told about is
-    // the one they will later describe as "it jumped" or "it lost my place", with nothing
-    // on screen to point at.
-    diagLog("wait", QStringLiteral("%1 reloaded — %2, records=%3")
-                        .arg(m_document->path(),
+    // The status bar says this in passing and for five seconds (SPEC.md §3); the file
+    // says it permanently, which is the half a bug report can be built on — a reload is
+    // the thing a reader later describes as "it jumped" or "it lost my place", and the
+    // transient notice is gone long before they think to mention it. Untranslated and
+    // greppable by design, `cause` included, exactly as the outcome beside it is.
+    const char *why = cause == ReloadCause::Replaced    ? "replaced"
+                      : cause == ReloadCause::Truncated ? "truncated"
+                                                        : "retry";
+    diagLog("wait", QStringLiteral("%1 reloaded — %2, %3, records=%4")
+                        .arg(m_document->path(), QString::fromLatin1(why),
                              QString::fromLatin1(ok ? "rescanned" : "could not reopen"))
                         .arg(m_document->index().records.size()));
+
+    // BEFORE rescanned(), which must stay the LAST statement of this function: that is
+    // what makes handing control to eight external subscribers safe without a QPointer
+    // dance on `this` (contrast settleFirstBytes(), which is not last and needs one).
+    // Only a re-read that actually worked is announced — a failed reopen would be
+    // claiming the log was reloaded when it was not — and never a Retry, which fires on
+    // every tick that an unreadable log is still unreadable.
+    if (ok && cause != ReloadCause::Retry)
+        emit reloaded(cause);
     emit rescanned();
 }
 
