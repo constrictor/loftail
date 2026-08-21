@@ -366,6 +366,14 @@ signals:
     // gesture must reach that same item rather than a second copy of it.
     void recordDoubleClicked(int viewRow, int column);
 
+    // A cell was Ctrl+Alt+clicked or Alt+clicked (SPEC.md §5) — "show only this value"
+    // and "hide this value", the two edits the Filters pane's own lists offer, reached
+    // from the record. Reported exactly as the two above are, and for the same reason:
+    // the view has the hit test and no access to the panes, so what these MEAN lives
+    // where the record menu's items live and the gesture reaches that same item.
+    void recordShowOnlyRequested(int viewRow, int column);
+    void recordHideRequested(int viewRow, int column);
+
     // The reader asked to zoom with Ctrl+wheel (SPEC.md §5). Reported, never acted on:
     // the log text size is ONE application-wide setting, so a view that re-fonted itself
     // would be a second path to it and the other open views would not follow. `steps` is
@@ -503,6 +511,13 @@ private:
     // anchor onto that record, so a Shift+click after it extends from where the pointer
     // last was, exactly as it does after a plain click.
     void toggleRecordSelection(int record);
+
+    // The two filter chords (SPEC.md §5), shared by the press and the double-click that
+    // a second chord-click arrives as. Answers true when it TOOK the event: the modifier
+    // is matched by EXACT equality, so Ctrl+Alt+Shift is left to the Shift branch below
+    // rather than claimed by a chord nobody aimed, and a click below the last record is
+    // refused for the reason the menu and the double-click refuse it.
+    bool takeFilterChord(QMouseEvent *event);
 
     // --- Drag-select (SPEC.md §5) --------------------------------------------------
     // extendDragTo() is the whole of what a drag does: clamp the pointer into the

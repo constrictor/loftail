@@ -1721,6 +1721,10 @@ void LogView::mousePressEvent(QMouseEvent *event)
         QAbstractScrollArea::mousePressEvent(event);
         return;
     }
+    // The filter chords come FIRST, and they take the whole press: what follows must not
+    // also move the selection, because the click was spent on the filter.
+    if (takeFilterChord(event))
+        return;
     const int record = recordAtViewportY(int(event->position().y()));
     if (record < 0) {
         QAbstractScrollArea::mousePressEvent(event);
@@ -1743,6 +1747,48 @@ void LogView::mousePressEvent(QMouseEvent *event)
     }
     m_dragging = true;
     m_autoScrollY = int(event->position().y());
+}
+
+// Ctrl+Alt+click a cell for "show only this value", Alt+click for "hide it" (SPEC.md §5)
+// — the two edits the Filters pane's own lists offer, reached from the record the reader
+// is looking at. The view decides nothing about what they mean: it reports the record and
+// the column, and the window reaches the record menu's own item, which is what keeps the
+// chords and the menu one thing rather than two that can drift.
+//
+// Ctrl+Alt rather than the pane's bare Ctrl, because Ctrl+click here already takes a
+// record in and out of the selection and goes on doing so — on every column, this one
+// included.
+//
+// The modifiers are matched by EXACT equality, following the pane's own chord
+// (AxisEditor::eventFilter): this claims two chords, not every chord that happens to
+// include Alt, so Ctrl+Alt+Shift+click still falls through to Shift's "extend to here".
+bool LogView::takeFilterChord(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton)
+        return false;
+    const Qt::KeyboardModifiers mods = event->modifiers();
+    const bool showOnly = mods == (Qt::ControlModifier | Qt::AltModifier);
+    const bool hide = mods == Qt::AltModifier;
+    if (!showOnly && !hide)
+        return false;
+    // recordUnderPoint, not recordAtViewportY: the empty space below the last record
+    // answers "nothing" here for the reason it does for the menu and the double-click —
+    // a gesture aimed at a record the cursor is not on must not filter by one the user
+    // cannot see themselves pointing at. Left unclaimed, so the press below still
+    // selects the last record as it always did.
+    const int record = recordUnderPoint(int(event->position().y()));
+    if (record < 0)
+        return false;
+    const int column = m_header->logicalIndexAt(int(event->position().x()));
+    // Deliberately no setFocus(), no setCurrentRecord() and no drag armed: the click is
+    // spent entirely on the filter, and the ticks visibly moving in the pane is the
+    // feedback. Taking the event is what keeps the selection where the reader left it.
+    if (showOnly)
+        emit recordShowOnlyRequested(record, column);
+    else
+        emit recordHideRequested(record, column);
+    event->accept();
+    return true;
 }
 
 void LogView::mouseMoveEvent(QMouseEvent *event)
@@ -1779,6 +1825,12 @@ void LogView::mouseReleaseEvent(QMouseEvent *event)
 // a gesture nobody aimed.
 void LogView::mouseDoubleClickEvent(QMouseEvent *event)
 {
+    // A second chord-click in quick succession arrives as a double-click, so it is taken
+    // here too — the same reason AxisEditor's own Ctrl+click claims the double-click
+    // type. Both edits are idempotent, so this is about the chord answering every time
+    // rather than every other time.
+    if (takeFilterChord(event))
+        return;
     if (event->button() != Qt::LeftButton || event->modifiers() != Qt::NoModifier) {
         QAbstractScrollArea::mouseDoubleClickEvent(event);
         return;

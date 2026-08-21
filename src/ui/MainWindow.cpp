@@ -1624,6 +1624,17 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
     // the window reads the DOCUMENT's when it resolves a view row.
     connect(logView, &LogView::recordDoubleClicked, this,
             [this, view](int row, int column) { activateRecordColumn(view, row, column); });
+    // Ctrl+Alt+click and Alt+click on a cell are the record menu's Show Only and Hide,
+    // reached without the menu (SPEC.md §5). Connected on the table only, for the reason
+    // the two above are.
+    connect(logView, &LogView::recordShowOnlyRequested, this,
+            [this, view](int row, int column) {
+                applyRecordFilter(view, row, column, RecordFilterCommand::ShowOnly);
+            });
+    connect(logView, &LogView::recordHideRequested, this,
+            [this, view](int row, int column) {
+                applyRecordFilter(view, row, column, RecordFilterCommand::Hide);
+            });
     // Ctrl+wheel over either table asks for a size, and the WINDOW answers — one size
     // for the application, so a view that re-fonted itself would leave every other tab
     // behind. The strip is wired too: it is a log table under the pointer like any other.
@@ -3622,17 +3633,62 @@ void MainWindow::activateRecordColumn(DocumentView *view, int viewRow, int colum
     const QVector<Field> &fields = view->context()->doc->format().fields;
     if (column < 0 || column >= fields.size())
         return;
+    // Its OWN two-role gate, not applyRecordFilter()'s three: a double-click on a
+    // Priority cell has always done nothing and goes on doing nothing, because the
+    // gesture was invented for the columns where a cell names a value of a value axis.
     const char *wanted = nullptr;
     switch (fields.at(column).role) {
     case FieldRole::Logger: wanted = "recordShowOnlySubsystem"; break;
     case FieldRole::Thread: wanted = "recordShowOnlyThread"; break;
     default: return;
     }
+    triggerRecordMenuItem(view, viewRow, column, wanted);
+}
 
+// The two filter chords (SPEC.md §5). Ctrl+Alt+click is the Filters pane's own Ctrl+click
+// — "show only this one" — moved onto the record, and Alt+click is unticking that value,
+// which is the edit the pane is next most often wanted for. Priority takes the first and
+// not the second: its axis is a MINIMUM level, so "at least this bad" is a thing to point
+// at and "not this level" is not one the axis can express.
+//
+// Deliberately NOT toggles, for activateRecordColumn()'s own reason: undoing would mean
+// recognising the pane's state as exactly what the last chord set, which stops being true
+// the moment the reader touches the pane — and the pane is where these edits are undone.
+void MainWindow::applyRecordFilter(DocumentView *view, int viewRow, int column,
+                                   RecordFilterCommand command)
+{
+    if (!view || !view->context() || !view->context()->doc)
+        return;
+    const QVector<Field> &fields = view->context()->doc->format().fields;
+    if (column < 0 || column >= fields.size())
+        return;
+    const bool only = command == RecordFilterCommand::ShowOnly;
+    const char *wanted = nullptr;
+    switch (fields.at(column).role) {
+    case FieldRole::Logger:
+        wanted = only ? "recordShowOnlySubsystem" : "recordHideSubsystem";
+        break;
+    case FieldRole::Thread:
+        wanted = only ? "recordShowOnlyThread" : "recordHideThread";
+        break;
+    case FieldRole::Priority:
+        if (!only)
+            return;
+        wanted = "recordPriorityFloor";
+        break;
+    default:
+        return;
+    }
+    triggerRecordMenuItem(view, viewRow, column, wanted);
+}
+
+void MainWindow::triggerRecordMenuItem(DocumentView *view, int viewRow, int column,
+                                       const char *objectName)
+{
     QMenu menu(this);
     buildRecordMenu(&menu, view, viewRow, column);
     for (QAction *a : menu.actions()) {
-        if (a->objectName() == QLatin1String(wanted)) {
+        if (a->objectName() == QLatin1String(objectName)) {
             a->trigger();
             return;
         }
