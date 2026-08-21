@@ -3,6 +3,8 @@
 #include "FormatSettings.h"
 #include "WrapMode.h"
 
+#include <QJsonObject>
+
 namespace loftail {
 
 // Everything one node of the settings tree says about a log (SPEC.md §4): the format
@@ -34,5 +36,23 @@ struct LogProfile
     }
     bool operator!=(const LogProfile &o) const { return !(*this == o); }
 };
+
+// The profile's JSON form, shared by the two stores that hold one: logsettings.json's
+// defaults and pattern nodes (LogSettingsStore) and the per-log records (LogFileStore).
+// One spelling in one place, because a profile moves between those two levels every time
+// somebody presses Promote to Parent Pattern — two serializers would have to agree
+// key for key, and would drift the first time a field was added to only one of them.
+//
+// The keys are the ones M3's FormatCache and the QSettings session already used for the
+// same fields, kept verbatim, so a value still moves between stores with no mapping
+// table (ARCHITECTURE.md §8). They are JSON keys and are NEVER translated (§9.1).
+QJsonObject logProfileToJson(const LogProfile &p);
+
+// PRESENCE, NOT EMPTINESS, for `pattern`. An empty saved pattern is a real answer — it
+// parses nothing, so every log it applies to reaches the format dialog, which is how a
+// user asks to be consulted about each one. Reading empty as "nothing saved" would
+// silently reinstate the built-in and make that setting unreachable. Every other key
+// falls back to its struct default, so a missing one is benign.
+LogProfile logProfileFromJson(const QJsonObject &o);
 
 } // namespace loftail

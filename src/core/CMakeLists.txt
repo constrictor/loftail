@@ -127,6 +127,10 @@ add_library(loftail_core STATIC
     # M3's per-file FormatCache and M18's DefaultFormatStore, whose contents it migrates
     # in once and whose QSettings groups it then removes.
     WrapMode.h
+    LogFileSettings.cpp
+    LogFileSettings.h
+    LogFileStore.cpp
+    LogFileStore.h
     LogProfile.cpp
     LogProfile.h
     LogSettings.cpp
