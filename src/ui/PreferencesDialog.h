@@ -28,8 +28,14 @@ class MessageLabel;
 //
 //   Default settings          the root — what a log nothing else matches is tried with
 //     *.log                   a file pattern, in precedence order; first match wins
-//       /var/log/app.log      one concrete log, with settings of its own
-//     Logs with no pattern    a VIRTUAL node with no settings and no editor
+//       Current file          the log that is open, under whichever level claims it
+//
+// ONE per-log row, and it is the log this dialog was opened on. Every other entry in the
+// store is still resolved on an open and still swept — it is simply not listed, because
+// the file level had become a list of logs nobody was looking at, and the errand here is
+// nearly always "this log, the one I have in front of me, is not being read right". A log
+// no pattern claims hangs directly under the root, which is the level it inherits from;
+// the absence of a match is a row's POSITION and not a virtual parent standing in for it.
 //
 // A LOG ENTRY LASTS ONLY AS LONG AS IT SAYS SOMETHING ITS PATTERN DOES NOT. Every
 // mutation here ends in rebuildTree(), which sweeps the per-log entries against what
@@ -37,17 +43,18 @@ class MessageLabel;
 // what a log's own entry said removes that entry, in the tree the user is looking at,
 // rather than leaving it behind to shadow the pattern for ever.
 //
-// The virtual node exists here and nowhere else. "No parent" is the absence of a match,
-// not a thing to store, so a row for it in the model would be a row that is not a row —
-// which is the objection the pathless default entry drew when it was proposed as a row
-// in the old per-file cache. It survives the milestone; it just moves down a level.
+// THE OPEN LOG'S ROW IS A FIXTURE. rebuildTree() spares its node from that sweep and
+// re-creates it, saying what the log inherits, whenever something has removed it — so
+// Delete and Promote both read as "put this log back on the level above" instead of
+// taking the file level away for the rest of the visit. accept() sweeps without the
+// exception, so a node left saying nothing is still not stored.
 //
 // Like every other dialog here, this one APPLIES NOTHING. It mutates a working copy of
 // the tree; the caller reads tree() after Accepted and does the single write. That is
-// what makes Cancel exact — it discards a pattern added, a node deleted, a bulk forget,
-// and the scratch node a mid-open invocation created, with no special case for any of
-// them. "Apply to current file" is no exception: it only records the request, because
-// applying reindexes and destroys the very Document this dialog is previewing.
+// what makes Cancel exact — it discards a pattern added, a node deleted, and the node a
+// mid-open invocation created for the log, with no special case for any of them. "Apply
+// to current file" is no exception: it only records the request, because applying
+// reindexes and destroys the very Document this dialog is previewing.
 //
 // AND SO IT DOES NOT CLOSE THE DIALOG EITHER. It used to call accept(), which is how the
 // recorded request got carried out — but that made it the one button on a panel of
@@ -108,11 +115,11 @@ private:
     // What a tree row points at. Held in Qt::UserRole as a string, so a rebuild can
     // reselect by identity rather than by row — a reorder re-parents file nodes, and a
     // row index means something different afterwards.
-    enum class NodeKind { Root, Pattern, File, Orphan };
+    enum class NodeKind { Root, Pattern, File };
     struct NodeRef
     {
         NodeKind kind = NodeKind::Root;
-        QString  key; // pattern id, or file address; empty for Root and Orphan
+        QString  key; // pattern id, or file address; empty for Root
     };
     static QString refToString(const NodeRef &r);
     static NodeRef refFromString(const QString &s);
@@ -149,16 +156,21 @@ private:
     void movePattern(int delta);
     void promoteToParent();
     void applyToCurrent();
-    void forgetAllPerLogSettings();
 
     NodeRef currentRef() const;
 
     LogSettingsTree m_settings;
-    QString         m_scratchAddress; // the node selectLog() created, if any
-    // The log the previewed sample came from, in tree-key form. Set by selectLog(), the
-    // call both entry points make, and compared against the selected node to decide
-    // whether a claim about those bytes is a claim about THIS entry's log.
-    QString         m_sampleAddress;
+    // THE LOG THIS DIALOG WAS OPENED ON, in tree-key form, and the answer to three
+    // questions that turn out to be one. Which node gets the tree's single per-log row —
+    // every other entry stays in m_settings, still resolved and still swept, and is
+    // simply not shown. Which node rebuildTree()'s sweep must spare, so that row cannot
+    // be pruned out from under the reader. And which node a claim about the previewed
+    // bytes is a claim about.
+    //
+    // Set by selectLog(), the call both of MainWindow's entry points make, and never
+    // cleared while the dialog lives — Delete and Promote included, which is what makes
+    // the row a fixture rather than something the two of them can take away.
+    QString         m_currentAddress;
 
     QString    m_applyTarget;
     bool       m_applyRequested = false;
@@ -183,7 +195,6 @@ private:
     QToolButton      *m_deleteNode = nullptr;
     QToolButton      *m_moveUp = nullptr;
     QToolButton      *m_moveDown = nullptr;
-    QPushButton      *m_forgetFiles = nullptr;
     QLabel           *m_nodeTitle = nullptr;
     // The identity block every node wears: its own NAME, and under that, muted, which of
     // the three levels it sits at. ONE block filled three ways rather than a block per
