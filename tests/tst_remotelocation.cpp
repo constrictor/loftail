@@ -206,39 +206,74 @@ void TestRemoteLocation::displayHelpersFallBackToLocalBehavior()
 // bar, a blank clickable row in the recent-files menu.
 //
 // The second half of the claim is the one that is easy to undo: the fallback is a
-// SEGMENT, never the raw address. tabLabelsFor() groups on this string and builds a
-// label as parent directories plus it, which only stays unambiguous while the name is
+// SEGMENT, never the raw address. prefixedLabelsFor() builds a recent-files entry as
+// parent directories plus this string, which only stays unambiguous while the name is
 // the tail of its own label — and a menu is as wide as its widest item.
+//
+// It holds for logSourceBareName() too, and there it is load-bearing in a second way:
+// tabLabelsFor() GROUPS on the bare name to find the logs that would otherwise wear one
+// name, and a key with a path in it groups nothing with anything. That is what the three
+// REMOTE rows below are for — `ssh://h/var/log/` used to answer "/var/log/ (h)", because
+// the remote branch fell back to the whole remote path where the local one falls back to
+// its deepest segment, and no row here had ever asked.
 void TestRemoteLocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath_data()
 {
     QTest::addColumn<QString>("address");
     QTest::addColumn<QString>("expected");
+    QTest::addColumn<QString>("bare");
 
-    QTest::newRow("ordinary local") << "/var/log/app.log" << "app.log";
+    QTest::newRow("ordinary local") << "/var/log/app.log" << "app.log" << "app.log";
     // The deepest thing in the address that could be a name: the directory itself.
-    QTest::newRow("local directory") << "/var/log/" << "log";
-    QTest::newRow("relative directory") << "logs/" << "logs";
+    QTest::newRow("local directory") << "/var/log/" << "log" << "log";
+    QTest::newRow("relative directory") << "logs/" << "logs" << "logs";
     // Nothing left but the scheme, which at least says ssh from sftp.
-    QTest::newRow("scheme only") << "ssh://" << "ssh";
-    QTest::newRow("sftp scheme only") << "sftp://" << "sftp";
-    QTest::newRow("scheme and slash") << "ssh:///" << "ssh";
+    QTest::newRow("scheme only") << "ssh://" << "ssh" << "ssh";
+    QTest::newRow("sftp scheme only") << "sftp://" << "sftp" << "sftp";
+    QTest::newRow("scheme and slash") << "ssh:///" << "ssh" << "ssh";
     // A host but no path — RemoteLocation::isValid() wants both, so this does not parse.
-    QTest::newRow("host but no path") << "ssh://web1" << "web1";
-    QTest::newRow("user and host, no path") << "ssh://deploy@web1" << "deploy@web1";
+    QTest::newRow("host but no path") << "ssh://web1" << "web1" << "web1";
+    QTest::newRow("user and host, no path") << "ssh://deploy@web1" << "deploy@web1"
+                                            << "deploy@web1";
     // Nothing in the address that could be a name at all.
-    QTest::newRow("root") << "/" << "(unnamed)";
-    QTest::newRow("empty") << "" << "(unnamed)";
+    QTest::newRow("root") << "/" << "(unnamed)" << "(unnamed)";
+    QTest::newRow("empty") << "" << "(unnamed)" << "(unnamed)";
+
+    // A remote log, and the same fallbacks on the far side of the host.
+    QTest::newRow("remote log") << "ssh://web1/var/log/app.log" << "app.log (web1)"
+                                << "app.log";
+    QTest::newRow("remote directory") << "ssh://web1/var/log/" << "log (web1)" << "log";
+    QTest::newRow("remote root") << "ssh://web1/" << "(unnamed) (web1)" << "(unnamed)";
+
+    // An archive brackets its container on exactly as a host does, and the bare name is
+    // the log inside it either way.
+    QTest::newRow("archive member") << "/srv/bundle.tar.gz/var/log/app.log"
+                                    << "app.log (bundle.tar.gz)" << "app.log";
+    // A bare compressed stream is the log the writer meant, named once and not twice.
+    QTest::newRow("single stream") << "/srv/app.log.gz" << "app.log" << "app.log";
+    // No member picked: the container IS what is being named, so the bare is its name.
+    QTest::newRow("container, no member") << "/srv/bundle.zip" << "bundle.zip"
+                                          << "bundle.zip";
 }
 
 void TestRemoteLocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath()
 {
     QFETCH(QString, address);
     QFETCH(QString, expected);
+    QFETCH(QString, bare);
 
     const QString name = logSourceDisplayName(address);
     QCOMPARE(name, expected);
     QVERIFY(!name.isEmpty());
     QVERIFY(!name.contains(u'/'));
+
+    const QString plain = logSourceBareName(address);
+    QCOMPARE(plain, bare);
+    QVERIFY(!plain.isEmpty());
+    QVERIFY(!plain.contains(u'/'));
+    // The two are one decision taken apart, never two: the display name is the bare name
+    // with whatever says WHERE the log is bracketed onto it, so the bare is always what
+    // the display name starts with.
+    QVERIFY2(name.startsWith(plain), qPrintable(name + QLatin1String(" / ") + plain));
 }
 
 // The password rule was written for addresses that PARSE — parse() is where a URL
@@ -257,6 +292,8 @@ void TestRemoteLocation::anAddressThatDoesNotParseStillLosesItsPassword()
         QVERIFY2(!RemoteLocation::withoutPassword(address).contains(QStringLiteral("hunter2")),
                  qPrintable(address));
         QVERIFY2(!logSourceDisplayName(address).contains(QStringLiteral("hunter2")),
+                 qPrintable(address));
+        QVERIFY2(!logSourceBareName(address).contains(QStringLiteral("hunter2")),
                  qPrintable(address));
         QVERIFY2(!logSourceDisplayPath(address).contains(QStringLiteral("hunter2")),
                  qPrintable(address));

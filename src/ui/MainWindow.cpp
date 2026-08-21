@@ -100,11 +100,6 @@ constexpr auto kRecentFilesKey = "recentFiles";
 // otherwise disagree about how big the text is. Absent means "the platform's own size".
 constexpr auto kLogFontSizeKey = "logFontPointSize";
 
-// Longest parent prefix a recent entry carries before its middle is elided
-// (TabLabels.h). Wider than a tab's, because a menu is laid out to its widest item and
-// has the room, where a tab bar divides one fixed width among every open log.
-constexpr int  kMaxRecentPrefixChars = 40;
-
 // How long a rotation notice stays up (SPEC.md §3). Longer than announceLogFontSize()'s
 // 2000, because a zoom is a setting the reader just pressed and this is something that
 // happened to their data while they were reading it. Not longer still: a temporary
@@ -1998,10 +1993,10 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
     // in its own tab title instead.
     //
     // The name comes from relabelTabs(), which decided it against every OTHER open log
-    // (TabLabels.h) — two logs called app.log each carry the nearest parent directory
-    // that differs. Read from the cache and never recomputed here: this runs on every
-    // ingest tick, and the answer cannot have moved unless a log opened or closed. The
-    // fallback keeps a context that has somehow not been labelled yet showing its own
+    // (TabLabels.h) — two logs called app.log each bracket on the most prominent thing
+    // that tells them apart. Read from the cache and never recomputed here: this runs on
+    // every ingest tick, and the answer cannot have moved unless a log opened or closed.
+    // The fallback keeps a context that has somehow not been labelled yet showing its own
     // name rather than an empty tab.
     QString name = ctx->tabLabel.isEmpty() ? logSourceDisplayName(ctx->doc->path())
                                            : ctx->tabLabel;
@@ -3427,15 +3422,18 @@ void MainWindow::refreshRecentFilesMenu()
         none->setObjectName(QStringLiteral("recentEmptyAction"));
         none->setEnabled(false);
     } else {
-        // What an entry is CALLED is decided against the whole list at once, by the very
-        // function that names the tabs (TabLabels.h): the log's own name, grown by the
-        // nearest parent directory that differs wherever two entries would otherwise
-        // read alike. A raw address is unbounded in width — an `ssh://` URL or a path
-        // continuing through an archive especially — and a menu is as wide as its widest
-        // item, so the list used to size itself to the longest path ever opened. The
-        // full address is not lost: it is the entry's tooltip, which is also what makes
-        // shortening the label safe, exactly as it is on a tab.
-        const QStringList labels = tabLabelsFor(recent, kMaxRecentPrefixChars);
+        // What an entry is CALLED is decided against the whole list at once (TabLabels.h):
+        // the log's own name, grown by the nearest parent directory that differs wherever
+        // two entries would otherwise read alike. A raw address is unbounded in width —
+        // an `ssh://` URL or a path continuing through an archive especially — and a menu
+        // is as wide as its widest item, so the list used to size itself to the longest
+        // path ever opened. The full address is not lost: it is the entry's tooltip,
+        // which is also what makes shortening the label safe, exactly as it is on a tab.
+        //
+        // This is the PREFIX rule and not the tab's bracket rule, deliberately: an entry
+        // is read against the other nine rather than against the logs open beside it, and
+        // a path is what a person recognises a remembered file by.
+        const QStringList labels = prefixedLabelsFor(recent);
         for (int i = 0; i < recent.size(); ++i) {
             const QString path = recent.at(i);
             QString label = labels.at(i);

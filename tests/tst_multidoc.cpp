@@ -195,7 +195,7 @@ private slots:
     // rule itself, over every shape of address, is tst_tablabels'.
     void twoLogsWithOneBasenameEachShowTheirOwnDirectory();
     void closingOneOfThemShortensTheSurvivorBackToItsPlainName();
-    void theViewNumberingComposesWithTheDirectoryLabel();
+    void theViewNumberingComposesWithTheDistinguisher();
 
     // --- The two high-frequency gestures (SPEC.md §5) ---------------------------
     // Wrap has a key now, and log text has a size. Driven through the real window,
@@ -1356,7 +1356,8 @@ void TestMultiDoc::twoLogsWithOneBasenameEachShowTheirOwnDirectory()
 {
     // Both tabs used to read "app.log", with only the tooltip telling them apart —
     // which is the ordinary state of affairs for anyone tailing one service in two
-    // deployments.
+    // deployments. Each now brackets on the directory that differs (TabLabels.h); the
+    // common parts of the two paths are left out, because they tell nothing apart.
     MainWindow w;
     w.resize(900, 600);
     w.show();
@@ -1366,8 +1367,8 @@ void TestMultiDoc::twoLogsWithOneBasenameEachShowTheirOwnDirectory()
     waitUntilIndexed(w);
 
     QTabWidget *t = tabs(w);
-    QCOMPARE(t->tabText(0), QStringLiteral("svc-a/app.log"));
-    QCOMPARE(t->tabText(1), QStringLiteral("svc-b/app.log"));
+    QCOMPARE(t->tabText(0), QStringLiteral("app.log (svc-a)"));
+    QCOMPARE(t->tabText(1), QStringLiteral("app.log (svc-b)"));
 
     // The tooltip is untouched by any of this: it is the full address, which is what
     // makes a shortened label safe. Asserted as a suffix rather than as the string the
@@ -1381,12 +1382,12 @@ void TestMultiDoc::twoLogsWithOneBasenameEachShowTheirOwnDirectory()
     QTRY_COMPARE(tabCount(w), 3);
     waitUntilIndexed(w);
     QCOMPARE(t->tabText(2), QStringLiteral("a.log"));
-    QCOMPARE(t->tabText(0), QStringLiteral("svc-a/app.log"));
+    QCOMPARE(t->tabText(0), QStringLiteral("app.log (svc-a)"));
 }
 
 void TestMultiDoc::closingOneOfThemShortensTheSurvivorBackToItsPlainName()
 {
-    // The ambiguity is gone with the log that caused it, so the directory goes too.
+    // The ambiguity is gone with the log that caused it, so the bracket goes too.
     // This falls out only because the labels are decided for the whole set on every
     // open and close, rather than fixed when a log opens.
     MainWindow w;
@@ -1396,17 +1397,17 @@ void TestMultiDoc::closingOneOfThemShortensTheSurvivorBackToItsPlainName()
     w.openFile(m_svcB);
     QTRY_COMPARE(tabCount(w), 2);
     waitUntilIndexed(w);
-    QCOMPARE(tabs(w)->tabText(0), QStringLiteral("svc-a/app.log"));
+    QCOMPARE(tabs(w)->tabText(0), QStringLiteral("app.log (svc-a)"));
 
     trigger(w, "closeTabAction"); // closes svc-b, the active tab
     QTRY_COMPARE(tabCount(w), 1);
     QCOMPARE(tabs(w)->tabText(0), QStringLiteral("app.log"));
 }
 
-void TestMultiDoc::theViewNumberingComposesWithTheDirectoryLabel()
+void TestMultiDoc::theViewNumberingComposesWithTheDistinguisher()
 {
-    // Two mechanisms, two different questions: the directory says WHICH LOG, the
-    // number says which view of it. Both at once reads "svc-a/app.log [1]".
+    // Two mechanisms, two different questions: the bracket says WHICH LOG, the
+    // number says which view of it. Both at once reads "app.log (svc-a) [1]".
     MainWindow w;
     w.resize(900, 600);
     w.show();
@@ -1419,9 +1420,9 @@ void TestMultiDoc::theViewNumberingComposesWithTheDirectoryLabel()
     waitUntilIndexed(w);
 
     QTabWidget *t = tabs(w);
-    QCOMPARE(t->tabText(0), QStringLiteral("svc-a/app.log [1]"));
-    QCOMPARE(t->tabText(1), QStringLiteral("svc-a/app.log [2]"));
-    QCOMPARE(t->tabText(2), QStringLiteral("svc-b/app.log"));
+    QCOMPARE(t->tabText(0), QStringLiteral("app.log (svc-a) [1]"));
+    QCOMPARE(t->tabText(1), QStringLiteral("app.log (svc-a) [2]"));
+    QCOMPARE(t->tabText(2), QStringLiteral("app.log (svc-b)"));
 }
 
 // --- Line wrap by keyboard, and log text size (SPEC.md §5) -------------------

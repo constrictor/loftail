@@ -145,9 +145,11 @@ void TestArchiveOpen::aMultiMemberArchiveAsksWhichLog()
     window.openFile(zip, QString::fromLatin1(kPattern));
     QTRY_VERIFY(shown);
     QTRY_COMPARE(tabCount(window), 1);
-    // Here the container IS worth naming: several of its logs could be open at once,
-    // and two tabs called "app.log" from different bundles would be indistinguishable.
-    QTRY_COMPARE(tabs(window)->tabText(0), QStringLiteral("db.log (bundle.zip)"));
+    // The container is worth naming where two tabs would otherwise both read "db.log"
+    // — and only there (TabLabels.h). One log is open, so the tab is the log's own name
+    // and the container lives on the tooltip with the rest of the address.
+    QTRY_COMPARE(tabs(window)->tabText(0), QStringLiteral("db.log"));
+    QVERIFY(tabs(window)->tabToolTip(0).contains(QStringLiteral("bundle.zip")));
 }
 
 void TestArchiveOpen::severalPickedMembersOpenAsSeveralTabs()

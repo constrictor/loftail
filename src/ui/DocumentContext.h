@@ -101,8 +101,9 @@ public:
     QJsonObject filterState;
 
     // What this log is called on its tab, before the indexing/waiting/match markers and
-    // the view number are folded in (TabLabels.h). Normally its own name; enough parent
-    // directories to tell it apart when another open log answers to the same name.
+    // the view number are folded in (TabLabels.h). Normally its own name alone; that name
+    // plus a bracket naming its host, its archive or the differing part of its path when
+    // another open log answers to the same name.
     //
     // CACHED, and that is the point: the label depends on the OTHER open logs, so it is
     // recomputed for every file when one opens or closes — MainWindow::relabelTabs() —

@@ -4,15 +4,13 @@
 
 namespace loftail {
 
-// The name a log wears on its tab, decided for the WHOLE set of open logs at once
-// (SPEC.md §3, ARCHITECTURE.md §12.4).
+// What an open log is CALLED, decided for the WHOLE set at once (SPEC.md §5a,
+// ARCHITECTURE.md §12.4).
 //
-// A tab shows the log's own name — `logSourceDisplayName()`, which already brackets a
-// remote host or an archive container onto it. That is enough right up until two open
-// logs answer to the same name, which is the ordinary case for anyone tailing one
-// service across hosts or environments: `svc-a/app.log` and `svc-b/app.log` both read
-// `app.log`, and only the tooltip told them apart. Where two names collide, each grows
-// the nearest parent directory that differs — as many as it takes, and no more.
+// TWO RULES LIVE HERE, and they are deliberately different. A tab shows the log's own
+// name and brackets on whatever tells it from the tabs beside it; the recent-files menu
+// keeps the older spelling, which grows parent directories in front of the name. They
+// share the address arithmetic and nothing else.
 //
 // Why a free function over the whole set rather than a name computed per log as it
 // opens: a label is a statement about a log's NEIGHBOURS, so it changes when they do.
@@ -25,31 +23,54 @@ namespace loftail {
 // DocumentContext::tabLabel); rewriting a QTabBar entry relays the whole bar out, so
 // the labels are recomputed when the set of open logs CHANGES and never per tick.
 
-// Longest parent prefix a label carries before its middle is elided. The log's own
-// name is never elided here — the tab bar's own ElideMiddle handles a long one, and a
-// label that is short when unambiguous must stay byte-identical when it grows a
-// prefix. The elision keeps the prefix's head and tail, which is where the
-// distinguishing segments are: the outermost one is what made this label unique, and
-// the innermost is the directory the log actually sits in.
-inline constexpr int kMaxTabPrefixChars = 24;
+// Longest the path component of a tab's bracket grows before its middle is elided. Only
+// that component is bounded: it is the one with nothing to bound it, where a host and a
+// container name are each a single segment. The log's own name is not elided here
+// either — the tab bar's own ElideMiddle handles a long one, and a label that is short
+// when unambiguous must stay byte-identical when it grows a bracket. The elision keeps
+// the run's head and tail, which is where the telling-apart is.
+inline constexpr int kMaxTabQualifierChars = 24;
+
+// The same budget for a recent-files entry, which is wider because a menu is laid out to
+// its widest item and has the room, where a tab bar divides one fixed width among every
+// open log.
+inline constexpr int kMaxRecentPrefixChars = 40;
 
 // One label per address, in the same order. Handles every address the application
 // accepts — a local path, an `ssh://` URL and a path inside an archive — by asking
 // RemoteLocation/ArchiveLocation what the parts are rather than cutting up the string.
 //
-// Segments contributed, outermost last:
-//   local     the directories above the file.
-//   remote    the directories above the file on that host. The HOST is not a segment:
-//             it is already in the log's own name, in brackets, so two hosts serving
-//             `/var/log/app.log` never collide in the first place.
-//   archived  the directories above the member inside the container, then the
-//             directories above the CONTAINER. The container's name is bracketed onto
-//             the log's name exactly as a host is, and for the same reason.
+// A log whose name no other open log answers to wears that name and nothing else. Where
+// two or more DO share a name — the ordinary case for anyone tailing one service across
+// hosts or deployments — each grows a bracket holding the most prominent thing that
+// tells it from the others, in this order:
 //
-// Addresses that stay ambiguous after every segment is spent — two users on one host
-// naming one path, say — keep their duplicate labels rather than growing something
+//   1. the DEVICE it is on: the host of an `ssh://` address, nothing for a local log.
+//   2. the archive CONTAINER it is in.
+//   3. the PATH RUN: its parent directories with the ones EVERY member of the group
+//      carries stripped from both ends — the common root and the common tail — and all
+//      of what is left, outermost first, joined by `/`.
+//
+// An axis is spent only where it BUYS a distinction, so a group whose logs are all on
+// one host is told apart by its directories alone and never says the host. The
+// components that are spent read in that order inside one parenthesis, separated by
+// ", ": `app.log (host-a, svc-a)`.
+//
+// Addresses that stay ambiguous after all three — two users on one host naming one path,
+// two ports on one host — keep their duplicate labels rather than growing something
 // invented. The tooltip carries the full address in every case.
 QStringList tabLabelsFor(const QStringList &addresses,
-                         int maxPrefixChars = kMaxTabPrefixChars);
+                         int maxQualifierChars = kMaxTabQualifierChars);
+
+// The older rule, kept for File ▸ Open Recent: the log's own name as
+// logSourceDisplayName() spells it — with a remote host or an archive container already
+// bracketed on — grown by the nearest parent directories that differ wherever two
+// entries would otherwise read alike, as many as it takes and no more.
+//
+// A menu entry is not a tab: it is read against the other nine entries rather than
+// against the logs open beside it, it is as wide as the widest item rather than a share
+// of a fixed bar, and a path prefix is what a person recognises a remembered file by.
+QStringList prefixedLabelsFor(const QStringList &addresses,
+                              int maxPrefixChars = kMaxRecentPrefixChars);
 
 } // namespace loftail

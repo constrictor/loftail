@@ -126,8 +126,8 @@ bool logPathIsSpooled(const QString &s);
 // word for a remote-shaped address that has nothing else ("ssh" for `ssh://`), then a
 // placeholder for the truly nameless (`/`, "").
 //
-// It NEVER CONTAINS A SEPARATOR. tabLabelsFor() (TabLabels.h) groups on this string and
-// builds a label as parent directories plus it, which only stays unambiguous while the
+// It NEVER CONTAINS A SEPARATOR. prefixedLabelsFor() (TabLabels.h) builds a recent-files
+// entry as parent directories plus this string, which only stays unambiguous while the
 // name is the tail of its own label — so the fallback is a SEGMENT and never the raw
 // address. The raw address is also unbounded in width, which is the recent-files menu's
 // own reason for not using one.
@@ -136,6 +136,17 @@ bool logPathIsSpooled(const QString &s);
 // RemoteLocation::withoutPassword() first, because the addresses that reach it are
 // exactly the ones parse() refused and so never cleaned.
 QString logSourceDisplayName(const QString &path);
+
+// The first half of that name alone: "app.log" for every one of `/var/log/app.log`,
+// `ssh://web1/var/log/app.log` and `/srv/bundle.tar.gz/var/log/app.log` — the log's own
+// name with nothing bracketed onto it to say where it is.
+//
+// It carries the same three guarantees as the display name above, and for the same
+// reasons: never empty, never a separator, never a password. The separator half is
+// load-bearing in a second place here — tabLabelsFor() (TabLabels.h) GROUPS on this
+// string to find the logs that would otherwise wear one name, and a key with a path in
+// it groups nothing with anything.
+QString logSourceBareName(const QString &path);
 
 // The full location for a tooltip or an error message: the local path, or the URL.
 // Password-free for the same reason and by the same route as the name above.
