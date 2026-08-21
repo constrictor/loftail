@@ -40,6 +40,10 @@ class HighlighterPane;
 class PresetPane; // built only under LOFTAIL_HAVE_PRESETS; declaring it always is free
 class RunPane;
 class PaneTitleStyle;
+// Why the log on screen was re-read (LiveController.h). Forward-declared rather than
+// included: it is at namespace scope precisely so this header need not learn about the
+// live controller, which it otherwise knows only by name.
+enum class ReloadCause;
 
 // The application's top-level window. Per-file state lives in Document and the
 // machinery around it in DocumentContext; the window holds the context vector and
@@ -325,6 +329,9 @@ private:
     // Say what the size is now, transiently. The bounds clamp silently, and a key held
     // down at 32 pt with no answer at all reads as a broken shortcut.
     void announceLogFontSize();
+    // Say that the log on screen was replaced or truncated behind us and re-read
+    // (SPEC.md §3). The reload itself is unchanged; this is the sentence it lacked.
+    void announceReload(ReloadCause cause, const QString &path);
 
     // Open `path` under `settings`. When the pattern matches no sample record,
     // Preferences is offered first (SPEC.md §4) — there is deliberately no way in for a

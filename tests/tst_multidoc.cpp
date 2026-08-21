@@ -10,6 +10,7 @@
 #include <QFontDatabase>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QStatusBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -207,6 +208,17 @@ private slots:
     void theZoomStopsAtItsBoundsAndComesBackOnReset();
     void theChosenTextSizeSurvivesARestart();
     void theCommandLineTakesEveryFileNamedAndOnePatternForThemAll();
+
+    // A log replaced behind the application says so, in the status BAR's own temporary
+    // message and for the ACTIVE tab only (SPEC.md §3). Both halves need a real window
+    // with two tabs, which is what this file is: the classification itself is tst_tail's
+    // (core, POSIX-only), and what is left to pin here is that the sentence reaches the
+    // bar at all, and that a background tab's rotation does not spend the one status bar
+    // on a log nobody is looking at. The second case is the one a broken implementation
+    // satisfies silently — a notice that always fires passes every assertion about a
+    // notice that fires.
+    void aReplacedLogSaysSoInTheStatusBar();
+    void aRotationInABackgroundTabSaysNothing();
 };
 
 namespace {
@@ -1574,6 +1586,72 @@ void TestMultiDoc::theChosenTextSizeSurvivesARestart()
                         ->font()
                         .pointSizeF()),
              chosen);
+}
+
+void TestMultiDoc::aReplacedLogSaysSoInTheStatusBar()
+{
+    // Its own log: this case rewrites it twice, and the shared ones are appended to by
+    // the cases above.
+    const QString path = m_dir.filePath(QStringLiteral("rolled.log"));
+    writeLog(path, "net.io", 20);
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(path);
+    waitUntilIndexed(w);
+    QVERIFY(w.statusBar()->currentMessage().isEmpty());
+
+    // A copytruncate: this same file, shorter. Read back off the status BAR and never
+    // off m_statusLabel, which is where the sentence must NOT be — updateStatus()
+    // rewrites that label from the active document on the very tick this fires from.
+    writeLog(path, "net.io", 4);
+    tick(w, 0);
+    QCOMPARE(modelOfTab(w, 0)->rowCount(), 4);
+    QCOMPARE(w.statusBar()->currentMessage(),
+             QStringLiteral("rolled.log was truncated — reloaded"));
+
+    // A rewrite in place that GROWS. Same file, same inode, more bytes — so it is a
+    // replacement and not a truncation, which is SPEC.md §3's own vocabulary. The
+    // wording is the whole content of the notice, which is why it is compared entire.
+    writeLog(path, "db.pool", 30);
+    tick(w, 0);
+    QCOMPARE(modelOfTab(w, 0)->rowCount(), 30);
+    QCOMPARE(w.statusBar()->currentMessage(),
+             QStringLiteral("rolled.log was replaced — reloaded"));
+
+    w.close();
+}
+
+void TestMultiDoc::aRotationInABackgroundTabSaysNothing()
+{
+    const QString behind = m_dir.filePath(QStringLiteral("behind.log"));
+    writeLog(behind, "net.io", 20);
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(behind);
+    w.openFile(m_b);
+    waitUntilIndexed(w);
+    QCOMPARE(tabCount(w), 2);
+    tabs(w)->setCurrentIndex(1); // b is in front; `behind` is the tab nobody is reading
+    QVERIFY(w.statusBar()->currentMessage().isEmpty());
+
+    writeLog(behind, "net.io", 3);
+    tick(w, 0);
+
+    // The reload itself DID happen — without this the case passes for the wrong reason,
+    // and would go on passing if the signal were never emitted at all.
+    QCOMPARE(modelOfTab(w, 0)->rowCount(), 3);
+    // ...and it said nothing, because there is one status bar and it belongs to the log
+    // in front. Unlike the tab marker, which exists FOR the background tab and is
+    // therefore handled above the same guard (aMatchInABackgroundTabMarksIt), a notice
+    // here would cover the record count of a log that had not moved.
+    QVERIFY2(w.statusBar()->currentMessage().isEmpty(),
+             qPrintable(w.statusBar()->currentMessage()));
+
+    w.close();
 }
 
 #include "tst_multidoc.moc"

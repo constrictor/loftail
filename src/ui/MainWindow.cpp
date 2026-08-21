@@ -105,6 +105,14 @@ constexpr auto kLogFontSizeKey = "logFontPointSize";
 // has the room, where a tab bar divides one fixed width among every open log.
 constexpr int  kMaxRecentPrefixChars = 40;
 
+// How long a rotation notice stays up (SPEC.md §3). Longer than announceLogFontSize()'s
+// 2000, because a zoom is a setting the reader just pressed and this is something that
+// happened to their data while they were reading it. Not longer still: a temporary
+// message COVERS m_statusLabel for its whole life, so every second of it is a second the
+// record count and the filtered/total pair are off screen — at the one moment they have
+// just changed the most.
+constexpr int kReloadNoticeMs = 5000;
+
 // How far Find will go to count the matches behind its "3 of 47" (SPEC.md §5).
 // Finding a match stops at the first one; counting them asks the text of EVERY visible
 // record, which on a four-million-record log is several seconds — per keystroke, since
@@ -2245,6 +2253,18 @@ void MainWindow::startWatching(DocumentContext *ctx)
             }
             updateStatus();
         });
+        connect(ctx->live, &LiveController::reloaded, this,
+                [this, ctx](ReloadCause cause) {
+                    // BELOW the guard, and nothing may be hoisted above it — unlike the
+                    // ingest handler, where handleAlerts() and followLastRunIfMoved()
+                    // sit above their identical line deliberately (M19). A transient
+                    // message is window chrome and there is one status bar: a background
+                    // tab's rotation would spend it on a log the reader is not looking
+                    // at, and cover the count of the one they are.
+                    if (ctx != activeContext())
+                        return;
+                    announceReload(cause, ctx->doc->path());
+                });
         ctx->live->start();
     }
 }
@@ -3525,6 +3545,29 @@ void MainWindow::announceLogFontSize()
     // document on every tick by updateStatus(), so a size written into it would be gone
     // by the next one. A transient message covers it and clears itself.
     statusBar()->showMessage(tr("Log text size: %1 pt").arg(logFontPointSize()), 2000);
+}
+
+void MainWindow::announceReload(ReloadCause cause, const QString &path)
+{
+    // Through the status BAR for the reason announceLogFontSize() gives above, and with
+    // more force here: this fires FROM a watch tick, and updateStatus() runs on that same
+    // tick from the rescanned handler — so a sentence written into m_statusLabel would be
+    // overwritten by the very reload that produced it.
+    //
+    // It names the log even though only the active tab announces, because the temporary
+    // message covers m_statusLabel, which is the one place the name otherwise appears.
+    const QString name = logSourceDisplayName(path);
+    const QString text = cause == ReloadCause::Truncated
+                             ? tr("%1 was truncated — reloaded").arg(name)
+                             : tr("%1 was replaced — reloaded").arg(name);
+    // A writer rewriting in place faster than the notice expires would otherwise re-arm
+    // the timer on every reload and keep m_statusLabel hidden for as long as it kept
+    // going. Re-showing the same sentence says nothing new, so the FIRST timer is left to
+    // run and the record count comes back five seconds after the first notice rather than
+    // five seconds after the last.
+    if (statusBar()->currentMessage() == text)
+        return;
+    statusBar()->showMessage(text, kReloadNoticeMs);
 }
 
 // --- Session persistence ---------------------------------------------------

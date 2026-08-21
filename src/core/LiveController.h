@@ -15,6 +15,27 @@ namespace loftail {
 class Document;
 class LogModel;
 
+// What made the bytes we had indexed stop being the bytes in the file (SPEC.md §3).
+// At namespace scope rather than nested in LiveController, following WaitCause
+// (Document.h), so MainWindow can forward-declare it: the window header knows this
+// class only by name and must not gain a core include for one enum's sake.
+//
+// TWO shapes, not three, and SPEC.md §3 is what settles the vocabulary: "Rewriting a
+// log in place counts as replacing it". So a `cp new.log app.log` is Replaced, whether
+// the new content is shorter, longer or exactly the same length.
+//
+// Derived by checkNow() from the finer facts it already has, NEVER read off the
+// source's wasTruncated(), which is a catch-all: MappedLogSource::refreshSize() latches
+// it for a shrink, for an identity change AND for an in-place rewrite the HeadWitness
+// caught, where neither the size nor the inode moved. Classifying on that flag would
+// announce "was truncated" about a file that GREW, which is precisely what
+// tst_tail::overwriteInPlaceTriggersRescan builds on purpose.
+enum class ReloadCause {
+    Replaced,  // a different file is at the path, or the one there was rewritten
+    Truncated, // this same file shrank under us — the only honest truncation
+    Retry,     // a previous rescan could not open the log; NOT something to announce
+};
+
 // M6 — the watch mechanism (SPEC.md §3, invariant #5). QFileSystemWatcher alone is
 // unreliable: it misses updates on many network mounts and drops a path when the
 // file is rotated out from under it. So the watch is BELT-AND-BRACES — a filesystem
@@ -122,8 +143,25 @@ signals:
     // Appended `newRecords` source records (>= 0; 0 when only the trailing record
     // grew in place). Lets the UI refresh discovered subsystem/thread lists + counts.
     void ingested(qint64 newRecords);
-    // The file was rotated or truncated and silently reloaded (SPEC.md §3).
+    // The file was rotated or truncated and reloaded (SPEC.md §3). Nullary and
+    // deliberately undifferentiated: it fires for the reload below AND for the two
+    // resume paths (a log that turned up, a log whose first bytes settled its format),
+    // because what every receiver of it does is the same — the visible set was replaced
+    // wholesale. Which of them it was rides `reloaded` instead, so this seam stays inert
+    // and every existing receiver goes on working untouched.
     void rescanned();
+
+    // The log was replaced or truncated behind us and re-read, and this is which
+    // (SPEC.md §3). Emitted ONLY from the genuine reload — never from the two resume
+    // paths, which announce themselves through the waiting state, and never for
+    // ReloadCause::Retry, which runs every tick until an unreadable log becomes
+    // readable. Emitted only when the re-read actually SUCCEEDED: a failed reopen must
+    // not claim the log was reloaded, and stays diagnostics-only as it always has been.
+    //
+    // GUI thread, direct connection, like everything else in this class — so the enum
+    // needs no metatype registration. Do not queue it: the tree registers a metatype in
+    // exactly one place (IndexBatch), where the type genuinely crosses a thread.
+    void reloaded(ReloadCause cause);
 
     // What this source is doing, for the status bar, or empty when there is nothing to
     // report (sourceStatusText). Emitted only when the text CHANGES, so the 750 ms tick
@@ -177,7 +215,9 @@ private:
     // of it for a document whose rules only colour is one anyEnabled() walk of the rule
     // list, which is the first line of the body.
     void runMatchActions(int firstNewRow, bool provisionalChanged, int provisionalRow);
-    void doRescan();
+    // Re-read the whole log in place. `cause` is only about what, if anything, the
+    // reader is told: the re-read itself is identical for all three.
+    void doRescan(ReloadCause cause);
     void syncBaseline();
     void publishSourceStatus();
     // The waiting half of checkNow(): returns true when it handled this tick.
