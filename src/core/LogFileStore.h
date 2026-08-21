@@ -142,6 +142,19 @@ public:
     // — and only when the tree actually moved. NEVER on an open and never on a watch tick.
     int pruneAgainst(const LogSettingsTree &tree);
 
+    // THE ONE-TIME DRAIN of the per-log profiles that used to live elsewhere: M20's
+    // `files[]` inside logsettings.json and, through it, M18's `formatCache`
+    // (LogSettingsStore::takeLegacyFiles). Returns how many were adopted.
+    //
+    // Three rules. An EXISTING RECORD WINS, so a user who downgraded, ran a build that
+    // rewrites `files[]`, and upgraded again does not have their newer per-log record
+    // rolled back. Each node goes through save(), so the redundancy rule fires on the way
+    // in and a node that already agreed with its pattern is never given a slot. And with
+    // more nodes than slots the LAST kSlots are kept: the old array is insertion order, so
+    // its tail is the nearest thing to an MRU the source has, and a silent drop beats a
+    // dialog on the first launch after upgrade about entries nobody can see.
+    int adoptLegacy(const QVector<LegacyFileNode> &nodes, const LogSettingsTree &tree);
+
 private:
     struct Entry
     {

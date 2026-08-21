@@ -2,6 +2,7 @@
 
 #include "DocumentContext.h"
 #include "FormatSettings.h"
+#include "LogFileStore.h"
 #include "LogSettingsStore.h"
 #include "LogView.h"
 #include "SshPromptDialogs.h"
@@ -40,6 +41,7 @@ class HighlighterPane;
 class PresetPane; // built only under LOFTAIL_HAVE_PRESETS; declaring it always is free
 class RunPane;
 class PaneTitleStyle;
+class PreferencesDialog;
 // Why the log on screen was re-read (LiveController.h). Forward-declared rather than
 // included: it is at namespace scope precisely so this header need not learn about the
 // live controller, which it otherwise knows only by name.
@@ -396,14 +398,32 @@ private:
     // change → repaint only (§5.1, §6.1). The document, its tab and its views survive
     // all three.
     void applySettings(const FormatSettings &newSettings);
-    // Write `s` into the settings tree as this log's own node — or DELETE that node,
-    // when `s` is exactly what the log would inherit anyway (LogSettingsTree::
-    // setFileProfile). The tree is saved only when it actually changed.
-    void persistFormat(const QString &path, const FormatSettings &s);
-    // Save `s` as the tree's root defaults: what a log nothing else matches is tried
-    // with. The counterpart to persistFormat(), two levels up — that one remembers a
-    // log, this one remembers a habit.
-    void rememberDefaultFormat(const FormatSettings &s);
+    // Store what a Preferences visit decided: the tree, the open log's own settings, and
+    // — only when the tree actually moved — the sweep of every other log's record against
+    // the patterns that have just changed under them. The single exit for both entry
+    // points, so the two cannot come to write different things.
+    void commitPreferences(const PreferencesDialog &dlg, const QString &address);
+
+    // What `address` opens with: its own stored record where it has one, and what it
+    // inherits from the tree where it has none. THE ONE RESOLVER — every site that used
+    // to read `m_logSettings.resolve(path).profile` reads this instead.
+    //
+    // An OPEN log is answered from its context rather than from the disk, because the
+    // context holds what the tab is actually using: a format the user has just changed
+    // has reached ctx->fileSettings before it has reached the pool, and a second view
+    // created in between must not open on the older answer.
+    LogProfile resolvedProfile(const QString &address);
+
+    // THE ONE PLACE A PER-LOG RECORD IS WRITTEN. Everything a gesture may have changed is
+    // folded in from the context, compared against what this context last stored, and
+    // written only on a real difference. persistFormat() was this for the profile alone;
+    // the CHANGE GATE is what lets it be called from paths that repeat, and it must stay,
+    // because resumeOrSettleDocument() reaches it on every resume of a remote log.
+    //
+    // NOT REACHABLE FROM THE INGEST PATH. followLastRunIfMoved() retargets the run on
+    // every tick of a restarting log, and HighlighterPane::refreshTimeBounds() runs there
+    // too; neither may end in an atomic file write.
+    void persistFileSettings(DocumentContext *ctx);
 
     // What came of asking whether a format fits (offerFormat).
     enum class FormatOutcome {
@@ -440,6 +460,9 @@ private:
     void onTabMoved(int from, int to);
     // The view showing `path`, or nullptr — reopening an open file raises it.
     DocumentView *viewOfPath(const QString &path) const;
+    // The context for `address`, matched through logSettingsKey() rather than by the
+    // spelling the log was opened with, or nullptr when that log is not open.
+    DocumentContext *contextOfPath(const QString &address) const;
     // Rebuild the Window menu's list of open views.
     void refreshWindowMenu();
     // Move the active view one tab forward (or back).
@@ -559,6 +582,17 @@ private:
     // of each document's format.
     LogSettingsStore m_settingsStore{LogSettingsStore::defaultDir()};
     LogSettingsTree  m_logSettings;
+
+    // THE PER-LOG POOL (M21, SPEC.md §4, §10): one JSON record per log under
+    // fileSettings/, holding what that log alone says — its format profile, and from the
+    // steps that follow its filters, its highlight rules and its run. The MAP is read
+    // here in the constructor beside the tree; a record is read when its log is opened
+    // and written through persistFileSettings().
+    //
+    // The pool is bounded, so eviction has to know what is open: relabelTabs() — the
+    // function whose whole definition is "the set of open logs changed" — hands it the
+    // pinned set, and nothing else does.
+    LogFileStore     m_fileStore{LogFileStore::defaultDir()};
     // View ▸ Line Wrap. Held so the checked entry can be made to track the ACTIVE view,
     // which matters now that the mode a log opens in is its own (M20) rather than one
     // window-wide choice: each action carries its WrapMode in QAction::data().

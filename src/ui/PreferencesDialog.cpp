@@ -454,41 +454,20 @@ void PreferencesDialog::rebuildTree(const NodeRef &select)
     const bool wasUpdating = m_updating; // saved and RESTORED, never forced false
     m_updating = true;
 
-    // Every mutation of this tree ends here, which is what makes this the one place a
-    // log node can be re-tested against a parent it did not itself change. A pattern
-    // edited, added, reordered or deleted re-homes logs and changes what they inherit,
-    // and a log whose own entry now says exactly that has nothing left to say — so it
-    // goes, here, rather than sitting under the pattern shadowing it for ever.
+    // THE ROW IS A FACT NOW, not a fixture this function has to keep putting back. It
+    // used to take two blocks here: a sweep of the per-log nodes against what they would
+    // inherit, and a re-creation of the open log's node whenever Delete or Promote had
+    // removed it. Both are gone with the file level (M21).
     //
-    // THE OPEN LOG'S NODE IS THE ONE EXCEPTION, and the exception is about the LOG and
-    // not about who created the node. It began narrower — selectLog() creates a node
-    // precisely so that a log with nothing of its own has a row to be edited in, and such
-    // a node says nothing new until the user makes it, so an unexempted sweep would eat it
-    // between its creation and its first keystroke. That spelling stopped being enough
-    // once this tree lists exactly one file row: a log whose STORED entry happens to
-    // agree with the pattern above it (the insertFileProfile() load case — an entry
-    // written before the pattern that now covers it) was swept here, and with no other
-    // file row to fall back on the reader was left looking at a tree with no row for the
-    // log in front of them, and no way to give it settings without reopening the dialog.
-    //
-    // accept() prunes with NO exception, so what is persisted is unchanged either way:
-    // a node the user left saying nothing still goes.
-    m_settings.pruneRedundantFiles(m_currentAddress);
-
-    // AND THE ROW IS A FIXTURE WHILE A LOG IS OPEN. Delete and Promote to Parent Pattern
-    // both end in "this log's entry is gone" — which used to take the row with it, and
-    // with it the only route to the open log's settings for the rest of the visit. The
-    // node comes straight back, unedited, saying exactly what the log now inherits, so
-    // both gestures read as "put it back to what the level above gives me" and answer
-    // themselves on screen. Left untouched it is pruned by accept() like any other, so
-    // neither gesture stores anything.
-    //
-    // Here rather than in either slot, because it is a property of the tree and not of
-    // one press: any future removal gets it for nothing.
-    if (!m_currentAddress.isEmpty() && m_settings.indexOfFile(m_currentAddress) < 0) {
-        m_settings.insertFileProfile(m_currentAddress,
-                                     m_settings.inherited(m_currentAddress));
-    }
+    // The row exists because the ADDRESS does — one log is open, so one row is drawn, and
+    // nothing can take it away mid-visit. What it shows is m_fileProfile, which Delete
+    // and Promote to Parent Pattern set back to what the log inherits rather than
+    // removing; both therefore still read as "put this log back on the level above" and
+    // answer themselves on screen, with one comparison instead of a removal and a
+    // re-creation. Whether anything is STORED is asked once, at the end, by
+    // fileProfile() — and the sweep of every OTHER log, which this dialog never lists,
+    // is the caller's LogFileStore::pruneAgainst(), run only when the tree actually moved
+    // (reading five hundred records on every keystroke here is not affordable).
 
     m_treeWidget->clear();
 
@@ -542,11 +521,11 @@ void PreferencesDialog::rebuildTree(const NodeRef &select)
     // such a log has no level to be promoted to — moved to the panel that log heads (see
     // loadNode()), with the Promote button's tooltip saying it a second time where the
     // question is actually asked.
-    if (!m_currentAddress.isEmpty() && m_settings.indexOfFile(m_currentAddress) >= 0) {
-        const auto res = m_settings.resolve(m_currentAddress);
+    if (!m_currentAddress.isEmpty()) {
+        const int patternIndex = m_settings.matchingPattern(m_currentAddress);
         QTreeWidgetItem *parent =
-            res.patternIndex >= 0 && res.patternIndex < patternItems.size()
-            ? patternItems.at(res.patternIndex)
+            patternIndex >= 0 && patternIndex < patternItems.size()
+            ? patternItems.at(patternIndex)
             : root;
         // Named for its ROLE and not for the log, which is the whole point of showing one:
         // there is nothing to tell it apart from, so a file name would only be a shorter
@@ -629,11 +608,11 @@ void PreferencesDialog::loadNode()
         break;
     }
     case NodeKind::File: {
-        const int i = m_settings.indexOfFile(ref.key);
-        if (i < 0) {
-            haveProfile = false;
-            break;
-        }
+        // No "is there a node?" branch any more (M21). The row is drawn because a log is
+        // open, and what it shows is m_fileProfile — which always holds something, being
+        // either the log's own stored settings or what it inherits. A file row whose node
+        // had gone was a state this dialog could reach and can no longer.
+        //
         // The log's OWN NAME heads the panel — logSourceDisplayName(), which is what
         // names it everywhere else in the application, so it is recognisable as the tab
         // it belongs to rather than as an address to be read left to right. Its full
@@ -651,16 +630,15 @@ void PreferencesDialog::loadNode()
         // but a tooltip has to be hunted for and a disabled control is not where anyone
         // hunts.
         m_nodeTitle->clear();
-        if (m_settings.resolve(ref.key).patternIndex < 0) {
+        if (m_settings.matchingPattern(ref.key) < 0) {
             m_nodeTitle->setText(
                 tr("No file pattern matches this log, so it takes the default settings "
                    "unless its own say otherwise. Promoting needs a pattern to promote "
                    "to — add one that matches it first."));
         }
-        const LogFileNode &f = m_settings.files().at(i);
-        setIdentity(logSourceDisplayName(f.path), tr("This log only"),
-                    logSourceDisplayPath(f.path));
-        profile = f.profile;
+        setIdentity(logSourceDisplayName(ref.key), tr("This log only"),
+                    logSourceDisplayPath(ref.key));
+        profile = m_fileProfile;
         break;
     }
     }
@@ -780,16 +758,12 @@ void PreferencesDialog::commitCurrent()
         n.profile = p;
         break;
     }
-    case NodeKind::File: {
-        const int i = m_settings.indexOfFile(m_loaded.key);
-        if (i < 0)
-            return;
-        m_settings.fileAt(i).profile = p;
-        // Re-tested against its parent by the next rebuild, and by OK. Not here: a node
-        // vanishing from under the cursor mid-edit, because one field happens to match
-        // the pattern above, would be a rebuild nobody asked for.
+    case NodeKind::File:
+        // Re-tested against its parent once, by fileProfile(), when OK is pressed. Not
+        // here: a row vanishing from under the cursor mid-edit, because one field happens
+        // to match the pattern above, would be a rebuild nobody asked for.
+        m_fileProfile = p;
         break;
-    }
     }
 }
 
@@ -850,7 +824,7 @@ void PreferencesDialog::updateButtons()
     // still shows its tooltip, so the explanation arrives exactly when the question is
     // asked — which is better than where it was, since nobody selected that heading in
     // order to read it.
-    const bool hasParentPattern = isFile && m_settings.resolve(ref.key).patternIndex >= 0;
+    const bool hasParentPattern = isFile && m_settings.matchingPattern(ref.key) >= 0;
     if (isPattern) {
         m_promoteButton->setText(tr("&Promote to Default Settings"));
         m_promoteButton->setToolTip(
@@ -882,27 +856,41 @@ void PreferencesDialog::updateButtons()
                               && refToString(m_applyNode) == refToString(ref));
 }
 
-void PreferencesDialog::selectLog(const QString &address, const LogProfile &seed)
+void PreferencesDialog::selectLog(const QString &address, const std::optional<LogProfile> &own,
+                                  const LogProfile &seed)
 {
     commitCurrent();
     const QString key = logSettingsKey(address);
-    if (m_settings.indexOfFile(key) < 0) {
-        // insertFileProfile, not setFileProfile: the node must EXIST to be selected and
-        // edited, even when the seed happens to equal what the log already inherits.
-        // accept() puts it back through the prune rule, so nothing that says nothing
-        // survives OK.
-        //
-        // The SEED is not rebuildTree()'s inherited() fallback and cannot be replaced by
-        // it: offerFormat() seeds with the pattern autodetection just guessed, which is
-        // deliberately not what the log inherits — that guess is the whole of what the
-        // dialog is opened to have confirmed.
-        m_settings.insertFileProfile(key, seed);
-    }
-    // Set whether or not a node had to be made, and never cleared afterwards. This is
-    // what the tree lists its one file row for, what the sweep above spares and what the
-    // sample's bytes are judged a fact about — three questions with one answer.
+    // What the row shows: the log's own stored settings where it has some, and the SEED
+    // where it has none. The seed is not the same thing as what the log inherits and
+    // cannot be replaced by it — offerFormat() seeds with the pattern autodetection has
+    // just guessed, which is deliberately not what the log inherits, that guess being the
+    // whole of what the dialog is opened to have confirmed.
+    //
+    // Whether any of it is STORED is a separate question, asked once by fileProfile() at
+    // the end. So a seed equal to what the log inherits shows on screen, can be edited,
+    // and leaves nothing behind if it is not.
+    m_fileProfile = own.value_or(seed);
+    // Set whether or not the log had settings, and never cleared afterwards. This is what
+    // the tree lists its one file row for and what the sample's bytes are judged a fact
+    // about — two questions with one answer.
     m_currentAddress = key;
     rebuildTree(NodeRef{NodeKind::File, key});
+}
+
+std::optional<LogProfile> PreferencesDialog::fileProfile() const
+{
+    // THE REDUNDANCY RULE, asked once, at the only moment the answer is final. A log gets
+    // settings of its own only while they say something the level above does not — so a
+    // row left showing exactly what it inherits stores nothing, whether it started that
+    // way, was edited back into line, or had its pattern taught what it said.
+    //
+    // It also answers Promote and Delete without either needing to know: both put
+    // m_fileProfile back to inherited(), and this comparison turns that into "the log's
+    // entry is removed".
+    if (m_currentAddress.isEmpty() || m_fileProfile == m_settings.inherited(m_currentAddress))
+        return std::nullopt;
+    return m_fileProfile;
 }
 
 void PreferencesDialog::setApplyTarget(const QString &name)
@@ -937,8 +925,7 @@ void PreferencesDialog::addPattern()
     //
     // The PROFILE is still seeded from the selected log, which is the useful half of the
     // gesture: "make a pattern out of how this one is read".
-    n.profile = ref.kind == NodeKind::File ? m_settings.resolve(ref.key).profile
-                                           : m_settings.defaults();
+    n.profile = ref.kind == NodeKind::File ? m_fileProfile : m_settings.defaults();
     const int i = m_settings.addPattern(n);
     rebuildTree(NodeRef{NodeKind::Pattern, m_settings.patterns().at(i).id});
     m_patternMatch->setFocus();
@@ -959,10 +946,11 @@ void PreferencesDialog::deleteNode()
         break;
     }
     case NodeKind::File:
-        m_settings.removeFile(ref.key);
-        // RESELECTED, not dropped to the root: rebuildTree() puts the open log's node
-        // straight back saying what it now inherits, so the row the press was on is
-        // still there — and what it now shows is the answer to the press.
+        // GIVING UP what was remembered is showing what the log inherits instead — the
+        // row itself cannot go, because the log is still the one that is open and taking
+        // the only route to its settings away mid-visit is not an answer to the press.
+        // fileProfile() then reports nothing stored, so the entry really is removed.
+        m_fileProfile = m_settings.inherited(ref.key);
         rebuildTree(ref);
         break;
     case NodeKind::Root:
@@ -1006,16 +994,15 @@ void PreferencesDialog::promoteToParent()
         return;
     commitCurrent();
 
-    const int patternIndex = m_settings.resolve(ref.key).patternIndex;
-    const int fileIndex = m_settings.indexOfFile(ref.key);
-    if (patternIndex < 0 || fileIndex < 0)
+    const int patternIndex = m_settings.matchingPattern(ref.key);
+    if (patternIndex < 0)
         return;
 
-    const LogProfile p = m_settings.files().at(fileIndex).profile;
-    m_settings.patternAt(patternIndex).profile = p;
+    m_settings.patternAt(patternIndex).profile = m_fileProfile;
     // The log now says exactly what the pattern says, so its own entry has nothing left
-    // to say. setFileProfile is what notices that; it is not a special case here.
-    m_settings.setFileProfile(ref.key, p);
+    // to say — which fileProfile()'s comparison notices on its own. Nothing is special-
+    // cased here and nothing is removed here; the row goes on showing the same settings,
+    // now inherited rather than its own, which is exactly what promoting means.
 
     rebuildTree(NodeRef{NodeKind::Pattern, m_settings.patterns().at(patternIndex).id});
 }
@@ -1065,13 +1052,11 @@ bool PreferencesDialog::profileOfNode(const NodeRef &ref, LogProfile *out) const
         *out = m_settings.patterns().at(i).profile;
         return true;
     }
-    case NodeKind::File: {
-        const int i = m_settings.indexOfFile(ref.key);
-        if (i < 0)
+    case NodeKind::File:
+        if (ref.key != m_currentAddress)
             return false;
-        *out = m_settings.files().at(i).profile;
+        *out = m_fileProfile;
         return true;
-    }
     }
     return false;
 }
@@ -1095,7 +1080,7 @@ QString PreferencesDialog::nodeDisplayName(const NodeRef &ref) const
         // This feeds the apply notice, which says "the settings for app.log" about a node
         // that may well not be the one on screen — a role word there would name whichever
         // row the reader is looking at instead of the one the request points at.
-        return m_settings.indexOfFile(ref.key) < 0 ? QString() : logSourceDisplayName(ref.key);
+        return ref.key != m_currentAddress ? QString() : logSourceDisplayName(ref.key);
     }
     return QString();
 }
@@ -1178,13 +1163,12 @@ void PreferencesDialog::accept()
     if (m_applyRequested)
         profileOfNode(m_applyNode, &m_applyProfile);
 
-    // With NO exception this time, which is the only difference from the sweep every
-    // rebuild runs: the open log's node is spared while the dialog is up so that it has
-    // a row to be edited in, and is pruned here if the user left it saying nothing its
-    // parent does not already say. commitCurrent() above is why this runs at all — the
-    // node just written has not been through a rebuild since.
-    m_settings.pruneRedundantFiles();
-
+    // No prune here any more (M21). The open log's entry is decided by fileProfile(),
+    // which the caller asks once and which compares against what the log inherits — so a
+    // row left saying nothing is still not stored, and commitCurrent() above is still
+    // what makes that comparison see the last keystroke. Every OTHER log's entry lives
+    // in the pool and is swept by the caller's LogFileStore::pruneAgainst(), which is
+    // affordable exactly once per visit and only when the tree actually moved.
     QDialog::accept();
 }
 

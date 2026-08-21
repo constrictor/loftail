@@ -14,6 +14,7 @@
 #include "Filter.h"
 #include "Highlight.h"
 #include "LogProfile.h"
+#include "ConfigReset.h"
 #include "LogSettingsStore.h"
 #include "LogView.h"
 #include "MainWindow.h"
@@ -93,7 +94,7 @@ void TestReload::init()
     // A per-log node left by a previous case would decide this one's format; the reload
     // is not supposed to consult the tree at all, and a leaked node would hide it if it
     // ever started to.
-    QFile::remove(LogSettingsStore(LogSettingsStore::defaultDir()).filePath());
+    clearLogSettings();
 }
 
 void TestReload::itIsOnF5AndDisabledWithNothingOpen()

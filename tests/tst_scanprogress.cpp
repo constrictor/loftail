@@ -11,6 +11,7 @@
 #include <QWidget>
 
 #include "LogModel.h"
+#include "ConfigReset.h"
 #include "LogSettingsStore.h"
 #include "LogView.h"
 #include "MainWindow.h"
@@ -73,7 +74,7 @@ void TestScanProgress::init()
     QSettings settings;
     settings.remove(QStringLiteral("session"));
     settings.sync();
-    QFile::remove(LogSettingsStore(LogSettingsStore::defaultDir()).filePath());
+    clearLogSettings();
 }
 
 void TestScanProgress::initTestCase()

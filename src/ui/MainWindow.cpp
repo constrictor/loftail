@@ -144,7 +144,7 @@ MainWindow::MainWindow(QWidget *parent)
 {
     {
         // THE SETTINGS TREE (M20), read once here so an open never touches the disk for
-        // it and kept in step by showPreferences() and persistFormat().
+        // it and kept in step by showPreferences().
         //
         // The migration runs FIRST, and that ordering is load-bearing: restoreSession()
         // later in this constructor resolves each restored tab's settings through the
@@ -153,6 +153,24 @@ MainWindow::MainWindow(QWidget *parent)
         QSettings store;
         m_settingsStore.migrateLegacy(store);
         m_logSettings = m_settingsStore.load();
+
+        // THE PER-LOG POOL (M21). Only the map is read here — a record is read when its
+        // log is opened — so this costs one small file however many logs are remembered.
+        m_fileStore.load();
+
+        // The one-time drain of the per-log profiles that used to live in the tree's
+        // `files[]` and, before that, in M18's `formatCache`. It runs HERE for the reason
+        // the migration above does: restoreSession() resolves each restored tab through
+        // the pool, so draining after it would open every restored tab on the built-in
+        // defaults, once, on the first launch after upgrade.
+        //
+        // Rewriting the tree is what CLOSES it: save() no longer emits `files[]`, so the
+        // next launch has nothing to take and there is no "migrated" flag to keep.
+        if (const auto legacy = m_settingsStore.takeLegacyFiles(); !legacy.isEmpty()) {
+            m_fileStore.adoptLegacy(legacy, m_logSettings);
+            m_fileStore.flush();
+            m_settingsStore.save(m_logSettings);
+        }
 
         // The remembered log text size (SPEC.md §5). Read HERE, with the settings tree
         // and before restoreSession(), because every LogView is constructed with
@@ -577,11 +595,10 @@ void MainWindow::buildMenus()
         // its own, and the session restores each view's — but the node is what a NEW
         // view starts from, and a gesture the user made is the best answer it can hold.
         if (DocumentContext *ctx = activeContext(); ctx && ctx->doc) {
-            const QString path = ctx->doc->path();
-            LogProfile p = m_logSettings.resolve(path).profile;
-            p.wrapMode = mode;
-            if (m_logSettings.setFileProfile(path, p))
-                m_settingsStore.save(m_logSettings);
+            if (!ctx->fileSettings.profile)
+                ctx->fileSettings.profile = resolvedProfile(ctx->doc->path());
+            ctx->fileSettings.profile->wrapMode = mode;
+            persistFileSettings(ctx);
         }
     };
     connect(wrapOff, &QAction::triggered, this, [setWrap]() { setWrap(LogView::WrapMode::Off); });
@@ -950,6 +967,20 @@ DocumentView *MainWindow::viewOfPath(const QString &path) const
     return nullptr;
 }
 
+DocumentContext *MainWindow::contextOfPath(const QString &address) const
+{
+    // Compared through logSettingsKey(), unlike viewOfPath() above, because the callers
+    // here arrive with a SETTINGS address — one that has been round-tripped through the
+    // store — while a context holds the spelling the log was opened with. The two differ
+    // over a symlink, a relative path and an `ssh://` URL with no port.
+    const QString key = logSettingsKey(address);
+    for (const auto &ctx : m_contexts) {
+        if (ctx->doc && logSettingsKey(ctx->doc->path()) == key)
+            return ctx.get();
+    }
+    return nullptr;
+}
+
 Document *MainWindow::activeDocument() const
 {
     DocumentContext *ctx = activeContext();
@@ -1274,6 +1305,10 @@ void MainWindow::endOpenBatch()
         return;
     m_openBatchDepth = 0;
     showOpenRefusals();
+    // The pool's MRU index, once per GESTURE rather than once per log. touch() moves a
+    // tick in memory and nothing else, so a restored session of twenty tabs costs one
+    // atomic map write here instead of twenty — which is the whole reason it defers.
+    m_fileStore.flush();
 }
 
 void MainWindow::showOpenRefusals()
@@ -1386,7 +1421,7 @@ bool MainWindow::openFile(const QString &rawPath, const QString &pattern)
     // file exactly as a resolved node is, and openWithSettings() persists it only if it
     // fits (SPEC.md §3, §4). An empty value carries no pattern and is the bare launch:
     // there is nothing to override with, so the resolved levels stand.
-    FormatSettings settings = m_logSettings.resolve(path).profile.format;
+    FormatSettings settings = resolvedProfile(path).format;
     if (!pattern.isEmpty())
         settings.pattern = pattern;
 
@@ -1485,6 +1520,15 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     auto ctx = std::make_unique<DocumentContext>();
     ctx->doc = std::move(doc);
     ctx->settings = settings;
+    // WHAT IS STORED FOR THIS LOG (M21), read once as the tab is made and kept EXACTLY
+    // as it was read. It is the baseline persistFileSettings()'s change gate compares
+    // against, so filling its profile in with the settings this open is about would make
+    // the very first write look like no change — which is how a fitting `--pattern`
+    // silently stopped being remembered.
+    ctx->fileSettings = m_fileStore.read(path);
+    // AN OPEN is what the MRU counts, and this is one. In memory only; the map rides out
+    // with endOpenBatch().
+    m_fileStore.touch(path);
     ctx->pendingRunRestore = std::move(runRestore);
     // The prompt this open could not raise, deferred to the first resume that has bytes.
     ctx->pendingFormatPrompt = deferFormatPrompt;
@@ -1511,7 +1555,7 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     buildViewAndIndex(m_contexts.back().get());
 
     if (persist)
-        persistFormat(path, settings);
+        persistFileSettings(m_contexts.back().get());
     rememberRecentFile(path);
     return true;
 }
@@ -1526,7 +1570,7 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
     // The mode a new view starts in comes from this log's settings node (M20, SPEC.md
     // §5) — a seed, not a per-file property: the view owns it from here, and the
     // session restores each view's own saved mode over this one.
-    logView->setWrapMode(m_logSettings.resolve(ctx->doc->path()).profile.wrapMode);
+    logView->setWrapMode(resolvedProfile(ctx->doc->path()).wrapMode);
     // A view made for a document that is ALREADY waiting — the first view of a waiting
     // open, a restored tab, or a second view onto one — needs the message now; the
     // waitingChanged signal it would otherwise learn from has already fired.
@@ -1619,7 +1663,7 @@ DocumentContext *MainWindow::prepareContext(const SessionDocument &d, QString *e
     // Resolved through the settings tree like any other open (M20), not carried in the
     // session: one home for a log's settings means a Preferences edit reaches a restored
     // tab, which it could not while the session held its own copy.
-    const FormatSettings format = m_logSettings.resolve(d.path).profile.format;
+    const FormatSettings format = resolvedProfile(d.path).format;
 
     auto doc = std::make_unique<Document>();
     ManualFormatProvider provider(format.pattern);
@@ -1634,6 +1678,10 @@ DocumentContext *MainWindow::prepareContext(const SessionDocument &d, QString *e
     DocumentContext *ctx = owned.get();
     ctx->doc = std::move(doc);
     ctx->settings = format;
+    // The stored record, as openWithSettings() reads it — this and that function are the
+    // only two routes to a new Document, and both have to ask (M21).
+    ctx->fileSettings = m_fileStore.read(d.path);
+    m_fileStore.touch(d.path);
     ctx->filterState = d.filters;
     if (!format.runStartPattern.isEmpty()) {
         ctx->pendingRunRestore =
@@ -1765,7 +1813,7 @@ MainWindow::FormatOutcome MainWindow::offerFormat(Document *doc, const QString &
     // What resolved for this log did not match. Autodetect (M8, ARCHITECTURE.md §9) and
     // PRE-FILL the node with the detected pattern for confirmation — never applied
     // silently. A no-detection result leaves it seeded with what was resolved.
-    LogProfile seed = m_logSettings.resolve(path).profile;
+    LogProfile seed = resolvedProfile(path);
     seed.format = *settings;
     DetectingFormatProvider detector(settings->encoding);
     detector.formatFor(QByteArrayView(sample.constData(), sample.size()));
@@ -1776,15 +1824,14 @@ MainWindow::FormatOutcome MainWindow::offerFormat(Document *doc, const QString &
     // so the answer can be given once for a class of logs (a file pattern) rather than
     // for this one — which is the level the two-store arrangement had no room for.
     PreferencesDialog dlg(m_logSettings, logSourceDisplayName(path), sample, this);
-    dlg.selectLog(path, seed);
+    dlg.selectLog(path, m_fileStore.read(path).profile, seed);
     if (dlg.exec() != QDialog::Accepted) {
-        // Everything the dialog touched, including the node it created for this log,
-        // went with its working copy. Nothing is persisted and nothing is applied.
+        // Everything the dialog touched went with its working copy. Nothing is persisted
+        // and nothing is applied.
         return FormatOutcome::Declined;
     }
-    m_logSettings = dlg.tree();
-    m_settingsStore.save(m_logSettings);
-    *settings = m_logSettings.resolve(path).profile.format;
+    commitPreferences(dlg, path);
+    *settings = resolvedProfile(path).format;
     return FormatOutcome::Chosen;
 }
 
@@ -1813,16 +1860,17 @@ void MainWindow::showPreferences()
                           sample, this);
     if (!activePath.isEmpty()) {
         // Open on the log in front of the user, so the common errand — "this one is not
-        // parsing" — needs no navigation. A node is created for it only if it had none,
-        // and dropped again on OK if it ends up saying nothing new.
-        dlg.selectLog(activePath, m_logSettings.resolve(activePath).profile);
+        // parsing" — needs no navigation. The row shows what the log has stored, or what
+        // it inherits where it has stored nothing; OK stores that only if it ends up
+        // saying something new.
+        dlg.selectLog(activePath, m_fileStore.read(activePath).profile,
+                      resolvedProfile(activePath));
         dlg.setApplyTarget(logSourceDisplayName(activePath));
     }
     if (dlg.exec() != QDialog::Accepted)
         return;
 
-    m_logSettings = dlg.tree();
-    m_settingsStore.save(m_logSettings);
+    commitPreferences(dlg, activePath);
 
     // LAST, because applying re-reads the log: it stops this document's workers, empties
     // its index and starts a fresh scan. The context and the Document itself now SURVIVE
@@ -1840,12 +1888,12 @@ void MainWindow::applyProfileToActive(const LogProfile &p)
         return;
     const QString path = ctx->doc->path();
 
-    // Wrap first, into the tree AND the views already on screen: applySettings() below
-    // may reindex, and a view built afterwards seeds its mode from the tree.
-    LogProfile stored = m_logSettings.resolve(path).profile;
+    // Wrap first, into the record AND the views already on screen: applySettings() below
+    // may reindex, and a view built afterwards seeds its mode from the record.
+    LogProfile stored = resolvedProfile(path);
     stored.wrapMode = p.wrapMode;
-    if (m_logSettings.setFileProfile(path, stored))
-        m_settingsStore.save(m_logSettings);
+    ctx->fileSettings.profile = stored;
+    persistFileSettings(ctx);
     for (DocumentView *v : std::as_const(ctx->views))
         v->logView()->setWrapMode(p.wrapMode);
 
@@ -1909,7 +1957,7 @@ void MainWindow::applySettings(const FormatSettings &newSettings)
         ctx->pendingRunRestore.reset();
 
     ctx->settings = newSettings;
-    persistFormat(path, newSettings);
+    persistFileSettings(activeContext());
 
     // Pattern or encoding change alters record boundaries and byte offsets (§6.1,
     // invariant #3), so the index is invalid — read the file again through the new
@@ -1971,20 +2019,99 @@ void MainWindow::applySettings(const FormatSettings &newSettings)
     updateStatus();
 }
 
-void MainWindow::persistFormat(const QString &path, const FormatSettings &s)
+void MainWindow::commitPreferences(const PreferencesDialog &dlg, const QString &address)
 {
-    // The wrap mode is carried over from whatever already answers for this log, so a
-    // format change does not quietly reset it: this function is reached from the format
-    // dialog, the timestamp header menu and the Run pane, none of which sets it.
-    LogProfile p = m_logSettings.resolve(path).profile;
-    p.format = s;
+    // THE DIALOG APPLIES NOTHING and now writes to nothing either: it hands back a tree
+    // and one log's own settings, and this is the single place both are stored. Two exits
+    // reach it — offerFormat()'s mid-open confirmation and File ▸ Preferences — and they
+    // used to write the one store between them with two spellings.
+    //
+    // The SWEEP is gated on the tree having actually moved, and that gate is not an
+    // optimisation. A per-log record stops saying anything of its own just as surely when
+    // the pattern above it is edited, added, reordered or deleted — and nothing writes
+    // that record, so nothing re-tests it. But re-testing means reading every record in
+    // the pool, which is affordable once on an OK and not at all on the keystroke-by-
+    // keystroke rebuilds inside the dialog, where its predecessor used to live.
+    const bool treeMoved = dlg.tree() != m_logSettings;
+    m_logSettings = dlg.tree();
+    m_settingsStore.save(m_logSettings);
+    if (treeMoved)
+        m_fileStore.pruneAgainst(m_logSettings);
 
-    // Creates, updates or DELETES the per-log node — one exists only while it says
-    // something the log would not inherit anyway. Writing only on a real change matters:
-    // this is called on every resume of a remote or archived log, and without the gate
-    // that is one atomic rewrite of the whole tree per poll.
-    if (m_logSettings.setFileProfile(path, p))
-        m_settingsStore.save(m_logSettings);
+    if (address.isEmpty())
+        return;
+
+    // What the log itself should have afterwards — nullopt when the row ended up saying
+    // exactly what it inherits, which is also how Delete and Promote finish.
+    //
+    // Written STRAIGHT to the store rather than through persistFileSettings(), and
+    // `ctx->settings` is deliberately left alone. That funnel builds the record's format
+    // out of `ctx->settings`, which is what the tab is reading NOW — and this dialog does
+    // not apply anything (SPEC.md §4): the settings reach the log on the next open, or
+    // through "Apply to current file", which the caller performs after this returns.
+    // Writing `ctx->settings` here would also make applySettings()'s diff — the thing
+    // that decides between a rescan, a reparse and a repaint — see no change at all, so
+    // the apply would store the new format and never re-read the log with it.
+    DocumentContext *ctx = contextOfPath(address);
+    LogFileSettings record = ctx ? ctx->fileSettings : m_fileStore.read(address);
+    record.address = logSettingsKey(address);
+    record.profile = dlg.fileProfile();
+    m_fileStore.save(record, m_logSettings.inherited(address));
+    if (ctx)
+        ctx->fileSettings = record; // the change gate's baseline moves with the disk
+}
+
+LogProfile MainWindow::resolvedProfile(const QString &address)
+{
+    // AN OPEN LOG IS ANSWERED FROM ITS TAB. The context holds what that tab is actually
+    // reading — a format the user has just changed reaches ctx->fileSettings before it
+    // reaches the pool — so a second view created in between must not open on the older
+    // answer, and a resolution taken mid-gesture must not disagree with the one on screen.
+    const QString key = logSettingsKey(address);
+    for (const auto &ctx : m_contexts) {
+        if (!ctx->doc || logSettingsKey(ctx->doc->path()) != key)
+            continue;
+        // The tab's LIVE answer: the format it is actually reading, over the wrap seed its
+        // own record or its pattern supplies. `settings` is the half that can be newer
+        // than the disk — a `--pattern` override, or a format just confirmed in the
+        // dialog — so a second view created in between must not open on the older one.
+        LogProfile p = ctx->fileSettings.profile.value_or(m_logSettings.inherited(address));
+        p.format = ctx->settings;
+        return p;
+    }
+
+    // Otherwise the log's own record, and failing that what it inherits — the deepest
+    // level that names it, taken WHOLE, exactly as the three-level tree always resolved
+    // (SPEC.md §4). The two upper levels simply live in another file now.
+    if (const auto own = m_fileStore.read(address).profile)
+        return *own;
+    return m_logSettings.inherited(address);
+}
+
+void MainWindow::persistFileSettings(DocumentContext *ctx)
+{
+    if (!ctx || !ctx->doc)
+        return;
+
+    LogFileSettings next = ctx->fileSettings;
+    next.address = logSettingsKey(ctx->doc->path());
+    // The wrap mode is carried over from what the record already holds, so a format
+    // change does not quietly reset it: this is reached from the format dialog, the
+    // timestamp header menu and the Run pane, none of which sets it.
+    LogProfile p = next.profile.value_or(m_logSettings.inherited(next.address));
+    p.format = ctx->settings;
+    next.profile = p;
+
+    // THE CHANGE GATE, and it is not an optimisation. This is reached on every resume of
+    // a remote or archived log, so without it an identical record is rewritten — and the
+    // map with it — once per poll.
+    if (next == ctx->fileSettings)
+        return;
+    ctx->fileSettings = next;
+
+    // Creates, updates or DELETES the record — one exists only while it says something
+    // the log would not inherit anyway, which is what save() applies on the way in.
+    m_fileStore.save(next, m_logSettings.inherited(next.address));
 }
 
 void MainWindow::updateTabTitles(DocumentContext *ctx)
@@ -2056,6 +2183,13 @@ void MainWindow::relabelTabs()
     addresses.reserve(int(m_contexts.size()));
     for (const auto &ctx : m_contexts)
         addresses.append(ctx->doc->path());
+
+    // WHAT MAY NOT BE EVICTED (M21). The pool is bounded, so storing one log's settings
+    // can cost another log theirs — and the one cost that is never acceptable is a log
+    // somebody has open, whose tab is still reading the record and will rewrite it. This
+    // is where the set of open logs changes, which is the whole definition of this
+    // function, so this is where the pool is told.
+    m_fileStore.setPinned(QSet<QString>(addresses.begin(), addresses.end()));
 
     // One pass over the whole set: what a log is called depends on which others are
     // open, so closing one of two app.logs has to shorten the survivor back again.
@@ -2456,7 +2590,7 @@ void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
             // It fits, and it has now been checked against real lines rather than
             // assumed — which is exactly the point at which it becomes worth
             // remembering. The waiting open deliberately persisted nothing.
-            persistFormat(doc->path(), ctx->settings);
+            persistFileSettings(ctx);
             ctx->formatNotice.clear();
             break;
         case FormatOutcome::Chosen:
@@ -2714,7 +2848,7 @@ void MainWindow::onRunStartChanged(const QString &pattern, bool regex, bool case
     ctx->settings.runStartPattern = pattern;
     ctx->settings.runStartIsRegex = regex;
     ctx->settings.runStartCaseSensitive = caseSensitive;
-    persistFormat(doc->path(), ctx->settings);
+    persistFileSettings(ctx);
 
     // Reconfigure + re-detect over the existing index (no rescan — offsets are
     // unchanged, invariant #3), defaulting to the newest run, then re-apply the view.

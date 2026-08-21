@@ -6,6 +6,8 @@
 #include <QDialog>
 #include <QString>
 
+#include <optional>
+
 QT_BEGIN_NAMESPACE
 class QCheckBox;
 class QComboBox;
@@ -37,17 +39,20 @@ class MessageLabel;
 // no pattern claims hangs directly under the root, which is the level it inherits from;
 // the absence of a match is a row's POSITION and not a virtual parent standing in for it.
 //
-// A LOG ENTRY LASTS ONLY AS LONG AS IT SAYS SOMETHING ITS PATTERN DOES NOT. Every
-// mutation here ends in rebuildTree(), which sweeps the per-log entries against what
-// they would inherit and drops the ones that now agree with it — so teaching a pattern
-// what a log's own entry said removes that entry, in the tree the user is looking at,
-// rather than leaving it behind to shadow the pattern for ever.
+// A LOG ENTRY LASTS ONLY AS LONG AS IT SAYS SOMETHING ITS PATTERN DOES NOT, and since
+// M21 that is ONE comparison in ONE place: fileProfile(), asked by the caller when OK is
+// pressed. Delete and Promote to Parent Pattern both put the row back to what the log
+// inherits, and the comparison turns that into "the entry is removed" without either
+// gesture removing anything.
 //
-// THE OPEN LOG'S ROW IS A FIXTURE. rebuildTree() spares its node from that sweep and
-// re-creates it, saying what the log inherits, whenever something has removed it — so
-// Delete and Promote both read as "put this log back on the level above" instead of
-// taking the file level away for the rest of the visit. accept() sweeps without the
-// exception, so a node left saying nothing is still not stored.
+// THE ROW IS A FACT AND NOT A FIXTURE. It exists because a log is open, so nothing can
+// take it away mid-visit and nothing has to keep putting it back. It used to be a node in
+// the tree that rebuildTree() spared from a sweep and re-created whenever a gesture had
+// removed it; the file level living in its own store (LogFileStore.h) retires both halves.
+// The sweep of every OTHER log — which this dialog never lists, and which is needed
+// because a pattern edit changes what those logs inherit while nothing writes them — is
+// the caller's LogFileStore::pruneAgainst(), run once per visit and only when the tree
+// actually moved.
 //
 // Like every other dialog here, this one APPLIES NOTHING. It mutates a working copy of
 // the tree; the caller reads tree() after Accepted and does the single write. That is
@@ -75,18 +80,32 @@ public:
                       const QByteArray &sample,
                       QWidget *parent = nullptr);
 
-    // Select the node for `address`, creating one seeded with `seed` when the log has
-    // none yet. That scratch node is pruned again on OK if the user leaves it saying
-    // nothing its parent does not already say.
-    void selectLog(const QString &address, const LogProfile &seed);
+    // Show `address` as the one per-log row. `own` is what the log has stored, or
+    // nullopt when it has nothing; `seed` is what the row shows in that case — which is
+    // deliberately NOT what the log inherits, since offerFormat() seeds with the pattern
+    // autodetection has just guessed and that guess is the whole of what the dialog is
+    // opened to have confirmed.
+    void selectLog(const QString &address, const std::optional<LogProfile> &own,
+                   const LogProfile &seed);
 
     // Offer "Apply to current file", naming `name` in its tooltip. Without this the
     // button stays hidden — there is nothing to apply to, which is also the mid-open
     // case, where OK already means "open the log like this".
     void setApplyTarget(const QString &name);
 
-    // The edited tree. Read after exec() returns Accepted.
+    // The edited tree — the defaults and the ordered pattern list. Read after exec()
+    // returns Accepted.
     const LogSettingsTree &tree() const { return m_settings; }
+
+    // What the open log should have stored of its own afterwards, or nullopt when it
+    // should have nothing — which is the redundancy rule, asked once, at the only moment
+    // the answer is final. Read beside tree() after Accepted; the caller writes both, to
+    // two stores (M21: the tree is one file, a log's own settings are one file each).
+    //
+    // This is also how Promote and Delete finish. Both put the row back to what the log
+    // inherits, and this comparison is what turns that into "the log's entry is removed"
+    // — so neither needs a removal of its own and neither can forget one.
+    std::optional<LogProfile> fileProfile() const;
 
     // Whether the user asked for a node's settings to be put on the current log, and what
     // those settings are. Reported, never acted on. The profile is re-read from the node
@@ -96,8 +115,8 @@ public:
     LogProfile applyProfile() const { return m_applyProfile; }
 
 public slots:
-    // Overridden to sweep the per-log nodes one last time, this time including the
-    // scratch node a mid-open invocation created. Public, like QDialog's own.
+    // Overridden to fold the panel's last keystroke back into the node it belongs to, and
+    // to re-read an armed apply request from the node it names. Public, like QDialog's own.
     void accept() override;
 
 protected:
@@ -160,17 +179,23 @@ private:
     NodeRef currentRef() const;
 
     LogSettingsTree m_settings;
-    // THE LOG THIS DIALOG WAS OPENED ON, in tree-key form, and the answer to three
-    // questions that turn out to be one. Which node gets the tree's single per-log row —
-    // every other entry stays in m_settings, still resolved and still swept, and is
-    // simply not shown. Which node rebuildTree()'s sweep must spare, so that row cannot
-    // be pruned out from under the reader. And which node a claim about the previewed
-    // bytes is a claim about.
+    // THE LOG THIS DIALOG WAS OPENED ON, in logSettingsKey() form, and the answer to two
+    // questions that turn out to be one. WHETHER there is a per-log row at all, and which
+    // log it stands for — every other log's entry lives in the pool, untouched and
+    // unlisted. And whether a claim about the previewed bytes is a claim about this
+    // entry's log.
     //
     // Set by selectLog(), the call both of MainWindow's entry points make, and never
     // cleared while the dialog lives — Delete and Promote included, which is what makes
-    // the row a fixture rather than something the two of them can take away.
+    // the row a fact rather than something the two of them can take away.
     QString         m_currentAddress;
+
+    // What that one row SHOWS: the open log's own stored settings, or what it inherits.
+    // Always meaningful while m_currentAddress is set, which is why loadNode()'s File
+    // branch no longer has a "the node is gone" case and updateButtons() no longer has to
+    // ask whether one exists. Whether any of it is STORED is fileProfile()'s question,
+    // asked once, at the end.
+    LogProfile      m_fileProfile;
 
     QString    m_applyTarget;
     bool       m_applyRequested = false;

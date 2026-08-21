@@ -14,6 +14,8 @@
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
+#include "ConfigReset.h"
+#include "LogFileStore.h"
 #include "LogSettingsStore.h"
 #include "PreferencesDialog.h"
 #include "LogView.h"
@@ -127,7 +129,7 @@ void TestOpenFlow::init()
     // the previous case suppresses the very prompt under test, and leaked defaults
     // change what a never-seen log is tried with — either would make a case pass or fail
     // depending on what ran before it.
-    QFile::remove(LogSettingsStore(LogSettingsStore::defaultDir()).filePath());
+    clearLogSettings();
 }
 
 void TestOpenFlow::initTestCase()
@@ -590,6 +592,34 @@ static void saveTree(const LogSettingsTree &tree)
     QVERIFY(LogSettingsStore(LogSettingsStore::defaultDir()).save(tree));
 }
 
+// One log's own record, straight off the disk — the level that used to be the tree's
+// `files[]` and is now one file per log (M21). Read through a SECOND store, for the same
+// reason storedTree() does: the window's in-memory copy would answer even for a write
+// that never reached the disk.
+static LogFileSettings storedRecord(const QString &address)
+{
+    LogFileStore store(LogFileStore::defaultDir());
+    store.load();
+    return store.read(address);
+}
+
+// Give `address` settings of its own, before the window exists.
+static void saveRecord(const QString &address, const QString &pattern)
+{
+    LogFileStore store(LogFileStore::defaultDir());
+    store.load();
+    LogFileSettings s;
+    s.address = address;
+    s.profile = LogProfile::builtIn();
+    s.profile->format.pattern = pattern;
+    // Against the built-in, so the record is kept whatever the tree on disk says: what
+    // these cases are arranging is a log that HAS an entry, and the redundancy rule
+    // would quietly refuse to make one that agreed with what it inherits.
+    LogProfile nothingLikeIt;
+    nothingLikeIt.format.pattern = QStringLiteral("<<never matches>>");
+    QVERIFY(store.save(s, nothingLikeIt));
+}
+
 // --pattern NAMES A FORMAT AND IS NOT A PROMISE THAT IT FITS (SPEC.md §3, bugs.md 15).
 // It overrides whatever the tree resolved — that is the switch's whole job — and is then
 // checked against the log like any other level. It earns a per-log node by fitting; it
@@ -626,9 +656,9 @@ void TestOpenFlow::aSuppliedPatternThatFitsIsRememberedForTheLog()
     // logger names in it, which only the supplied pattern can produce.
     QTRY_VERIFY(documentOf(w)->index().loggers.names().contains(QStringLiteral("Vms::Http")));
 
-    const auto hit = storedTree().resolve(m_weird);
-    QVERIFY2(hit.fileIndex >= 0, "a pattern that fits left no per-log node");
-    QCOMPARE(hit.profile.format.pattern, weirdPattern());
+    const LogFileSettings hit = storedRecord(m_weird);
+    QVERIFY2(hit.profile.has_value(), "a pattern that fits left no per-log record");
+    QCOMPARE(hit.profile->format.pattern, weirdPattern());
     w.close();
 }
 
@@ -657,9 +687,9 @@ void TestOpenFlow::aSuppliedPatternEqualToWhatIsInheritedLeavesNoNode()
     QTest::qWait(200);
     QVERIFY2(!d.seen, "Preferences was shown for a supplied pattern that parses the log");
 
-    const LogSettingsTree tree = storedTree();
-    QVERIFY2(tree.files().isEmpty(), "a supplied pattern the log already inherits was stored");
-    QCOMPARE(tree.defaults().format.pattern, weirdPattern());
+    QVERIFY2(!storedRecord(m_weird).saysSomething(),
+             "a supplied pattern the log already inherits was stored");
+    QCOMPARE(storedTree().defaults().format.pattern, weirdPattern());
     w.close();
 }
 
@@ -693,9 +723,9 @@ void TestOpenFlow::aSuppliedPatternThatDoesNotFitAsksAndSavesNothingWhenDismisse
     // No tab: the dialog was the open, and dismissing it cancelled it.
     QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 0);
 
-    const LogSettingsTree tree = storedTree();
-    QVERIFY2(tree.files().isEmpty(), "a dismissed --pattern was written under the log's key");
-    QCOMPARE(tree.defaults().format.pattern, weirdPattern());
+    QVERIFY2(!storedRecord(m_weird).saysSomething(),
+             "a dismissed --pattern was written under the log's key");
+    QCOMPARE(storedTree().defaults().format.pattern, weirdPattern());
     w.close();
 }
 
@@ -741,10 +771,11 @@ void TestOpenFlow::correctingASuppliedPatternPersistsTheCorrectionAndNotTheSwitc
 
     QTRY_VERIFY(documentOf(w)->index().loggers.names().contains(QStringLiteral("Vms::Http")));
 
-    const auto hit = storedTree().resolve(m_weird);
-    QVERIFY(hit.fileIndex >= 0);
-    QCOMPARE(hit.profile.format.pattern, weirdPattern());
-    QVERIFY2(hit.profile.format.pattern != typo, "the switch was stored instead of the correction");
+    const LogFileSettings hit = storedRecord(m_weird);
+    QVERIFY(hit.profile.has_value());
+    QCOMPARE(hit.profile->format.pattern, weirdPattern());
+    QVERIFY2(hit.profile->format.pattern != typo,
+             "the switch was stored instead of the correction");
     w.close();
 }
 
@@ -762,12 +793,10 @@ void TestOpenFlow::aDismissedSuppliedPatternLeavesAStoredEntryAlone()
         LogProfile root;
         root.format.pattern = uselessPattern();
         tree.setDefaults(root);
-        LogProfile mine;
-        mine.format.pattern = LogProfile::builtIn().format.pattern;
-        tree.insertFileProfile(m_good, mine);
         saveTree(tree);
+        saveRecord(m_good, LogProfile::builtIn().format.pattern);
     }
-    QCOMPARE(storedTree().files().size(), 1);
+    QVERIFY(storedRecord(m_good).profile.has_value());
 
     MainWindow w;
     w.resize(900, 600);
@@ -779,9 +808,9 @@ void TestOpenFlow::aDismissedSuppliedPatternLeavesAStoredEntryAlone()
     QVERIFY2(d.seen, "the overriding pattern was applied to a log it cannot parse");
     QCOMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 0);
 
-    const LogSettingsTree tree = storedTree();
-    QCOMPARE(tree.files().size(), 1);
-    QCOMPARE(tree.resolve(m_good).profile.format.pattern, LogProfile::builtIn().format.pattern);
+    const LogFileSettings kept = storedRecord(m_good);
+    QVERIFY(kept.profile.has_value());
+    QCOMPARE(kept.profile->format.pattern, LogProfile::builtIn().format.pattern);
     w.close();
 }
 
@@ -797,10 +826,8 @@ void TestOpenFlow::anEmptyPatternValueIsTheBareLaunch()
         LogProfile root;
         root.format.pattern = uselessPattern();
         tree.setDefaults(root);
-        LogProfile mine;
-        mine.format.pattern = LogProfile::builtIn().format.pattern;
-        tree.insertFileProfile(m_good, mine);
         saveTree(tree);
+        saveRecord(m_good, LogProfile::builtIn().format.pattern);
     }
 
     MainWindow w;
@@ -816,7 +843,7 @@ void TestOpenFlow::anEmptyPatternValueIsTheBareLaunch()
 
     QCOMPARE(w.findChild<LogView *>(QStringLiteral("logView"))->recordCount(), 2);
     QTRY_VERIFY(documentOf(w)->index().loggers.names().contains(QStringLiteral("net.io")));
-    QCOMPARE(storedTree().resolve(m_good).profile.format.pattern,
+    QCOMPARE(storedRecord(m_good).profile->format.pattern,
              LogProfile::builtIn().format.pattern);
     w.close();
 }

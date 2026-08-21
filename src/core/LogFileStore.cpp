@@ -400,4 +400,33 @@ int LogFileStore::pruneAgainst(const LogSettingsTree &tree)
     return changed;
 }
 
+int LogFileStore::adoptLegacy(const QVector<LegacyFileNode> &nodes, const LogSettingsTree &tree)
+{
+    if (m_readOnly)
+        return 0;
+
+    // The tail, for the reason the header gives: insertion order is the closest thing to
+    // an MRU the old array carries, so if there are more nodes than slots the ones kept
+    // are the ones most recently given settings.
+    const int first = qMax(0, nodes.size() - kSlots);
+
+    int adopted = 0;
+    for (int i = first; i < nodes.size(); ++i) {
+        const LegacyFileNode &n = nodes.at(i);
+        if (n.path.isEmpty())
+            continue;
+        // AN EXISTING RECORD WINS. It is newer by construction — nothing writes `files[]`
+        // any more — so overwriting it would roll a downgrade-then-upgrade back.
+        if (read(n.path).saysSomething())
+            continue;
+
+        LogFileSettings s;
+        s.address = n.path;
+        s.profile = n.profile;
+        if (save(s, tree.inherited(n.path)))
+            ++adopted;
+    }
+    return adopted;
+}
+
 } // namespace loftail
