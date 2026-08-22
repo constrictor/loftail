@@ -211,6 +211,14 @@ struct SshSession::Impl
     // could not be launched" want different handling upstream.
     bool runCommand(const QString &command, QByteArray *stdOut, int *exitCode);
 
+    // The same, with BYTES ON STDIN — which is the whole of the exec transport's write
+    // path: `cat > 'path'` takes what it is given and puts it in the file. Separate
+    // from runCommand() rather than an optional argument, because the write half has to
+    // handle short writes and send EOF, and mixing that into the read path would put
+    // channel-write bookkeeping on every `stat`.
+    bool runCommandWithInput(const QString &command, const QByteArray &stdIn, int *exitCode,
+                             QString *error);
+
     void teardown()
     {
         if (file) {
@@ -292,6 +300,70 @@ bool SshSession::Impl::runCommand(const QString &command, QByteArray *stdOut, in
 
     if (stdOut)
         *stdOut = out;
+    return true;
+}
+
+bool SshSession::Impl::runCommandWithInput(const QString &command, const QByteArray &stdIn,
+                                           int *exitCode, QString *error)
+{
+    const auto fail = [error](const QString &text) {
+        if (error)
+            *error = text;
+        return false;
+    };
+    if (!session)
+        return fail(Tr::tr("Not connected."));
+
+    LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(session);
+    if (!channel)
+        return fail(Tr::tr("The server would not open a channel to write with."));
+
+    const QByteArray line = command.toUtf8();
+    if (libssh2_channel_exec(channel, line.constData()) != 0) {
+        libssh2_channel_free(channel);
+        return fail(Tr::tr("The server would not run the command to write the file."));
+    }
+
+    // SHORT WRITES ARE THE NORMAL CASE, not an error: libssh2 writes as much as the
+    // channel's window allows and returns how much that was. Treating the first return
+    // as the whole thing silently truncates every file bigger than one window.
+    qint64 written = 0;
+    bool ok = true;
+    while (written < stdIn.size()) {
+        const ssize_t n = libssh2_channel_write(channel, stdIn.constData() + written,
+                                                size_t(stdIn.size() - written));
+        if (n < 0) {
+            ok = false;
+            break;
+        }
+        if (n == 0) {
+            // No progress and no error: the peer is gone or the session has timed out.
+            // Spinning here would hang the worker for ever.
+            ok = false;
+            break;
+        }
+        written += qint64(n);
+    }
+
+    // EOF FIRST, then close. `cat` only finishes when its stdin ends, so a channel
+    // closed without an EOF leaves the far end waiting and the exit status meaningless.
+    libssh2_channel_send_eof(channel);
+    libssh2_channel_wait_eof(channel);
+
+    // Drain whatever it said so the window cannot fill and wedge the close.
+    char sink[1024];
+    while (libssh2_channel_read(channel, sink, sizeof(sink)) > 0) { }
+    while (libssh2_channel_read_stderr(channel, sink, sizeof(sink)) > 0) { }
+
+    libssh2_channel_close(channel);
+    libssh2_channel_wait_closed(channel);
+    const int code = libssh2_channel_get_exit_status(channel);
+    libssh2_channel_free(channel);
+
+    if (exitCode)
+        *exitCode = code;
+    if (!ok)
+        return fail(Tr::tr("The connection dropped while writing the file."));
     return true;
 }
 
@@ -1007,6 +1079,197 @@ bool SshSession::openFile(QString *error, Failure *failure)
     const Attrs byName = statPath();
     const Attrs byHandle = statHandle();
     d->fstatTracks = byName.valid && byHandle.valid && byName.size == byHandle.size;
+    return true;
+}
+
+// --- Whole-file operations at an arbitrary path (SPEC.md §4) ----------------
+
+bool SshSession::readFileAt(const QString &path, QByteArray *out, bool *existed, QString *error)
+{
+    const auto fail = [error](const QString &text) {
+        if (error)
+            *error = text;
+        return false;
+    };
+    if (out)
+        out->clear();
+    if (existed)
+        *existed = false;
+
+    if (d->mode == Mode::Exec) {
+        // Existence FIRST and on its own round trip: an empty file that is there and a
+        // file that is not are the same empty stdout, and which of the two it is decides
+        // whether the editor says "new file" and whether saving creates something.
+        QByteArray probe;
+        int code = 0;
+        if (!d->runCommand(configExistsCommand(path), &probe, &code))
+            return fail(Tr::tr("The server would not answer whether %1 is there.").arg(path));
+        bool there = false;
+        if (!parseConfigExistsOutput(probe, &there)) {
+            return fail(Tr::tr("Could not tell whether %1 is there on %2.")
+                            .arg(path, d->location.host));
+        }
+        if (existed)
+            *existed = there;
+        if (!there)
+            return true; // not there is a SUCCESS: the editor opens empty on it
+
+        QByteArray body;
+        if (!d->runCommand(configReadCommand(path), &body, &code))
+            return fail(Tr::tr("The server would not run the command to read %1.").arg(path));
+        if (code != 0)
+            return fail(Tr::tr("Cannot read %1 on %2.").arg(path, d->location.host));
+        if (out)
+            *out = body;
+        return true;
+    }
+
+    if (!d->sftp)
+        return fail(Tr::tr("Not connected."));
+
+    const QByteArray raw = path.toUtf8();
+    LIBSSH2_SFTP_HANDLE *handle =
+        libssh2_sftp_open_ex(d->sftp, raw.constData(), static_cast<unsigned int>(raw.size()),
+                             LIBSSH2_FXF_READ, 0, LIBSSH2_SFTP_OPENFILE);
+    if (!handle) {
+        const unsigned long code = libssh2_sftp_last_error(d->sftp);
+        if (code == LIBSSH2_FX_NO_SUCH_FILE || code == LIBSSH2_FX_NO_SUCH_PATH)
+            return true; // not there, and that is a supported answer
+        // "There and shut" is a DIFFERENT sentence from "not there", and this is where
+        // the two part company: a config whose mode is 000 must not be described as one
+        // that has not been created yet, because saving would then overwrite it.
+        if (code == LIBSSH2_FX_PERMISSION_DENIED) {
+            return fail(Tr::tr("%1 on %2 is there but cannot be read.")
+                            .arg(path, d->location.host));
+        }
+        return fail(Tr::tr("Cannot open %1 on %2 (%3)").arg(path, d->location.host).arg(code));
+    }
+
+    QByteArray body;
+    char buffer[32768];
+    forever {
+        const ssize_t n = libssh2_sftp_read(handle, buffer, sizeof(buffer));
+        if (n > 0) {
+            body.append(buffer, int(n));
+            continue;
+        }
+        if (n == 0)
+            break; // end of file
+        libssh2_sftp_close(handle);
+        return fail(Tr::tr("The connection dropped while reading %1.").arg(path));
+    }
+    libssh2_sftp_close(handle);
+    if (existed)
+        *existed = true;
+    if (out)
+        *out = body;
+    return true;
+}
+
+bool SshSession::writeFileAt(const QString &path, const QByteArray &bytes, QString *error)
+{
+    const auto fail = [error](const QString &text) {
+        if (error)
+            *error = text;
+        return false;
+    };
+
+    if (d->mode == Mode::Exec) {
+        // `cat > 'path'` truncates the existing inode rather than replacing it, so the
+        // owner, the group and the mode all survive without anything here having to read
+        // or restore them — see configWriteCommand().
+        int code = 0;
+        QString why;
+        if (!d->runCommandWithInput(configWriteCommand(path), bytes, &code, &why))
+            return fail(why);
+        if (code != 0) {
+            return fail(Tr::tr("%1 could not be written on %2 — the server refused it.")
+                            .arg(path, d->location.host));
+        }
+        // VERIFY THE SIZE. This transport has no atomic replace, so a write that died
+        // halfway leaves a short file; the whole point of checking is that the reader is
+        // told rather than left with a truncated config that still looks saved.
+        QByteArray probe;
+        int sizeCode = 0;
+        if (d->runCommand(wcSizeCommand(path), &probe, &sizeCode)) {
+            const ExecAttrs attrs = parseWcSizeOutput(probe);
+            if (attrs.ok && attrs.size != bytes.size()) {
+                return fail(Tr::tr("%1 was written short on %2 — %3 bytes of %4 arrived.")
+                                .arg(path, d->location.host)
+                                .arg(attrs.size)
+                                .arg(bytes.size()));
+            }
+        }
+        return true;
+    }
+
+    if (!d->sftp)
+        return fail(Tr::tr("Not connected."));
+
+    const QByteArray raw = path.toUtf8();
+
+    // What is there now, so the mode can be put back if the server applies the create
+    // mode to an existing file. WRITE|TRUNC is not supposed to, but this is one round
+    // trip against silently widening the permissions on somebody's configuration.
+    LIBSSH2_SFTP_ATTRIBUTES before{};
+    const bool existed = libssh2_sftp_stat_ex(d->sftp, raw.constData(),
+                                              static_cast<unsigned int>(raw.size()),
+                                              LIBSSH2_SFTP_STAT, &before)
+        == 0;
+
+    // TRUNC, NOT a temp-and-rename: the existing inode is kept, and with it the owner
+    // and group a rename could not preserve. 0644 is the mode for a file being CREATED
+    // and is ignored when one is already there.
+    LIBSSH2_SFTP_HANDLE *handle = libssh2_sftp_open_ex(
+        d->sftp, raw.constData(), static_cast<unsigned int>(raw.size()),
+        LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC, 0644, LIBSSH2_SFTP_OPENFILE);
+    if (!handle) {
+        const unsigned long code = libssh2_sftp_last_error(d->sftp);
+        if (code == LIBSSH2_FX_PERMISSION_DENIED)
+            return fail(Tr::tr("%1 on %2 cannot be written.").arg(path, d->location.host));
+        if (code == LIBSSH2_FX_NO_SUCH_PATH || code == LIBSSH2_FX_NO_SUCH_FILE) {
+            // The FILE was allowed not to exist; a missing DIRECTORY is a different
+            // thing and is named rather than created, exactly as the local path does.
+            return fail(Tr::tr("The directory for %1 does not exist on %2, so it cannot "
+                               "be saved. Create it first, or correct the path in "
+                               "File ▸ Preferences.")
+                            .arg(path, d->location.host));
+        }
+        return fail(Tr::tr("Cannot write %1 on %2 (%3)").arg(path, d->location.host).arg(code));
+    }
+
+    qint64 written = 0;
+    while (written < bytes.size()) {
+        const ssize_t n = libssh2_sftp_write(handle, bytes.constData() + written,
+                                             size_t(bytes.size() - written));
+        if (n < 0) {
+            libssh2_sftp_close(handle);
+            return fail(Tr::tr("The connection dropped while writing %1 — it may now be "
+                               "incomplete.")
+                            .arg(path));
+        }
+        if (n == 0)
+            break;
+        written += qint64(n);
+    }
+    libssh2_sftp_close(handle);
+
+    if (written != bytes.size()) {
+        return fail(Tr::tr("%1 was written short on %2 — %3 bytes of %4 arrived.")
+                        .arg(path, d->location.host)
+                        .arg(written)
+                        .arg(bytes.size()));
+    }
+
+    if (existed && (before.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS)) {
+        LIBSSH2_SFTP_ATTRIBUTES restore{};
+        restore.flags = LIBSSH2_SFTP_ATTR_PERMISSIONS;
+        restore.permissions = before.permissions;
+        // Not reported on failure: the file IS saved, and a server that refuses SETSTAT
+        // is usually one that never applied the create mode either. Widening would be
+        // worth shouting about; being unable to re-set what is already right is not.
+        libssh2_sftp_setstat(d->sftp, raw.constData(), &restore);
+    }
     return true;
 }
 

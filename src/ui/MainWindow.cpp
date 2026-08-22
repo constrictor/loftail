@@ -1074,14 +1074,27 @@ ConfigView *MainWindow::openConfigAt(const QString &address)
         }
     }
 
-    const ConfigReadResult read = readConfigFile(address);
-    if (!read.ok) {
-        reportOpenRefusal(logSourceDisplayName(address), read.error);
+    // A build with no SSH cannot reach a remote config at all, and that is a no-I/O
+    // refusal — decidable without asking anybody — so it makes no tab, exactly as a
+    // remote LOG open does in this configuration (§6.5).
+    if (QString reason; !configAddressIsWritable(address, &reason)) {
+        reportOpenRefusal(logSourceDisplayName(address), reason);
         return nullptr;
     }
 
+    const bool remote = configAddressIsRemote(address);
+    ConfigReadResult read;
+    if (!remote) {
+        read = readConfigFile(address);
+        if (!read.ok) {
+            reportOpenRefusal(logSourceDisplayName(address), read.error);
+            return nullptr;
+        }
+    }
+
     auto *view = new ConfigView(address, this);
-    view->setContents(read.bytes, read.existed);
+    if (!remote)
+        view->setContents(read.bytes, read.existed);
     m_editors.append(view);
 
     connect(view, &ConfigView::zoomStepRequested, this, &MainWindow::stepLogFontSize);
@@ -1096,6 +1109,40 @@ ConfigView *MainWindow::openConfigAt(const QString &address)
     m_tabs->setCurrentWidget(view);
     view->setFocus();
     updateEmptyState();
+
+    if (remote) {
+        // THE TAB IS UP BEFORE THE FAR END ANSWERS, which is M17's rule for a log and is
+        // the same rule here: a connect is up to twenty seconds and may stop to ask for a
+        // password, and the thread that opens must not be the thread that waits. A
+        // refusal then KEEPS ITS TAB and says why, because a tab that appears and
+        // vanishes is worse than one that explains itself.
+        const auto host = RemoteLocation::parse(address);
+        view->setBusy(true, host ? tr("Connecting to %1…").arg(host->displayHost())
+                                 : tr("Connecting…"));
+        auto *transfer = new ConfigTransfer(view); // destroying the tab abandons it
+        connect(transfer, &ConfigTransfer::readFinished, view,
+                [this, view, transfer](const ConfigReadResult &result) {
+                    view->setBusy(false, QString());
+                    if (!result.ok) {
+                        view->showNotice(result.error);
+                    } else {
+                        view->setContents(result.bytes, result.existed);
+                        if (result.existed)
+                            view->clearNotice();
+                        else
+                            view->showNotice(tr("%1 does not exist yet. Saving will "
+                                                "create it.")
+                                                 .arg(logSourceDisplayPath(view->address())));
+                    }
+                    updateConfigTabTitle(view);
+                    transfer->deleteLater();
+                });
+        // The relay, never the prompter itself: the work runs on a worker thread, and
+        // this is what carries a host-key question or a password prompt across to the
+        // application thread and the answer back.
+        transfer->startRead(address, &m_promptRelay);
+        return view;
+    }
 
     if (!read.existed) {
         view->showNotice(tr("%1 does not exist yet. Saving will create it.")
@@ -1129,8 +1176,38 @@ void MainWindow::updateConfigTabTitle(ConfigView *view)
 void MainWindow::saveActiveConfig()
 {
     ConfigView *view = activeConfigView();
-    if (!view)
+    if (!view || view->isBusy())
         return;
+
+    if (configAddressIsRemote(view->address())) {
+        // THE BYTES ARE TAKEN NOW, and the revision with them. Clearing the modified flag
+        // when the reply arrives is only honest if nothing was typed while it was in
+        // flight — otherwise a keystroke made during a slow remote save is marked saved
+        // and is lost at the next close with no prompt.
+        const QByteArray payload = view->toBytes();
+        const int sentAt = view->revision();
+        view->setBusy(true, tr("Saving %1…").arg(view->displayName()));
+        updateActionStates();
+        auto *transfer = new ConfigTransfer(view);
+        connect(transfer, &ConfigTransfer::writeFinished, view,
+                [this, view, transfer, sentAt](const ConfigWriteResult &result) {
+                    view->setBusy(false, QString());
+                    if (!result.ok) {
+                        view->showNotice(result.error);
+                    } else {
+                        if (view->revision() == sentAt)
+                            view->setModified(false);
+                        view->clearNotice();
+                        statusBar()->showMessage(tr("Saved %1").arg(view->displayName()), 5000);
+                    }
+                    updateConfigTabTitle(view);
+                    updateActionStates();
+                    transfer->deleteLater();
+                });
+        transfer->startWrite(view->address(), payload, &m_promptRelay);
+        return;
+    }
+
     const ConfigWriteResult result = writeConfigFile(view->address(), view->toBytes());
     if (!result.ok) {
         // A save failure names a directory or a permission the reader has to act on, so

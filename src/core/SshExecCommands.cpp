@@ -63,6 +63,48 @@ QString readCommand(const QString &path, qint64 offset, qint64 length)
              QString::number(qMax<qint64>(0, length)));
 }
 
+namespace {
+// The marker configExistsCommand() prints. Its own, not probeMarker()'s, so a stray
+// probe reply arriving late on a reused channel cannot be read as an answer about a file.
+QByteArray configMarker()
+{
+    return QByteArrayLiteral("loftail-cfg");
+}
+} // namespace
+
+QString configReadCommand(const QString &path)
+{
+    return QStringLiteral("cat < %1").arg(shellQuote(path));
+}
+
+QString configExistsCommand(const QString &path)
+{
+    // `-e`, not `-f`: a config reached through a symlink is an ordinary arrangement, and
+    // `-e` follows it. A directory answers 1 here and the write then fails with the
+    // server's own words, which is a better message than anything invented here.
+    return QStringLiteral("if test -e %1; then echo %2 1; else echo %2 0; fi")
+        .arg(shellQuote(path), QString::fromLatin1(configMarker()));
+}
+
+QString configWriteCommand(const QString &path)
+{
+    return QStringLiteral("cat > %1").arg(shellQuote(path));
+}
+
+bool parseConfigExistsOutput(const QByteArray &output, bool *exists)
+{
+    const QByteArray line = lastNonEmptyLine(output);
+    const QByteArray head = configMarker() + ' ';
+    if (!line.startsWith(head))
+        return false;
+    const QByteArray tail = line.mid(head.size()).trimmed();
+    if (tail != "0" && tail != "1")
+        return false;
+    if (exists)
+        *exists = tail == "1";
+    return true;
+}
+
 QByteArray probeMarker()
 {
     return QByteArrayLiteral("loftail-exec-ok");

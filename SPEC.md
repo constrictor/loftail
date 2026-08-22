@@ -227,7 +227,10 @@ An application that writes a log4cplus log is *configured* by a file saying whic
 - **Closing a tab or quitting with unsaved changes asks** — Save, Discard, or Cancel — and Cancel abandons the close or the quit entirely, leaving everything as it was.
 - **Find works exactly as it does in a log** (§5), in the same bar, with the same keys and the same wording.
 - Open config files are part of the remembered session (§10): a tab comes back where it was on the bar. Its *contents* are re-read from disk, never restored from the session — loftail does not hold unsaved work on your behalf.
-- **Config files on another machine are not editable yet.** A log opened over SSH says so plainly rather than opening an empty editor over nothing.
+- **A config file on another machine opens over SSH too**, the same way its log does. The tab appears at once, saying it is connecting, and fills in when the far end answers; a host that refuses keeps its tab and says why rather than vanishing. Closing that tab while it is still connecting does not wait for it.
+  - **Saving writes the file in place**, which is what keeps its owner, its group and its mode — a configuration that was readable only by its owner stays that way. The cost is that a remote save is **not atomic**: a connection lost halfway through leaves a short file rather than the previous one intact. loftail checks the size afterwards and says so if that happened, but it cannot undo it.
+  - A missing **directory** on the far end is refused by name, exactly as it is locally; loftail creates directories on nobody's machine.
+  - Where SSH support is not built in, a remote config file says so instead of opening.
 
 ### Character encoding
 
