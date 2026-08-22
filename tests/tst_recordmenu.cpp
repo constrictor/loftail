@@ -127,6 +127,21 @@ private:
         return nullptr;
     }
 
+    // How many records the active view is showing.
+    //
+    // ALWAYS READ THROUGH QTRY_COMPARE, never QCOMPARE, and the reason is not laziness
+    // about timing. FilterPane::scheduleApply() applies SYNCHRONOUSLY only while the
+    // last re-filter measured under 40 ms, and falls back to a 150 ms debounce
+    // otherwise — an adaptive cadence that is right for typing and invisible from here.
+    // So on an unloaded machine every edit lands before the next line runs, and on a
+    // loaded one a single slow apply flips the pane into debounced mode and every
+    // immediate read afterwards sees the PREVIOUS count.
+    //
+    // That is what this file used to do, and it was green for as long as the runners
+    // happened to be quick: it failed as "3 instead of 2" on Windows in one CI run and
+    // on Linux in the next, on code that did not touch filtering, and never once
+    // locally. Waiting weakens nothing — a filter that never lands still fails, on the
+    // QTRY timeout — and it removes an assumption the pane never made.
     static int visibleRecords(const MainWindow &w)
     {
         DocumentView *view = activeView(w);
@@ -350,7 +365,7 @@ void TestRecordMenu::anUnparsedLineOffersNothingToFilterBy()
     MainWindow w;
     w.openFile(m_log);
     waitUntilIndexed(w);
-    QCOMPARE(visibleRecords(w), 4);
+    QTRY_COMPARE(visibleRecords(w), 4);
 
     QMenu menu;
     w.buildRecordMenu(&menu, activeView(w), kPlain, -1);
@@ -430,10 +445,10 @@ void TestRecordMenu::showOnlySubsystemFiltersTheFile()
     showOnly->trigger();
 
     // net.io's two records, plus the unparsed line that no subsystem filter may hide.
-    QCOMPARE(second->logView()->recordCount(), 3);
+    QTRY_COMPARE(second->logView()->recordCount(), 3);
     DocumentView *first = qobject_cast<DocumentView *>(tabs(w)->widget(0));
     QVERIFY(first);
-    QCOMPARE(first->logView()->recordCount(), 3);
+    QTRY_COMPARE(first->logView()->recordCount(), 3);
 }
 
 void TestRecordMenu::hideThreadLeavesTheOthers()
@@ -451,7 +466,7 @@ void TestRecordMenu::hideThreadLeavesTheOthers()
 
     // Both [main] records stay, and so does the unparsed line (§6: a record lacking
     // the field an axis tests is never hidden by it).
-    QCOMPARE(visibleRecords(w), 3);
+    QTRY_COMPARE(visibleRecords(w), 3);
 }
 
 void TestRecordMenu::priorityFloorTakesTheRecordsOwnLevel()
@@ -467,7 +482,7 @@ void TestRecordMenu::priorityFloorTakesTheRecordsOwnLevel()
     QVERIFY(floor->text().contains(QStringLiteral("ERROR")));
     floor->trigger();
 
-    QCOMPARE(visibleRecords(w), 2); // the ERROR record + the unparsed line
+    QTRY_COMPARE(visibleRecords(w), 2); // the ERROR record + the unparsed line
 }
 
 void TestRecordMenu::timeBoundsNarrowFromBothEnds()
@@ -486,7 +501,7 @@ void TestRecordMenu::timeBoundsNarrowFromBothEnds()
     }
     // The [worker] and ERROR records, plus the unparsed line: it has no timestamp, so
     // a time filter must not hide it either (§6).
-    QCOMPARE(visibleRecords(w), 3);
+    QTRY_COMPARE(visibleRecords(w), 3);
 
     // Now close the other end on what is row 1 of the FILTERED view — the same
     // [worker] record, since the plain line still leads.
@@ -497,7 +512,7 @@ void TestRecordMenu::timeBoundsNarrowFromBothEnds()
         QVERIFY(end);
         end->trigger();
     }
-    QCOMPARE(visibleRecords(w), 2); // one timestamped record left, and the plain line
+    QTRY_COMPARE(visibleRecords(w), 2); // one timestamped record left, and the plain line
 }
 
 // One record names one instant, so the range item appears only when a selection
@@ -520,7 +535,7 @@ void TestRecordMenu::aSelectionOfTwoRecordsOffersItsOwnRange()
 
     // 10:00:00 through 10:00:01 — the ERROR record at 10:00:02 is out, the plain
     // line stays because it has no timestamp to compare.
-    QCOMPARE(visibleRecords(w), 3);
+    QTRY_COMPARE(visibleRecords(w), 3);
 }
 
 void TestRecordMenu::highlightingAppendsARuleAndKeepsTheOthers()
@@ -556,7 +571,7 @@ void TestRecordMenu::highlightingAppendsARuleAndKeepsTheOthers()
             != doc->highlighters().rules.at(seeded + 1).background);
 
     // Highlighting removes nothing: every record is still there (SPEC.md §7).
-    QCOMPARE(visibleRecords(w), 4);
+    QTRY_COMPARE(visibleRecords(w), 4);
 }
 
 void TestRecordMenu::aContextRowOffersItsOwnRecord()
@@ -576,12 +591,12 @@ void TestRecordMenu::aContextRowOffersItsOwnRecord()
     QVERIFY(messageGroup && messageText);
     messageGroup->setChecked(true);
     messageText->setText(QStringLiteral("three"));
-    QCOMPARE(visibleRecords(w), 1);
+    QTRY_COMPARE(visibleRecords(w), 1);
 
     auto *before = pane->findChild<QSpinBox *>(QStringLiteral("contextBefore"));
     QVERIFY(before);
     before->setValue(1);
-    QCOMPARE(visibleRecords(w), 2);
+    QTRY_COMPARE(visibleRecords(w), 2);
 
     // View row 0 is the context row, whose SOURCE record is the [worker] WARN from
     // db.pool. The menu must describe that record, not the ERROR below it.
@@ -649,7 +664,7 @@ void TestRecordMenu::selectAllTakesTheActiveViewsVisibleRecordsAndNothingElse()
     QVERIFY(messageGroup && messageText);
     messageGroup->setChecked(true);
     messageText->setText(QStringLiteral("two"));
-    QCOMPARE(visibleRecords(w), 1);
+    QTRY_COMPARE(visibleRecords(w), 1);
 
     selectAll->trigger();
     QCOMPARE(selectedCount(activeView(w)), 1);
@@ -665,18 +680,18 @@ void TestRecordMenu::doubleClickingASubsystemCellShowsOnlyThatSubsystem()
 {
     MainWindow w;
     openShown(w, m_log);
-    QCOMPARE(visibleRecords(w), 4);
+    QTRY_COMPARE(visibleRecords(w), 4);
 
     // kWorker is db.pool, and it is NOT the record the view opened on — the gesture has
     // to read the record under the pointer, not the selection.
     doubleClickCell(w, kWorker, FieldRole::Logger);
 
     const Document *doc = activeView(w)->context()->doc.get();
-    QVERIFY(doc->filters().loggerEnabled);
-    QCOMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("db.pool")});
+    QTRY_VERIFY(doc->filters().loggerEnabled);
+    QTRY_COMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("db.pool")});
     QVERIFY(!doc->filters().threadEnabled);
     // db.pool's one record, plus the unparsed line no subsystem filter may hide (§6).
-    QCOMPARE(visibleRecords(w), 2);
+    QTRY_COMPARE(visibleRecords(w), 2);
     // And the record acted on is the one that was double-clicked — it is still the
     // focused one afterwards, at whatever view row the narrowed subset gives it.
     QCOMPARE(doc->filtered().sourceRow(activeView(w)->logView()->currentRecord()),
@@ -691,10 +706,10 @@ void TestRecordMenu::doubleClickingAThreadCellShowsOnlyThatThread()
     doubleClickCell(w, kWorker, FieldRole::Thread);
 
     const Document *doc = activeView(w)->context()->doc.get();
-    QVERIFY(doc->filters().threadEnabled);
-    QCOMPARE(filteredNames(w, /*logger=*/false), QStringList{QStringLiteral("worker")});
+    QTRY_VERIFY(doc->filters().threadEnabled);
+    QTRY_COMPARE(filteredNames(w, /*logger=*/false), QStringList{QStringLiteral("worker")});
     QVERIFY(!doc->filters().loggerEnabled);
-    QCOMPARE(visibleRecords(w), 2);
+    QTRY_COMPARE(visibleRecords(w), 2);
 }
 
 // The item asks for ONE gesture. A Message, Time or Priority cell names no value a
@@ -709,7 +724,7 @@ void TestRecordMenu::doubleClickingAnyOtherColumnDoesNothingAtAll()
         doubleClickCell(w, kWorker, role);
         QVERIFY2(!activeView(w)->context()->doc->filters().anyActive(),
                  "a double-click outside the two value columns filtered something");
-        QCOMPARE(visibleRecords(w), 4);
+        QTRY_COMPARE(visibleRecords(w), 4);
     }
 }
 
@@ -723,7 +738,7 @@ void TestRecordMenu::doubleClickingACellTheRecordCannotAnswerForDoesNothing()
 
     doubleClickCell(w, kPlain, FieldRole::Logger);
     QVERIFY(!activeView(w)->context()->doc->filters().loggerEnabled);
-    QCOMPARE(visibleRecords(w), 4);
+    QTRY_COMPARE(visibleRecords(w), 4);
 
     // The empty space below the last record answers "nothing" too, exactly as it does
     // for the menu: a gesture aimed there acts on no record.
@@ -733,7 +748,7 @@ void TestRecordMenu::doubleClickingACellTheRecordCannotAnswerForDoesNothing()
                        QPoint(cellCentre(w, 0, FieldRole::Logger).x(),
                               log->viewport()->height() - lh / 2));
     QVERIFY(!activeView(w)->context()->doc->filters().loggerEnabled);
-    QCOMPARE(visibleRecords(w), 4);
+    QTRY_COMPARE(visibleRecords(w), 4);
 }
 
 // Deliberately not a toggle: the second double-click re-applies the same "show only",
@@ -745,13 +760,13 @@ void TestRecordMenu::doubleClickingTheSameCellAgainLeavesTheFilterWhereItIs()
     openShown(w, m_log);
 
     doubleClickCell(w, kMain, FieldRole::Logger); // net.io
-    QCOMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("net.io")});
-    QCOMPARE(visibleRecords(w), 3); // two net.io records + the unparsed line
+    QTRY_COMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("net.io")});
+    QTRY_COMPARE(visibleRecords(w), 3); // two net.io records + the unparsed line
 
     // The filtered view still holds that record at row 1, and it is still net.io's.
     doubleClickCell(w, 1, FieldRole::Logger);
-    QCOMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("net.io")});
-    QCOMPARE(visibleRecords(w), 3);
+    QTRY_COMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("net.io")});
+    QTRY_COMPARE(visibleRecords(w), 3);
 }
 
 // --- the two filter chords (SPEC.md §5) ---------------------------------------
@@ -766,16 +781,16 @@ void TestRecordMenu::ctrlAltClickingASubsystemCellShowsOnlyThatSubsystem()
 {
     MainWindow w;
     openShown(w, m_log);
-    QCOMPARE(visibleRecords(w), 4);
+    QTRY_COMPARE(visibleRecords(w), 4);
 
     clickCell(w, kWorker, FieldRole::Logger, kShowOnlyChord); // db.pool
 
     const Document *doc = activeView(w)->context()->doc.get();
-    QVERIFY(doc->filters().loggerEnabled);
-    QCOMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("db.pool")});
+    QTRY_VERIFY(doc->filters().loggerEnabled);
+    QTRY_COMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("db.pool")});
     QVERIFY(!doc->filters().threadEnabled);
     // db.pool's one record, plus the unparsed line no subsystem filter may hide (§6).
-    QCOMPARE(visibleRecords(w), 2);
+    QTRY_COMPARE(visibleRecords(w), 2);
 }
 
 void TestRecordMenu::ctrlAltClickingAThreadCellShowsOnlyThatThread()
@@ -786,10 +801,10 @@ void TestRecordMenu::ctrlAltClickingAThreadCellShowsOnlyThatThread()
     clickCell(w, kWorker, FieldRole::Thread, kShowOnlyChord); // worker
 
     const Document *doc = activeView(w)->context()->doc.get();
-    QVERIFY(doc->filters().threadEnabled);
-    QCOMPARE(filteredNames(w, /*logger=*/false), QStringList{QStringLiteral("worker")});
+    QTRY_VERIFY(doc->filters().threadEnabled);
+    QTRY_COMPARE(filteredNames(w, /*logger=*/false), QStringList{QStringLiteral("worker")});
     QVERIFY(!doc->filters().loggerEnabled);
-    QCOMPARE(visibleRecords(w), 2);
+    QTRY_COMPARE(visibleRecords(w), 2);
 }
 
 // Hide unticks ONE value and says nothing about the next name the scan turns up, which
@@ -802,10 +817,10 @@ void TestRecordMenu::altClickingASubsystemCellHidesItAndKeepsDiscovering()
     clickCell(w, kMain, FieldRole::Logger, kHideChord); // net.io
 
     const Document *doc = activeView(w)->context()->doc.get();
-    QVERIFY(doc->filters().loggerEnabled);
-    QCOMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("db.pool")});
+    QTRY_VERIFY(doc->filters().loggerEnabled);
+    QTRY_COMPARE(filteredNames(w, /*logger=*/true), QStringList{QStringLiteral("db.pool")});
     // net.io's two records gone; db.pool's one and the unparsed line left.
-    QCOMPARE(visibleRecords(w), 2);
+    QTRY_COMPARE(visibleRecords(w), 2);
 
     auto *pane = w.findChild<FilterPane *>();
     QVERIFY(pane);
@@ -823,9 +838,9 @@ void TestRecordMenu::altClickingAThreadCellHidesIt()
     clickCell(w, kWorker, FieldRole::Thread, kHideChord); // worker
 
     const Document *doc = activeView(w)->context()->doc.get();
-    QVERIFY(doc->filters().threadEnabled);
-    QCOMPARE(filteredNames(w, /*logger=*/false), QStringList{QStringLiteral("main")});
-    QCOMPARE(visibleRecords(w), 3); // the two main records + the unparsed line
+    QTRY_VERIFY(doc->filters().threadEnabled);
+    QTRY_COMPARE(filteredNames(w, /*logger=*/false), QStringList{QStringLiteral("main")});
+    QTRY_COMPARE(visibleRecords(w), 3); // the two main records + the unparsed line
 }
 
 // The priority axis is a MINIMUM level, so Show Only means "this level and above" — the
@@ -837,7 +852,7 @@ void TestRecordMenu::ctrlAltClickingAPriorityCellSetsTheFloor()
 
     clickCell(w, kError, FieldRole::Priority, kShowOnlyChord);
 
-    QCOMPARE(visibleRecords(w), 2); // the ERROR record + the unparsed line
+    QTRY_COMPARE(visibleRecords(w), 2); // the ERROR record + the unparsed line
 }
 
 // And there is no "hide this level": a floor cannot exclude one rung, so the chord that
@@ -850,7 +865,7 @@ void TestRecordMenu::altClickingAPriorityCellDoesNothing()
     clickCell(w, kError, FieldRole::Priority, kHideChord);
 
     QVERIFY(!activeView(w)->context()->doc->filters().anyActive());
-    QCOMPARE(visibleRecords(w), 4);
+    QTRY_COMPARE(visibleRecords(w), 4);
 }
 
 void TestRecordMenu::theChordsDoNothingOnTheOtherColumns()
@@ -863,7 +878,7 @@ void TestRecordMenu::theChordsDoNothingOnTheOtherColumns()
             clickCell(w, kWorker, role, mods);
             QVERIFY2(!activeView(w)->context()->doc->filters().anyActive(),
                      "a chord outside the three filterable columns filtered something");
-            QCOMPARE(visibleRecords(w), 4);
+            QTRY_COMPARE(visibleRecords(w), 4);
         }
     }
 }
@@ -879,7 +894,7 @@ void TestRecordMenu::aCellTheRecordCannotAnswerForIsInertUnderBothChords()
     for (Qt::KeyboardModifiers mods : {kShowOnlyChord, kHideChord}) {
         clickCell(w, kPlain, FieldRole::Logger, mods);
         QVERIFY(!activeView(w)->context()->doc->filters().loggerEnabled);
-        QCOMPARE(visibleRecords(w), 4);
+        QTRY_COMPARE(visibleRecords(w), 4);
 
         LogView *log = activeView(w)->logView();
         const int lh = qMax(1, log->fontMetrics().height());
@@ -887,7 +902,7 @@ void TestRecordMenu::aCellTheRecordCannotAnswerForIsInertUnderBothChords()
                           QPoint(cellCentre(w, 0, FieldRole::Logger).x(),
                                  log->viewport()->height() - lh / 2));
         QVERIFY(!activeView(w)->context()->doc->filters().loggerEnabled);
-        QCOMPARE(visibleRecords(w), 4);
+        QTRY_COMPARE(visibleRecords(w), 4);
     }
 }
 
