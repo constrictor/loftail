@@ -5,6 +5,9 @@
 #include "DiagnosticLog.h"
 #include "Document.h"
 #include "DocumentContext.h"
+#include "ConfigFileIO.h"
+#include "ConfigLocation.h"
+#include "ConfigView.h"
 #include "DocumentView.h"
 #include "Fonts.h"
 #include "Filter.h"
@@ -449,6 +452,29 @@ void MainWindow::buildMenus()
 #endif
 
     fileMenu->addSeparator();
+
+    // The config-file editor (SPEC.md §4). Reading a log and tuning what goes into it
+    // are the same errand, so the way in sits with the other opens rather than off in a
+    // menu of its own.
+    m_openConfigAction = fileMenu->addAction(tr("Open Config File &Editor"));
+    m_openConfigAction->setObjectName(QStringLiteral("openConfigAction")); // findChild
+    m_openConfigAction->setEnabled(false);
+    connect(m_openConfigAction, &QAction::triggered, this, &MainWindow::openConfigEditor);
+
+    // VISIBLE only on an editor tab, which is what was asked for — and paired with
+    // setEnabled() rather than relying on Qt to take the shortcut away with the
+    // visibility. This is the one place the window's usual argument inverts: elsewhere a
+    // disabled QAction "swallows its shortcut with no feedback", and that is a cost
+    // because there is an answer to give; on a log tab there is genuinely nothing for
+    // Ctrl+S to do.
+    m_saveConfigAction = fileMenu->addAction(tr("&Save"));
+    m_saveConfigAction->setObjectName(QStringLiteral("saveConfigAction")); // findChild
+    m_saveConfigAction->setShortcut(QKeySequence::Save); // Ctrl+S
+    m_saveConfigAction->setVisible(false);
+    m_saveConfigAction->setEnabled(false);
+    connect(m_saveConfigAction, &QAction::triggered, this, &MainWindow::saveActiveConfig);
+
+    fileMenu->addSeparator();
     m_closeTabAction = fileMenu->addAction(tr("&Close Tab"));
     m_closeTabAction->setObjectName(QStringLiteral("closeTabAction")); // findChild, for tests
     m_closeTabAction->setShortcut(QKeySequence::Close); // Ctrl+W
@@ -458,7 +484,8 @@ void MainWindow::buildMenus()
     m_closeAllAction = fileMenu->addAction(tr("Close &All"));
     m_closeAllAction->setObjectName(QStringLiteral("closeAllAction")); // findChild, for tests
     m_closeAllAction->setEnabled(false);
-    connect(m_closeAllAction, &QAction::triggered, this, &MainWindow::closeAllDocuments);
+    connect(m_closeAllAction, &QAction::triggered, this,
+            [this]() { closeAllDocuments(Prompt::Ask); });
 
     // Ask a spooled log's fetcher to try again NOW rather than at its next backoff.
     // The one case it is required for, rather than merely convenient: a reconnect that
@@ -552,7 +579,9 @@ void MainWindow::buildMenus()
     m_findAction->setShortcut(QKeySequence::Find);
     m_findAction->setEnabled(false);
     connect(m_findAction, &QAction::triggered, this, [this]() {
-        if (m_activeView)
+        if (ConfigView *editor = activeConfigView())
+            editor->activateFind();
+        else if (m_activeView)
             m_activeView->activateFind();
     });
     m_findNextAction = editMenu->addAction(tr("Find &Next"));
@@ -673,6 +702,7 @@ void MainWindow::buildMenus()
     // the view is currently following; triggering it re-attaches and jumps to the end.
     viewMenu->addSeparator();
     m_followAction = viewMenu->addAction(tr("&Follow Tail"));
+    m_followAction->setObjectName(QStringLiteral("followAction")); // findChild, for tests
     m_followAction->setCheckable(true);
     m_followAction->setChecked(true);
     m_followAction->setEnabled(false);
@@ -794,7 +824,10 @@ void MainWindow::refreshWindowMenu()
     if (m_views.isEmpty())
         return;
     m_windowMenu->addSeparator();
-    for (DocumentView *view : std::as_const(m_views)) {
+    // In TAB order, so the menu reads down the bar rather than in the order the logs
+    // happened to be opened.
+    const QVector<DocumentView *> ordered = viewsInTabOrder();
+    for (DocumentView *view : ordered) {
         const int index = m_tabs->indexOf(view);
         QAction *a = m_windowMenu->addAction(index >= 0 ? m_tabs->tabText(index) : QString());
         a->setCheckable(true);
@@ -810,8 +843,10 @@ void MainWindow::cycleView(int delta)
         return;
     const int current = qMax(0, m_tabs->currentIndex());
     m_tabs->setCurrentIndex(((current + delta % size) + size) % size);
-    if (m_activeView)
-        m_activeView->logView()->setFocus();
+    // The page that is now in front, whichever kind it is. Both kinds carry a focus
+    // proxy, so this reaches the table or the text without asking which.
+    if (QWidget *page = m_tabs->currentWidget())
+        page->setFocus();
 }
 
 // --- Side panes ------------------------------------------------------------
@@ -853,19 +888,38 @@ QDockWidget *MainWindow::addPaneDock(QWidget *pane, const QString &objectName,
 
 void MainWindow::onCurrentTabChanged(int index)
 {
-    // The current page IS the active view; there is no other way to be looking at a
-    // log. A -1 (the last tab just closed) makes the window file-less, which
-    // setActiveView handles by unbinding the panes.
-    setActiveView(qobject_cast<DocumentView *>(m_tabs->widget(index)));
+    // The current page is the active view WHEN IT IS A LOG. An editor page leaves the
+    // bound document exactly where it was, deliberately: setActiveView() ends in
+    // stashPaneState(), which writes a per-log record, so unbinding on every flip to an
+    // editor tab and back would cost a file write per flip — and the Filters and
+    // Highlighters panes staying on the log being read is also what a reader editing
+    // that log's config wants to see.
+    //
+    // The consequence is that `hasFile` stays true with an editor in front, which is why
+    // every per-log action asks activePageIsLog() instead.
+    if (auto *view = qobject_cast<DocumentView *>(m_tabs->widget(index)))
+        setActiveView(view);
+    else if (index < 0)
+        setActiveView(nullptr); // the last tab closed: nothing to be looking at
+
+    // UNCONDITIONALLY, and after the branch above rather than inside its else. What the
+    // per-page actions may act on has moved whether or not the bound DOCUMENT did — and
+    // setActiveView() early-returns when the view is unchanged, which is exactly what
+    // happens coming back from an editor tab to the log that was already active. Put
+    // this in the else and Save stays visible on the log tab, with every per-log action
+    // still greyed out, until something else happens to refresh them.
+    updateActionStates();
+    updateStatus();
 }
 
-void MainWindow::onTabMoved(int from, int to)
+void MainWindow::onTabMoved(int /*from*/, int /*to*/)
 {
-    // m_views is the session's view order and Ctrl+Tab's walk order, so a dragged
-    // tab has to move with it.
-    if (from < 0 || from >= m_views.size() || to < 0 || to >= m_views.size())
-        return;
-    m_views.move(from, to);
+    // NOTHING TO REORDER. m_views no longer carries tab order — viewsInTabOrder() reads
+    // it off the bar, which has already moved by the time this runs — so the old
+    // m_views.move(from, to) is not merely unnecessary, it is the bug: those arguments
+    // are tab indices, and indexing m_views with one is only correct while every page
+    // in the well is a DocumentView.
+    //
     // Two views of one file are numbered by tab position, so moving a tab renumbers
     // its file's — and only a file with several views can be affected.
     for (auto &ctx : m_contexts) {
@@ -874,10 +928,24 @@ void MainWindow::onTabMoved(int from, int to)
     }
 }
 
+QVector<DocumentView *> MainWindow::viewsInTabOrder() const
+{
+    QVector<DocumentView *> ordered;
+    ordered.reserve(m_views.size());
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        if (auto *view = qobject_cast<DocumentView *>(m_tabs->widget(i)))
+            ordered.append(view);
+    }
+    return ordered;
+}
+
 void MainWindow::updateEmptyState()
 {
-    m_centre->setCurrentWidget(m_views.isEmpty() ? static_cast<QWidget *>(m_placeholder)
-                                                 : static_cast<QWidget *>(m_tabs));
+    // Asked of the TAB BAR, not of m_views: the placeholder means "the well is empty",
+    // and a well holding a page of some other kind is not empty even with no log in it.
+    // On m_views this would hide a live page behind the "no file open" notice.
+    m_centre->setCurrentWidget(m_tabs->count() == 0 ? static_cast<QWidget *>(m_placeholder)
+                                                    : static_cast<QWidget *>(m_tabs));
 }
 
 void MainWindow::onViewDestroyed(QObject *obj)
@@ -934,8 +1002,201 @@ void MainWindow::onViewDestroyed(QObject *obj)
     }
 }
 
+// --- The config-file editor (SPEC.md §4) -----------------------------------
+
+ConfigView *MainWindow::activeConfigView() const
+{
+    return qobject_cast<ConfigView *>(m_tabs->currentWidget());
+}
+
+bool MainWindow::activePageIsLog() const
+{
+    // NOT `activeContext() != nullptr`. The bound document deliberately does NOT move
+    // when an editor tab comes to the front — setActiveView() ends in stashPaneState(),
+    // which writes a per-log record, and a tab flip must not cost a file write — so
+    // `hasFile` stays true with an editor in front. Every action that acts on
+    // m_activeView therefore has to ask THIS instead, or it operates on a log the reader
+    // is not looking at.
+    return qobject_cast<DocumentView *>(m_tabs->currentWidget()) != nullptr;
+}
+
+void MainWindow::openConfigEditor()
+{
+    DocumentContext *ctx = activeContext();
+    if (!ctx || !ctx->doc)
+        return;
+    const QString logPath = ctx->doc->path();
+
+    ConfigAddress target = resolveConfigAddress(logPath, resolvedProfile(logPath).configPath);
+
+    if (target.state == ConfigAddress::State::Refused) {
+        reportOpenRefusal(logSourceDisplayName(logPath), target.reason);
+        return;
+    }
+
+    if (target.state == ConfigAddress::State::Unset) {
+        // Nothing configured, so ASK — and the answer becomes this log's own setting,
+        // through the ordinary write funnel, which means the redundancy rule applies to
+        // it exactly as it does to everything else: if the chosen path is what the log
+        // would have inherited anyway, no per-log entry is left behind.
+        const QString dir = QFileInfo(logPath).absolutePath();
+        const QString chosen = QFileDialog::getOpenFileName(
+            this, tr("Config file for %1").arg(logSourceDisplayName(logPath)), dir,
+            tr("Config files (*.properties *.ini *.conf *.cfg *.xml *.json);;All files (*)"));
+        if (chosen.isEmpty())
+            return; // cancelled: nothing chosen, nothing remembered
+
+        LogProfile stored = resolvedProfile(logPath);
+        stored.configPath = chosen;
+        ctx->fileSettings.profile = stored;
+        persistFileSettings(ctx);
+
+        target = resolveConfigAddress(logPath, chosen);
+        if (target.state != ConfigAddress::State::Resolved) {
+            reportOpenRefusal(logSourceDisplayName(logPath), target.reason);
+            return;
+        }
+    }
+
+    openConfigAt(target.address);
+}
+
+ConfigView *MainWindow::openConfigAt(const QString &address)
+{
+    // Already open: RAISE it rather than opening a second tab onto one file, which is
+    // openWithSettings()'s rule for a log and is more important here — two editors over
+    // one buffer would let the reader save one over the other.
+    for (ConfigView *existing : std::as_const(m_editors)) {
+        if (existing->address() == address) {
+            m_tabs->setCurrentWidget(existing);
+            existing->setFocus();
+            return existing;
+        }
+    }
+
+    const ConfigReadResult read = readConfigFile(address);
+    if (!read.ok) {
+        reportOpenRefusal(logSourceDisplayName(address), read.error);
+        return nullptr;
+    }
+
+    auto *view = new ConfigView(address, this);
+    view->setContents(read.bytes, read.existed);
+    m_editors.append(view);
+
+    connect(view, &ConfigView::zoomStepRequested, this, &MainWindow::stepLogFontSize);
+    connect(view, &ConfigView::modifiedChanged, this,
+            [this, view](bool) { updateConfigTabTitle(view); });
+    connect(view, &QObject::destroyed, this, [this](QObject *obj) {
+        m_editors.removeIf([obj](ConfigView *v) { return v == obj; });
+    });
+
+    m_tabs->addTab(view, QString());
+    updateConfigTabTitle(view);
+    m_tabs->setCurrentWidget(view);
+    view->setFocus();
+    updateEmptyState();
+
+    if (!read.existed) {
+        view->showNotice(tr("%1 does not exist yet. Saving will create it.")
+                             .arg(logSourceDisplayPath(address)));
+    }
+    return view;
+}
+
+void MainWindow::updateConfigTabTitle(ConfigView *view)
+{
+    const int index = m_tabs->indexOf(view);
+    if (index < 0)
+        return;
+    QString name = view->displayName();
+    name.replace(u'&', QLatin1String("&&")); // the tab bar reads '&' as a mnemonic
+    // A TRAILING mark, which is already this application's vocabulary for "something is
+    // in force here" — the pane docks wear one. The two leading marks are taken and mean
+    // something else: the hollow one is "not there yet" and the filled one is "something
+    // arrived while you were away".
+    const QString title = view->isModified() ? QStringLiteral("%1 •").arg(name) : name;
+    // Only on a real change: QTabBar::setTabText relays the whole bar out whether or not
+    // the text moved, and this runs on every keystroke that flips the modified flag.
+    if (m_tabs->tabText(index) != title)
+        m_tabs->setTabText(index, title);
+    const QString tip = logSourceDisplayPath(view->address());
+    if (m_tabs->tabToolTip(index) != tip)
+        m_tabs->setTabToolTip(index, tip);
+    updateActionStates();
+}
+
+void MainWindow::saveActiveConfig()
+{
+    ConfigView *view = activeConfigView();
+    if (!view)
+        return;
+    const ConfigWriteResult result = writeConfigFile(view->address(), view->toBytes());
+    if (!result.ok) {
+        // A save failure names a directory or a permission the reader has to act on, so
+        // it goes in the page's own notice, which stays — not the status bar's transient
+        // channel and not m_statusLabel, which updateStatus() rewrites on every tick.
+        view->showNotice(result.error);
+        return;
+    }
+    view->setModified(false);
+    updateConfigTabTitle(view);
+    if (!result.error.isEmpty()) {
+        // Saved, but with something worth saying — a permission that could not be put
+        // back. Not a failure, so the flag is cleared above, and still not silent.
+        view->showNotice(result.error);
+        return;
+    }
+    view->clearNotice();
+    statusBar()->showMessage(tr("Saved %1").arg(view->displayName()), 5000);
+}
+
+bool MainWindow::confirmDiscard(ConfigView *view)
+{
+    if (!view || !view->isModified())
+        return true;
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(tr("Unsaved changes"));
+    box.setText(tr("%1 has unsaved changes.").arg(view->displayName()));
+    box.setInformativeText(tr("Save them before closing?"));
+    box.setStandardButtons(QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Save);
+    box.setEscapeButton(QMessageBox::Cancel);
+    switch (box.exec()) {
+    case QMessageBox::Save: {
+        const ConfigWriteResult result = writeConfigFile(view->address(), view->toBytes());
+        if (!result.ok) {
+            // A FAILED save is a Cancel. Closing anyway would throw the work away after
+            // the reader explicitly asked to keep it, which is the one outcome this
+            // dialog exists to prevent.
+            view->showNotice(result.error);
+            return false;
+        }
+        view->setModified(false);
+        return true;
+    }
+    case QMessageBox::Discard:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void MainWindow::closeViewAt(int index)
 {
+    // An editor page is closed here too. Without this branch the qobject_cast below
+    // fails, the function returns, and the tab's own ✕ button silently does nothing.
+    if (auto *editor = qobject_cast<ConfigView *>(m_tabs->widget(index))) {
+        if (!confirmDiscard(editor))
+            return; // the reader cancelled: the tab stays, with its edits
+        m_tabs->removeTab(index);
+        delete editor; // its destroyed handler takes it out of m_editors
+        updateEmptyState();
+        updateActionStates();
+        return;
+    }
+
     auto *view = qobject_cast<DocumentView *>(m_tabs->widget(index));
     if (!view)
         return;
@@ -1054,13 +1315,28 @@ void MainWindow::updateActionStates()
 {
     DocumentContext *ctx = activeContext();
     const bool hasFile = ctx != nullptr;
+    // `hasFile` says a LOG IS BOUND; `onLog` says the page in front is that log. They
+    // used to be the same question and are not any more: the bound document deliberately
+    // does not move when an editor tab comes forward (see onCurrentTabChanged), so every
+    // action that acts on m_activeView must ask `onLog` or it acts on a log the reader is
+    // not looking at.
+    const bool onLog = activePageIsLog();
+    ConfigView *editor = activeConfigView();
 
     if (m_copyAction)
-        m_copyAction->setEnabled(hasFile);
+        m_copyAction->setEnabled(onLog);
     if (m_copyColumnsAction)
-        m_copyColumnsAction->setEnabled(hasFile);
+        m_copyColumnsAction->setEnabled(onLog);
     if (m_selectAllAction)
-        m_selectAllAction->setEnabled(hasFile);
+        m_selectAllAction->setEnabled(onLog);
+    // The config editor's own two. Save is VISIBLE only on an editor page, which is what
+    // was asked for; Open Config File Editor needs a log to resolve a path against.
+    if (m_openConfigAction)
+        m_openConfigAction->setEnabled(hasFile);
+    if (m_saveConfigAction) {
+        m_saveConfigAction->setVisible(editor != nullptr);
+        m_saveConfigAction->setEnabled(editor != nullptr && editor->isModified());
+    }
     // Find and its two navigations, on hasFile and nothing else. NOT on the query being
     // non-empty: these two carry F3 and Shift+F3, and a disabled QAction swallows its
     // shortcut with no feedback at all — so gating on the query would delete the only
@@ -1069,36 +1345,42 @@ void MainWindow::updateActionStates()
     // DocumentView child) and changes per keystroke, so it would put a window-wide menu
     // state on the typing path to tell the reader something the empty box in front of
     // them already says.
+    // Find is the deliberate EXCEPTION to the onLog rule above: a config editor searches
+    // too, so these stay enabled on either kind of page. The comment above still governs
+    // why they are not gated on the query being non-empty.
+    const bool canFind = hasFile || editor != nullptr;
     if (m_findAction)
-        m_findAction->setEnabled(hasFile);
+        m_findAction->setEnabled(canFind);
     if (m_findNextAction)
-        m_findNextAction->setEnabled(hasFile);
+        m_findNextAction->setEnabled(canFind);
     if (m_findPreviousAction)
-        m_findPreviousAction->setEnabled(hasFile);
+        m_findPreviousAction->setEnabled(canFind);
     // Only a spooled log has a fetcher to poke; a local one is watched, not connected.
     if (m_reconnectAction) {
         m_reconnectAction->setEnabled(
-            hasFile && dynamic_cast<SpooledLogSource *>(ctx->doc->source()) != nullptr);
+            onLog && dynamic_cast<SpooledLogSource *>(ctx->doc->source()) != nullptr);
     }
     // Enabled for a WAITING document too: there it means "try now" rather than
     // "re-read", which is exactly what somebody staring at a tab that says a log has not
     // turned up wants the key to do.
     if (m_reloadAction)
-        m_reloadAction->setEnabled(hasFile);
+        m_reloadAction->setEnabled(onLog);
+    // Any page can be closed, log or editor — the editor branch in closeViewAt() is what
+    // answers for one. Gated on hasFile it would take Ctrl+W away from an editor tab.
     if (m_closeTabAction)
-        m_closeTabAction->setEnabled(hasFile);
+        m_closeTabAction->setEnabled(m_tabs->count() > 0);
     if (m_closeAllAction)
-        m_closeAllAction->setEnabled(!m_views.isEmpty());
+        m_closeAllAction->setEnabled(m_tabs->count() > 0);
     if (m_newViewAction)
-        m_newViewAction->setEnabled(hasFile);
+        m_newViewAction->setEnabled(onLog);
     if (m_followAction) {
-        m_followAction->setEnabled(hasFile);
+        m_followAction->setEnabled(onLog);
         // With no file the next open follows again (SPEC.md §3); with one, the
         // checkbox tracks that view's own follow state.
         m_followAction->setChecked(hasFile ? m_activeView->logView()->following() : true);
     }
     if (m_toggleWrapAction)
-        m_toggleWrapAction->setEnabled(hasFile);
+        m_toggleWrapAction->setEnabled(onLog);
     if (m_wrapGroup) {
         // Wrap belongs to the view (invariant #7) and a log now opens in the mode its
         // settings name, so the checked entry has to follow whichever view is in front
@@ -1106,7 +1388,7 @@ void MainWindow::updateActionStates()
         const int mode =
             hasFile ? int(m_activeView->logView()->wrapMode()) : int(LogView::WrapMode::Off);
         for (QAction *a : m_wrapGroup->actions()) {
-            a->setEnabled(hasFile);
+            a->setEnabled(onLog);
             if (a->data().toInt() == mode)
                 a->setChecked(true);
         }
@@ -1122,9 +1404,15 @@ void MainWindow::updateActionStates()
             m_progressBar->setValue(ctx->progressPercent);
     }
 
-    setWindowTitle(hasFile
-                       ? tr("loftail — %1").arg(logSourceDisplayName(ctx->doc->path()))
-                       : QStringLiteral("loftail"));
+    // The title names WHAT IS IN FRONT, which with an editor page is the config file
+    // and not the log still bound behind it. Naming the log there would be a title
+    // describing a tab the reader is not looking at.
+    if (editor)
+        setWindowTitle(tr("loftail — %1").arg(editor->displayName()));
+    else if (hasFile)
+        setWindowTitle(tr("loftail — %1").arg(logSourceDisplayName(ctx->doc->path())));
+    else
+        setWindowTitle(QStringLiteral("loftail"));
 }
 
 void MainWindow::updateClearFiltersState()
@@ -1228,10 +1516,34 @@ void MainWindow::refreshRemoteHostsMenu()
     }
 }
 
-void MainWindow::closeAllDocuments()
+void MainWindow::closeAllDocuments(Prompt prompt)
 {
+    // The editor pages first, and a Cancel on any of them ABANDONS the whole gesture —
+    // File ▸ Close All means all of them or none, not "as many as happened to be clean".
+    // AlreadyAsked is what keeps the quit path from asking twice: closeEvent() has to ask
+    // BEFORE it saves the session, so by the time it reaches here the answer is in.
+    if (prompt == Prompt::Ask) {
+        const QVector<ConfigView *> editors = m_editors;
+        for (ConfigView *editor : editors) {
+            if (!confirmDiscard(editor))
+                return;
+        }
+    }
+    {
+        const QSignalBlocker block(m_tabs);
+        const QVector<ConfigView *> editors = m_editors;
+        for (ConfigView *editor : editors) {
+            if (const int index = m_tabs->indexOf(editor); index >= 0)
+                m_tabs->removeTab(index);
+            delete editor;
+        }
+        m_editors.clear();
+    }
+
     if (m_contexts.empty()) {
         m_activeView = nullptr;
+        updateEmptyState();
+        updateActionStates();
         return;
     }
 
@@ -1941,8 +2253,15 @@ void MainWindow::applyProfileToActive(const LogProfile &p)
 
     // Wrap first, into the record AND the views already on screen: applySettings() below
     // may reindex, and a view built afterwards seeds its mode from the record.
+    // EVERY non-format field has to be named here by hand, and a field added to
+    // LogProfile without a line of its own is one "Apply to current file" silently
+    // ignores — the button appears to do nothing for that setting alone, which reads as
+    // the whole button being broken. `stored` starts from resolvedProfile(), so an
+    // unnamed field keeps its OLD value rather than being cleared, which is why the
+    // omission is invisible until somebody changes that setting and presses Apply.
     LogProfile stored = resolvedProfile(path);
     stored.wrapMode = p.wrapMode;
+    stored.configPath = p.configPath;
     ctx->fileSettings.profile = stored;
     persistFileSettings(ctx);
     for (DocumentView *v : std::as_const(ctx->views))
@@ -3091,6 +3410,15 @@ void MainWindow::runFind(bool forward, bool fromStart)
 {
     // Find runs over the view whose bar asked for it. Focusing that bar already made
     // its view active, so the active view IS the requesting one.
+    // The page in front decides what is searched. FIRST, above everything, because the
+    // log view below is still bound while an editor page is current — searching it would
+    // move the cursor in a tab the reader is not looking at and report into its hidden
+    // bar.
+    if (ConfigView *editor = activeConfigView()) {
+        editor->runFind(forward, fromStart);
+        return;
+    }
+
     LogView *logView = activeLogView();
     LogModel *model = activeModel();
     FindBar *findBar = m_activeView ? m_activeView->findBar() : nullptr;
@@ -3183,22 +3511,27 @@ void MainWindow::runFind(bool forward, bool fromStart)
     // moment the total is a floor ("47+") and, when the match itself lies past where
     // counting stopped, there is no position to give and the bar just says it found one.
     const Find::Tally t = Find::tally(count, hit, kFindTallyRows, kFindTallyMs, rowMatches);
-    QString status;
-    if (t.index <= 0)
-        status = tr("match"); // counting stopped short of this one: no position to give
-    else if (t.complete)
-        status = tr("%1 of %2").arg(t.index).arg(t.total);
-    else
-        status = tr("%1 of %2+").arg(t.index).arg(t.total); // at least that many
-    if (wrapped) {
-        status = forward ? tr("%1, wrapped to the top").arg(status)
-                         : tr("%1, wrapped to the bottom").arg(status);
-    }
+    // The wording lives on FindBar, shared with the config editor's own bar, so the two
+    // cannot come to describe one gesture in two vocabularies.
+    const QString status = FindBar::describeMatch(t.index, t.total, t.complete, wrapped, forward);
     findBar->setStatus(status); // the bar's own label: focus stays in it for the next F3
 }
 
 void MainWindow::updateStatus()
 {
+    if (ConfigView *editor = activeConfigView()) {
+        // The page in front is a config file, so the status line describes THAT rather
+        // than the log still bound behind it. Above the document branch, because
+        // activeDocument() is deliberately still non-null here.
+        QString text = editor->displayName();
+        if (!editor->fileExisted())
+            text = tr("%1 — new file").arg(text);
+        if (editor->isModified())
+            text = tr("%1 — unsaved changes").arg(text);
+        m_statusLabel->setText(text);
+        return;
+    }
+
     Document *doc = activeDocument();
     if (!doc) {
         m_statusLabel->setText(tr("No file open"));
@@ -3795,10 +4128,26 @@ void MainWindow::dropEvent(QDropEvent *event)
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    // THE PROMPT COMES FIRST, above saveSession(), and the order is the whole point. A
+    // cancelled quit must leave the window exactly as it was — and saveSession() does not
+    // merely write the session: it calls persistFileSettings() for every context and
+    // flushes the per-log pool. Asking afterwards would mean a "Cancel" that had already
+    // performed half a quit.
+    //
+    // In tab order, so the questions arrive left to right the way the tabs read.
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        if (auto *editor = qobject_cast<ConfigView *>(m_tabs->widget(i))) {
+            if (!confirmDiscard(editor)) {
+                event->ignore();
+                return;
+            }
+        }
+    }
+
     // Persist the full session BEFORE teardown drops the view and unbinds the panes
     // (SPEC.md §10). Global state is last-writer-wins across instances (§8.1).
     saveSession();
-    closeAllDocuments();
+    closeAllDocuments(Prompt::AlreadyAsked);
     event->accept();
 }
 
@@ -3815,6 +4164,11 @@ void MainWindow::applyLogFontToViews()
         view->logView()->setFont(f);
         view->digestView()->setFont(f);
     }
+    // The config editors too, or a zoom leaves every open config file behind at the old
+    // size while the logs move — and "the editor font is the same as in logs" would then
+    // be true only until somebody pressed Ctrl+=.
+    for (ConfigView *editor : std::as_const(m_editors))
+        editor->setLogFont(f);
 }
 
 void MainWindow::setLogFontSize(int points)
@@ -3903,16 +4257,36 @@ void MainWindow::saveSession()
     // Once for the gesture, after every record has had its say.
     m_fileStore.flush();
 
-    // m_views is kept in tab order, so saving it in order is what puts the tabs back
-    // left to right — including after the user has dragged them around.
-    for (DocumentView *view : std::as_const(m_views)) {
+    // THE SAVED ORDER IS THE BAR'S ORDER, read off the bar. The `views` array carries
+    // the tab layout and nothing else does, so this is where a dragged tab has to be
+    // observed — and m_views is no longer the place to observe it from.
+    const QVector<DocumentView *> ordered = viewsInTabOrder();
+    for (DocumentView *view : ordered) {
         SessionView v;
         v.documentIndex = documentIndex.value(view->context(), 0);
         v.columnState = view->logView()->saveColumnState();
         v.wrapMode = int(view->logView()->wrapMode());
         session.views.append(v);
     }
-    session.activeView = qMax(0, m_views.indexOf(m_activeView));
+    // Into the ORDERED list, for the same reason: activeView indexes `views`.
+    session.activeView = qMax(0, int(ordered.indexOf(m_activeView)));
+
+    // The editor pages, each with WHERE ON THE BAR it sat. The views array's order is
+    // the whole layout a session used to need; with a second kind of page, order alone
+    // cannot say how the two interleave, so an absolute position is what carries it.
+    // Walked over the bar so the positions are the real ones.
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        auto *editor = qobject_cast<ConfigView *>(m_tabs->widget(i));
+        if (!editor)
+            continue;
+        SessionEditor e;
+        e.address = editor->address();
+        e.tabIndex = i;
+        e.syntaxChosen = editor->syntaxWasChosen();
+        e.syntax = int(editor->syntax());
+        session.editors.append(e);
+    }
+    session.activeTab = qMax(0, m_tabs->currentIndex());
 
     QSettings store;
     SessionStore::save(store, session);
@@ -4099,14 +4473,58 @@ void MainWindow::restoreSession()
         // one of them WITH its reason and stays there until dismissed, while this
         // placeholder is only on screen while nothing else opened at all.
     }
+    // The config-file editor pages, put back WHERE THEY SAT. In ascending tab order and
+    // inserted rather than appended, which is what reproduces the interleaving exactly:
+    // the log tabs are already in place, so inserting each editor at its recorded
+    // position walks the bar back to the shape it had.
+    //
+    // The FILE is re-read from disk, never restored from the session: a session is not a
+    // backing store for unsaved work, and resurrecting a buffer over a file somebody
+    // changed in the meantime would be worse than losing it.
+    QVector<SessionEditor> editors = session.editors;
+    std::sort(editors.begin(), editors.end(),
+              [](const SessionEditor &a, const SessionEditor &b) {
+                  return a.tabIndex < b.tabIndex;
+              });
+    for (const SessionEditor &e : std::as_const(editors)) {
+        const ConfigReadResult read = readConfigFile(e.address);
+        if (!read.ok) {
+            // Listed with its reason like any other refused restore, rather than an
+            // error dialog on every launch (SPEC.md §10).
+            reportOpenRefusal(logSourceDisplayName(e.address), read.error);
+            continue;
+        }
+        auto *view = new ConfigView(e.address, this);
+        view->setContents(read.bytes, read.existed);
+        if (e.syntaxChosen)
+            view->setSyntax(static_cast<ConfigSyntax>(e.syntax), /*chosen=*/true);
+        m_editors.append(view);
+        connect(view, &ConfigView::zoomStepRequested, this, &MainWindow::stepLogFontSize);
+        connect(view, &ConfigView::modifiedChanged, this,
+                [this, view](bool) { updateConfigTabTitle(view); });
+        connect(view, &QObject::destroyed, this, [this](QObject *obj) {
+            m_editors.removeIf([obj](ConfigView *v) { return v == obj; });
+        });
+        m_tabs->insertTab(qMin(e.tabIndex, m_tabs->count()), view, QString());
+        updateConfigTabTitle(view);
+    }
+
     endOpenBatch();
     updateEmptyState();
-    if (m_contexts.empty())
+    if (m_contexts.empty() && m_editors.isEmpty())
         return;
 
     // Activate the saved view, which binds the panes to its file, then start every
     // scan. Indexing goes last so worker batches never race the layout settling.
-    showView(toActivate ? toActivate : m_views.first());
+    if (!m_contexts.empty())
+        showView(toActivate ? toActivate : m_views.first());
+    // The saved tab last, so an editor page that was in front comes back in front. After
+    // showView() rather than instead of it: showView() is what binds the panes to a log,
+    // and that has to happen whichever page ends up current.
+    if (session.activeTab >= 0 && session.activeTab < m_tabs->count())
+        m_tabs->setCurrentIndex(session.activeTab);
+    if (m_contexts.empty())
+        return;
 
     // Restored rules go straight onto their Documents rather than through the pane, so
     // nothing above has asked whether any of them wants notifications (M19).

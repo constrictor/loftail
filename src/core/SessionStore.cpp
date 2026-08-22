@@ -11,6 +11,8 @@ constexpr auto kSchema = "schemaVersion";
 constexpr auto kGeometry = "geometry";
 constexpr auto kWindowState = "windowState";
 constexpr auto kActiveView = "activeView";
+constexpr auto kActiveTab = "activeTab";
+constexpr auto kEditors = "editors";
 constexpr auto kActiveDocumentV1 = "activeDocument";
 constexpr auto kDocuments = "documents";
 constexpr auto kViews = "views";
@@ -35,7 +37,7 @@ Session SessionStore::load(QSettings &settings)
     // rather than a half-read one — a clean first launch (§8). Versions 1 and 2 are
     // read and migrated; anything else is discarded.
     const int version = settings.value(QLatin1String(kSchema), 0).toInt();
-    if (version != kSchemaVersion && version != 1 && version != 2) {
+    if (version != kSchemaVersion && version != 1 && version != 2 && version != 3) {
         settings.endGroup();
         return session;
     }
@@ -43,11 +45,16 @@ Session SessionStore::load(QSettings &settings)
 
     session.schemaVersion = kSchemaVersion;
     session.geometry = settings.value(QLatin1String(kGeometry)).toByteArray();
-    // Only a current windowState is usable: a v1 blob describes a different window
-    // entirely, and a v2 one records the collapsed central widget of the all-docks
-    // shell, which would squeeze the document well to zero. Geometry (position and
-    // size) is still good, so only the pane layout is dropped.
-    if (version == kSchemaVersion)
+    // Only a windowState describing THIS shell is usable: a v1 blob describes a
+    // different window entirely, and a v2 one records the collapsed central widget of
+    // the all-docks shell, which would squeeze the document well to zero. Geometry
+    // (position and size) is still good, so only the pane layout is dropped.
+    //
+    // `>= 3`, NOT `== kSchemaVersion`. v3 is the same shell as v4 — the bump added an
+    // array, not a layout — so testing for the current version alone would silently
+    // throw away every existing user's pane arrangement on the first launch after the
+    // upgrade, for no reason at all.
+    if (version >= 3)
         session.windowState = settings.value(QLatin1String(kWindowState)).toByteArray();
 
     const int n = settings.beginReadArray(QLatin1String(kDocuments));
@@ -99,6 +106,27 @@ Session SessionStore::load(QSettings &settings)
             session.views.append(v);
         }
         settings.endArray();
+
+        // v3 knew only log pages, so the tab in front was the active view and there are
+        // no editors to place. Both fall out of the defaults, which is what makes this
+        // migration a copy rather than a conversion.
+        session.activeTab = settings.value(QLatin1String(kActiveTab), session.activeView).toInt();
+        const int editorCount = settings.beginReadArray(QLatin1String(kEditors));
+        session.editors.reserve(editorCount);
+        for (int i = 0; i < editorCount; ++i) {
+            settings.setArrayIndex(i);
+            SessionEditor e;
+            e.address = settings.value(QStringLiteral("address")).toString();
+            e.tabIndex = settings.value(QStringLiteral("tab"), 0).toInt();
+            // PRESENCE, not value: a stored 0 is PlainText and is indistinguishable from
+            // "nothing was chosen", so reading it as a choice brings every restored tab
+            // back uncoloured. Only a syntax the user actually picked is written.
+            e.syntaxChosen = settings.contains(QStringLiteral("syntax"));
+            e.syntax = settings.value(QStringLiteral("syntax"), 0).toInt();
+            if (!e.address.isEmpty())
+                session.editors.append(e);
+        }
+        settings.endArray();
     }
 
     settings.endGroup();
@@ -113,12 +141,14 @@ void SessionStore::save(QSettings &settings, const Session &session)
     // (QSettings::beginWriteArray does not remove entries beyond the new size).
     settings.remove(QLatin1String(kDocuments));
     settings.remove(QLatin1String(kViews));
+    settings.remove(QLatin1String(kEditors));
     settings.remove(QLatin1String(kActiveDocumentV1)); // superseded by activeView
 
     settings.setValue(QLatin1String(kSchema), kSchemaVersion);
     settings.setValue(QLatin1String(kGeometry), session.geometry);
     settings.setValue(QLatin1String(kWindowState), session.windowState);
     settings.setValue(QLatin1String(kActiveView), session.activeView);
+    settings.setValue(QLatin1String(kActiveTab), session.activeTab);
 
     settings.beginWriteArray(QLatin1String(kDocuments), session.documents.size());
     for (int i = 0; i < session.documents.size(); ++i) {
@@ -144,6 +174,22 @@ void SessionStore::save(QSettings &settings, const Session &session)
         settings.setValue(QStringLiteral("document"), v.documentIndex);
         settings.setValue(QStringLiteral("columnState"), v.columnState);
         settings.setValue(QStringLiteral("wrapMode"), v.wrapMode);
+    }
+    settings.endArray();
+
+    settings.beginWriteArray(QLatin1String(kEditors), session.editors.size());
+    for (int i = 0; i < session.editors.size(); ++i) {
+        settings.setArrayIndex(i);
+        const SessionEditor &e = session.editors.at(i);
+        settings.setValue(QStringLiteral("address"), e.address);
+        settings.setValue(QStringLiteral("tab"), e.tabIndex);
+        // Written ONLY when the user chose it. The key's presence is the whole signal
+        // (see load()), so an unconditional write would make every guess look like a
+        // decision and freeze it against a file that may since have changed.
+        if (e.syntaxChosen)
+            settings.setValue(QStringLiteral("syntax"), e.syntax);
+        else
+            settings.remove(QStringLiteral("syntax"));
     }
     settings.endArray();
 

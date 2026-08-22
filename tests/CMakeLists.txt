@@ -135,6 +135,37 @@ qt_add_executable(tst_archivelocation tst_archivelocation.cpp)
 target_link_libraries(tst_archivelocation PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_archivelocation COMMAND tst_archivelocation)
 
+# The config-file editor, path layer: the configured path placed on the filesystem the
+# log is on, resolved against the log's own directory. The highest-value test in that
+# feature, because a wrong answer here does not SHOW a wrong file, it WRITES one — at a
+# path nobody asked for, possibly on somebody else's server. UNGATED for the reason the
+# two location tests above are: the answer must not depend on which optional
+# dependencies were compiled in.
+qt_add_executable(tst_configlocation tst_configlocation.cpp)
+target_link_libraries(tst_configlocation PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_configlocation COMMAND tst_configlocation)
+
+# The config-file editor, syntax layer: which grammar a config file is coloured in, and
+# whether those colours can be read. The extension decides where it says anything and the
+# contents only where it does not — and the contrast half is measured in BOTH themes,
+# because a hue that clears 4.5:1 on white routinely fails on near-black and nothing in
+# the rendered page says so. Links loftail_ui for UiColors, so offscreen.
+qt_add_executable(tst_configsyntax tst_configsyntax.cpp)
+target_link_libraries(tst_configsyntax PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_configsyntax COMMAND tst_configsyntax)
+set_tests_properties(tst_configsyntax PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The config-file editor as a page in the document well, through a real MainWindow. Most
+# of it is about the SEAM rather than about editing text: a second kind of page in a well
+# that has held one kind since M9. What that seam gets wrong it gets wrong SILENTLY — an
+# action that acts on the log behind the editor, a tab whose close button does nothing, a
+# font that stops following the zoom — so every case asserts on the surface the failure
+# would actually show up on.
+qt_add_executable(tst_configeditor tst_configeditor.cpp)
+target_link_libraries(tst_configeditor PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_configeditor COMMAND tst_configeditor)
+set_tests_properties(tst_configeditor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # M11 — the spooled source: the committed-size clamp that stands in for a lock
 # between the GUI thread and the fetcher thread, and generation-based rotation. Uses
 # tests/FakeFetcher.h, so no network and no libssh2 — this runs everywhere.

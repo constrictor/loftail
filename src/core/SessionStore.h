@@ -73,14 +73,43 @@ struct SessionView
     int        wrapMode = 0;      // LogView::WrapMode
 };
 
+// One config-file editor page, and WHERE ON THE BAR it sat (SPEC.md §4, §10).
+//
+// The `views` array's ORDER is the order the log tabs sit in, which was the whole layout
+// a session had to carry while every page was a log. With a second kind of page the
+// order alone cannot say how the two interleave, so an editor records its absolute tab
+// position and the restore inserts it there — see SessionStore.h's schema note.
+struct SessionEditor
+{
+    // THE CONFIG ADDRESS, never the log it was opened from. The same config is reachable
+    // from several logs, so restoring it as "log #2's config" would reopen a different
+    // file the moment that log's setting moved — and this lets an editor page outlive
+    // the tab of the log that opened it. Already normalized and password-free, because
+    // ConfigLocation is what produced it.
+    QString address;
+    int     tabIndex = 0;
+    // PRESENCE, NOT VALUE. Only a syntax the USER chose is written; a guess is re-made on
+    // restore from the file as it stands, which is right because the file may have
+    // changed. `syntaxChosen` false means "nothing was stored", and reading a stored 0
+    // (PlainText) as a choice would bring every restored tab back uncoloured — the trap
+    // four other stores in this project already record.
+    bool    syntaxChosen = false;
+    int     syntax = 0;
+};
+
 struct Session
 {
-    int                      schemaVersion = 3; // SessionStore::kSchemaVersion
+    int                      schemaVersion = 4; // SessionStore::kSchemaVersion
     QByteArray               geometry;    // QWidget::saveGeometry()
     QByteArray               windowState; // QMainWindow::saveState() — the pane layout
     int                      activeView = 0; // index into `views`
+    // Which TAB was in front, absolute on the bar. Distinct from `activeView` because
+    // the bar now holds two kinds of page: with no editors the two are equal, which is
+    // exactly what makes the v3 migration a copy.
+    int                      activeTab = 0;
     QVector<SessionDocument> documents;
     QVector<SessionView>     views;
+    QVector<SessionEditor>   editors;
 
     bool hasDocuments() const { return !documents.isEmpty(); }
     // The document `view` belongs to, or nullptr if the index is out of range.
@@ -116,10 +145,15 @@ public:
     // structural change — a new array, a field moved
     // between scopes, a renamed key, a dropped blob — and it costs every session
     // whose version load() does not list.
-    static constexpr int kSchemaVersion = 3;
+    // 4 — added the `editors` array (config-file editor pages, SPEC.md §4) and the
+    // `activeTab` index beside `activeView`. A NEW ARRAY, so by the rule above it earns
+    // the bump — and the bump costs nothing, because load() lists 3 and migrates it: a
+    // v3 store restores with no editors and activeTab copied from activeView, which is
+    // what it means when every page is a log.
+    static constexpr int kSchemaVersion = 4;
 
     // Read the whole session (empty documents when nothing was saved, or when the
-    // stored schema version is not understood). A v1 or v2 store is migrated.
+    // stored schema version is not understood). A v1, v2 or v3 store is migrated.
     static Session load(QSettings &settings);
 
     // Write the whole session, replacing any previous one. Both arrays are rewritten

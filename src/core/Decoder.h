@@ -54,6 +54,20 @@ public:
     // Decode an arbitrary byte range. Does not strip line terminators.
     QString decode(QByteArrayView bytes) const;
 
+    // The reverse: `text` in this decoder's RESOLVED encoding, with no byte-order mark.
+    //
+    // Here rather than in a second class, because one object owning both directions is
+    // what stops an encoder and a decoder disagreeing about what a file is — and the one
+    // caller that needs it, the config-file editor, exists precisely to write a file
+    // back in the encoding it was read in. A blind UTF-8 re-encode there silently
+    // rewrites every byte of a UTF-16 config, and log4cplus built for wchar_t on Windows
+    // is exactly the population that writes one.
+    //
+    // The BOM is the CALLER's to replay: only it knows whether the file had one, and
+    // bomLength() is what it reads that off. Adding one unconditionally would grow a BOM
+    // onto a file that never had one, which some parsers refuse.
+    QByteArray encode(const QString &text) const;
+
 private:
     Encoding m_requested = Encoding::Auto;
     Encoding m_resolved = Encoding::Utf8;

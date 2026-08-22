@@ -37,6 +37,7 @@ private slots:
     void anEmptyPatternIsStillAnAnswer();
     void legacyStoresMigrateOnceAndAreRemoved();
     void aNewerSchemaLoadsEmptyAndRefusesToSave();
+    void aProfileDiffersWhenAnyOneFieldOfItDoes();
 };
 
 namespace {
@@ -252,6 +253,7 @@ void TestLogSettings::theTreeRoundTripsThroughJson()
     n.profile.format.runStartIsRegex = true;
     n.profile.format.runStartCaseSensitive = true;
     n.profile.wrapMode = WrapMode::AlwaysOn;
+    n.profile.configPath = QStringLiteral("../conf/log4cplus.properties");
     t.addPattern(n);
 
     LogSettingsStore store(dir.path());
@@ -276,6 +278,7 @@ void TestLogSettings::theTreeRoundTripsThroughJson()
     QVERIFY(p.profile.format.runStartIsRegex);
     QVERIFY(p.profile.format.runStartCaseSensitive);
     QVERIFY(p.profile.wrapMode == WrapMode::AlwaysOn);
+    QCOMPARE(p.profile.configPath, QStringLiteral("../conf/log4cplus.properties"));
 
     // NOTHING ABOUT ONE CONCRETE LOG is written here any more (M21): what survives is the
     // pair of INHERITED levels, and a log's own settings are one record per log in the
@@ -425,6 +428,43 @@ void TestLogSettings::aNewerSchemaLoadsEmptyAndRefusesToSave()
     const QJsonObject still = QJsonDocument::fromJson(f.readAll()).object();
     QCOMPARE(still.value(QStringLiteral("schemaVersion")).toInt(),
              LogSettingsStore::kSchemaVersion + 1);
+}
+
+// One case per LogProfile field, in the shape of
+// tst_highlight::aRuleDiffersWhenAnyOneFieldOfItDoes and for the same reason.
+//
+// LogProfile::operator== is not a convenience: LogFileSettings::reduce() deletes a
+// per-log entry whose profile equals what the log inherits, so a field the comparison
+// does not look at is a field two profiles can never differ in — the entry is dropped on
+// the next write and the setting vanishes with nothing on screen. A field added to the
+// struct and not to the comparison is therefore SILENT DATA LOSS, and it is invisible to
+// the round-trip case above, which only ever compares fields it was told about.
+void TestLogSettings::aProfileDiffersWhenAnyOneFieldOfItDoes()
+{
+    const LogProfile base = LogProfile::builtIn();
+
+    const auto differsFrom = [&base](auto &&mutate) {
+        LogProfile other = base;
+        mutate(other);
+        return other != base && !(other == base);
+    };
+
+    QVERIFY(differsFrom([](LogProfile &p) { p.format.pattern = QStringLiteral("%m%n"); }));
+    QVERIFY(differsFrom([](LogProfile &p) { p.format.encoding = Encoding::Utf16BE; }));
+    QVERIFY(differsFrom([](LogProfile &p) {
+        p.format.sourceZone = ZoneChoice{ZoneChoice::Kind::Utc, 0};
+    }));
+    QVERIFY(differsFrom([](LogProfile &p) { p.format.timeDisplay = TimeDisplay::Utc; }));
+    QVERIFY(differsFrom([](LogProfile &p) { p.format.runStartPattern = QStringLiteral("BOOT"); }));
+    QVERIFY(differsFrom([](LogProfile &p) { p.format.runStartIsRegex = true; }));
+    QVERIFY(differsFrom([](LogProfile &p) { p.format.runStartCaseSensitive = true; }));
+    QVERIFY(differsFrom([](LogProfile &p) { p.wrapMode = WrapMode::AlwaysOn; }));
+    QVERIFY(differsFrom([](LogProfile &p) { p.configPath = QStringLiteral("x.properties"); }));
+
+    // And the other direction, so the comparison cannot be satisfied by always
+    // answering "different": two profiles built the same way are equal, which is what
+    // reduce() relies on to delete an entry that says nothing of its own.
+    QVERIFY(LogProfile::builtIn() == base);
 }
 
 QTEST_APPLESS_MAIN(TestLogSettings)

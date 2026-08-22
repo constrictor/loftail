@@ -35,6 +35,8 @@ private slots:
     // M19 — highlight actions ride inside the same opaque `highlighters` blob, so the
     // session schema did not have to move for them.
     void highlightActionsRoundTripWithoutASchemaBump();
+    void aVersion3SessionMigratesAndKeepsItsPaneLayout();
+    void anEditorPageRoundTripsAndOnlyAChosenSyntaxIsStored();
 };
 
 namespace {
@@ -506,15 +508,104 @@ void TestSession::highlightActionsRoundTripWithoutASchemaBump()
     QCOMPARE(back.rules.at(1).actions, digestOnly.actions);
     QCOMPARE(back.rules.at(2).actions, HighlightActions());
 
-    // The version did NOT move. A session bump migrates upward but is unreadable by any
-    // already-shipped binary, and the preset file — the same rule blob — gates on exact
-    // equality with no migration at all, so it would discard every preset a user has.
     QCOMPARE(out.schemaVersion, SessionStore::kSchemaVersion);
-    QCOMPARE(SessionStore::kSchemaVersion, 3);
 
-    // And a colour-only rule still writes exactly what it wrote before actions existed,
-    // which is what makes that true rather than merely intended.
+    // THE CLAIM IS THAT ACTIONS WERE ADDITIVE, and it used to be spelled
+    // `QCOMPARE(kSchemaVersion, 3)`. That spelling pinned a NUMBER as a proxy for it,
+    // which any later and unrelated bump moves — as the editors array (v4) did. The
+    // claim itself is the line below: a colour-only rule serializes byte-for-byte as it
+    // did before actions existed, so nothing about M19 could have forced a bump. The
+    // reason bumps are expensive still stands and is stated in SessionStore.h: a bumped
+    // file is unreadable by any already-shipped binary, and the preset store — the same
+    // rule blob — gates on exact equality with no migration at all.
     QVERIFY(!colouring.toJson().contains(QStringLiteral("actions")));
+}
+
+// A v3 store — everything users have today — restores intact under v4.
+//
+// TWO THINGS, and the second is the one that would have gone wrong silently. The editors
+// array is simply absent, which is what "every page was a log" means. And `windowState`
+// must SURVIVE: load() took it only for the exact current version, because a v1 blob
+// describes a different window and a v2 one describes the collapsed central widget of the
+// all-docks shell. v3 describes THIS shell, so a `== kSchemaVersion` test there throws
+// away every existing user's pane arrangement on the first launch after the upgrade, for
+// no reason at all — and nothing on screen would connect the loss to the upgrade.
+void TestSession::aVersion3SessionMigratesAndKeepsItsPaneLayout()
+{
+    QTemporaryDir dir;
+    const QString ini = dir.filePath(QStringLiteral("v3.ini"));
+    const QByteArray layout = QByteArrayLiteral("pane-layout-blob");
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        s.beginGroup(QStringLiteral("session"));
+        s.setValue(QStringLiteral("schemaVersion"), 3);
+        s.setValue(QStringLiteral("windowState"), layout);
+        s.setValue(QStringLiteral("activeView"), 1);
+        s.beginWriteArray(QStringLiteral("documents"), 1);
+        s.setArrayIndex(0);
+        s.setValue(QStringLiteral("path"), QStringLiteral("/tmp/a.log"));
+        s.endArray();
+        s.beginWriteArray(QStringLiteral("views"), 2);
+        s.setArrayIndex(0);
+        s.setValue(QStringLiteral("document"), 0);
+        s.setArrayIndex(1);
+        s.setValue(QStringLiteral("document"), 0);
+        s.endArray();
+        s.endGroup();
+    }
+
+    QSettings s(ini, QSettings::IniFormat);
+    const Session out = SessionStore::load(s);
+    QCOMPARE(out.schemaVersion, SessionStore::kSchemaVersion);
+    QCOMPARE(out.documents.size(), 1);
+    QCOMPARE(out.views.size(), 2);
+    QVERIFY(out.editors.isEmpty());
+    // With no editors the tab in front IS the active view, which is what makes the
+    // migration a copy rather than a conversion.
+    QCOMPARE(out.activeTab, 1);
+    QCOMPARE(out.windowState, layout);
+}
+
+// An editor page round-trips, and a GUESSED syntax is not written.
+void TestSession::anEditorPageRoundTripsAndOnlyAChosenSyntaxIsStored()
+{
+    QTemporaryDir dir;
+    const QString ini = dir.filePath(QStringLiteral("v4.ini"));
+
+    Session in;
+    in.activeTab = 2;
+    SessionEditor guessed;
+    guessed.address = QStringLiteral("/etc/a.properties");
+    guessed.tabIndex = 1;
+    guessed.syntaxChosen = false;
+    guessed.syntax = 1; // would be Ini, but nobody chose it
+    SessionEditor chosen;
+    chosen.address = QStringLiteral("/etc/b.conf");
+    chosen.tabIndex = 2;
+    chosen.syntaxChosen = true;
+    chosen.syntax = 3;
+    in.editors = {guessed, chosen};
+
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        SessionStore::save(s, in);
+    }
+    QSettings s(ini, QSettings::IniFormat);
+    const Session out = SessionStore::load(s);
+
+    QCOMPARE(out.editors.size(), 2);
+    QCOMPARE(out.editors.at(0).address, guessed.address);
+    QCOMPARE(out.editors.at(0).tabIndex, 1);
+    QCOMPARE(out.activeTab, 2);
+
+    // PRESENCE, NOT VALUE. A guess is re-made on restore from the file as it stands,
+    // which is right because the file may have changed; only a decision is stored. Store
+    // the guess too and a restored tab comes back frozen at whatever the file used to
+    // look like — and a stored 0 (PlainText) cannot be told from "nothing was chosen"
+    // at all, which would bring every restored tab back uncoloured.
+    QVERIFY(!out.editors.at(0).syntaxChosen);
+    QVERIFY(out.editors.at(1).syntaxChosen);
+    QCOMPARE(out.editors.at(1).syntax, 3);
 }
 
 QTEST_APPLESS_MAIN(TestSession)

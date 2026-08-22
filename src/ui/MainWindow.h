@@ -33,6 +33,7 @@ QT_END_NAMESPACE
 namespace loftail {
 
 class Document;
+class ConfigView;
 class DocumentView;
 class LogModel;
 struct SessionDocument;
@@ -480,7 +481,11 @@ private:
     void armBulkRestore();
 
     // Close every open file (window close, and File ▸ Close All).
-    void closeAllDocuments();
+    // Whether to ask about unsaved config edits. The quit path has ALREADY asked by the
+    // time it gets here — it must, because the question has to be answered before the
+    // session is written — so it passes AlreadyAsked rather than asking twice.
+    enum class Prompt { Ask, AlreadyAsked };
+    void closeAllDocuments(Prompt prompt = Prompt::AlreadyAsked);
     // Close the active view's tab; the file itself closes with its last view.
     void closeActiveView();
     // Close the view in tab `index` (its close button, or Ctrl+W).
@@ -510,6 +515,39 @@ private:
     // otherwise; the two share the central widget through a stack.
     void updateEmptyState();
 
+    // Every log view, in the order its tab sits on the bar.
+    //
+    // THE TAB BAR IS THE ONLY THING THAT KNOWS TAB ORDER, and this is what asks it.
+    // `m_views` used to answer by construction — its index WAS the tab index, kept in
+    // step by onTabMoved() — which held only while every page in the well was a
+    // DocumentView. One page of any other kind and that arithmetic is silently wrong:
+    // a drag would reorder the wrong entry and the saved session would come back
+    // scrambled, with every tab still showing the right text throughout.
+    //
+    // Deriving the order instead REMOVES that invariant rather than adding a second one
+    // to maintain. `m_views` keeps ownership and reaping; it no longer claims an order.
+    QVector<DocumentView *> viewsInTabOrder() const;
+
+    // --- The config-file editor (SPEC.md §4) ---------------------------------
+
+    // File ▸ Open Config File Editor. Resolves the active log's configured path; with
+    // none configured, asks for one and makes the answer that LOG's own setting.
+    void openConfigEditor();
+    // Open (or raise) an editor tab on an already-resolved config address.
+    ConfigView *openConfigAt(const QString &address);
+    // The editor tab in front, or nullptr when the current page is a log.
+    ConfigView *activeConfigView() const;
+    // Whether the page in front is a log. NOT the same question as `hasFile`, which is
+    // about the bound DOCUMENT and stays true while an editor tab is in front — see
+    // onCurrentTabChanged(). Every per-log action asks this one instead, or it acts on a
+    // log the reader is not looking at.
+    bool activePageIsLog() const;
+    void saveActiveConfig();
+    // Ask about one editor's unsaved changes. False means the user cancelled, and every
+    // caller must abandon what it was doing — including quitting.
+    bool confirmDiscard(ConfigView *view);
+    void updateConfigTabTitle(ConfigView *view);
+
     // Make `view` the active one: repoint the status bar, title and per-file
     // actions at it, and re-emit activeDocumentChanged when the Document changes.
     void setActiveView(DocumentView *view);
@@ -535,10 +573,17 @@ private:
     LogModel        *activeModel() const;
 
     std::vector<std::unique_ptr<DocumentContext>> m_contexts;
-    // Every open view, in TAB order — which is also the order the session stores
-    // them in, and the order Ctrl+Tab walks. Kept in step with the tab bar, which
-    // the user can reorder by dragging.
+    // Every open view. OWNERSHIP AND REAPING ONLY — this list does NOT carry tab order,
+    // and nothing may index it with a tab index. Ask viewsInTabOrder() for the order,
+    // which reads it off the tab bar, the only place it actually lives.
     QVector<DocumentView *> m_views;
+    // The config-editor pages, the second kind of page the well holds. A separate list
+    // rather than a common base class with DocumentView: the two share no behaviour
+    // worth abstracting, and qobject_cast on two concrete types is already this
+    // window's idiom. Like m_views, it carries no ORDER — the tab bar does.
+    QVector<ConfigView *> m_editors;
+    QAction *m_openConfigAction = nullptr;
+    QAction *m_saveConfigAction = nullptr;
     DocumentView *m_activeView = nullptr;
 
     QMenu   *m_recentMenu = nullptr;

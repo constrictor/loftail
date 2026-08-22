@@ -540,6 +540,30 @@ Four things about it are easy to undo:
 
 **The state object is a leaked-on-purpose singleton.** A retired fetcher outlives the window (§6.3.3), so a `static QFile` destroyed at exit would be a use-after-free on precisely the thread most likely to still be writing.
 
+### 6.8 The config file: where it is, and writing it (`SPEC.md` §4)
+
+An application that writes a log4cplus log is configured by a file naming which subsystems log at which priority. `LogProfile::configPath` says where, and two core files turn that into something openable and writable.
+
+**`ConfigLocation` derives one address from another**, and is pure value work like `RemoteLocation` and `ArchiveLocation` beside it. The reduction is: find the filesystem the log is ON and the directory it is IN, then place the configured path there. An archived log **peels to its container** — `/srv/bundle.zip/var/log/app.log` anchors at `/srv/bundle.zip`, whose directory is `/srv/` — so a config sits beside the archive and never inside it, which is what makes it writable at all.
+
+Five rules are easy to undo:
+
+- **The peel terminates on INEQUALITY and nothing else.** `ArchiveLocation::split()` applied to a bare container answers with that same container and an empty member, so peeling unconditionally spins on an unchanged string and overflows the stack. It must *not* also test that the container got shorter: for a remote address `split()` returns the container in **normal form**, port spelled out, so `ssh://host/srv/b.zip/m` peels to the strictly LONGER `ssh://host:22/srv/b.zip` — and a length test refuses the one peel that address needs, silently anchoring inside the archive.
+- **Three states, not a bool.** `Unset` (nothing configured, so ask) is not a refusal; folding the two puts an error strip where a file picker belongs. Same distinction `openFile()` draws by returning false only for "refused and reported".
+- **`QDir::cleanPath`, never `canonicalFilePath()`** — a config that does not exist yet is a *supported* case, and the canonical form of a missing path is empty.
+- **A remote answer is rebuilt through `RemoteLocation::toString()` from parsed parts**, never concatenated onto the original, which is how a password gets into a new address; anything shown goes through `withoutPassword()` first, and that matters most on the branch reached when `parse()` FAILED, which never went through parse's own dropping.
+- **A config path may not itself be a URL.** Which machine the file is on is decided by the log; a second URL would name a second host, a second credential prompt, and — at the pattern level — one host for every log a pattern matches.
+
+**`ConfigFileIO` is the only place loftail writes a file the USER named.** Everything else it writes is its own, under a directory it chose. Three rules live there together because that is what makes writing somebody else's file safe:
+
+- **The directory is never created.** A missing one is refused *by name*. This deliberately inverts `AtomicJson`, which `mkpath`s — that one writes loftail's own tree, where creating is right; here a missing directory almost always means a mistyped path, and the useful answer is to say which.
+- **Permissions survive.** The write is `QSaveFile`, i.e. temp-file-and-rename, which creates a **new inode** — so a config that was `0640` comes back `0644` unless the mode is read before and restored after the rename. A configuration that silently became world-readable because a *viewer* saved it is the worst thing this feature could do, and nothing on screen would say it had happened.
+- **The write is atomic**: a crash or a full disk leaves the previous contents, never half a file.
+
+**Encoding and line endings are REPLAYED, not re-derived.** `ConfigView` reads through the same `Decoder::detect()` every log goes through, records the resolved encoding, the byte-order mark and the dominant line terminator, and writes all three back. `Decoder::encode()` is the reverse direction, added to the same class deliberately: one object owning both is what stops an encoder and a decoder disagreeing about what a file is. A blind UTF-8 re-encode would silently rewrite every byte of a UTF-16 config — and log4cplus built for `wchar_t` on Windows is exactly the population that writes one — while normalising CRLF to LF produces a diff the size of the file. A config file's encoding is also **not its log's**: a UTF-16 log beside a UTF-8 properties file is entirely ordinary, so this must never be seeded from the log's resolved encoding.
+
+**Remote config files are refused in words, not silently.** `SshSession` is read-only — `openFile/closeFile/statPath/statHandle/readAt`, no write anywhere — so editing a config on another machine needs a write face this layer does not have yet. `readConfigFile()`/`writeConfigFile()` say so rather than returning an empty buffer, which would look like an empty config file and invite somebody to save over a real one.
+
 ## 7. Model, view, and filtering
 
 ### 7.1 Variable row heights — why not `QTableView`
@@ -1219,6 +1243,19 @@ The window is a **central `QTabWidget` holding the open files**, with the four s
   - It is **cached** in `DocumentContext::tabLabel` and merely read by `updateTabTitles()`, which runs on every ingest tick of every open log. `updateTabTitles()` also writes `setTabText`/`setTabToolTip` **only on a real change**: `QTabBar::setTabText` relays the whole bar out whether or not the text moved, which is the trap the Filters pane's dock title already guards against (§7.2).
   - Both rules elide in the **middle** and neither elides the log's own name, the tab bar's `ElideMiddle` being what handles a long one. The middle is right for the same reason in both: what survives is the two ends, where the telling-apart is — the outermost segment is what made a prefixed label unique and the innermost is where the log sits, and a path run's two ends are the shallowest and deepest things that differ. A label that is short when unambiguous must also stay byte-identical when it grows, which is why the elision never touches the name.
 
+**THE WELL HOLDS TWO KINDS OF PAGE NOW, and the change that made that safe was a DELETION.** A config-file editor (`ConfigView`, `SPEC.md` §4) is a page beside the logs, and `m_views` was documented as being *in tab order* — an invariant `onTabMoved(from, to)` cashed in by doing `m_views.move(from, to)` with two **tab** indices. That arithmetic is correct only while every page in the well is a `DocumentView`; with one page of any other kind anywhere on the bar, dragging a tab reorders the wrong entry and the saved session comes back scrambled, with every tab still showing the right text throughout.
+
+- `m_views` **keeps ownership and reaping and loses its ordering claim.** `viewsInTabOrder()` walks the tab bar and `qobject_cast`s, so the order is read from the only thing that actually knows it. `onTabMoved` now has *nothing to do* about ordering — the fix was removing the line, not adding a mapping — and `saveSession()` asks the helper instead. That is why this is cheaper than it looks: it removes an invariant rather than adding a second one to keep in step.
+- **No common base class.** The two page kinds share no behaviour worth abstracting, and a base would not fix the actual break, which was the indexing. It would also fight `onViewDestroyed()`'s hard-won "compare, never downcast" rule (§13), which exists because `~QObject` runs after the derived destructor.
+- **`updateEmptyState()` asks the TAB BAR**, not `m_views.isEmpty()`: the placeholder means "the well is empty", and a well holding an editor page is not empty even with no log in it. On the old test an editor-only window showed "No file open" over a live page.
+- **`closeViewAt()` needs the editor branch or the ✕ button silently does nothing** — the `qobject_cast<DocumentView *>` simply failed and the function returned, with nothing on screen to say why.
+
+**The bound document is STICKY across an editor page, and that is a performance decision with a wide consequence.** `setActiveView()` ends in `stashPaneState()`, which ends in `persistFileSettings()` — an atomic per-log file write. Unbinding on every flip to an editor tab and back would therefore cost a file write per flip, so `m_activeView` does not move and `activeDocumentChanged` does not fire; the Filters and Highlighters panes stay on the log being read, which is also what somebody editing that log's config wants to see.
+
+The cost is that **`hasFile` stays true with an editor page in front**, so it stopped being the right question for the ten or so actions that act on `m_activeView`. `activePageIsLog()` is that question now, and an action that forgets to ask it operates on a log the reader is not looking at — Reload would re-read it, Copy would copy from it — with no visible connection to the tab in front. `tst_configeditor::perLogActionsDoNotActOnTheLogBehindTheEditor` is one assertion per action for exactly that reason. **Find is the deliberate exception** and stays enabled on either kind of page, because a config editor searches too and the existing argument against gating Find (a disabled `QAction` swallows its shortcut with no feedback) generalises to "enabled while there is any page".
+
+**`onCurrentTabChanged()` refreshes the actions UNCONDITIONALLY**, outside the branch that calls `setActiveView()`. That function early-returns when the view is unchanged — which is exactly what happens coming back from an editor page to the log that was already active — so putting the refresh in the `else` leaves Save visible on the log tab with every per-log action greyed out until something else happens to run it. Found by the test, not by reading.
+
 **This was originally the opposite decision**, and the reversal is the interesting part. Open files were `QDockWidget`s too, which bought drag-to-split, tab groups and floating logs for free from Qt's dock dragging. It was rejected in use: with one arrangement shared by panes and logs, ordinary pane dragging could tab a Filters pane on top of the log being read, or wedge a log into the strip along the edge. The flexibility was real, and worth less than knowing where the log is. What the earlier notes recorded as an accepted trade-off versus a third-party docking framework (KDDockWidgets, Qt-ADS) — "nothing structurally prevents a pane from being tabbed next to a log, as Visual Studio's separate document well would" — turned out to be the whole problem, and a plain central `QTabWidget` buys the document well without vendoring either library into a three-platform packaging story.
 
 The cost is deliberate: **logs no longer split, tear off, or float.** Two views of one file still scroll independently, but side by side is not available; if it is wanted back, it belongs in a splitter *inside* the document area, never by returning the logs to the dock layout.
@@ -1243,12 +1280,22 @@ The command line itself lives in `src/ui/CommandLine.h` rather than in `main()`,
 ### 12.3 Session schema v3, and the restore ordering
 
 ```json
-{ "schemaVersion": 3,
+{ "schemaVersion": 4,
   "geometry": "...", "windowState": "...",
   "documents": [ { "path": "..." } ],
   "views":     [ { "document": 0, "columnState": "...", "wrapMode": 0 } ],
-  "activeView": 0 }
+  "editors":   [ { "address": "...", "tab": 2, "syntax": 1 } ],
+  "activeView": 0, "activeTab": 0 }
 ```
+
+**v4 added `editors` and `activeTab`** for the config-file editor (`SPEC.md` §4). A new array earns a bump by the rule below, and the bump costs nothing because `load()` lists 3 and migrates it: a v3 store restores with no editors and `activeTab` copied from `activeView`, which is precisely what "every page was a log" means. Four things about it are easy to undo.
+
+- **An editor entry stores the config ADDRESS, not the log it was opened from.** The same config is reachable from several logs, so restoring it as "log #2's config" reopens a different file the moment that log's setting moves — and this is what lets an editor page outlive the tab of the log that opened it. The address is already normalized and password-free, because `ConfigLocation` is what produced it.
+- **The `views` array's order was the whole layout while every page was a log; with two kinds it cannot be.** An editor records its **absolute tab position** and the restore *inserts* at it, ascending, after the log tabs are in place — which reproduces the interleaving exactly without restructuring `views` or touching anything downstream of it.
+- **Presence, not value, for `syntax`.** Only a grammar the user actually chose is written; a guess is re-made on restore from the file as it stands, which is right because the file may have changed. A stored `0` is `PlainText` and cannot be told from "nothing was chosen", so reading it as a value brings every restored tab back uncoloured — the same trap four other stores here already record.
+- **`windowState` is taken for `version >= 3`, NOT for `== kSchemaVersion`.** That condition was correct while 3 was current — a v1 blob describes a different window and a v2 one the collapsed central widget of the all-docks shell — and v3 describes *this* shell, so leaving it as an equality test silently throws away every existing user's pane arrangement on the first launch after the upgrade, for no reason at all. `tst_session::aVersion3SessionMigratesAndKeepsItsPaneLayout` fails on it.
+
+**Buffer contents are never stored.** A restored editor page re-reads its file from disk. Storing unsaved text would make the session a backing store for unsaved work — a much larger promise — and would resurrect edits over a file somebody changed in the meantime; quitting with unsaved changes asks instead.
 
 Two arrays, matching the two scopes: N files, and N views pointing back at them. **The `views` array is in tab order**, which is all the layout an open file has now; `windowState` is `QMainWindow::saveState()` and carries the pane arrangement alone.
 

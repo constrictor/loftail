@@ -884,6 +884,7 @@ void TestPreferences::everyProfileFieldRoundTripsThroughTheEditor()
     p.format.runStartIsRegex = true;
     p.format.runStartCaseSensitive = true;
     p.wrapMode = WrapMode::AlwaysOn;
+    p.configPath = QStringLiteral("../conf/log4cplus.properties");
     t.setDefaults(p);
 
     PreferencesDialog dlg(t, QStringLiteral("app.log"), sample());
@@ -898,6 +899,8 @@ void TestPreferences::everyProfileFieldRoundTripsThroughTheEditor()
     QCOMPARE(dlg.findChild<QComboBox *>(QStringLiteral("profileWrapMode"))
                  ->currentData().toInt(),
              int(WrapMode::AlwaysOn));
+    QCOMPARE(dlg.findChild<QLineEdit *>(QStringLiteral("profileConfigPath"))->text(),
+             QStringLiteral("../conf/log4cplus.properties"));
 
     // Read back off the TREE, not off the editor: what matters is that a trip through
     // the dialog leaves the node holding what it held.
