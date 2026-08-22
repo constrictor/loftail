@@ -1024,7 +1024,18 @@ bool MainWindow::activePageIsLog() const
     // `hasFile` stays true with an editor in front. Every action that acts on
     // m_activeView therefore has to ask THIS instead, or it operates on a log the reader
     // is not looking at.
-    return qobject_cast<DocumentView *>(m_tabs->currentWidget()) != nullptr;
+    //
+    // AND IT IMPLIES `hasFile`, which is not decoration. Written as the cast alone this
+    // answered true for a log page that was NOT the active view — which happens
+    // transiently while tabs are being taken down — and updateActionStates() then
+    // dereferenced a null context on the Reconnect line, whose guard this replaced.
+    // That crashed on Windows and nowhere else: every case in tst_recordmenu passed on
+    // its own and the binary segfaulted running them together, which is what a
+    // teardown-ordering bug looks like from the outside. Asking the whole question here
+    // is what makes every caller safe, rather than a null check at the one site that
+    // happened to be found first.
+    auto *page = qobject_cast<DocumentView *>(m_tabs->currentWidget());
+    return page != nullptr && page == m_activeView && activeContext() != nullptr;
 }
 
 void MainWindow::openConfigEditor()
