@@ -36,6 +36,19 @@ add_library(loftail_core STATIC
     # archived path identically (see ArchiveLocation.h).
     ArchiveLocation.cpp
     ArchiveLocation.h
+    # The config-file editor: where a log's config file is. Derives one address from
+    # another — the configured path placed on the filesystem the log is on, resolved
+    # against the log's own directory — so it sits beside the two location types above
+    # and, like them, is pure value work that never touches an optional dependency.
+    ConfigLocation.cpp
+    ConfigLocation.h
+    # Reading and writing that config file — THE ONLY PLACE loftail writes a file the
+    # user named, as against the several it writes under directories of its own. Its
+    # three rules (never create a directory, never widen permissions, rename over the
+    # target) are stated in one place because they are what makes writing somebody
+    # else's file safe.
+    ConfigFileIO.cpp
+    ConfigFileIO.h
     ArchiveFetcher.h
     # Declares the member listing and the reader; free of libarchive types, so the
     # member-picker dialog compiles either way and both builds' UI looks the same.

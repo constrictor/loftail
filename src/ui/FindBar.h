@@ -49,6 +49,21 @@ public:
     // rewritten on every ingest tick and tab switch. An empty string clears it.
     void setStatus(const QString &text);
 
+    // The bar searches records in a log and text in a config file, and the two say
+    // "Search visible records..." and something else. Default unchanged, so every
+    // existing caller and every existing test is untouched.
+    void setPlaceholderText(const QString &text);
+
+    // The four sentences a search can end in, in one place.
+    //
+    // SHARED so the two things that use a Find bar cannot come to word the same outcome
+    // differently — a reader stepping between a log tab and a config tab would otherwise
+    // meet two vocabularies for one gesture. `index` <= 0 means the count never reached
+    // the hit, which is the ordinary case on a large log and has no position to give;
+    // `complete` false renders the total as a floor ("47+"), never as a fact.
+    static QString describeMatch(int index, int total, bool complete, bool wrapped,
+                                 bool forward);
+
 signals:
     // forward=true for Find Next, false for Find Previous. `fromStart` restarts the
     // search from the top/bottom rather than the current cursor (used when the query

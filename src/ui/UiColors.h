@@ -10,6 +10,11 @@ QT_END_NAMESPACE
 
 namespace loftail {
 
+// Forward-declared with its underlying type rather than including ConfigSyntax.h, which
+// would drag QSyntaxHighlighter and QRegularExpression into every user of this file for
+// the sake of one enum. The `: quint8` on the definition is what makes this legal.
+enum class ConfigRole : quint8;
+
 // Chrome colours that are not part of a log's content: an invalid pattern's red, a
 // caution's amber, secondary explanatory text, and the grey of placeholder text.
 //
@@ -132,5 +137,18 @@ QColor contextFillColor(const QColor &ruleBg, const QColor &base);
 // the resulting colour against the field, so it also catches a theme that sets the role
 // badly rather than not at all.
 void ensureReadablePlaceholder(QWidget *widget);
+
+// The colour a config-file syntax role is drawn in (ConfigSyntax.h), resolved against
+// `palette`.
+//
+// Every answer must clear 4.5:1 against QPalette::Base in BOTH themes, and
+// tst_uicolors::everySyntaxColourReadsOnBothThemes is what measures it. Two rules keep
+// that affordable. The set of COLOURED roles is deliberately small — Key, Tag and
+// Attribute spend weight rather than hue in the highlighter, so they resolve to the
+// theme's own Text and need no argument at all. And a hue is a fixed pair of light and
+// dark constants, never QColor::lighter()/darker() of the theme's: those scale the HSV
+// value, so they are no-ops at both ends of the range, which is exactly how the log
+// table's zebra band measured 1.00:1 on a white theme for eight milestones.
+QColor syntaxColor(const QPalette &palette, ConfigRole role);
 
 } // namespace loftail

@@ -111,6 +111,7 @@ void TstLogFileStore::aRecordRoundTripsWhole()
     s.profile->format.runStartIsRegex = true;
     s.profile->format.runStartCaseSensitive = true;
     s.profile->wrapMode = WrapMode::AlwaysOn;
+    s.profile->configPath = QStringLiteral("../conf/log4cplus.properties");
     s.filters = narrowingFilters();
     s.highlighters = HighlighterSet::defaults().toJson();
     s.run.all = false;
@@ -122,6 +123,7 @@ void TstLogFileStore::aRecordRoundTripsWhole()
     QVERIFY(back.profile.has_value());
     QCOMPARE(back.profile->format.encoding, Encoding::Utf16LE);
     QCOMPARE(back.profile->wrapMode, WrapMode::AlwaysOn);
+    QCOMPARE(back.profile->configPath, QStringLiteral("../conf/log4cplus.properties"));
     QCOMPARE(back.run.startOffset, 4096);
     QCOMPARE(back.run.startTimestamp, 1700000000000LL);
 }

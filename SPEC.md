@@ -190,7 +190,7 @@ Most people have a handful of house layouts and a great many log files. So the s
 | **A file pattern** | every log whose name matches — `*.log`, `audit-*`, a regular expression |
 | **One log** | that log alone, local or remote |
 
-Each level holds the same complete set: the conversion pattern, the character encoding, the source time zone, how timestamps are displayed, the run-start pattern with its two flags, and the line wrapping a newly opened view starts in. **The deepest level that names a log supplies all of them** — the levels are not merged field by field, so what a log opens with is always exactly what one entry says.
+Each level holds the same complete set: the conversion pattern, the character encoding, the source time zone, how timestamps are displayed, the run-start pattern with its two flags, the line wrapping a newly opened view starts in, and where the log's **configuration file** is. **The deepest level that names a log supplies all of them** — the levels are not merged field by field, so what a log opens with is always exactly what one entry says.
 
 **File ▸ Preferences** (`Ctrl+P`, or the platform's own convention where it has one — `⌘,` on macOS) shows the arrangement as a tree, with the selected entry's settings beside it. The tree opens as wide as its own longest row asks for, and every row gives its full self on hover — a pattern its whole expression, and the one log row the whole address of the log it stands for — since the divider can be dragged narrower than any of them. What the selected entry *is* comes first: the entry's **own name** heads the panel — the log's file name, the pattern's expression, or **Default settings** — with the level it sits at named quietly under it, so which of the three is being edited is readable at a glance. A log's full address, which its name is short for, is on the tooltip. For a pattern the fields defining it follow, and a rule under them separates what the entry *is* from what it gives its logs. Then the settings, as three named blocks: **File format** (the conversion pattern, the encoding, the source time zone) with a live preview of the sample under it, **Run splitting**, and **Display**.
 
@@ -211,6 +211,23 @@ Each level holds the same complete set: the conversion pattern, the character en
 **Up to 500 logs are remembered individually.** What a log says of its own — its settings, its filters, its highlight rules and which run it was on — is kept per log, and the number of logs kept is capped. Past the cap the log you opened longest ago gives up its entry, so a machine that has seen thousands of logs does not accumulate settings for all of them; a log open in a tab is never the one dropped. Losing an entry costs only what that log said of its own: it opens on whatever its file pattern or the defaults give it, exactly as a log that has never been configured does. The two levels above — the defaults and the file patterns — are not capped and are never dropped.
 
 Out of the box the defaults are log4cplus's own conventional layout. Clearing the pattern entirely is a valid answer, and means "ask me about every log".
+
+### The configuration file
+
+An application that writes a log4cplus log is *configured* by a file saying which subsystems log at which priority — usually `log4cplus.properties`, sometimes XML. Reading a log and tuning what goes into it are the same errand, so loftail can open that file too.
+
+- **Where it is, is a setting like any other**, at whichever of the three levels it belongs to. A path may be **relative or absolute**; a relative one is resolved against **the log's own directory**. That is what makes it worth stating above the per-log level: one file pattern saying `../conf/log4cplus.properties` names the right file for every log it matches, each against its own folder — so `/srv/prod/logs/app.log` and `/srv/test/logs/app.log` reach their own configurations from a single entry.
+- **The config file is always on the same machine as the log.** For a log inside an archive the file sits **beside the container**, on the real filesystem, never inside it — a path that would land inside an archive is refused and says which archive. A config path may not itself be an `ssh://` address: which machine it is on is decided by the log, not stated twice.
+- **File ▸ Open Config File Editor** opens it in a tab of its own beside the log tabs. With no path set for the log, loftail asks for one, and the answer becomes **that log's own** setting — appearing in Preferences like anything else, and disappearing again if it turns out to be what the log inherited anyway.
+- **A file that is not there yet opens empty**, marked as new, and **Save creates it**. loftail will not create the *directory*, though: a missing folder is refused by name, because a mistyped path should be pointed at rather than have a tree sprouted for it.
+- The editor is a plain text editor, in the same fixed-pitch font as the log, at the same size — **the log text zoom moves both**.
+- **Colouring is chosen from the file's extension**, and from its contents only where the extension says nothing. `.properties`, `.ini`, `.conf` and `.cfg` are read as key-and-value files, `.json` as JSON, `.xml` as XML. **Which one was picked is shown**, along with where the choice came from, and can be changed for that tab at any time — loftail never colours a file one way without saying so.
+- **File ▸ Save** and `Ctrl+S` exist only while a config file is in front; there is nothing for them to do on a log, which loftail never writes. A tab with unsaved changes carries a mark.
+- **Saving preserves the file it found**: its character encoding, its byte-order mark if it had one, its line endings, and its permissions. A configuration that was readable only by its owner does not become world-readable because loftail saved it, and a file written on Windows does not come back with every line changed.
+- **Closing a tab or quitting with unsaved changes asks** — Save, Discard, or Cancel — and Cancel abandons the close or the quit entirely, leaving everything as it was.
+- **Find works exactly as it does in a log** (§5), in the same bar, with the same keys and the same wording.
+- Open config files are part of the remembered session (§10): a tab comes back where it was on the bar. Its *contents* are re-read from disk, never restored from the session — loftail does not hold unsaved work on your behalf.
+- **Config files on another machine are not editable yet.** A log opened over SSH says so plainly rather than opening an empty editor over nothing.
 
 ### Character encoding
 
@@ -354,6 +371,7 @@ Time-range filter bounds (§6) are always entered as wall clock in the display t
 - **A file can be opened in more than one view.** *New View* opens a second, independently scrolled view onto the log already being read, so one can be pinned to a point in the history while the other keeps tailing. It starts as a copy of the view it was made from and diverges from there. Tabs of the same file are numbered in the order they appear on the tab bar, after whatever the log is called: two views of one `app.log (svc-a)` beside another service's read `app.log (svc-a) [1]`, `app.log (svc-a) [2]` and `app.log (svc-b)` — the bracket says which log, the number says which view of it.
   - **Shared** between views of one file: the records themselves, the log format, the timestamp display mode, active filters, active highlighters, and the selected run. Filtering in one view filters both — the panes edit the *file*, not the view.
   - **Private** to each view: scroll position, selection, wrap mode, column layout, follow state, and the Find bar.
+- **A config file opens as a tab too** (§4), beside the logs and telling itself apart by name like any of them. It is the one page in the well that is not a log: the side panes describe the log you were reading and stay on it, and the actions that act on a log — Reload, Follow, the wrap modes, Copy — are unavailable while it is in front. Find, Close Tab and the text zoom apply to whichever page you are looking at.
 - **Closing a tab closes that view.** The file itself closes when its last view does; closing every tab leaves the empty view of §3.
 - The whole arrangement — which files are open, how many views each has, and the order of the tabs — is part of the remembered session (§10).
 
@@ -484,6 +502,7 @@ On relaunch, loftail restores:
 - Saved presets, where the build has them (§9)
 - Window geometry, the order of the tabs, and the arrangement of the side panes (§5a, §8)
 - The log text size (§5)
+- Every config file that was open for editing (§4), back in the same place on the tab bar. Its **contents are re-read from disk**, never restored from the session: loftail does not hold unsaved work on your behalf, which is why quitting with unsaved changes asks rather than remembering.
 
 **Scoping:** active filters, active highlighters and the run selection are remembered **per file** — and *for the file*, not for the session, so they come back when you open that log again whether or not it was open when you quit. What the session itself restores is which logs were open and in what order. Column layout and wrap mode are remembered **per view**, so a second view showing wide messages and one showing just timestamps each keep their shape. Presets, the log text size and the window/pane layout are global — and the text size is written the moment it changes rather than at close, so a second window started meanwhile comes up at it.
 
@@ -499,7 +518,7 @@ If a file from the last session is not there, its tab comes back **waiting for i
 
 These are things loftail will **not** do — as distinct from features not yet built, which are in `FUTURE.md`. loftail does not:
 
-- Edit, write, or delete log files — it is strictly a reader
+- Edit, write, or delete log files — it is strictly a reader. **loftail does write one kind of file you name: the configuration file a log is opened alongside (§4).** That is not an exception to this rule but the boundary of it — the thing being edited is what *produces* the log, never the log, and no log is written, moved or removed under any circumstances.
 - Read log formats from other logging frameworks (the format is configurable, so some will happen to work; none are supported)
 - Aggregate several files into a single merged, time-ordered view — distinct from simply opening several files, which loftail does (§5a). Merging is not planned at all: each tab stays an independent log
 - Provide charts, statistics, or alerting

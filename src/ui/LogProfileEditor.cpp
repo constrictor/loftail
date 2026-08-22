@@ -95,6 +95,30 @@ LogProfileEditor::LogProfileEditor(QWidget *parent)
                           "View ▸ Line Wrap still changes the view in front of you."));
     viewForm->addRow(tr("Line wrap:"), m_wrap);
     root->addWidget(viewBox);
+
+    // Where the log's config file is (SPEC.md §4). Its own section rather than a row in
+    // one of the three above, because it is not a property of the log's FORMAT, not part
+    // of run splitting and not a display choice: it names a different file entirely.
+    auto *configBox = new SectionBox(tr("Configuration file"), this);
+    configBox->setObjectName(QStringLiteral("profileConfigGroup")); // findChild, for tests
+    configBox->setFlat(true);
+    configBox->setTitleDivider(true);
+    auto *configForm = new QFormLayout(configBox);
+
+    m_configPath = new QLineEdit(configBox);
+    m_configPath->setObjectName(QStringLiteral("profileConfigPath")); // findChild, for tests
+    m_configPath->setPlaceholderText(tr("Leave empty to be asked for one"));
+    // Say what a RELATIVE path is relative to, because that is the whole reason this
+    // setting is worth having above the per-log level and it is not guessable: one
+    // pattern node saying `../conf/log4cplus.properties` resolves against each matching
+    // log's own directory, so it names a different file for each of them.
+    m_configPath->setToolTip(tr("The file that says which subsystems this application "
+                                "logs at which priority. A relative path is resolved "
+                                "against the log's own directory, so one entry here can "
+                                "serve every log a pattern matches. The config file is "
+                                "always on the same machine as the log."));
+    configForm->addRow(tr("Path:"), m_configPath);
+    root->addWidget(configBox);
 }
 
 void LogProfileEditor::setSample(const QByteArray &sample)
@@ -123,6 +147,7 @@ void LogProfileEditor::setProfile(const LogProfile &p)
     m_runCase->setChecked(p.format.runStartCaseSensitive);
     selectData(m_timeDisplay, int(p.format.timeDisplay));
     selectData(m_wrap, int(p.wrapMode));
+    m_configPath->setText(p.configPath);
 }
 
 LogProfile LogProfileEditor::profile() const
@@ -137,6 +162,7 @@ LogProfile LogProfileEditor::profile() const
     p.format.timeDisplay =
         static_cast<TimeDisplay>(m_timeDisplay->currentData().toInt());
     p.wrapMode = static_cast<WrapMode>(m_wrap->currentData().toInt());
+    p.configPath = m_configPath->text().trimmed();
     return p;
 }
 

@@ -17,8 +17,8 @@ class FormatEditor;
 
 // Everything one node of the settings tree holds, on one page (SPEC.md §4): the format
 // (through the existing FormatEditor — pattern, encoding, source zone, live preview and
-// Detect), the run-start pattern and its two flags, how timestamps are displayed, and
-// the wrap mode a new view of the log starts in.
+// Detect), the run-start pattern and its two flags, how timestamps are displayed, the
+// wrap mode a new view of the log starts in, and where the log's config file is.
 //
 // A wrapper rather than more controls inside FormatEditor. That class's contract is that
 // a trip through it cannot reset a choice made elsewhere, so it stashes the fields it
@@ -55,6 +55,7 @@ private:
     QCheckBox    *m_runCase = nullptr;
     QComboBox    *m_timeDisplay = nullptr;
     QComboBox    *m_wrap = nullptr;
+    QLineEdit    *m_configPath = nullptr;
 };
 
 } // namespace loftail

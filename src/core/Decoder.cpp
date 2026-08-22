@@ -1,5 +1,6 @@
 #include "Decoder.h"
 
+#include <QStringEncoder>
 #include <QStringDecoder>
 
 namespace loftail {
@@ -170,6 +171,26 @@ QString Decoder::decode(QByteArrayView bytes) const
         break;
     }
     return QString::fromUtf8(bytes);
+}
+
+QByteArray Decoder::encode(const QString &text) const
+{
+    switch (m_resolved) {
+    case Encoding::System:
+        return text.toLocal8Bit();
+    case Encoding::Utf16LE:
+    case Encoding::Utf16BE: {
+        // WriteBom is deliberately OFF: whether the file carries one is the caller's
+        // fact about the file it read, not this decoder's about the encoding, and
+        // adding one unconditionally would grow a BOM onto a file that never had one.
+        QStringEncoder enc(converterFor(m_resolved), QStringConverter::Flag::Stateless);
+        return enc.encode(text);
+    }
+    case Encoding::Utf8:
+    case Encoding::Auto:
+        break;
+    }
+    return text.toUtf8();
 }
 
 QString Decoder::decodeLine(QByteArrayView content) const

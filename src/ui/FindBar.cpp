@@ -104,6 +104,28 @@ FindBar::FindBar(QWidget *parent) : QWidget(parent)
 QString FindBar::pattern() const { return m_edit->text(); }
 // The report as it was given, not as the label happens to be rendering it — which is
 // elided to whatever width the bar has (updateStatusText below).
+void FindBar::setPlaceholderText(const QString &text)
+{
+    m_edit->setPlaceholderText(text);
+}
+
+QString FindBar::describeMatch(int index, int total, bool complete, bool wrapped,
+                               bool forward)
+{
+    QString status;
+    if (index <= 0)
+        status = tr("match"); // counting stopped short of this one: no position to give
+    else if (complete)
+        status = tr("%1 of %2").arg(index).arg(total);
+    else
+        status = tr("%1 of %2+").arg(index).arg(total); // at least that many
+    if (wrapped) {
+        status = forward ? tr("%1, wrapped to the top").arg(status)
+                         : tr("%1, wrapped to the bottom").arg(status);
+    }
+    return status;
+}
+
 QString FindBar::status() const { return m_statusText; }
 bool FindBar::regex() const { return m_regex->isChecked(); }
 bool FindBar::caseSensitive() const { return m_case->isChecked(); }

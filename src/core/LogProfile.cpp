@@ -22,6 +22,7 @@ constexpr auto kRunStartKey      = "runStartPattern";
 constexpr auto kRunStartRegexKey = "runStartRegex";
 constexpr auto kRunStartCaseKey  = "runStartCase";
 constexpr auto kWrapModeKey      = "wrapMode";
+constexpr auto kConfigPathKey    = "configPath";
 } // namespace
 
 LogProfile LogProfile::builtIn()
@@ -45,6 +46,7 @@ QJsonObject logProfileToJson(const LogProfile &p)
     o.insert(QLatin1String(kRunStartRegexKey), p.format.runStartIsRegex);
     o.insert(QLatin1String(kRunStartCaseKey), p.format.runStartCaseSensitive);
     o.insert(QLatin1String(kWrapModeKey), int(p.wrapMode));
+    o.insert(QLatin1String(kConfigPathKey), p.configPath);
     return o;
 }
 
@@ -66,6 +68,12 @@ LogProfile logProfileFromJson(const QJsonObject &o)
     p.format.runStartIsRegex = o.value(QLatin1String(kRunStartRegexKey)).toBool();
     p.format.runStartCaseSensitive = o.value(QLatin1String(kRunStartCaseKey)).toBool();
     p.wrapMode = static_cast<WrapMode>(o.value(QLatin1String(kWrapModeKey)).toInt(0));
+    // A plain value read, NOT the presence test the pattern above needs: an empty config
+    // path and an absent key mean the same thing here ("no config file configured"), so
+    // there is nothing for presence to tell apart. The pattern's rule does not
+    // generalise — it exists because an empty pattern is a DIFFERENT answer from an
+    // unset one.
+    p.configPath = o.value(QLatin1String(kConfigPathKey)).toString();
     return p;
 }
 

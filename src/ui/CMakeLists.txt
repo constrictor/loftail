@@ -41,6 +41,18 @@ add_library(loftail_ui STATIC
     # plus run splitting, timestamp display and the wrap mode a new view starts in.
     LogProfileEditor.cpp
     LogProfileEditor.h
+    # The config-file editor's syntax layer: which grammar a config file is coloured in
+    # (extension first, contents only where the extension says nothing) and the one
+    # highlighter that draws all three. A rule TABLE per grammar rather than a class per
+    # grammar, because they differ only in their patterns and the role each maps to.
+    ConfigSyntax.cpp
+    ConfigSyntax.h
+    # The config-file editor page itself — the PEER of DocumentView, and the second kind
+    # of page the document well has ever held. Holds no Document and no DocumentContext:
+    # a config file is not a log. What it shares with a log tab is the Find bar, verbatim,
+    # and the log font.
+    ConfigView.cpp
+    ConfigView.h
     # M4 — the Filters side pane and the Find bar. The five axis controls themselves
     # live in AxisEditor, shared with the per-rule editor in the Highlighters pane so
     # filtering and highlighting offer the same criteria and cannot drift apart.

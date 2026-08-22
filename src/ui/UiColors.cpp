@@ -1,5 +1,7 @@
 #include "UiColors.h"
 
+#include "ConfigSyntax.h"
+
 #include <QPalette>
 #include <QWidget>
 
@@ -60,6 +62,31 @@ constexpr QRgb kErrorDark = 0xffff7b6e;
 constexpr QRgb kWarningLight = 0xff8f5c00;
 constexpr QRgb kWarningDark = 0xffffb454;
 
+// Config-file syntax colours (ConfigSyntax.h). A fixed pair per role, NOT a lighter()/
+// darker() of the theme's own text: those scale the HSV value and are therefore no-ops
+// at both ends of the range, which is how the log table's zebra band measured 1.00:1 on
+// a white theme for eight milestones.
+//
+// Only three roles are coloured. Key, Tag and Attribute spend WEIGHT and italics
+// instead, so they stay at the theme's own text colour and need no contrast argument at
+// all — which is what keeps this table small enough to hold above 4.5:1 against Base in
+// two themes. Every pair below is measured by
+// tst_uicolors::everySyntaxColourReadsOnBothThemes.
+// A comment gets a colour OF ITS OWN rather than the muted placeholder role, and that
+// is a deliberate reversal: placeholderColor() measures 3.89:1 on white, which is fine
+// for a hint in an empty field and wrong here. In an EDITOR a comment is text the reader
+// is reading and editing — in a log4cplus properties file it is usually the explanation
+// of what the setting below it does — so it is de-emphasised by hue, never by dropping
+// below the legibility line. Caught by the contrast test on its first run.
+constexpr QRgb kSyntaxCommentLight = 0xff4a7a4a; // desaturated green
+constexpr QRgb kSyntaxCommentDark  = 0xff8fbf8f;
+constexpr QRgb kSyntaxStringLight = 0xff0f7a3d; // green, dark enough on white
+constexpr QRgb kSyntaxStringDark  = 0xff6bd18a;
+constexpr QRgb kSyntaxNumberLight = 0xff8a4b00; // amber/brown
+constexpr QRgb kSyntaxNumberDark  = 0xffe0a253;
+constexpr QRgb kSyntaxValueLight  = 0xff0b5f96; // blue
+constexpr QRgb kSyntaxValueDark   = 0xff6fb8e8;
+
 QColor mix(const QColor &from, const QColor &to, qreal amount)
 {
     return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * amount,
@@ -116,6 +143,28 @@ QColor mutedColor(const QPalette &palette)
     // background rather than inside a field.
     return mix(palette.color(QPalette::WindowText), palette.color(QPalette::Window),
                kPlaceholderMix);
+}
+
+QColor syntaxColor(const QPalette &palette, ConfigRole role)
+{
+    const bool dark = isDarkPalette(palette);
+    switch (role) {
+    case ConfigRole::Comment:
+        return QColor::fromRgba(dark ? kSyntaxCommentDark : kSyntaxCommentLight);
+    case ConfigRole::String:
+        return QColor::fromRgba(dark ? kSyntaxStringDark : kSyntaxStringLight);
+    case ConfigRole::Number:
+        return QColor::fromRgba(dark ? kSyntaxNumberDark : kSyntaxNumberLight);
+    case ConfigRole::Value:
+        return QColor::fromRgba(dark ? kSyntaxValueDark : kSyntaxValueLight);
+    case ConfigRole::Key:
+    case ConfigRole::Tag:
+    case ConfigRole::Attribute:
+        break;
+    }
+    // Weight and italics carry these, so the colour is the theme's own — which is both
+    // the most readable answer available and the one that cannot fall below 4.5:1.
+    return palette.color(QPalette::Text);
 }
 
 QColor placeholderColor(const QPalette &palette)
