@@ -347,6 +347,45 @@ bool ArchiveFetcher::beginExpansion(QString *error)
         return false;
     }
 
+    // A COMPRESSED MEMBER IS DECOMPRESSED TOO, which is one more stream and not one more
+    // address. `logs.zip/app.log.1.gz` is the ordinary shape of a rotation bundle — a
+    // directory of rolled logs archived whole — and libarchive's filters apply to the
+    // CONTAINER's bytes, never to what comes out of a member, so until this the member
+    // was spooled as raw gzip: no line matched, the tab held nothing, and the only thing
+    // that said so was a format preview full of mojibake. The addressing rules do not
+    // move (§6.4.1): the cut still falls at the first archive component, and what
+    // changes is only how the member's own bytes are read once it has been found.
+    if (ArchiveLocation::isSingleStreamName(m_location.member)) {
+        m_stream = ArchiveStream::openNested(std::move(m_stream), &streamError);
+        // Empty, because raw yields exactly one member and it carries no name.
+        if (m_stream && !m_stream->seekToMember(QString(), &streamError))
+            m_stream.reset();
+        if (!m_stream) {
+            if (error)
+                *error = streamError;
+            setError(streamError);
+            m_input.reset();
+            return false;
+        }
+    } else if (ArchiveLocation::isContainerName(m_location.member)) {
+        // An archive inside an archive is a DIFFERENT thing and is not supported: the
+        // address has no room for a member of the inner one (the cut falls at the first
+        // archive component, so everything after it is one member string), and the
+        // picker only ever lists the outer container's own entries. Said out loud,
+        // because expanding it silently is what produced an empty tab: this is a
+        // refusal that keeps its tab and explains itself (M17).
+        streamError = Tr::tr("%1 is an archive inside %2. Extract it first and open it "
+                             "on its own.")
+                          .arg(m_location.member,
+                               QFileInfo(m_location.container).fileName());
+        if (error)
+            *error = streamError;
+        setError(streamError);
+        m_stream.reset();
+        m_input.reset();
+        return false;
+    }
+
     // Refuse before writing anything rather than filling the disk and failing partway.
     // This is the failure that actually happens: a 200 MB .gz is 2 GB expanded, and the
     // cache lives on the user's home filesystem.

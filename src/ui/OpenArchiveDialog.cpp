@@ -1,7 +1,9 @@
 #include "OpenArchiveDialog.h"
 
 #include "ArchiveLocation.h"
+#include "LogSettings.h"
 #include "RemoteLocation.h"
+#include "UiColors.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -10,11 +12,15 @@
 #include <QDeadlineTimer>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
 #include <QLocale>
 #include <QProgressDialog>
+#include <QRegularExpression>
 #include <QThread>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
@@ -60,11 +66,30 @@ OpenArchiveDialog::OpenArchiveDialog(const QString &container,
 
     m_summary = new QLabel(this);
     m_summary->setObjectName(QStringLiteral("archiveSummary"));
-    m_summary->setText(tr("%1 holds %2 logs. Choose one or more to open.")
-                           .arg(logSourceDisplayName(container))
-                           .arg(members.size()));
     m_summary->setWordWrap(true);
     layout->addWidget(m_summary);
+
+    // NARROWING THE LIST, because a support bundle holds hundreds of entries and
+    // ctrl-clicking every `*.audit.log` out of them one at a time is not a gesture.
+    // The line edit follows the Filters pane's, which is the only other place in
+    // loftail where typing narrows a list (AxisEditor).
+    auto *filterRow = new QHBoxLayout;
+    m_filter = new QLineEdit(this);
+    m_filter->setObjectName(QStringLiteral("archiveFilter"));
+    m_filter->setPlaceholderText(tr("Narrow the list, e.g. *.audit.log"));
+    m_filter->setToolTip(tr("Text matches anywhere in a log's name. Use * and ? to "
+                            "match the whole name — *.log finds every log with that "
+                            "extension. Not a regular expression."));
+    ensureReadablePlaceholder(m_filter);
+    m_filter->setClearButtonEnabled(true);
+    filterRow->addWidget(m_filter, 1);
+
+    m_selectAll = new QToolButton(this);
+    m_selectAll->setObjectName(QStringLiteral("archiveSelectAll"));
+    m_selectAll->setText(tr("Select All"));
+    m_selectAll->setToolTip(tr("Select every log the list is currently showing."));
+    filterRow->addWidget(m_selectAll);
+    layout->addLayout(filterRow);
 
     m_list = new QTreeWidget(this);
     m_list->setObjectName(QStringLiteral("archiveMembers"));
@@ -105,7 +130,87 @@ OpenArchiveDialog::OpenArchiveDialog(const QString &container,
     // Double-clicking a row is the same as choosing it — the gesture people try first.
     connect(m_list, &QTreeWidget::itemDoubleClicked, this, &OpenArchiveDialog::accept);
 
+    // textChanged and NOT returnPressed: Return in this box would open whatever was
+    // selected before the narrowing, which is the one thing narrowing must not do.
+    connect(m_filter, &QLineEdit::textChanged, this, &OpenArchiveDialog::narrow);
+    connect(m_selectAll, &QAbstractButton::clicked, this, &OpenArchiveDialog::selectShown);
+
+    updateSummary();
+
+    // The box takes the focus, so typing narrows straight away; Down walks into the
+    // list from it. The pre-selection above is what keeps Open meaningful for somebody
+    // who never types anything.
+    m_filter->setFocus();
+
     resize(560, 380);
+}
+
+// THE MATCH RULE, and it is two rules chosen by what was typed rather than by a mode
+// control the user has to find. Plain text is a substring, which is what a filter box
+// does everywhere; the moment it carries a `*` or a `?` it becomes a wildcard over the
+// WHOLE member path, so `*.log` means logs with that extension rather than "contains
+// .log" — which would take `app.log.1` with it and defeat the one thing extensions are
+// filtered for.
+//
+// Never a regular expression. wildcardToRegex() escapes everything else literally, so a
+// member genuinely called `app(1).log` is found by typing its name.
+bool OpenArchiveDialog::memberMatches(const QString &member, const QString &filter)
+{
+    if (filter.isEmpty())
+        return true;
+
+    if (!filter.contains(u'*') && !filter.contains(u'?'))
+        return member.contains(filter, Qt::CaseInsensitive);
+
+    // wildcardToRegex() is core's, and it is the one here for the reason its own header
+    // gives: QRegularExpression::wildcardToRegularExpression() is path-aware (its `*`
+    // stops at a separator, which is wrong for `*.log` over `var/log/app.log`) and the
+    // option that turns that off is Qt 6.6, above this project's 6.4 floor.
+    const QRegularExpression re(wildcardToRegex(filter),
+                                QRegularExpression::CaseInsensitiveOption);
+    if (!re.isValid())
+        return false; // an unfinished pattern claims nothing rather than everything
+    return re.match(member).hasMatch();
+}
+
+void OpenArchiveDialog::narrow(const QString &filter)
+{
+    for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *item = m_list->topLevelItem(i);
+        item->setHidden(!memberMatches(item->text(0), filter));
+    }
+    updateSummary();
+}
+
+void OpenArchiveDialog::selectShown()
+{
+    // Not QTreeWidget::selectAll(), which goes through the selection model over the
+    // whole model: this acts on the currently narrowed view only, the same rule
+    // AxisEditor's All/None/Invert follow.
+    for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *item = m_list->topLevelItem(i);
+        if (!item->isHidden())
+            item->setSelected(true);
+    }
+}
+
+void OpenArchiveDialog::updateSummary()
+{
+    int shown = 0;
+    for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
+        if (!m_list->topLevelItem(i)->isHidden())
+            ++shown;
+    }
+    // Off a filter this says exactly what it said before there was one, so the sentence
+    // a reader sees on opening the picker has not moved.
+    m_summary->setText(shown == m_members.size()
+                           ? tr("%1 holds %2 logs. Choose one or more to open.")
+                                 .arg(logSourceDisplayName(m_container))
+                                 .arg(m_members.size())
+                           : tr("%1 holds %2 logs; %3 shown. Choose one or more to open.")
+                                 .arg(logSourceDisplayName(m_container))
+                                 .arg(m_members.size())
+                                 .arg(shown));
 }
 
 void OpenArchiveDialog::accept()
@@ -113,6 +218,13 @@ void OpenArchiveDialog::accept()
     m_chosen.clear();
     const QList<QTreeWidgetItem *> selected = m_list->selectedItems();
     for (QTreeWidgetItem *item : selected) {
+        // A ROW THE FILTER HID IS NOT OPENED, whatever it was selected as. Pick
+        // app.log, narrow to *.audit.log, press Open — and a tab for a row that is not
+        // on screen is a tab nobody asked for. The empty-chosen guard below then covers
+        // the case where the narrowing took every selected row away: the dialog stays
+        // up rather than opening nothing.
+        if (item->isHidden())
+            continue;
         ArchiveLocation loc;
         loc.container = m_container;
         loc.member = item->text(0);

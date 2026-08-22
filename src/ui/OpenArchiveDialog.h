@@ -9,6 +9,8 @@
 QT_BEGIN_NAMESPACE
 class QDialogButtonBox;
 class QLabel;
+class QLineEdit;
+class QToolButton;
 class QTreeWidget;
 QT_END_NAMESPACE
 
@@ -24,6 +26,12 @@ namespace loftail {
 // Several members can be picked at once, each opening in its own tab. That is not a
 // new idea in the product: SPEC.md §3 already says dropping several files opens all of
 // them, and a logs.zip holding app.log and app.log.1 is exactly that case.
+//
+// A support bundle can hold hundreds of entries, so the list NARROWS. What is typed is
+// a substring until it carries a `*` or a `?`, at which point it is a wildcard over the
+// whole member path — never a regular expression, which is a language nobody should
+// have to know to find a file by its extension. Narrowing is only ever a view: a row it
+// hides is a row that cannot be opened, however it came to be selected.
 //
 // Like OpenRemoteDialog, this returns ADDRESSES rather than opening anything itself,
 // so the one open path in MainWindow stays the one open path.
@@ -53,10 +61,19 @@ public:
     // there is nothing to protect here that QDialog does not already expose.
     void accept() override;
 
+    // Whether `member` is shown under `filter`. Static and public because it is the
+    // whole of the match rule and is worth testing without a dialog on screen.
+    static bool memberMatches(const QString &member, const QString &filter);
+
 private:
+    void narrow(const QString &filter);
+    void selectShown();
+    void updateSummary();
 
     QString                m_container;
     QVector<ArchiveEntry>  m_members;
+    QLineEdit             *m_filter = nullptr;
+    QToolButton           *m_selectAll = nullptr;
     QTreeWidget           *m_list = nullptr;
     QLabel                *m_summary = nullptr;
     QDialogButtonBox      *m_buttons = nullptr;

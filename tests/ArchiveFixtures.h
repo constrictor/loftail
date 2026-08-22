@@ -1,7 +1,9 @@
 #pragma once
 
 #include <QByteArray>
+#include <QFile>
 #include <QPair>
+#include <QTemporaryFile>
 #include <QString>
 #include <QVector>
 
@@ -87,6 +89,25 @@ inline bool writeGzip(const QString &path, const QByteArray &content)
 {
     return detail::writeEntries(path, ARCHIVE_FORMAT_RAW, archive_write_add_filter_gzip,
                                 {{QStringLiteral("data"), content}});
+}
+
+// The same bytes as a value rather than a file, for putting a compressed log INSIDE a
+// container — `logs.zip/app.log.1.gz`, which is what archiving a rotated log directory
+// whole produces. libarchive's write side only writes to a file or to memory through a
+// callback, so this goes via a temporary and reads it back; a fixture may be slow.
+inline QByteArray gzipBytes(const QByteArray &content)
+{
+    QTemporaryFile tmp;
+    if (!tmp.open())
+        return {};
+    const QString path = tmp.fileName();
+    tmp.close();
+    if (!writeGzip(path, content))
+        return {};
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    return f.readAll();
 }
 
 inline bool writeXz(const QString &path, const QByteArray &content)

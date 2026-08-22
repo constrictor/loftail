@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QThread>
 
+#include <cerrno>
 #include <cstring>
 
 #include <archive.h>
@@ -71,6 +72,11 @@ struct ArchiveStream::Impl
     QByteArray      block;   // libarchive holds this until the next callback
     qint64          entrySize = -1;
     bool            atEntry = false;
+
+    // Set instead of `input` when this stream decompresses another stream's member
+    // (openNested). Owned, because the inner stream is this one's whole input and
+    // outliving it is the point.
+    std::unique_ptr<ArchiveStream> inner;
 };
 
 namespace {
@@ -136,6 +142,28 @@ la_int64_t seekBlock(struct archive *a, void *client, la_int64_t offset, int whe
     return d->offset;
 }
 
+// The read callback for a nested stream: its input is not a LogSource at all but the
+// bytes of another stream's current member, pulled a block at a time. No seek callback
+// goes with it — those bytes exist only as they are produced.
+la_ssize_t readInner(struct archive *a, void *client, const void **buffer)
+{
+    auto *d = static_cast<ArchiveStream::Impl *>(client);
+
+    d->block.resize(kInputChunk);
+    QString readError;
+    const qint64 got = d->inner->read(d->block.data(), kInputChunk, &readError);
+    if (got < 0) {
+        // EIO rather than libarchive's own ARCHIVE_ERRNO_MISC, which lives in a
+        // private header: the number only reaches archive_errno(), which nothing here
+        // reads, while the string is what lastError() puts in front of the user.
+        archive_set_error(a, EIO, "%s", readError.toUtf8().constData());
+        return -1;
+    }
+    d->block.resize(got);
+    *buffer = d->block.constData();
+    return static_cast<la_ssize_t>(got);
+}
+
 } // namespace
 
 ArchiveStream::ArchiveStream() : d(std::make_unique<Impl>()) {}
@@ -181,6 +209,45 @@ std::unique_ptr<ArchiveStream> ArchiveStream::open(LogSource *input, AwaitInput 
     if (seekable)
         archive_read_set_seek_callback(a, seekBlock);
     archive_read_set_read_callback(a, readBlock);
+    archive_read_set_callback_data(a, stream->d.get());
+
+    if (archive_read_open1(a) != ARCHIVE_OK) {
+        if (error)
+            *error = lastError(a, Tr::tr("Cannot read the archive."));
+        return nullptr;
+    }
+    return stream;
+}
+
+std::unique_ptr<ArchiveStream> ArchiveStream::openNested(std::unique_ptr<ArchiveStream> inner,
+                                                         QString *error)
+{
+    if (!inner) {
+        if (error)
+            *error = Tr::tr("No archive to read.");
+        return nullptr;
+    }
+
+    std::unique_ptr<ArchiveStream> stream(new ArchiveStream);
+    stream->d->inner = std::move(inner);
+
+    struct archive *a = archive_read_new();
+    if (!a) {
+        if (error)
+            *error = Tr::tr("Cannot start reading the archive.");
+        return nullptr;
+    }
+    stream->d->handle = a;
+
+    archive_read_support_filter_all(a);
+    archive_read_support_format_all(a);
+    // Raw LAST and always, exactly as open() does it: the compression filter is what
+    // this stream exists for, and raw is the format that hands the filtered bytes back
+    // as one unnamed member. A `.tar.gz` member is still recognised as a tar by the
+    // format probe above, which is why the ordering is not merely tidiness.
+    archive_read_support_format_raw(a);
+
+    archive_read_set_read_callback(a, readInner);
     archive_read_set_callback_data(a, stream->d.get());
 
     if (archive_read_open1(a) != ARCHIVE_OK) {
