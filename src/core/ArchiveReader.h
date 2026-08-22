@@ -58,6 +58,19 @@ public:
     static std::unique_ptr<ArchiveStream> open(LogSource *input, AwaitInput await,
                                                bool allowRaw, QString *error);
 
+    // A stream over the CURRENT MEMBER of another stream, which is what makes a
+    // compressed log inside an archive readable: `logs.zip/app.log.1.gz` is the
+    // ordinary shape of a rotation bundle, and libarchive's filters apply to the
+    // container's own bytes, never to what comes out of a member — so without this the
+    // member arrived as raw gzip, parsed to no records, and the tab sat there empty
+    // with nothing on screen to say why.
+    //
+    // Takes ownership of `inner`, which must already be positioned on its member
+    // (seekToMember). Always raw-capable and never seekable: what it reads is produced
+    // a block at a time by the stream underneath, so there is no offset to seek to.
+    static std::unique_ptr<ArchiveStream> openNested(std::unique_ptr<ArchiveStream> inner,
+                                                     QString *error);
+
     // Advance to the next member. False at the end of the archive, or on error, which
     // is distinguished by `error` being non-empty.
     bool nextEntry(ArchiveEntry *out, QString *error);

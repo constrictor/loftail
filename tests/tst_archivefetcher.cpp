@@ -33,6 +33,8 @@ private slots:
     void expandsAGzipStreamByteForByte();
     void expandsAnXzStream();
     void extractsTheNamedMemberAndOnlyThat();
+    void expandsACompressedMemberOfAContainer();
+    void refusesAnArchiveThatIsItselfAMember();
     void startPrimesEnoughForAFormatSample();
     void completeIsPublishedAfterTheFinalSize();
     void committedSizeNeverRunsAheadOfTheSpoolFile();
@@ -194,6 +196,55 @@ void TestArchiveFetcher::extractsTheNamedMemberAndOnlyThat()
     const QByteArray spooled = spoolContents(*fetcher);
     QCOMPARE(spooled, wanted);
     QVERIFY(!spooled.contains(other)); // neither the member before nor the one after
+}
+
+void TestArchiveFetcher::expandsACompressedMemberOfAContainer()
+{
+    // A ROTATION BUNDLE — a directory of rolled logs archived whole. libarchive's
+    // filters apply to the container, never to what comes out of a member, so until
+    // openNested() this spooled the gzip framing itself: byte-for-byte the member's
+    // stored content, and byte-for-byte not a log. Both compressions are undone now.
+    const QByteArray wanted = logBody(4000); // past the 128 KiB prime, so both stages stream
+    const QByteArray rolled = gzipBytes(wanted);
+    QVERIFY(!rolled.isEmpty());
+
+    const QString tgz = path(QStringLiteral("rotation.tar.gz"));
+    QVERIFY(writeTarGz(tgz, {{QStringLiteral("var/log/app.log"), logBody(10)},
+                             {QStringLiteral("var/log/app.log.1.gz"), rolled}}));
+
+    QString error;
+    auto fetcher = makeArchiveFetcher(at(tgz, QStringLiteral("var/log/app.log.1.gz")), &error);
+    QVERIFY2(fetcher, qPrintable(error));
+    QVERIFY2(fetcher->start(spoolDir(), &error), qPrintable(error));
+    QVERIFY(runToEnd(*fetcher));
+
+    QCOMPARE(spoolContents(*fetcher), wanted);
+}
+
+void TestArchiveFetcher::refusesAnArchiveThatIsItselfAMember()
+{
+    // An archive inside an archive cannot be addressed: the cut falls at the FIRST
+    // archive component, so everything after it is one member string and there is
+    // nowhere to name a member of the inner container. Refused in words — a refusal
+    // keeps its tab and says why (M17) — rather than expanded as raw tar bytes, which
+    // is an empty tab with nothing anywhere to explain it.
+    const QString inner = path(QStringLiteral("inner.tar"));
+    QVERIFY(writeTar(inner, {{QStringLiteral("app.log"), logBody(50)}}));
+
+    const QString zip = path(QStringLiteral("outer.zip"));
+    QVERIFY(writeZip(zip, {{QStringLiteral("inner.tar"), fileBytes(inner)}}));
+
+    QString error;
+    auto fetcher = makeArchiveFetcher(at(zip, QStringLiteral("inner.tar")), &error);
+    QVERIFY2(fetcher, qPrintable(error));
+    // start() SUCCEEDS: the refusal is the worker's, and the tab has to exist to carry
+    // it. What says no is the published state.
+    QVERIFY2(fetcher->start(spoolDir(), &error), qPrintable(error));
+    QVERIFY(waitForError(*fetcher));
+    QVERIFY2(fetcher->status().error.contains(QStringLiteral("inner.tar")),
+             qPrintable(fetcher->status().error));
+    QVERIFY2(fetcher->status().error.contains(QStringLiteral("outer.zip")),
+             qPrintable(fetcher->status().error));
 }
 
 void TestArchiveFetcher::startPrimesEnoughForAFormatSample()

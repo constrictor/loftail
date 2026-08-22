@@ -10,8 +10,16 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeWidget>
+#include <QDialog>
+#include <QHeaderView>
+#include <QLineEdit>
+#include <QToolButton>
+#include <QScopedPointer>
 
 #include "ArchiveFixtures.h"
+#include "ConfigReset.h"
+#include "LogModel.h"
+#include "LogView.h"
 #include "MainWindow.h"
 #include "OpenArchiveDialog.h"
 #include "LogFileStore.h"
@@ -54,6 +62,20 @@ private:
         QTabWidget *t = tabs(w);
         return t ? t->count() : -1;
     }
+    // The record count of ONE tab, background or not. statusText() cannot answer this:
+    // updateStatus() writes m_statusLabel from the ACTIVE context only, so a background
+    // tab's records are invisible to every existing assertion in this file — which is
+    // the blind spot severalPickedMembersOpenAsSeveralTabs shipped in.
+    static int recordsInTab(const MainWindow &w, int index)
+    {
+        QTabWidget *t = tabs(w);
+        if (!t || index < 0 || index >= t->count())
+            return -1;
+        LogView *log = t->widget(index)->findChild<LogView *>(QStringLiteral("logView"));
+        auto *model = log ? qobject_cast<LogModel *>(log->header()->model()) : nullptr;
+        return model ? model->rowCount() : -1;
+    }
+
     static QString statusText(const MainWindow &w)
     {
         auto *label = w.findChild<QLabel *>(QStringLiteral("statusLabel"));
@@ -72,6 +94,30 @@ private:
         return QFile::rename(staging, p);
     }
 
+    // Anything modal that is NOT the picker is a failure, not something to wait out.
+    // Without it a regression here does not fail the suite, it HANGS it: a member that
+    // arrives as raw gzip matches no pattern, so the tab that is owed a format prompt
+    // raises Preferences and exec()s forever with nobody to answer. Rejecting it turns
+    // that back into an assertion someone can read.
+    static QTimer *rejectUnexpectedDialogs(bool *seen)
+    {
+        auto *timer = new QTimer;
+        timer->setInterval(200);
+        QObject::connect(timer, &QTimer::timeout, [seen]() {
+            for (QWidget *w : QApplication::topLevelWidgets()) {
+                auto *dialog = qobject_cast<QDialog *>(w);
+                if (!dialog || !dialog->isVisible())
+                    continue;
+                if (qobject_cast<OpenArchiveDialog *>(dialog))
+                    continue;
+                *seen = true;
+                dialog->reject();
+            }
+        });
+        timer->start();
+        return timer;
+    }
+
     // The picker is modal, so drive it from a timer once it is up.
     static void whenDialogShown(std::function<void(OpenArchiveDialog *)> act)
     {
@@ -86,9 +132,19 @@ private:
     }
 
 private slots:
+    // A log's settings outlive its tab since M21 and the pool is a DIRECTORY, so
+    // without this a case inherits whatever an earlier one left under the same path
+    // and passes or fails on the order QtTest happened to run them in. Every other GUI
+    // suite that opens logs does this; this one never had it.
+    void init() { clearLogSettings(); }
+
     void aCompressedLogOpensWithoutAskingAnything();
     void aMultiMemberArchiveAsksWhichLog();
     void severalPickedMembersOpenAsSeveralTabs();
+    void aCompressedMemberInsideAnArchiveIsDecompressedToo();
+    void aTypedFilterNarrowsTheMemberList();
+    void aNarrowedAwayRowIsNotOpened();
+    void theFilterBoxIsNotARegularExpression();
     void oneMemberIsOneTabHoweverItIsSpelled();
     void theFormatAndTheSessionRememberAnArchivedPath();
     void aTabOpenedBeforeItsContainerExistsFillsInWhenItAppears();
@@ -173,6 +229,172 @@ void TestArchiveOpen::severalPickedMembersOpenAsSeveralTabs()
     // picked out of one archive is the same case.
     window.openFile(zip, QString::fromLatin1(kPattern));
     QTRY_COMPARE(tabCount(window), 3);
+
+    // AND EVERY ONE OF THEM HOLDS ITS OWN RECORDS. Three tabs was the whole of this
+    // case for two milestones, which is exactly the blind spot the defect lived in:
+    // each member expands on its own worker, so the tabs appear at once and fill in
+    // afterwards, and nothing here — nor anywhere else in the suite — had ever looked
+    // at a BACKGROUND archived tab's record count. statusText() cannot see one either
+    // (recordsInTab). Asserted without switching tabs first, because a switch is a
+    // gesture the bug's reporter did not have to make.
+    for (int i = 0; i < 3; ++i)
+        QTRY_COMPARE_WITH_TIMEOUT(recordsInTab(window, i), 2, 10000);
+}
+
+void TestArchiveOpen::aCompressedMemberInsideAnArchiveIsDecompressedToo()
+{
+    // A ROTATION BUNDLE — a directory of rolled logs archived whole — which is the
+    // ordinary shape of a support bundle and the shape this failed on: libarchive's
+    // filters apply to the container's own bytes and never to what comes out of a
+    // member, so `app.log.1.gz` inside the zip was spooled as raw gzip. Nothing matched
+    // it, the tab held no records, and the only thing anywhere that said so was a
+    // format preview full of mojibake. `app.log` beside it worked perfectly, which is
+    // precisely "only one of them contains data".
+    const QByteArray plain = sampleLog();
+    const QByteArray rolled = gzipBytes(sampleLog());
+    QVERIFY(!rolled.isEmpty());
+
+    const QString zip = path(QStringLiteral("rotation.zip"));
+    QVERIFY(writeZip(zip, {{QStringLiteral("app.log"), plain},
+                           {QStringLiteral("app.log.1.gz"), rolled}}));
+
+    MainWindow window;
+    window.show();
+
+    bool unexpectedDialog = false;
+    QScopedPointer<QTimer> guard(rejectUnexpectedDialogs(&unexpectedDialog));
+
+    whenDialogShown([](OpenArchiveDialog *dialog) {
+        auto *list = dialog->findChild<QTreeWidget *>(QStringLiteral("archiveMembers"));
+        list->selectAll();
+        dialog->accept();
+    });
+
+    window.openFile(zip, QString::fromLatin1(kPattern));
+    QTRY_COMPARE(tabCount(window), 2);
+    // Both, and the compressed one is the case: two records each, decompressed twice
+    // over for the second — out of the zip, then out of the gzip.
+    QTRY_COMPARE_WITH_TIMEOUT(recordsInTab(window, 0), 2, 10000);
+    QTRY_COMPARE_WITH_TIMEOUT(recordsInTab(window, 1), 2, 10000);
+    QVERIFY2(!unexpectedDialog, "the format dialog was raised: a member arrived unparsed");
+}
+
+namespace {
+
+// The zip every filter case narrows: two extensions, a rolled log and a non-log, so
+// each of the three rules below has something it must NOT match as well as something
+// it must.
+QVector<Member> filterFixture()
+{
+    // Real records, not filler: a member whose lines do not match the pattern raises
+    // the format dialog on whichever tab ends up in front, and a modal dialog with
+    // nobody to answer it hangs the suite rather than failing it.
+    const QByteArray body =
+        "2026-08-05 00:00:01,000 [t0] INFO  logger.a - first\n"
+        "2026-08-05 00:00:02,000 [t1] WARN  logger.b - second\n";
+    return {{QStringLiteral("var/log/app.log"), body},
+            {QStringLiteral("var/log/app.log.1"), body},
+            {QStringLiteral("var/log/db.audit.log"), body},
+            {QStringLiteral("notes.txt"), body}};
+}
+
+QStringList shownMembers(QTreeWidget *list)
+{
+    QStringList out;
+    for (int i = 0; i < list->topLevelItemCount(); ++i) {
+        if (!list->topLevelItem(i)->isHidden())
+            out << list->topLevelItem(i)->text(0);
+    }
+    return out;
+}
+
+} // namespace
+
+void TestArchiveOpen::aTypedFilterNarrowsTheMemberList()
+{
+    const QString zip = path(QStringLiteral("filtered.zip"));
+    QVERIFY(writeZip(zip, filterFixture()));
+
+    MainWindow window;
+    window.show();
+
+    QStringList substring, glob, cleared;
+    whenDialogShown([&](OpenArchiveDialog *dialog) {
+        auto *list = dialog->findChild<QTreeWidget *>(QStringLiteral("archiveMembers"));
+        auto *filter = dialog->findChild<QLineEdit *>(QStringLiteral("archiveFilter"));
+        QVERIFY(list && filter);
+
+        // Plain text is a SUBSTRING, anywhere in the member path.
+        filter->setText(QStringLiteral("audit"));
+        substring = shownMembers(list);
+
+        // A star makes it a wildcard over the WHOLE path — which is the difference
+        // that matters: `*.log` must not take `app.log.1` with it, or filtering by
+        // extension does not filter by extension.
+        filter->setText(QStringLiteral("*.log"));
+        glob = shownMembers(list);
+
+        filter->clear();
+        cleared = shownMembers(list);
+        dialog->reject();
+    });
+
+    QString error;
+    OpenArchiveDialog::chooseMembers(zip, &window, &error);
+
+    QCOMPARE(substring, QStringList{QStringLiteral("var/log/db.audit.log")});
+    QCOMPARE(glob, (QStringList{QStringLiteral("var/log/app.log"),
+                                QStringLiteral("var/log/db.audit.log")}));
+    QCOMPARE(cleared.size(), 4);
+}
+
+void TestArchiveOpen::aNarrowedAwayRowIsNotOpened()
+{
+    const QString zip = path(QStringLiteral("hidden.zip"));
+    QVERIFY(writeZip(zip, filterFixture()));
+
+    MainWindow window;
+    window.show();
+
+    bool unexpectedDialog = false;
+    QScopedPointer<QTimer> guard(rejectUnexpectedDialogs(&unexpectedDialog));
+
+    whenDialogShown([](OpenArchiveDialog *dialog) {
+        auto *list = dialog->findChild<QTreeWidget *>(QStringLiteral("archiveMembers"));
+        auto *filter = dialog->findChild<QLineEdit *>(QStringLiteral("archiveFilter"));
+        auto *selectAll = dialog->findChild<QToolButton *>(QStringLiteral("archiveSelectAll"));
+        QVERIFY(list && filter && selectAll);
+
+        // Pick something, THEN narrow it away. Its selection survives in Qt's model,
+        // and opening a tab for a row that is no longer on screen is the whole thing
+        // this case exists to forbid.
+        list->clearSelection();
+        list->topLevelItem(0)->setSelected(true); // var/log/app.log
+        filter->setText(QStringLiteral("audit"));
+        selectAll->click();
+        dialog->accept();
+    });
+
+    window.openFile(zip, QString::fromLatin1(kPattern));
+    QTRY_COMPARE(tabCount(window), 1);
+    QTRY_COMPARE(tabs(window)->tabText(0), QStringLiteral("db.audit.log"));
+    QVERIFY(!unexpectedDialog);
+}
+
+void TestArchiveOpen::theFilterBoxIsNotARegularExpression()
+{
+    // Typed verbatim, a name full of regex punctuation finds itself and nothing else.
+    // The rule is stated where it lives rather than through a dialog, because that is
+    // all there is to it.
+    QVERIFY(OpenArchiveDialog::memberMatches(QStringLiteral("app(1).log"),
+                                             QStringLiteral("app(1).log")));
+    QVERIFY(!OpenArchiveDialog::memberMatches(QStringLiteral("app1.log"),
+                                              QStringLiteral("app(1).log")));
+    // A dot is a dot, not "any character".
+    QVERIFY(!OpenArchiveDialog::memberMatches(QStringLiteral("appXlog"),
+                                              QStringLiteral("app.log")));
+    // And an empty filter hides nothing.
+    QVERIFY(OpenArchiveDialog::memberMatches(QStringLiteral("anything"), QString()));
 }
 
 void TestArchiveOpen::oneMemberIsOneTabHoweverItIsSpelled()
