@@ -202,7 +202,11 @@ void ConfigView::setContents(const QByteArray &bytes, bool existed)
     const Decoder decoder = Decoder::detect(bytes, Encoding::Auto);
     m_encoding = int(decoder.resolvedEncoding());
     m_bom = bytes.left(int(decoder.bomLength()));
-    const QString text = decoder.decode(QByteArrayView(bytes).sliced(decoder.bomLength()));
+    // QByteArray::mid(), not QByteArrayView::sliced(): the view's slicing family is
+    // where the Qt 6.4 floor bites — left() is not there at all — and only CI checks
+    // that, so the whole family is avoided rather than audited member by member. The
+    // copy is one config file, once per open.
+    const QString text = decoder.decode(bytes.mid(int(decoder.bomLength())));
     m_lineEnding = dominantLineEnding(text);
 
     // Into the widget with '\n' throughout — QPlainTextEdit works in paragraphs and

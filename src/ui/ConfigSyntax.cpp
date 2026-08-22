@@ -52,7 +52,11 @@ ConfigSyntax syntaxForExtension(QStringView suffix)
 
 ConfigSyntax sniffSyntax(QByteArrayView head)
 {
-    const QByteArray sample = head.left(kSniffBytes).toByteArray();
+    // Built from the pointer and a length rather than QByteArrayView::left(), which
+    // arrived after the Qt 6.4 floor: it compiles on a newer dev machine and breaks the
+    // reference toolchain, MSVC and the sanitizer job at once — the version gap
+    // CLAUDE.md records, and only CI checks it.
+    const QByteArray sample(head.constData(), qMin<qsizetype>(head.size(), kSniffBytes));
     if (sample.trimmed().isEmpty())
         return ConfigSyntax::PlainText;
 
