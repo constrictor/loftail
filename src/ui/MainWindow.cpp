@@ -1137,10 +1137,9 @@ ConfigView *MainWindow::openConfigAt(const QString &address)
                     updateConfigTabTitle(view);
                     transfer->deleteLater();
                 });
-        // The relay, never the prompter itself: the work runs on a worker thread, and
-        // this is what carries a host-key question or a password prompt across to the
-        // application thread and the answer back.
-        transfer->startRead(address, &m_promptRelay);
+        // The transfer owns the relay that carries a host-key question or a password
+        // prompt to this thread — see ConfigTransfer, where the lifetime argument is.
+        transfer->startRead(address);
         return view;
     }
 
@@ -1204,7 +1203,7 @@ void MainWindow::saveActiveConfig()
                     updateActionStates();
                     transfer->deleteLater();
                 });
-        transfer->startWrite(view->address(), payload, &m_promptRelay);
+        transfer->startWrite(view->address(), payload);
         return;
     }
 
