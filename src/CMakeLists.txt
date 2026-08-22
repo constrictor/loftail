@@ -17,6 +17,17 @@ target_link_libraries(loftail PRIVATE
     loftail_ui
 )
 
+# -DLOFTAIL_CLANG_TIDY=ON puts clang-tidy on the compile line of these three and
+# NOTHING else. Per target rather than the global CMAKE_CXX_CLANG_TIDY, and the
+# top-level block that computes LOFTAIL_CLANG_TIDY_COMMAND says why: unlike a
+# sanitizer, clang-tidy needs no agreement between the TUs of one binary, so the
+# 79 test targets and bench_index stay out of it. `clang_tidy_all` is the target
+# for sweeping tests/ as well.
+if(LOFTAIL_CLANG_TIDY)
+    set_property(TARGET loftail_core loftail_ui loftail
+                 PROPERTY CXX_CLANG_TIDY "${LOFTAIL_CLANG_TIDY_COMMAND}")
+endif()
+
 # --- Packaging / install layout (PLAN.md M7) -------------------------------
 #
 # These rules give every platform a standard install tree that the deploy
