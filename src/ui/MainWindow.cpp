@@ -979,6 +979,11 @@ void MainWindow::onViewDestroyed(QObject *obj)
     std::erase_if(m_contexts, [this](const auto &ctx) {
         if (!ctx->views.isEmpty())
             return false;
+        // BEFORE the Document goes. The Filters pane may be holding a deferred edit
+        // aimed at it, and landing that after the fact resolves names through a freed
+        // intern table (FilterPane::documentClosing).
+        if (m_filterPane)
+            m_filterPane->documentClosing(ctx->doc.get());
         if (m_lastNotified == ctx.get())
             m_lastNotified = nullptr; // about to dangle
         return true;
@@ -1659,8 +1664,13 @@ void MainWindow::closeAllDocuments(Prompt prompt)
 
     // Only now the contexts: a view references its context's model and Document,
     // and ~DocumentContext destroys both.
-    for (auto &ctx : m_contexts)
+    for (auto &ctx : m_contexts) {
         ctx->views.clear();
+        // As in onViewDestroyed: a deferred filter edit must not outlive the document
+        // it was made against.
+        if (m_filterPane)
+            m_filterPane->documentClosing(ctx->doc.get());
+    }
     m_contexts.clear(); // ~DocumentContext stops the workers and deletes the model
 
     updateEmptyState();

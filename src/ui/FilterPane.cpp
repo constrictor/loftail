@@ -177,6 +177,28 @@ void FilterPane::setDocument(Document *document)
     applyToDocument();
 }
 
+void FilterPane::documentClosing(const Document *document)
+{
+    // The pane defers an edit and lands it on the document it was made against — see
+    // setDocument(). That is right while both documents are alive and WRONG once the
+    // outgoing one is being destroyed: the flush would resolve subsystem and thread
+    // names through an intern table that has just been freed.
+    //
+    // It is reachable by hand: type in the filter box and close the tab before the
+    // debounce fires. It surfaced as a crash during teardown in tst_recordmenu, after an
+    // unrelated assertion failed and the window went down with an edit still pending.
+    //
+    // Dropping the edit rather than applying it is the whole answer: a filter applied to
+    // a log that is closing has nothing to show for it.
+    if (m_document != document)
+        return;
+    if (m_applyTimer)
+        m_applyTimer->stop();
+    m_document = nullptr;
+    m_axes->setDocument(nullptr);
+    setEnabled(false);
+}
+
 void FilterPane::scheduleApply()
 {
     if (m_lastApplyMs < kApplyDebounceThresholdMs) {

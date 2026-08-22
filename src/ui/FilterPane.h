@@ -41,6 +41,12 @@ public:
     // axes according to whether the format carries those fields.
     void setDocument(Document *document);
 
+    // `document` is about to be destroyed. Drops any deferred edit aimed at it and
+    // unbinds, so nothing later resolves names through its freed intern table. The
+    // owner calls this BEFORE it destroys a context — see the implementation for the
+    // crash this prevents.
+    void documentClosing(const Document *document);
+
     // Refresh the auto-discovered lists from the document's intern tables — called
     // when indexing progresses/finishes so newly-seen subsystems/threads appear
     // (SPEC.md §6: the lists are discovered as the file is scanned).
