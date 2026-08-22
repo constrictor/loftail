@@ -87,14 +87,20 @@ class ConfigTransfer : public QObject
     Q_OBJECT
 
 public:
-    // `parent` owns it: destroying the parent abandons the transfer. `prompter` is asked
-    // on the APPLICATION thread — pass a PromptRelay, which is what marshals the
-    // question across and refuses when there is nobody to ask.
+    // `parent` owns it: destroying the parent abandons the transfer.
     explicit ConfigTransfer(QObject *parent = nullptr);
     ~ConfigTransfer() override;
 
-    void startRead(const QString &address, SshPrompter *prompter);
-    void startWrite(const QString &address, const QByteArray &bytes, SshPrompter *prompter);
+    // NO PROMPTER ARGUMENT. The question a connect may ask has to be answered on the
+    // application thread, so it goes through a PromptRelay — and that relay must outlive
+    // the WORKER, not the caller. Passing one in is how this crashed: a relay owned by
+    // the window was destroyed while a detached thread was still inside connectTo(),
+    // and the next virtual call on it aborted the process with "pure virtual method
+    // called". The transfer owns its own now, in the block the worker keeps a reference
+    // to, so it cannot go early. PromptRelay holds no prompter of its own — it resolves
+    // sshPrompter() inside each marshalled call — so one per transfer costs nothing.
+    void startRead(const QString &address);
+    void startWrite(const QString &address, const QByteArray &bytes);
 
     // What the worker and the owner share: the abandon flag and the session to abort.
     // Public because the free function that runs the connect needs it, and a friend

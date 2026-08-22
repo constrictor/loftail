@@ -1,7 +1,6 @@
 #pragma once
 
 #include "DocumentContext.h"
-#include "PromptRelay.h"
 #include "FormatSettings.h"
 #include "LogFileStore.h"
 #include "LogSettingsStore.h"
@@ -605,10 +604,6 @@ private:
     // Answers the questions a remote open asks (host key, password). Owned here
     // because it puts up dialogs parented to this window.
     std::unique_ptr<GuiSshPrompter> m_sshPrompter;
-    // Carries a config transfer's host-key and password questions from its worker thread
-    // to this one. Holds no prompter of its own — it resolves sshPrompter() inside each
-    // marshalled call — so it is safe to outlive any particular window.
-    PromptRelay m_promptRelay;
     QMenu   *m_windowMenu = nullptr;  // the open-views list, rebuilt on aboutToShow
     QAction *m_closeTabAction = nullptr;
     QAction *m_closeAllAction = nullptr;

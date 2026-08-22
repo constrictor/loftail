@@ -1,5 +1,6 @@
 #include "ConfigFileIO.h"
 
+#include "PromptRelay.h"
 #include "RemoteLocation.h"
 #include "SshPrompter.h"
 
@@ -189,6 +190,11 @@ struct ConfigTransfer::Shared
 #if defined(LOFTAIL_HAVE_SSH)
     SshSession       *session = nullptr;
 #endif
+
+    // OWNED HERE, and that placement is the whole point: the worker holds a strong
+    // reference to this block, so the relay it asks through cannot be destroyed while a
+    // connect is still using it. Stateless by design, so one per transfer is free.
+    PromptRelay       relay;
 };
 
 ConfigTransfer::ConfigTransfer(QObject *parent)
@@ -260,20 +266,19 @@ QString withSession(const QString &address, SshPrompter *prompter,
 #endif
 } // namespace
 
-void ConfigTransfer::startRead(const QString &address, SshPrompter *prompter)
+void ConfigTransfer::startRead(const QString &address)
 {
 #if !defined(LOFTAIL_HAVE_SSH)
-    Q_UNUSED(prompter);
     ConfigReadResult out;
     configAddressIsWritable(address, &out.error);
     QTimer::singleShot(0, this, [this, out]() { emit readFinished(out); });
 #else
     auto shared = m_shared;
     QPointer<ConfigTransfer> self(this);
-    std::thread worker([address, prompter, shared, self]() {
+    std::thread worker([address, shared, self]() {
         ConfigReadResult out;
         const QString error = withSession(
-            address, prompter, shared, [&out, &address](SshSession &session, const QString &path) {
+            address, &shared->relay, shared, [&out, &address](SshSession &session, const QString &path) {
                 QString why;
                 if (!session.readFileAt(path, &out.bytes, &out.existed, &why))
                     return why;
@@ -291,7 +296,7 @@ void ConfigTransfer::startRead(const QString &address, SshPrompter *prompter)
             out.ok = false;
             out.error = error;
         }
-        if (shared->abandoned)
+        if (shared->abandoned || !QCoreApplication::instance())
             return;
         // Back on the application thread. The QPointer is only ever DEREFERENCED there,
         // which is what makes carrying it across legal: if the owner went in the
@@ -308,11 +313,9 @@ void ConfigTransfer::startRead(const QString &address, SshPrompter *prompter)
 #endif
 }
 
-void ConfigTransfer::startWrite(const QString &address, const QByteArray &bytes,
-                                SshPrompter *prompter)
+void ConfigTransfer::startWrite(const QString &address, const QByteArray &bytes)
 {
 #if !defined(LOFTAIL_HAVE_SSH)
-    Q_UNUSED(prompter);
     Q_UNUSED(bytes);
     ConfigWriteResult out;
     configAddressIsWritable(address, &out.error);
@@ -320,10 +323,10 @@ void ConfigTransfer::startWrite(const QString &address, const QByteArray &bytes,
 #else
     auto shared = m_shared;
     QPointer<ConfigTransfer> self(this);
-    std::thread worker([address, bytes, prompter, shared, self]() {
+    std::thread worker([address, bytes, shared, self]() {
         ConfigWriteResult out;
         const QString error =
-            withSession(address, prompter, shared,
+            withSession(address, &shared->relay, shared,
                         [&out, &bytes](SshSession &session, const QString &path) {
                             QString why;
                             if (!session.writeFileAt(path, bytes, &why))
@@ -335,7 +338,7 @@ void ConfigTransfer::startWrite(const QString &address, const QByteArray &bytes,
             out.ok = false;
             out.error = error;
         }
-        if (shared->abandoned)
+        if (shared->abandoned || !QCoreApplication::instance())
             return;
         QMetaObject::invokeMethod(
             QCoreApplication::instance(),

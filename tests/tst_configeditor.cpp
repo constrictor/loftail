@@ -569,12 +569,30 @@ void TestConfigEditor::closingATabMidConnectDoesNotWaitForIt()
     QCOMPARE(tabs->count(), 0);
     QVERIFY2(took < 1000, qPrintable(QStringLiteral("closing waited %1 ms").arg(took)));
 
-    // And tearing the whole window down mid-connect is the same claim: no hang.
-    QVERIFY(w->openConfigAt(blackHoleConfig()));
-    clock.restart();
-    w.reset();
-    QVERIFY2(clock.elapsed() < 1000,
-             qPrintable(QStringLiteral("shutdown waited %1 ms").arg(clock.elapsed())));
+    // And tearing the whole WINDOW down mid-connect, several times over, with more than
+    // one transfer in flight each time.
+    //
+    // The repetition is not padding. A connect calls back into the prompter to report
+    // progress, so a window destroyed at the wrong moment used to take the relay out
+    // from under a worker that was about to make a virtual call on it — which aborts the
+    // process with "pure virtual method called". That lost race is timing-dependent: it
+    // came up on a CI runner and never once locally, so a single tear-down here proves
+    // very little and a handful with several workers apiece proves rather more. The fix
+    // is that the transfer owns its relay in the block the worker holds a reference to,
+    // which makes the race unreachable rather than unlikely.
+    for (int round = 0; round < 5; ++round) {
+        std::unique_ptr<MainWindow> victim(new MainWindow);
+        victim->show();
+        for (int i = 0; i < 3; ++i) {
+            QVERIFY(victim->openConfigAt(
+                QStringLiteral("ssh://198.51.100.%1/etc/x.properties").arg(10 + i)));
+        }
+        QCoreApplication::processEvents();
+        clock.restart();
+        victim.reset();
+        QVERIFY2(clock.elapsed() < 1000,
+                 qPrintable(QStringLiteral("shutdown waited %1 ms").arg(clock.elapsed())));
+    }
 #endif
 }
 
