@@ -409,6 +409,13 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     closeAllDocuments();
+    // Every config transfer this window started has just been abandoned along with the
+    // tab that owned it; this is what WAITS for their threads to notice. Abandoning is
+    // enough while the process is alive, and not enough on the way out: Qt's own globals
+    // go with the application object, and a worker still inside QTcpSocket then writes
+    // through a pointer that has just become null (ConfigFileIO.h). Bounded, so a host
+    // that is not answering cannot hang the quit.
+    drainConfigTransfers();
     // The prompter is about to be destroyed; a stale pointer would outlive it and be
     // reachable from any later open (a second window, in the multi-instance case).
     if (sshPrompter() == m_sshPrompter.get())

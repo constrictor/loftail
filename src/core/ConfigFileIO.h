@@ -67,6 +67,15 @@ bool configAddressIsWritable(const QString &address, QString *reason);
 // Whether reaching `address` means a network round trip, and therefore a worker.
 bool configAddressIsRemote(const QString &address);
 
+// Stop every transfer still running and wait, up to `budgetMs`, for their threads to end.
+//
+// Called by the window on its way out. A transfer is abandoned rather than joined while
+// the process is alive — see ConfigTransfer — but at shutdown that is not enough: Qt's
+// own globals go with the application object, and a worker still inside QTcpSocket then
+// writes through a pointer that has just become null. Bounded, because a quit that can
+// hang is worse than a budget that can be exceeded.
+void drainConfigTransfers(int budgetMs = 3000);
+
 // One read or one write of a config file on ANOTHER MACHINE, off the calling thread.
 //
 // A local config is a QFile call and is answered where it is asked. A remote one is a
