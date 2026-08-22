@@ -116,6 +116,48 @@ QString wcSizeCommand(const QString &path);
 // of a large log does not stream the whole thing.
 QString readCommand(const QString &path, qint64 offset, qint64 length);
 
+// --- The config-file editor's whole-file operations (SPEC.md §4) -------------
+//
+// A log is read in windows with `tail`/`head` because it is large and grows. A CONFIG
+// file is neither: it is read once, whole, into an editor, and written back whole. So
+// these three are their own commands rather than a special case of readCommand().
+
+// The whole of `path` on stdout.
+//
+// A REDIRECT, not `cat 'path'`, for the two reasons wcSizeCommand() gives: a missing
+// file leaves stdout empty because the shell's complaint goes to stderr, and a path that
+// begins with `-` cannot be mistaken for an option — which `cat --` would also fix, but
+// only on the userlands that implement it, and this transport exists for the ones that
+// leave things out.
+QString configReadCommand(const QString &path);
+
+// Whether `path` is there, as a marked line: "<marker> 1" or "<marker> 0".
+//
+// Its own round trip rather than inferring absence from an empty read, because an EMPTY
+// FILE THAT EXISTS and a file that does not are the same empty stdout — and telling them
+// apart is the whole of whether the editor says "new file" and whether saving is
+// creating something. The marker is there for lastNonEmptyLine()'s reason: on these
+// machines stdout is not private, and a login banner would otherwise be the answer.
+QString configExistsCommand(const QString &path);
+
+// Take stdin and put it in `path`, creating it if it is not there.
+//
+// IN PLACE, and that is the whole reason this is a redirect and not a temp-and-move. A
+// shell `>` on an existing file TRUNCATES IT — it does not unlink and recreate — so the
+// inode survives and with it the file's owner, its group and its mode. A config that was
+// `0640 root:adm` is still `0640 root:adm` afterwards, which a rename could not promise:
+// that would leave a file owned by whoever loftail connected as, on the file that
+// decides what an application logs, silently.
+//
+// What it costs is atomicity: a write that dies halfway leaves a short file where a
+// rename would have left the old one intact. That is stated in SPEC.md §4 rather than
+// left to be discovered, and the caller verifies the size afterwards.
+QString configWriteCommand(const QString &path);
+
+// Read what configExistsCommand() printed. False for anything unparseable, which is what
+// a shell error, a restricted account and a missing marker all look like from here.
+bool parseConfigExistsOutput(const QByteArray &output, bool *exists);
+
 // What this server can run, on one line: the marker, then the size tools it has.
 //
 // Printed marker rather than exit status alone, because a restricted shell can exit 0

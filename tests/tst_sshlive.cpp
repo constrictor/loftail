@@ -130,6 +130,9 @@ private slots:
     void reportsAnUnreachableHostClearly();
     void theExecFallbackReadsTheSameBytes();
     void theExecFallbackSizesWithoutStat();
+    void aConfigFileIsReadAndWrittenWholeOverSftp();
+    void writingAConfigKeepsItsPermissions();
+    void theExecFallbackWritesTheSameBytes();
 };
 
 void TestSshLive::initTestCase()
@@ -149,6 +152,110 @@ void TestSshLive::initTestCase()
     setSshPrompter(nullptr);
     QVERIFY2(remoteShell(QStringLiteral("true")),
              "Cannot reach the test host non-interactively (agent or key auth needed)");
+}
+
+void TestSshLive::aConfigFileIsReadAndWrittenWholeOverSftp()
+{
+    // The config-file editor's two operations against a REAL server (SPEC.md §4). This
+    // is the only place they are exercised at all: CI never runs this file, and nothing
+    // in it can be faked usefully — a stub returns instantly and would satisfy the
+    // contract exactly as well whether or not any of this works.
+    const QString cfg = m_remotePath + QStringLiteral(".properties");
+    QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(cfg)));
+
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(m_location, nullptr, 20000, &error), qPrintable(error));
+
+    // NOT THERE is a success with `existed` false, not a failure: the editor opens empty
+    // on it and saving creates it.
+    QByteArray got;
+    bool existed = true;
+    QVERIFY2(session.readFileAt(cfg, &got, &existed, &error), qPrintable(error));
+    QVERIFY(!existed);
+    QVERIFY(got.isEmpty());
+
+    const QByteArray body = "log4cplus.rootLogger=DEBUG, STDOUT\n"
+                            "log4cplus.logger.app.db=WARN\n";
+    QVERIFY2(session.writeFileAt(cfg, body, &error), qPrintable(error));
+    QCOMPARE(remoteShellOutput(QStringLiteral("cat %1").arg(cfg)), body);
+
+    // And back, whole, with the existence flag now true — which is what stops the editor
+    // calling a file that IS there a new one.
+    got.clear();
+    existed = false;
+    QVERIFY2(session.readFileAt(cfg, &got, &existed, &error), qPrintable(error));
+    QVERIFY(existed);
+    QCOMPARE(got, body);
+
+    // A SHORTER rewrite, because truncation is where a write that only ever appends or
+    // overwrites in place would leave the old tail behind and produce a file that is
+    // half of each version.
+    const QByteArray shorter = "log4cplus.rootLogger=OFF\n";
+    QVERIFY2(session.writeFileAt(cfg, shorter, &error), qPrintable(error));
+    QCOMPARE(remoteShellOutput(QStringLiteral("cat %1").arg(cfg)), shorter);
+
+    QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(cfg)));
+}
+
+void TestSshLive::writingAConfigKeepsItsPermissions()
+{
+    // THE CLAIM THAT ONLY A REAL SERVER CAN SETTLE, and the one with the worst failure:
+    // a config that was readable only by its owner must not come back world-readable
+    // because a log viewer saved it. Nothing on screen would say that it had happened,
+    // and the file in question is the one that decides what an application logs.
+    //
+    // The write is in place — the existing inode truncated, never replaced — which is
+    // what preserves the mode, and the owner and group a rename could not.
+    const QString cfg = m_remotePath + QStringLiteral(".perm");
+    QVERIFY(remoteShell(QStringLiteral("printf 'a=1\n' > %1 && chmod 600 %1").arg(cfg)));
+    const QByteArray before =
+        remoteShellOutput(QStringLiteral("ls -l %1 | cut -c1-10").arg(cfg)).trimmed();
+    QCOMPARE(before, QByteArray("-rw-------"));
+
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(m_location, nullptr, 20000, &error), qPrintable(error));
+    QVERIFY2(session.writeFileAt(cfg, "a=2\n", &error), qPrintable(error));
+
+    QCOMPARE(remoteShellOutput(QStringLiteral("cat %1").arg(cfg)), QByteArray("a=2\n"));
+    const QByteArray after =
+        remoteShellOutput(QStringLiteral("ls -l %1 | cut -c1-10").arg(cfg)).trimmed();
+    QCOMPARE(after, before);
+
+    QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(cfg)));
+}
+
+void TestSshLive::theExecFallbackWritesTheSameBytes()
+{
+    // The other transport, driven directly — a server offering SFTP will never choose
+    // the fallback on its own. The exec write is `cat > 'path'`, whose in-place truncate
+    // gives the same permission guarantee the SFTP path gets explicitly.
+    const QString cfg = m_remotePath + QStringLiteral(".exec");
+    QVERIFY(remoteShell(QStringLiteral("printf 'old=1\n' > %1 && chmod 640 %1").arg(cfg)));
+
+    SshSession exec;
+    QString error;
+    QVERIFY2(exec.connectTo(m_location, nullptr, 20000, &error, nullptr), qPrintable(error));
+    if (exec.mode() != SshSession::Mode::Exec) {
+        // The transport is chosen by probing, so it cannot be asked for. Run this against
+        // a server whose sshd has no `Subsystem sftp` line to exercise it.
+        QSKIP("this server offers SFTP, so the exec fallback is not in use");
+    }
+
+    const QByteArray body = "log4cplus.rootLogger=INFO\n";
+    QVERIFY2(exec.writeFileAt(cfg, body, &error), qPrintable(error));
+    QCOMPARE(remoteShellOutput(QStringLiteral("cat %1").arg(cfg)), body);
+    QCOMPARE(remoteShellOutput(QStringLiteral("ls -l %1 | cut -c1-10").arg(cfg)).trimmed(),
+             QByteArray("-rw-r-----"));
+
+    QByteArray got;
+    bool existed = false;
+    QVERIFY2(exec.readFileAt(cfg, &got, &existed, &error), qPrintable(error));
+    QVERIFY(existed);
+    QCOMPARE(got, body);
+
+    QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(cfg)));
 }
 
 void TestSshLive::theExecFallbackReadsTheSameBytes()

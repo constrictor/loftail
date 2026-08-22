@@ -67,6 +67,10 @@ private slots:
     void wcReportsTheExactSize();
     void wcSizeParsingRejectsRubbish();
     void theProbeRequiresHeadAsWellAsTail();
+    void aConfigFileIsReadWholeAndWrittenWhole();
+    void writingInPlaceKeepsTheFilesPermissions();
+    void existenceTellsAnEmptyFileFromAMissingOne();
+    void aHostileConfigPathCannotRunAnything();
     void theProbeReportsWhichToolsExist();
 
     // The rotation ladder: what one poll's stat justifies doing about it. Ungated and
@@ -496,6 +500,123 @@ void TestSshExec::aServerWithNoMtimeAlwaysPaces()
              RotationVerdict::ComparePaced);
     QCOMPARE(rotationVerdict(obs(2000, 1000, kUnknownMtime, kUnknownMtime)),
              RotationVerdict::ComparePaced);
+}
+
+void TestSshExec::aConfigFileIsReadWholeAndWrittenWhole()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh to prove the commands against");
+
+    const QByteArray body = "log4cplus.rootLogger=DEBUG, STDOUT\n# a comment\n";
+    const QString path = write(QStringLiteral("cfg.properties"), body);
+    QCOMPARE(runSh(configReadCommand(path)), body);
+
+    // The write takes stdin, so it is driven the way the transport drives it: bytes in,
+    // nothing out.
+    const QByteArray replacement = "log4cplus.rootLogger=WARN, STDOUT\n";
+    QProcess sh;
+    sh.start(QStringLiteral("/bin/sh"), {QStringLiteral("-c"), configWriteCommand(path)});
+    QVERIFY(sh.waitForStarted(5000));
+    sh.write(replacement);
+    sh.closeWriteChannel();
+    QVERIFY(sh.waitForFinished(10000));
+    QCOMPARE(sh.exitCode(), 0);
+    QCOMPARE(runSh(configReadCommand(path)), replacement);
+}
+
+void TestSshExec::writingInPlaceKeepsTheFilesPermissions()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh to prove the commands against");
+
+    // THE WHOLE REASON THE WRITE IS A REDIRECT rather than a temp-and-move. A shell `>`
+    // truncates the existing file instead of unlinking and recreating it, so the inode
+    // survives and with it the owner, the group and the mode. A config that was 0640
+    // must not come back 0644 because a log viewer saved it — and nothing on screen
+    // would say that it had.
+    const QString path = write(QStringLiteral("perm.properties"), "a=1\n");
+    const QFile::Permissions restricted =
+        QFile::ReadOwner | QFile::WriteOwner | QFile::ReadGroup;
+    QVERIFY(QFile::setPermissions(path, restricted));
+
+    QProcess sh;
+    sh.start(QStringLiteral("/bin/sh"), {QStringLiteral("-c"), configWriteCommand(path)});
+    QVERIFY(sh.waitForStarted(5000));
+    sh.write("a=2\n");
+    sh.closeWriteChannel();
+    QVERIFY(sh.waitForFinished(10000));
+
+    QCOMPARE(runSh(configReadCommand(path)), QByteArray("a=2\n"));
+    QCOMPARE(QFile::permissions(path) & (QFile::ReadOther | QFile::WriteOther),
+             QFile::Permissions());
+    QVERIFY(QFile::permissions(path).testFlag(QFile::ReadGroup));
+}
+
+void TestSshExec::existenceTellsAnEmptyFileFromAMissingOne()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh to prove the commands against");
+
+    // An EMPTY FILE and a MISSING one are the same empty stdout from a read, and telling
+    // them apart is the whole of whether the editor says "new file" and whether saving
+    // is creating something. That is why existence is its own round trip.
+    const QString empty = write(QStringLiteral("empty.properties"), QByteArray());
+    bool exists = false;
+    QVERIFY(parseConfigExistsOutput(runSh(configExistsCommand(empty)), &exists));
+    QVERIFY(exists);
+    QCOMPARE(runSh(configReadCommand(empty)), QByteArray());
+
+    const QString missing = m_dir.filePath(QStringLiteral("not-there.properties"));
+    QVERIFY(parseConfigExistsOutput(runSh(configExistsCommand(missing)), &exists));
+    QVERIFY(!exists);
+    QCOMPARE(runSh(configReadCommand(missing)), QByteArray());
+
+    // And a banner ahead of the answer does not become the answer: on the machines this
+    // transport exists for, stdout is not private.
+    QVERIFY(parseConfigExistsOutput(QByteArray("Welcome to the box\nloftail-cfg 1\n"), &exists));
+    QVERIFY(exists);
+    QVERIFY(!parseConfigExistsOutput(QByteArray("Welcome to the box\n"), &exists));
+    QVERIFY(!parseConfigExistsOutput(QByteArray("loftail-cfg maybe\n"), &exists));
+}
+
+void TestSshExec::aHostileConfigPathCannotRunAnything()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh to prove the quoting against");
+
+    // The same claim the read path already makes, for the three commands that are new.
+    // A remote path arrives from a URL somebody typed or was handed, and it ends up
+    // inside a command a shell on someone else's machine interprets: without the
+    // quoting this is not a strange filename, it is remote code execution.
+    const QString canary = m_dir.filePath(QStringLiteral("canary"));
+    const QString hostile =
+        m_dir.filePath(QStringLiteral("x'; touch %1; echo '").arg(canary));
+
+    for (const QString &command : {configReadCommand(hostile), configExistsCommand(hostile),
+                                   configWriteCommand(hostile)}) {
+        int code = 0;
+        runSh(command, &code);
+        QVERIFY2(!QFileInfo::exists(canary), qPrintable(command));
+    }
+
+    // And the other half of the claim, which the case above cannot make: the quoting
+    // does not merely stop things running, it passes the whole string through as ONE
+    // filename. Checked on a name that is legal — the hostile one above embeds a path,
+    // so it names directories that are not there and could not be created whatever the
+    // quoting did.
+    const QString weird = m_dir.filePath(QStringLiteral("a b;$(id)`id`'q'.properties"));
+    QProcess sh;
+    sh.start(QStringLiteral("/bin/sh"), {QStringLiteral("-c"), configWriteCommand(weird)});
+    QVERIFY(sh.waitForStarted(5000));
+    sh.write("k=v\n");
+    sh.closeWriteChannel();
+    QVERIFY(sh.waitForFinished(10000));
+    QVERIFY2(QFileInfo::exists(weird), qPrintable(weird));
+    QCOMPARE(runSh(configReadCommand(weird)), QByteArray("k=v\n"));
+
+    bool exists = false;
+    QVERIFY(parseConfigExistsOutput(runSh(configExistsCommand(weird)), &exists));
+    QVERIFY(exists);
 }
 
 QTEST_GUILESS_MAIN(TestSshExec)

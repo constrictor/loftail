@@ -308,6 +308,28 @@ void ConfigView::clearNotice()
     m_notice->hide();
 }
 
+void ConfigView::setBusy(bool busy, const QString &what)
+{
+    m_busy = busy;
+    m_edit->setReadOnly(busy);
+    if (busy) {
+        // The page's own notice rather than the status bar: a connect can take twenty
+        // seconds, and the status bar is rewritten on every ingest tick of every log.
+        m_notice->setText(what);
+        QPalette p = m_notice->palette();
+        // The ORDINARY text colour, not the error colour showNotice() uses — "connecting"
+        // is not a failure, and painting it red would say the open had already gone wrong.
+        p.setColor(QPalette::WindowText, mutedColor(palette()));
+        m_notice->setPalette(p);
+        m_notice->show();
+    }
+}
+
+int ConfigView::revision() const
+{
+    return m_edit->document()->revision();
+}
+
 bool ConfigView::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == m_pathLabel && event->type() == QEvent::Resize)

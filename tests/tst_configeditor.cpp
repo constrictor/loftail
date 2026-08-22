@@ -12,6 +12,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QCloseEvent>
 
 #include "ConfigReset.h"
@@ -56,6 +57,8 @@ private slots:
     void closingAnEditorTabWorksAndDoesNotDisturbTheLogs();
     void anEditorTabComesBackInPlaceAfterARelaunch();
     void cancellingTheUnsavedPromptAbortsTheQuitAndWritesNoSession();
+    void aRemoteConfigPutsItsTabUpBeforeTheFarEndAnswers();
+    void closingATabMidConnectDoesNotWaitForIt();
 
 private:
     QString writeLog(const QString &name);
@@ -495,6 +498,84 @@ void TestConfigEditor::cancellingTheUnsavedPromptAbortsTheQuitAndWritesNoSession
 
     // The edits are still there to be saved.
     QVERIFY(editor->isModified());
+}
+
+// An address that cannot answer. TEST-NET-1 (RFC 5737) is reserved for documentation and
+// is not routed anywhere, so a connect to it hangs rather than being refused — which is
+// what makes it a connect worth proving we did not run.
+static QString blackHoleConfig()
+{
+    return QStringLiteral("ssh://198.51.100.7/etc/log4cplus.properties");
+}
+
+void TestConfigEditor::aRemoteConfigPutsItsTabUpBeforeTheFarEndAnswers()
+{
+#if !defined(LOFTAIL_HAVE_SSH)
+    QSKIP("SSH support is not built into this copy");
+#else
+    std::unique_ptr<MainWindow> w(new MainWindow);
+    w->show();
+    auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+
+    QElapsedTimer clock;
+    clock.start();
+    ConfigView *view = w->openConfigAt(blackHoleConfig());
+    const qint64 took = clock.elapsed();
+
+    // M17's rule, one level over: the tab is on screen BEFORE the far end answers. A
+    // connect is up to twenty seconds and may stop to ask for a password, so running it
+    // on this thread would freeze the window on a gesture that is supposed to open a tab.
+    QVERIFY(view);
+    QCOMPARE(tabs->count(), 1);
+    QVERIFY2(took < 1000, qPrintable(QStringLiteral("opening blocked for %1 ms").arg(took)));
+
+    // And it SAYS what it is doing. This assertion holds however the network behaves:
+    // even a connect that fails instantly reports through a queued call, which cannot
+    // have been delivered before this line runs.
+    QVERIFY(view->isBusy());
+    auto *notice = view->findChild<QLabel *>(QStringLiteral("configNotice"));
+    QVERIFY(notice);
+    QVERIFY(notice->isVisible());
+    QVERIFY(!notice->text().isEmpty());
+
+    // The text is not editable while there is nothing in it yet — typing into a buffer
+    // about to be replaced by the file would throw the work away.
+    QVERIFY(view->editor()->isReadOnly());
+#endif
+}
+
+void TestConfigEditor::closingATabMidConnectDoesNotWaitForIt()
+{
+#if !defined(LOFTAIL_HAVE_SSH)
+    QSKIP("SSH support is not built into this copy");
+#else
+    std::unique_ptr<MainWindow> w(new MainWindow);
+    w->show();
+    auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(w->openConfigAt(blackHoleConfig()));
+    QCOMPARE(tabs->count(), 1);
+
+    // THE TRANSFER IS ABANDONED, NEVER JOINED. Waiting for it here would make closing a
+    // tab on a host that is not answering cost the whole connect timeout — and because
+    // that worker can be blocked asking THIS thread for a password, the wait can be a
+    // deadlock rather than merely slow. The destructor aborts the session instead, which
+    // makes the blocking libssh2 call return at once.
+    QElapsedTimer clock;
+    clock.start();
+    w->findChild<QAction *>(QStringLiteral("closeTabAction"))->trigger();
+    const qint64 took = clock.elapsed();
+
+    QCOMPARE(tabs->count(), 0);
+    QVERIFY2(took < 1000, qPrintable(QStringLiteral("closing waited %1 ms").arg(took)));
+
+    // And tearing the whole window down mid-connect is the same claim: no hang.
+    QVERIFY(w->openConfigAt(blackHoleConfig()));
+    clock.restart();
+    w.reset();
+    QVERIFY2(clock.elapsed() < 1000,
+             qPrintable(QStringLiteral("shutdown waited %1 ms").arg(clock.elapsed())));
+#endif
 }
 
 int main(int argc, char *argv[])

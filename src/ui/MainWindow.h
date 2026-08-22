@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DocumentContext.h"
+#include "PromptRelay.h"
 #include "FormatSettings.h"
 #include "LogFileStore.h"
 #include "LogSettingsStore.h"
@@ -88,6 +89,16 @@ public:
     // in front, exactly as it is when they are opened one at a time.
     // Returns true when every one of them opened.
     bool openFiles(const QStringList &rawPaths, const QString &pattern = QString());
+
+    // Open (or raise) an editor tab on an already-resolved config address (SPEC.md §4).
+    // Returns null only for a refusal decided with NO I/O — a dependency that is not
+    // built in, or a file that is there and cannot be read; a remote address returns a
+    // tab that is still connecting.
+    //
+    // Public for the reason openFile() is: it is the seam a test drives, and the claims
+    // that matter about it — that the tab is up before the far end answers, and that
+    // closing it does not wait — cannot be made through a menu item without a live host.
+    ConfigView *openConfigAt(const QString &address);
 
     // Fill `menu` with what the record at `viewRow` of `view` offers (SPEC.md §5).
     // Public, and split from showRecordMenu(), so a test can inspect and trigger the
@@ -533,8 +544,6 @@ private:
     // File ▸ Open Config File Editor. Resolves the active log's configured path; with
     // none configured, asks for one and makes the answer that LOG's own setting.
     void openConfigEditor();
-    // Open (or raise) an editor tab on an already-resolved config address.
-    ConfigView *openConfigAt(const QString &address);
     // The editor tab in front, or nullptr when the current page is a log.
     ConfigView *activeConfigView() const;
     // Whether the page in front is a log. NOT the same question as `hasFile`, which is
@@ -596,6 +605,10 @@ private:
     // Answers the questions a remote open asks (host key, password). Owned here
     // because it puts up dialogs parented to this window.
     std::unique_ptr<GuiSshPrompter> m_sshPrompter;
+    // Carries a config transfer's host-key and password questions from its worker thread
+    // to this one. Holds no prompter of its own — it resolves sshPrompter() inside each
+    // marshalled call — so it is safe to outlive any particular window.
+    PromptRelay m_promptRelay;
     QMenu   *m_windowMenu = nullptr;  // the open-views list, rebuilt on aboutToShow
     QAction *m_closeTabAction = nullptr;
     QAction *m_closeAllAction = nullptr;

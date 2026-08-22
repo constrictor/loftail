@@ -1,9 +1,14 @@
 #pragma once
 
 #include <QByteArray>
+#include <QObject>
 #include <QString>
 
+#include <memory>
+
 namespace loftail {
+
+class SshPrompter;
 
 // Reading and writing a log's config file (SPEC.md §4).
 //
@@ -58,5 +63,52 @@ ConfigWriteResult writeConfigFile(const QString &address, const QByteArray &byte
 // Remote config files are read and written over SSH, which is an optional dependency —
 // so a build without it answers false with a reason, exactly as a remote LOG open does.
 bool configAddressIsWritable(const QString &address, QString *reason);
+
+// Whether reaching `address` means a network round trip, and therefore a worker.
+bool configAddressIsRemote(const QString &address);
+
+// One read or one write of a config file on ANOTHER MACHINE, off the calling thread.
+//
+// A local config is a QFile call and is answered where it is asked. A remote one is a
+// connect — up to a twenty-second timeout, possibly a host-key question and a password —
+// and running that where the window lives is exactly what M17 took out of the log path
+// (ARCHITECTURE.md §6.3.3). So this does the work on a thread of its own and delivers
+// the answer back through a queued signal.
+//
+// LIFETIME, which is the whole difficulty. A transfer must not be JOINED on the way out:
+// closing a tab on a host that is not answering would then wait out the connect, and a
+// worker that can be blocked asking the application thread for a password makes that
+// wait a deadlock — the reason ~SourceSpool retires its fetcher instead of joining it.
+// So the thread is detached and the two sides share a small state block: the destructor
+// abandons the work and aborts the session, which makes the blocking libssh2 call return
+// at once, and the thread then finds nobody to report to and simply ends.
+class ConfigTransfer : public QObject
+{
+    Q_OBJECT
+
+public:
+    // `parent` owns it: destroying the parent abandons the transfer. `prompter` is asked
+    // on the APPLICATION thread — pass a PromptRelay, which is what marshals the
+    // question across and refuses when there is nobody to ask.
+    explicit ConfigTransfer(QObject *parent = nullptr);
+    ~ConfigTransfer() override;
+
+    void startRead(const QString &address, SshPrompter *prompter);
+    void startWrite(const QString &address, const QByteArray &bytes, SshPrompter *prompter);
+
+    // What the worker and the owner share: the abandon flag and the session to abort.
+    // Public because the free function that runs the connect needs it, and a friend
+    // declaration for one helper in one .cpp buys nothing over saying so.
+    struct Shared;
+
+signals:
+    // Emitted on the application thread, exactly once, or never if the transfer was
+    // abandoned first.
+    void readFinished(ConfigReadResult result);
+    void writeFinished(ConfigWriteResult result);
+
+private:
+    std::shared_ptr<Shared> m_shared;
+};
 
 } // namespace loftail

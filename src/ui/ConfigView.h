@@ -79,6 +79,18 @@ public:
     void showNotice(const QString &text);
     void clearNotice();
 
+    // While a remote read or write is in flight. The text is not editable during a read
+    // — there is nothing in it yet to edit, and letting somebody type into a buffer that
+    // is about to be replaced would throw their work away — and Save is unavailable
+    // during a write, which is what stops two writes racing for one file.
+    void setBusy(bool busy, const QString &what);
+    bool isBusy() const { return m_busy; }
+
+    // The document's revision when a write was started. Clearing the modified flag on a
+    // reply is only honest if nothing was typed in the meantime, so the reply compares
+    // against this rather than assuming it is still true.
+    int revision() const;
+
     // Put the Find bar on screen and focus it, and run a search over the buffer. The
     // reveal comes FIRST, above every branch, for the reason MainWindow::runFind()
     // records: every report goes into this bar's own label, so a search asked for from
@@ -113,6 +125,7 @@ private:
     ConfigHighlighter *m_highlighter = nullptr;
     QVBoxLayout       *m_layout = nullptr;
 
+    bool         m_busy = false;
     bool         m_existed = false;
     bool         m_syntaxChosen = false;
     bool         m_syntaxSniffed = false;

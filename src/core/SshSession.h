@@ -147,6 +147,31 @@ public:
     // stalled, checked on a timer rather than on every poll.
     bool fstatTracksHandle() const;
 
+    // --- Whole-file operations at an ARBITRARY path (SPEC.md §4) --------------
+    //
+    // Everything above is about THE file this session was connected for — one open
+    // handle, read forward, watched for rotation. A log's config file is a different
+    // path on the same machine, read once and written once, so it gets its own pair
+    // rather than a mode on `openFile()`: nothing here touches `location`, the open
+    // handle, or the size ladder, and a session that is tailing a log is unaffected by
+    // one of these running on it.
+
+    // Read the whole of `path`. A file that is NOT THERE is a success with `existed`
+    // false, not a failure — the editor opens empty on it and saving creates it, and
+    // an empty file that does exist has to be tellable from it.
+    bool readFileAt(const QString &path, QByteArray *out, bool *existed, QString *error);
+
+    // Replace the contents of `path`, creating it if it is not there.
+    //
+    // IN PLACE WHEN IT EXISTS, and that is a deliberate choice against atomicity. A
+    // temp-and-rename would leave a file owned by whoever loftail connected as, with a
+    // fresh mode — so a config that was `0640 root:adm` would come back `0644 you:you`,
+    // silently, on the file that decides what an application logs. Truncating the
+    // existing inode keeps owner, group and mode; what it costs is that a write dying
+    // halfway leaves a short file, which SPEC.md §4 states rather than leaving to be
+    // discovered, and which the size check afterwards is there to catch.
+    bool writeFileAt(const QString &path, const QByteArray &bytes, QString *error);
+
     // Read up to `length` bytes at `offset` of the open file. Returns the number of
     // bytes read, 0 at EOF, or -1 on error (with `error` filled). Forward-only in
     // practice (invariant #9); the seek exists to resume after a reconnect.
