@@ -218,6 +218,130 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1
         run: ctest --test-dir build-asan --output-on-failure
 
+  clang-tidy:
+    # Static analysis over src/ (.clang-tidy at the repo root holds the check list
+    # and the reasoning behind every exclusion).
+    #
+    # A job of its own for the reason the sanitizer job above gives: it is a separate
+    # build of everything with a different compiler, and when it has something to say
+    # the useful signal is which check fired — which the `linux` job's four
+    # configurations would bury.
+    #
+    # It COMPLEMENTS the sanitizers rather than overlapping them. ASan and TSan are
+    # runtime tools and see only what a test actually drives; ARCHITECTURE.md §13
+    # records that neither found the M17 call-gate bug for exactly that reason.
+    # clang-tidy reads every translation unit whether or not a test reaches it, which
+    # is what makes it worth having in a tree where whole files (the libssh2
+    # transport, the Windows-only paths, PresetPane.cpp) are documented as never
+    # exercised by CI.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # NON-BLOCKING, on purpose and for now. The tree had never been linted when this
+    # landed: the first sweep reported 805 lines / 408 distinct findings over src/,
+    # none of them fixed in the same change, so a job that gated would be red from
+    # the day it arrived — and a check that is always red is a check people learn to
+    # scroll past. Tighten to blocking (drop this line, add WarningsAsErrors to
+    # .clang-tidy) once that baseline is at zero.
+    #
+    # It goes on the JOB, not on a step. At job level the WORKFLOW's own conclusion
+    # stays `success`, which is what release.yml's promote guard tests when it
+    # refuses to publish anything but a green run. On a step the job itself would go
+    # red and take the workflow's conclusion with it, quietly breaking releases.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain + system Qt 6 + clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake \
+            qt6-base-dev libgl1-mesa-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev \
+            clang-18 clang-tidy-18
+
+      - name: Configure
+        run: |
+          # clang++, NOT the runner's GCC. compile_commands.json is what clang-tidy
+          # consumes, and a database written by GCC carries flags and libstdc++
+          # header expectations clang can reject outright — a whole-file parse error
+          # reported as a finding. One toolchain writes it and reads it.
+          #
+          # The version is pinned on both halves: 24.04's clang-tidy is 18 and a dev
+          # machine may have anything (21 here). A finding present under one and
+          # absent under the other is expected, so at least make CI's answer stable.
+          cmake -S . -B build-tidy -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DLOFTAIL_CLANG_TIDY_EXE=clang-tidy-18 2>&1 | tee configure-tidy.log
+          # The optional dependencies again, for the same reason as in every other
+          # job: auto-detection failing silently would shrink what is analysed, and a
+          # sweep that skipped the SSH and archive layers would report clean about
+          # code it never read.
+          for want in "SSH remote sources: ENABLED" "Archived log sources: ENABLED" \
+                      "OS keychain for passwords: ENABLED"; do
+            grep -q "$want" configure-tidy.log \
+              || { echo "::error::the clang-tidy build reported '$want' missing"; exit 1; }
+          done
+          test -s build-tidy/compile_commands.json \
+            || { echo "::error::no compile_commands.json; CMAKE_EXPORT_COMPILE_COMMANDS is off"; exit 1; }
+          # run-clang-tidy ships with the clang-tidy package, so a miss here means the
+          # install step changed. Worth its own assertion because the target simply
+          # would not EXIST, and `--target clang_tidy` would fail as "no rule to make
+          # target" — which, in a job that does not gate, reads as nothing at all.
+          if grep -q "clang-tidy sweep targets: unavailable" configure-tidy.log; then
+            echo "::error::run-clang-tidy was not found; the clang_tidy target does not exist"
+            exit 1
+          fi
+
+      - name: Generate Qt sources
+        # AUTOMOC/AUTOUIC outputs are #included BY the real sources, so they have to
+        # exist before clang-tidy parses them — otherwise every file with a Q_OBJECT
+        # fails to parse and the sweep reports errors instead of findings.
+        #
+        # `--target loftail` and not the default target: that builds core, ui and the
+        # app, and skips the 79 test binaries, which this job does not analyse
+        # (`clang_tidy_all` is the target for those). It is most of the job's budget.
+        run: cmake --build build-tidy --target loftail
+
+      - name: Run clang-tidy over src/
+        run: |
+          # The standalone route: run-clang-tidy over the database the step above
+          # wrote. The path regex is what keeps _deps/ and the *_autogen TUs out.
+          #
+          # The pipe into tee is load-bearing, not just for the artifact:
+          # run-clang-tidy exits NON-ZERO when it has findings, and GitHub runs each
+          # `run:` under `bash -e` without pipefail — so the pipeline's status is
+          # tee's, and the tally below still gets written. Add `set -o pipefail` here
+          # and every run with a finding skips its own summary.
+          cmake --build build-tidy --target clang_tidy 2>&1 | tee clang-tidy.log
+
+          # A tally rather than the log itself, because the log is thousands of lines
+          # and the thing worth seeing at a glance is which checks are talking.
+          {
+            echo "### clang-tidy over \`src/\` (clang-tidy 18)"
+            echo
+            total=$(grep -cE 'warning: ' clang-tidy.log || true)
+            distinct=$(grep -E 'warning: ' clang-tidy.log | sort -u | wc -l)
+            echo "$total reported lines, $distinct distinct findings."
+            echo "A header is re-reported once per translation unit that includes it."
+            echo
+            echo '| count | check |'
+            echo '| ----: | ----- |'
+            grep -oE '\[[a-z][a-zA-Z0-9.-]*(,[a-z][a-zA-Z0-9.-]*)*\]$' clang-tidy.log \
+              | tr -d '[]' | tr ',' '\n' | sort | uniq -c | sort -rn \
+              | awk '{ printf "| %s | `%s` |\n", $1, $2 }'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the findings
+        # Always, not only on failure: the job does not fail (continue-on-error), so
+        # the artifact is the only place the findings themselves survive.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clang-tidy-log
+          path: clang-tidy.log
+          if-no-files-found: error
+
   deb:
     # Ubuntu packages, one per release. NOT one package built once: 24.04 has
     # Qt 6.4.2 and 26.04 a much newer Qt with different sonames, so a single .deb

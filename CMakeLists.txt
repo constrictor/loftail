@@ -9,6 +9,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# clang-tidy, clangd and every other libtooling consumer read compile_commands.json.
+# On unconditionally because it is free with Ninja and Makefiles, ignored by the
+# Visual Studio generator, and the file is already gitignored. See the clang-tidy
+# block at the bottom of this file.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Qt 6.4's headers (e.g. qvarlengtharray.h) use stdext::checked_array_iterator,
 # a Microsoft STL extension that recent MSVC toolsets compile out by default
 # (_HAS_DEPRECATED_STDEXT_ARR_ITERS now defaults to 0), causing "'stdext':
@@ -403,6 +409,115 @@ if(loftail_sanitize_flags)
     message(STATUS "Sanitizer: ${LOFTAIL_SANITIZE} (${loftail_sanitize_flags})")
 else()
     message(STATUS "Sanitizer: none (-DLOFTAIL_SANITIZE=address or =thread to enable)")
+endif()
+
+# ---------------------------------------------------------------------------
+# clang-tidy. Off by default; like the sanitizers, a build directory of its own
+# rather than a flag you flip on the one you develop in.
+#
+#   -DLOFTAIL_CLANG_TIDY=ON       lint src/ as part of the build
+#   -DLOFTAIL_CLANG_TIDY_EXE=...  name the binary (versions disagree; see below)
+#
+# The checks live in .clang-tidy at the repo root, which BOTH routes read: this
+# option, and the standalone clang_tidy / clang_tidy_all targets below.
+#
+# Two things here are easy to undo.
+#
+# The property is set PER TARGET, on loftail_core/loftail_ui/loftail only (see
+# src/CMakeLists.txt), and NOT through the global CMAKE_CXX_CLANG_TIDY. That is a
+# deliberate divergence from the sanitizer block directly above, whose comment says
+# the opposite: a sanitizer is only sound when every TU linked into a binary agrees,
+# so it must be global. clang-tidy has no such requirement, and going global would
+# put 79 test binaries and bench_index through the static analyzer as well, roughly
+# doubling the cost for a scope neither the CI job nor the default target covers.
+#
+# And a `-*` config is written into the BUILD tree. Qt's AUTOMOC generates a
+# mocs_compilation.cpp per target under <binary>/<target>_autogen/, which
+# CXX_CLANG_TIDY lints like any other source — findings in a file nobody wrote and
+# nobody can fix. clang-tidy resolves its config by walking UP from the input file's
+# own directory, so a config at the root of the build tree switches the generated
+# TUs off while src/ still reaches the real one at the repo root. (SKIP_LINTING on
+# the generated source is the other route, and it is CMake 3.27 — above this
+# project's 3.21 floor.)
+option(LOFTAIL_CLANG_TIDY "Run clang-tidy over src/ as part of the build" OFF)
+
+# Named rather than searched-for because the versions genuinely disagree: Ubuntu
+# 24.04 (the reference environment, ARCHITECTURE.md §1) ships clang-tidy 18, and a
+# dev machine may have anything. A finding present under one and absent under the
+# other is expected; pinning is how two machines get the same answer.
+set(LOFTAIL_CLANG_TIDY_EXE "" CACHE STRING
+    "clang-tidy executable to use; empty searches the usual names")
+
+if(LOFTAIL_CLANG_TIDY_EXE)
+    set(loftail_tidy_names ${LOFTAIL_CLANG_TIDY_EXE})
+else()
+    set(loftail_tidy_names
+        clang-tidy
+        clang-tidy-21 clang-tidy-20 clang-tidy-19 clang-tidy-18)
+endif()
+# NO_CACHE, which is exactly the 3.21 floor: a cached result would not be re-searched
+# when LOFTAIL_CLANG_TIDY_EXE is added to an existing build directory, so naming a
+# version would silently keep using whichever one the first configure happened to find.
+find_program(LOFTAIL_CLANG_TIDY_BIN NAMES ${loftail_tidy_names} NO_CACHE)
+
+if(LOFTAIL_CLANG_TIDY)
+    if(NOT LOFTAIL_CLANG_TIDY_BIN)
+        # Refuse loudly rather than build without it: an option that silently did
+        # nothing would go green and prove nothing, which is the sanitizer block's
+        # rule one section up.
+        message(FATAL_ERROR
+            "-DLOFTAIL_CLANG_TIDY=ON but no clang-tidy was found (looked for "
+            "${loftail_tidy_names}); install clang-tidy, or name one with "
+            "-DLOFTAIL_CLANG_TIDY_EXE=/path/to/clang-tidy")
+    endif()
+    # --quiet drops the "N warnings generated" line per TU, which is one line of
+    # noise per file in a build log that already has one line per file.
+    set(LOFTAIL_CLANG_TIDY_COMMAND "${LOFTAIL_CLANG_TIDY_BIN}" --quiet)
+    file(WRITE "${CMAKE_BINARY_DIR}/.clang-tidy" "Checks: '-*'\n")
+    message(STATUS "clang-tidy: ENABLED (${LOFTAIL_CLANG_TIDY_BIN}, src/ only)")
+else()
+    message(STATUS "clang-tidy: DISABLED "
+                   "(-DLOFTAIL_CLANG_TIDY=ON to lint src/ during the build, or build "
+                   "the clang_tidy target to sweep compile_commands.json instead)")
+endif()
+
+# The standalone sweep. Declared whether or not the option is on, because it costs
+# nothing unbuilt and it is the cheaper of the two routes: it reads the compilation
+# database an ordinary build already wrote, so it needs no second compile.
+#
+# The path regex is what keeps _deps/ and the *_autogen TUs out here — the build-tree
+# config above is only needed by the compile-line route.
+find_program(LOFTAIL_RUN_CLANG_TIDY_BIN
+    NAMES run-clang-tidy run-clang-tidy-21 run-clang-tidy-20 run-clang-tidy-19
+          run-clang-tidy-18 run-clang-tidy.py
+    NO_CACHE)
+if(LOFTAIL_RUN_CLANG_TIDY_BIN AND LOFTAIL_CLANG_TIDY_BIN)
+    add_custom_target(clang_tidy
+        COMMAND "${LOFTAIL_RUN_CLANG_TIDY_BIN}"
+                -p "${CMAKE_BINARY_DIR}"
+                -clang-tidy-binary "${LOFTAIL_CLANG_TIDY_BIN}"
+                -quiet
+                "^${CMAKE_SOURCE_DIR}/src/"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "clang-tidy over src/"
+        USES_TERMINAL
+        VERBATIM)
+    add_custom_target(clang_tidy_all
+        COMMAND "${LOFTAIL_RUN_CLANG_TIDY_BIN}"
+                -p "${CMAKE_BINARY_DIR}"
+                -clang-tidy-binary "${LOFTAIL_CLANG_TIDY_BIN}"
+                -quiet
+                "^${CMAKE_SOURCE_DIR}/(src|tests)/"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "clang-tidy over src/ and tests/"
+        USES_TERMINAL
+        VERBATIM)
+else()
+    # Say so rather than leaving `--target clang_tidy` to fail as "no rule to make
+    # target", which reads as a broken build rather than a missing tool.
+    message(STATUS "clang-tidy sweep targets: unavailable "
+                   "(run-clang-tidy and clang-tidy must both be on PATH for the "
+                   "clang_tidy / clang_tidy_all targets)")
 endif()
 
 enable_testing()

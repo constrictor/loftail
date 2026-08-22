@@ -1,0 +1,135 @@
+# clang-tidy configuration for loftail (CLAUDE.md, "Stack" and "Commands").
+#
+# Two routes read this one file:
+#   * -DLOFTAIL_CLANG_TIDY=ON, which puts clang-tidy on the compile line of the
+#     three src/ targets;
+#   * the standalone `clang_tidy` / `clang_tidy_all` targets, which drive
+#     run-clang-tidy over compile_commands.json.
+# Keeping the config in one place is what stops the two disagreeing.
+#
+# Nothing here is WarningsAsErrors. The tree has never been linted, so there is a
+# standing baseline; a build that refuses to finish on it is a build people work
+# around. The CI job is non-blocking for the same reason.
+#
+# NOT enabled, deliberately:
+#   cppcoreguidelines-*            almost every check in it fires on ordinary Qt
+#                                  code (pro-type-vararg on qDebug, pro-bounds-*
+#                                  on every array, owning-memory on `new QWidget`).
+#                                  Worth revisiting once the baseline is at zero.
+#   readability-identifier-naming  the tree is already consistently Qt-styled and a
+#                                  naming table is a large surface to get wrong.
+
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  concurrency-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -cert-err58-cpp,
+  -clang-analyzer-optin.performance.Padding,
+  -misc-const-correctness,
+  -misc-include-cleaner,
+  -misc-non-private-member-variables-in-classes,
+  -modernize-avoid-c-arrays,
+  -modernize-use-designated-initializers,
+  -modernize-use-nodiscard,
+  -modernize-use-trailing-return-type,
+  -performance-enum-size,
+  -portability-avoid-pragma-once,
+  -readability-braces-around-statements,
+  -readability-else-after-return,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-implicit-bool-conversion,
+  -readability-magic-numbers
+
+# Why each exclusion, in the order it appears above. The counts are from the first
+# full sweep over src/ with clang-tidy 21: 3918 reported lines (997 distinct
+# findings; a header is re-reported once per TU that includes it) before these came
+# off, 805 lines / 408 distinct after. A count is quoted where the count IS the
+# argument; where the check is simply wrong for this tree the count is beside the
+# point.
+#
+#   bugprone-easily-swappable-parameters
+#       Qt APIs and the geometry helpers take runs of same-typed ints by design
+#       (x, y, w, h; first, last; before, after). Every one of them is a finding.
+#   cert-err58-cpp
+#       fires on every file-scope QString/QRegularExpression constant, which is how
+#       the parse and format tables are written.
+#   clang-analyzer-optin.performance.Padding                             12 findings
+#       ELEVEN of the twelve are the same one: Document.h, re-reported once per TU
+#       that includes it. It is an opt-in layout hint, and invariant #1 is about
+#       Record — 32 bytes, one per indexed line — not about the one Document per
+#       open log. The rest of clang-analyzer-* stays on; this is the only check in
+#       it that is switched off.
+#   misc-const-correctness                                              208 findings
+#       proposes `const QApplication app` in main.cpp and const-qualified locals
+#       that are then moved from. The genuinely useful subset is not worth 208.
+#   misc-include-cleaner
+#       wants a direct #include for every symbol, against Qt's umbrella headers.
+#   misc-non-private-member-variables-in-classes
+#       Record (invariant #1, exactly 32 bytes), FormatSettings, LogProfile,
+#       MatchCriteria and the rest of the settings structs are aggregates on purpose.
+#   modernize-avoid-c-arrays
+#       the static tables (kPriorityByIndex, the palette bands) are C arrays for a
+#       reason: constant-initialised, no allocation, usable in a constexpr context.
+#   modernize-use-designated-initializers
+#       C++20, and noisy against every Qt struct.
+#   modernize-use-nodiscard                                            2018 findings
+#       51% of the entire baseline on its own: an annotation on every const accessor
+#       in 96 headers. Qt does not mark its own getters [[nodiscard]], so adopting it
+#       would make loftail's headers read unlike the framework they sit on — the
+#       exact thing CLAUDE.md Conventions asks not to happen.
+#   modernize-use-trailing-return-type
+#       would rewrite every signature in the tree, for the same reason.
+#   performance-enum-size                                               228 findings
+#       every one says "use std::uint8_t". These enums are classifications passed in
+#       registers, not fields of the 32-byte Record; and Priority in particular is
+#       declared in severity order so a minimum-level filter is one >= (invariant #4),
+#       which narrowing its base type buys nothing for.
+#   portability-avoid-pragma-once                                       647 findings
+#       one per header, because every header in the tree opens with #pragma once.
+#       That is the project's convention and all four supported toolchains honour it.
+#   readability-braces-around-statements, readability-else-after-return
+#       pure style, and there is no .clang-format enforcing a matching shape.
+#   readability-function-cognitive-complexity
+#       one unactionable finding each for MainWindow.cpp and LogView.cpp.
+#   readability-identifier-length
+#       r, dx, ok are the local idiom.
+#   readability-implicit-bool-conversion
+#       `if (ptr)` on a Qt pointer is universal here.
+#   readability-magic-numbers
+#       the geometry code is measured pixel and character constants, which is the
+#       point of it (ARCHITECTURE.md §7.1.1); every one is deliberate and commented.
+#
+# Kept ON deliberately, against its count: bugprone-narrowing-conversions, 292
+# findings, 144 of them in RecordIndex.h and 48 in FilteredIndex.h. That is not an
+# accident of where the qsizetype/int mixing happens to be — it is precisely the
+# two-level prefix-sum geometry where the documented scroll-range overflow lives
+# ("the scroll range is qBound-ed into int, not cast", ARCHITECTURE.md §7.1.1). A
+# check whose findings cluster on the code that has already been bitten by that
+# class stays on.
+
+# THE TWO CLANG-TIDY VERSIONS DISAGREE, ON PURPOSE. CI pins 18 (what Ubuntu 24.04
+# ships, ARCHITECTURE.md §1) and a dev machine has whatever it has — 21 here, which
+# is what the counts above were measured with. Checks that arrived after 18 are
+# simply absent there: portability-avoid-pragma-once is one of the exclusions above
+# and matches nothing under 18, while readability-use-concise-preprocessor-directives
+# (41 findings here) and modernize-use-integer-sign-comparison (34) are enabled and
+# report nothing there. An unknown name in the list is inert, never an error, so
+# neither half needs guarding. Do NOT delete a name because the local binary does
+# not know it — check which version ADDED it first.
+
+# Only loftail's own headers. Qt's are not ours to fix, and the dev machine's Qt
+# (6.10) is newer than the reference build's (6.4) — a diagnostic from a Qt header
+# would differ between this box and CI for reasons that have nothing to do with us.
+HeaderFilterRegex: '.*/(src/(core|ui|bench)|tests)/[^/]*\.h$'
+
+WarningsAsErrors: ''
+FormatStyle: none
