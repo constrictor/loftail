@@ -151,13 +151,35 @@ Checks: >
 # simply absent there: portability-avoid-pragma-once is one of the exclusions above
 # and matches nothing under 18, while readability-use-concise-preprocessor-directives
 # (41 findings here) and modernize-use-integer-sign-comparison (34) are enabled and
-# report nothing there. An unknown name in the list is inert, never an error, so
+# report nothing there. An unknown CHECK NAME in the list is inert, never an error, so
 # neither half needs guarding. Do NOT delete a name because the local binary does
 # not know it — check which version ADDED it first.
+#
+# THAT TOLERANCE DOES NOT EXTEND TO CONFIG KEYS, and the difference is a trap worth
+# stating once. An unknown key in THIS file is fatal: clang-tidy 18 answers
+# `error: unknown key 'X'` followed by `Error parsing .clang-tidy: Invalid argument`
+# and then runs with NO configuration at all — every check off, zero findings, and a
+# CI job that looks like it passed because it linted nothing. Verified against a real
+# 18 binary with ExcludeHeaderFilterRegex (a 19+ key). So a key added here must exist
+# in 18 as well, or CI is silently disarmed rather than merely noisier.
 
 # Only loftail's own headers. Qt's are not ours to fix, and the dev machine's Qt
 # (6.10) is newer than the reference build's (6.4) — a diagnostic from a Qt header
 # would differ between this box and CI for reasons that have nothing to do with us.
+#
+# IT DOES NOT FILTER THE PATH-SENSITIVE ANALYZER, which is why the baseline is zero
+# here and TWO on CI rather than zero on both. A clang-analyzer finding is anchored
+# wherever the bug manifests, and for these two that is inside Qt: a "Potential memory
+# leak" in QtCore/qobjectdefs.h and a "Use of memory after it is freed" in
+# QtCore/qsharedpointer_impl.h, each reachable from several of our translation units
+# (LiveController, KeychainSecretStore, Document). They cannot take a NOLINT, because
+# a NOLINT lives on the anchor line and that line is not in this tree. The key that
+# would exclude them, ExcludeHeaderFilterRegex, is clang-tidy 19+ and adding it would
+# disarm CI's 18 entirely (see the config-key trap above); 24.04 ships nothing newer.
+# So they stand, deliberately: they are the KNOWN RESIDUAL and the number to compare a
+# future CI run against is 2, not 0. Switching off clang-analyzer-cplusplus.NewDelete
+# and .NewDeleteLeaks would clear them and was rejected — NewDeleteLeaks is the check
+# that produced the one real report in main.cpp.
 HeaderFilterRegex: '.*/(src/(core|ui|bench)|tests)/[^/]*\.h$'
 
 WarningsAsErrors: ''
