@@ -625,7 +625,7 @@ target_link_libraries(tst_filteranchor PRIVATE loftail_ui Qt6::Test Qt6::Widgets
 add_test(NAME tst_filteranchor COMMAND tst_filteranchor)
 set_tests_properties(tst_filteranchor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-# "Last run" (SPEC.md §3a): the Runs pane's default is a standing instruction and not a
+# "Follow the last" (SPEC.md §3a): the Runs pane's default is a standing instruction and not a
 # run, so a live append that starts a new run moves the view onto it — including on a tab
 # in the BACKGROUND — while a run the user pinned is left alone by the same tick. The
 # document half is core-side in tst_runselect; this is the wiring that gives it a meaning.

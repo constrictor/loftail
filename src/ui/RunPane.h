@@ -32,21 +32,31 @@ class RunPane : public QWidget
 public:
     explicit RunPane(QWidget *parent = nullptr);
 
-    // The list's two fixed rows, and the run index each carries. Row 0 is "Last run"
-    // — not a run but a standing instruction to show whichever run is last, which is
-    // why it needs a sentinel of its own rather than the ordinal it currently means:
-    // the whole point is that the ordinal changes underneath it (SPEC.md §3a).
-    static constexpr int kLastRunRow  = 0;
-    static constexpr int kAllRunsRow  = 1;
-    static constexpr int kFirstRunRow = 2;   // row of runs().at(0)
-    static constexpr int kLastRun     = -2;  // runSelected() payload for row 0
-    static constexpr int kAllRuns     = -1;  // ...and for row 1
+    // The list's two fixed rows, and the run index each carries. Neither is a run:
+    // "All runs" lifts the restriction, and "Follow the last" is a standing instruction
+    // to show whichever run is last — which is why it needs a sentinel of its own rather
+    // than the ordinal it currently means, the whole point being that the ordinal
+    // changes underneath it (SPEC.md §3a).
+    //
+    // The list reads in FILE order — "All runs" first, then the runs from oldest to
+    // newest — and "Follow the last" sits at the BOTTOM, beside the newest run it
+    // resolves to and where a reader watching a live log is already looking. So the two
+    // fixed rows are the two ENDS of the list and only the top one has a constant row
+    // number; the follow row is `count() - 1`, whatever the log turned out to hold, and
+    // `followRow()` is what says so to a caller (tests included) rather than each of
+    // them writing the arithmetic out.
+    static constexpr int kAllRunsRow  = 0;
+    static constexpr int kFirstRunRow = 1;   // row of runs().at(0)
+    static constexpr int kLastRun     = -2;  // runSelected() payload for the follow row
+    static constexpr int kAllRuns     = -1;  // ...and for row 0
+    int followRow() const;
 
     // A run row is drawn as THREE lines — its name in bold, the span of instants it
     // covers, and what is outstanding in it — so its parts travel as item data and the
     // delegate composes them, rather than one label string being taken apart again at
-    // paint time. The two rows above the runs carry none of these, and that absence is
-    // exactly how the delegate tells a run row from a mode row.
+    // paint time. The two mode rows at the ends of the list carry them too — they
+    // resolve to a stretch of this log and report what they will show — so what the
+    // absence of the title role now means is a row with no document behind it.
     static constexpr int kRunTitleRole = Qt::UserRole + 1;  // "Run 3"
     static constexpr int kRunTimesRole = Qt::UserRole + 2;  // "10:04:11 - 10:41:57"
     static constexpr int kRunFatalRole = Qt::UserRole + 3;  // int, 0 == absent
@@ -72,8 +82,20 @@ signals:
     // last", which keeps moving as the log grows.
     void runSelected(int runIndex);
 
+protected:
+    // The zebra band below is a colour derived from the CURRENT theme's Base and Text,
+    // written into the list's own palette — so it has to be re-derived when the theme
+    // moves, exactly as HighlighterPane re-paints its swatches.
+    void changeEvent(QEvent *event) override;
+
 private:
     void buildUi();
+    // Give the run list a visible alternating band (SPEC.md §3a). QPalette::AlternateBase
+    // is the role the style reads and nothing obliges a theme to make it differ from
+    // Base, which is the trap UiColors::alternateRowColor() exists for — the log table's
+    // own band measured 1.00:1 on a white theme for eight milestones. Only that one role
+    // is written, so Base, Text and Highlight keep tracking the theme.
+    void applyZebraColour();
     void emitPattern();
     void rebuildRunList();
     // Re-word the note under the Apply button: quiet while the field agrees with the
@@ -97,7 +119,8 @@ private:
     int         m_noteState = -1;
     // The run list is the one thing in this pane that GROWS: it is as long as the log
     // has runs, which is unknown when the pane is built and changes while it scans.
-    // Row 0 is "Last run", row 1 is "All runs"; row i + kFirstRunRow is runs().at(i).
+    // Row 0 is "All runs" and the bottom row is "Follow the last"; row i + kFirstRunRow
+    // is runs().at(i).
     QListWidget *m_runList = nullptr;
 };
 

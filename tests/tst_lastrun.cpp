@@ -5,6 +5,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QTabWidget>
+#include <QScrollBar>
 #include <QTemporaryDir>
 
 #include <QTableWidget>
@@ -22,7 +23,7 @@
 
 using namespace loftail;
 
-// "Last run" (SPEC.md §3a): the Runs pane's first entry and its default, which is not a
+// "Follow the last" (SPEC.md §3a): the Runs pane's bottom entry and its default, which is not a
 // run but a standing instruction to show whichever run is last. The document half — the
 // sticky flag, the retarget, and the append still freezing at the boundary — is pinned
 // core-side by tst_runselect. What only a WINDOW-level test can pin is the wiring that
@@ -34,6 +35,11 @@ using namespace loftail;
 // Ticks are driven through LiveController::checkNow(), like tst_multidoc: the watcher's
 // own poll would make these wait on a timer for nothing. Widgets are found by OBJECT
 // NAME, never by visible text.
+// "Follow the last" is the BOTTOM row of the Runs pane's list (SPEC.md §3a), so its
+// index is a function of how many runs the log turned out to hold rather than a
+// constant — RunPane::followRow() is the same answer where the pane itself is in hand.
+static int followRow(const QListWidget *list) { return list ? list->count() - 1 : -1; }
+
 class TestLastRun : public QObject
 {
     Q_OBJECT
@@ -57,6 +63,21 @@ private:
         f.write(banner());
         f.write(line("a0"));
         f.write(line("a1"));
+        f.close();
+    }
+
+    // Two runs long enough that neither fits a viewport, so where a run OPENS is a
+    // question with an observable answer: the first record is off screen at the end and
+    // the last one is off screen at the start.
+    static void writeTwoLongRuns(const QString &path)
+    {
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        for (int run = 0; run < 2; ++run) {
+            f.write(banner());
+            for (int i = 0; i < 80; ++i)
+                f.write(line(qPrintable(QStringLiteral("r%1 line %2").arg(run).arg(i))));
+        }
         f.close();
     }
 
@@ -121,6 +142,8 @@ private slots:
     void aBackgroundTabFollowsTheNewRunToo();
     void aPinnedRunIsLeftWhereItIs();
     void aRestartDoesNotRewriteTheSeededHighlightRules();
+    void aPinnedRunOpensAtItsEnd();
+    void theLastRunOpensAtItsEndAndKeepsFollowing();
 };
 
 void TestLastRun::aNewRunMovesTheViewOntoIt()
@@ -153,12 +176,12 @@ void TestLastRun::aNewRunMovesTheViewOntoIt()
     QCOMPARE(ctx->model->rowCount(), 2); // the new banner and its one line
     QCOMPARE(doc->filtered().sourceRow(0), 3);
 
-    // ...and the pane still says "Last run", not the ordinal it has landed on: the next
+    // ...and the pane is still on "Follow the last", not the ordinal it has landed on: the next
     // restart has to move it again.
     QListWidget *list = runList(w);
     QVERIFY(list);
-    QCOMPARE(list->count(), 4); // "Last run" + "All runs" + two runs
-    QCOMPARE(list->currentRow(), RunPane::kLastRunRow);
+    QCOMPARE(list->count(), 4); // "All runs" + two runs + "Follow the last"
+    QCOMPARE(list->currentRow(), followRow(list));
     QVERIFY(doc->followingLastRun());
 }
 
@@ -272,6 +295,101 @@ void TestLastRun::aRestartDoesNotRewriteTheSeededHighlightRules()
     QCOMPARE(doc->highlighters().rules, HighlighterSet::defaults().rules); // ...and cost nothing
     auto *pane = w.findChild<HighlighterPane *>();
     QVERIFY(pane && !pane->hasCustomRules());
+}
+
+// Selecting a run opens it at its END (SPEC.md §3a). A run is picked because of how it
+// went, and what went wrong is the last thing in it — a crash writes its stack and stops
+// — so opening at the first record showed the one part nobody was looking for and left
+// the reader scrolling the whole run to reach the part they were. The assertion has to be
+// on the SCROLL POSITION as well as on the selected record: the record is what makes the
+// view land there, and the position is the thing the reader actually sees.
+void TestLastRun::aPinnedRunOpensAtItsEnd()
+{
+    const QString path = m_dir.filePath(QStringLiteral("tail-pinned.log"));
+    writeTwoLongRuns(path);
+
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+    w.openFile(path);
+    waitUntilIndexed(w);
+    typeRunPattern(w);
+
+    DocumentContext *ctx = contextAt(w, 0);
+    QVERIFY(ctx);
+    QCOMPARE(ctx->doc->runs().size(), 2);
+    auto *view = qobject_cast<DocumentView *>(tabs(w)->widget(0));
+    QVERIFY(view);
+    LogView *lv = view->logView();
+    QVERIFY(lv);
+
+    QListWidget *list = runList(w);
+    QVERIFY(list);
+    list->setCurrentRow(RunPane::kFirstRunRow); // run 0: earlier, finished, pinned
+
+    QCOMPARE(ctx->doc->selectedRun(), 0);
+    const int rows = ctx->model->rowCount();
+    QCOMPARE(rows, 81); // the banner and its 80 lines
+    // The run does not fit, or there would be nothing to open AT.
+    QVERIFY(lv->verticalScrollBar()->maximum() > 0);
+    QCOMPARE(lv->currentRecord(), rows - 1);
+    QCOMPARE(lv->verticalScrollBar()->value(), lv->verticalScrollBar()->maximum());
+}
+
+// The same for the two MODE rows — "All runs" and "Follow the last" — which is the same
+// question ("what happened at the end?") asked of a moving target: both open on the last
+// record of what they select and then FOLLOW it, so the end keeps moving under the
+// reader. The selected record is asserted as well as the scroll position: scrolling to
+// the end alone left the current record wherever the previous choice had put it, so the
+// first arrow key jumped the reader back out of the tail they had just been given.
+void TestLastRun::theLastRunOpensAtItsEndAndKeepsFollowing()
+{
+    const QString path = m_dir.filePath(QStringLiteral("tail-last.log"));
+    writeTwoLongRuns(path);
+
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+    w.openFile(path);
+    waitUntilIndexed(w);
+    typeRunPattern(w);
+
+    DocumentContext *ctx = contextAt(w, 0);
+    QVERIFY(ctx);
+    auto *view = qobject_cast<DocumentView *>(tabs(w)->widget(0));
+    QVERIFY(view);
+    LogView *lv = view->logView();
+    QVERIFY(lv);
+
+    QListWidget *list = runList(w);
+    QVERIFY(list);
+    const auto landsAtTheEnd = [lv]() {
+        QVERIFY(lv->verticalScrollBar()->maximum() > 0); // ...or there is no end to land at
+        QCOMPARE(lv->verticalScrollBar()->value(), lv->verticalScrollBar()->maximum());
+        QCOMPARE(lv->currentRecord(), lv->recordCount() - 1);
+        QVERIFY(lv->following());
+    };
+
+    list->setCurrentRow(RunPane::kFirstRunRow);       // away from the end...
+    list->setCurrentRow(RunPane::kFirstRunRow + 1);   // ...and onto the newest run
+    QCOMPARE(ctx->doc->selectedRun(), 1);
+    QCOMPARE(ctx->model->rowCount(), 81);
+    landsAtTheEnd();
+
+    // "Follow the last" is a standing instruction rather than an ordinal, and "All runs" lifts
+    // the restriction altogether — both still open on the end of what they show.
+    list->setCurrentRow(RunPane::kFirstRunRow);
+    list->setCurrentRow(followRow(list));
+    QVERIFY(ctx->doc->followingLastRun());
+    QCOMPARE(ctx->model->rowCount(), 81);
+    landsAtTheEnd();
+
+    list->setCurrentRow(RunPane::kFirstRunRow);
+    list->setCurrentRow(RunPane::kAllRunsRow);
+    QCOMPARE(ctx->model->rowCount(), 162); // both runs, whole file
+    landsAtTheEnd();
 }
 
 int main(int argc, char *argv[])

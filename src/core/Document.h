@@ -303,7 +303,8 @@ public:
     // An explicit pick, so it stops following the last run.
     void selectRun(int index);
 
-    // Follow the LAST run: the "Last run" entry the Runs pane opens on (SPEC.md §3a).
+    // Follow the LAST run: the "Follow the last" entry the Runs pane opens on
+    // (SPEC.md §3a).
     // Not a synonym for selectRun(runs().size() - 1) — it is STICKY, so when a new run
     // is appended the selection moves to it rather than staying pinned to the run that
     // was last when it was chosen. With no runs at all (no pattern, or a pattern that
@@ -374,6 +375,14 @@ public:
     // Records only ever APPEND within a run, so the counts resume where the last call
     // gave up. Integer fields only — nothing here decodes (invariant #1).
     RunStats runStats(int i) const;
+
+    // The same fold over the WHOLE file, which is what the pane's "All runs" row
+    // reports — and what "Follow the last" falls back to on a log where no run has been
+    // detected, that row being the whole file there for exactly the same reason the
+    // view is (SPEC.md §3a). Memoised on the same terms and dropped through the same
+    // funnel, so it cannot outlive a rescan or a re-detect: the counts are a fold over
+    // a range, which — unlike a first-instant baseline — a moved end really can change.
+    RunStats fileStats() const;
     // True when a run currently narrows the view (drives subset materialization and
     // the live-append branch, exactly like FilterSet::anyActive()).
     bool viewRestricted() const { return m_viewRestricted; }
@@ -578,6 +587,18 @@ private:
     // Drop every per-run memo — the RunSeconds baselines AND the run statistics.
     // Call whenever the run partition or the timestamps themselves change under it.
     void invalidateRunMemos() const;
+    // Run statistics, memoised on the same terms (see runStats()). `scanned` is the
+    // next record to examine; the stats are the fold of [from, scanned).
+    struct RunStatsMemo
+    {
+        RunStats stats;
+        int      scanned = -1;
+    };
+    // Fold the FATAL/ERROR/WARN counts and the span of [from, end) into `memo`,
+    // resuming from its cursor. Shared by runStats() and fileStats() so the two cannot
+    // disagree about what a count is — the "All runs" row is meant to be the sum of the
+    // rows under it, and two folds are two chances to answer otherwise.
+    void foldStats(RunStatsMemo &memo, int from, int end) const;
     // First timestamped record in [from, end), resuming from b's cursor.
     qint64 resolveBaseline(Baseline &b, int from, int end) const;
     // The whole first decoded physical line of a record (the run-start match target).
@@ -641,7 +662,7 @@ private:
     // selected run's byte interval is cached in m_viewStart/m_viewEnd.
     QVector<Run> m_runs;
     int          m_selectedRun = -1;   // index into m_runs, or -1 == all runs
-    // "Last run" (SPEC.md §3a) is a MODE and not a third value of m_selectedRun: the
+    // "Follow the last" (SPEC.md §3a) is a MODE and not a third value of m_selectedRun: the
     // selection has to name a concrete run for every bound, baseline and label below,
     // so what is sticky is the rule that re-points it. Default true — the entry the
     // Runs pane opens on. A document with no runs follows nothing and shows the file.
@@ -661,14 +682,8 @@ private:
     mutable Baseline          m_fileBase;   // the no-run-pattern whole-file baseline
     mutable int               m_runHint = -1;
 
-    // Run statistics, memoised on the same terms (see runStats()). `scanned` is the
-    // next record to examine; the stats are the fold of [Run::startRecord, scanned).
-    struct RunStatsMemo
-    {
-        RunStats stats;
-        int      scanned = -1;
-    };
     mutable QVector<RunStatsMemo> m_runStats;  // parallel to m_runs
+    mutable RunStatsMemo          m_fileStats; // the whole-file fold, for "All runs"
 };
 
 } // namespace loftail

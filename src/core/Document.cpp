@@ -1033,6 +1033,12 @@ void Document::invalidateRunMemos() const
     m_fileBase = Baseline();
     m_runHint = -1;
     m_runStats.clear();
+    // The whole-file fold goes with them. It survives a re-DETECT untouched in principle
+    // — the file's counts do not depend on where the runs are — but it is dropped here
+    // anyway rather than given an invalidation rule of its own: the two callers that
+    // matter (a rescan and a reparse) replace or rewrite every record, and one funnel
+    // that is occasionally pessimistic beats two that can disagree.
+    m_fileStats = RunStatsMemo();
 }
 
 qint64 Document::resolveBaseline(Baseline &b, int from, int end) const
@@ -1108,11 +1114,26 @@ Document::RunStats Document::runStats(int i) const
                                              : int(m_index.records.size());
 
     RunStatsMemo &memo = m_runStats[i];
+    foldStats(memo, from, end);
+    return memo.stats;
+}
+
+Document::RunStats Document::fileStats() const
+{
+    // The whole file is one range with no partition under it, so this needs neither the
+    // parallel-vector bookkeeping above nor a re-detect to stay right: records only ever
+    // append at the end, which is exactly what the resume cursor is for.
+    foldStats(m_fileStats, 0, int(m_index.records.size()));
+    return m_fileStats.stats;
+}
+
+void Document::foldStats(RunStatsMemo &memo, int from, int end) const
+{
     // A count is not undoable the way runBaseTimestamp()'s first-instant memo is: the
     // baseline survives its run's end moving because the FIRST instant cannot change,
     // and a fold over a range does not. So an end that has moved BACKWARDS — a new
     // marker splitting this run, everything from it on becoming the next run's — is
-    // recounted from the run's start rather than resumed.
+    // recounted from the start rather than resumed.
     //
     // No caller reaches that today: updateRunsAfterAppend() only ever finds a marker in
     // records appended since the last tick, so the split always lands at or beyond what
@@ -1141,7 +1162,6 @@ Document::RunStats Document::runStats(int i) const
             break;
         }
     }
-    return memo.stats;
 }
 
 int Document::runRecordCount(int i) const

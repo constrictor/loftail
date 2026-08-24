@@ -30,6 +30,11 @@ using namespace loftail;
 // session); the second is constructed (restoring it) and must come back with the
 // same file, filters and highlighters. A separate case proves a missing last file
 // degrades to an empty view rather than an error. Runs under the offscreen platform.
+// "Follow the last" is the BOTTOM row of the Runs pane's list (SPEC.md §3a), so its
+// index is a function of how many runs the log turned out to hold rather than a
+// constant — RunPane::followRow() is the same answer where the pane itself is in hand.
+static int followRow(const QListWidget *list) { return list ? list->count() - 1 : -1; }
+
 class TestSessionGui : public QObject
 {
     Q_OBJECT
@@ -328,10 +333,10 @@ void TestSessionGui::runSelectionThroughUiAndPersists()
         apply->click();
         QTest::qWait(50);
 
-        QCOMPARE(runs->count(), 5);      // "Last run" + "All runs" + 3 detected runs
+        QCOMPARE(runs->count(), 5);      // "All runs" + 3 runs + "Follow the last"
         // Not row 4 — the newest run is what is SHOWN, but what is selected is the
-        // standing "Last run" instruction that put it there (SPEC.md §3a).
-        QCOMPARE(runs->currentRow(), RunPane::kLastRunRow);
+        // standing "Follow the last" instruction that put it there (SPEC.md §3a).
+        QCOMPARE(runs->currentRow(), followRow(runs));
 
         w.close(); // saves the session incl. the run-start pattern + selection
     }
@@ -350,10 +355,10 @@ void TestSessionGui::runSelectionThroughUiAndPersists()
         QVERIFY(edit && runs);
         QCOMPARE(edit->text(), QStringLiteral("RUN START")); // restored
         QCOMPARE(runs->count(), 5);                          // runs re-detected
-        // "Last run" comes back as itself and not as the run it happened to resolve to
+        // "Follow the last" comes back as itself and not as the run it happened to resolve to
         // last time: saving that run would restore the session pinned to a run the
         // application has since finished, which is the one thing it exists not to do.
-        QCOMPARE(runs->currentRow(), RunPane::kLastRunRow);
+        QCOMPARE(runs->currentRow(), followRow(runs));
         w.close();
     }
 }

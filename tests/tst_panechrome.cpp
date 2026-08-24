@@ -41,6 +41,11 @@ using namespace loftail;
 // real title bar, which is why the bar is repainted rather than hidden or replaced. If
 // a future Qt makes tab-dragging undock a pane, `titleBarCannotSimplyBeHidden` starts
 // failing and the cheaper design becomes available.
+// "Follow the last" is the BOTTOM row of the Runs pane's list (SPEC.md §3a), so its
+// index is a function of how many runs the log turned out to hold rather than a
+// constant — RunPane::followRow() is the same answer where the pane itself is in hand.
+static int followRow(const QListWidget *list) { return list ? list->count() - 1 : -1; }
+
 class TestPaneChrome : public QObject
 {
     Q_OBJECT
@@ -530,7 +535,7 @@ void TestPaneChrome::aRunClickOrATimestampModeChangeIsNotAnEditToTheRules()
     QCOMPARE(doc->highlighters().rules, HighlighterSet::defaults().rules);
     QCOMPARE(highlighters->windowTitle(), plain);
 
-    runs->setCurrentRow(RunPane::kLastRunRow);
+    runs->setCurrentRow(followRow(runs));
     QTest::qWait(50);
     QCOMPARE(doc->highlighters().rules, HighlighterSet::defaults().rules);
     QCOMPARE(highlighters->windowTitle(), plain);

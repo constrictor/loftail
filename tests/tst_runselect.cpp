@@ -114,6 +114,7 @@ private slots:
     void runStatsSpanAndCounts();
     void runStatsFollowALiveAppend();
     void aNewRunsRecordsStopBeingCountedInTheRunBeforeIt();
+    void theWholeFileFoldIsTheSumOfTheRuns();
 };
 
 void TestRunSelect::detectsRunsAndSelectsNewest()
@@ -372,7 +373,7 @@ void TestRunSelect::liveNewRunStaysOnCurrent()
 void TestRunSelect::liveNewRunIsFollowedWhenLastRunIsSelected()
 {
     // The other half of the decision above, and the pane's DEFAULT (SPEC.md §3a):
-    // "Last run" is not an ordinal but a standing instruction, so a restart moves the
+    // "Follow the last" is not an ordinal but a standing instruction, so a restart moves the
     // view onto the run that just started rather than leaving it on the finished one.
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -775,6 +776,77 @@ void TestRunSelect::aNewRunsRecordsStopBeingCountedInTheRunBeforeIt()
     QCOMPARE(doc.runStats(0).fatal, 0);
     QCOMPARE(doc.runStats(1).fatal, 1);  // ...and the new run counts only what is its
     QCOMPARE(doc.runStats(1).error, 0);
+}
+
+void TestRunSelect::theWholeFileFoldIsTheSumOfTheRuns()
+{
+    // fileStats() is what the pane's "All runs" row reports, so it has to be the sum of
+    // the rows under it — which is why it goes through the same fold as runStats() and
+    // not through a second count of its own. It also has to survive a live append (the
+    // resume cursor) and a re-detect (the invalidation funnel drops it with the rest).
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("filestats.log"));
+
+    QByteArray whole;
+    int sec = 0;
+    whole += rec(sec++, "t0", "WARN ", "boot", "before any run");
+    whole += banner(sec++, 0);
+    whole += rec(sec++, "t1", "ERROR", "svc", "e");
+    whole += banner(sec++, 1);
+    whole += rec(sec++, "t1", "FATAL", "svc", "f");
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY(openDoc(doc, path));
+    doc.setRunStart(QString::fromLatin1(kMarker), false, Qt::CaseInsensitive);
+    QCOMPARE(doc.runs().size(), 3); // preamble + two
+
+    const auto sumOfRuns = [&doc]() {
+        Document::RunStats sum;
+        for (int i = 0; i < doc.runs().size(); ++i) {
+            const Document::RunStats r = doc.runStats(i);
+            sum.fatal += r.fatal;
+            sum.error += r.error;
+            sum.warn  += r.warn;
+        }
+        return sum;
+    };
+
+    Document::RunStats all = doc.fileStats();
+    QCOMPARE(all.fatal, 1);
+    QCOMPARE(all.error, 1);
+    QCOMPARE(all.warn, 1);   // the preamble's WARN counts: the FILE is the range
+    QCOMPARE(all.fatal, sumOfRuns().fatal);
+    QCOMPARE(all.error, sumOfRuns().error);
+    QCOMPARE(all.warn, sumOfRuns().warn);
+    // The span is the file's first and last timestamped record, across every boundary.
+    QCOMPARE(all.firstTimestamp, doc.index().records.at(0).timestamp);
+    QCOMPARE(all.lastTimestamp, doc.index().records.at(4).timestamp);
+
+    // Asking twice answers the same — a resume cursor, never an accumulator.
+    QCOMPARE(doc.fileStats().error, 1);
+
+    // A live append resumes rather than freezing or refolding.
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+    QVERIFY(append(path, rec(sec++, "t1", "ERROR", "svc", "e2")));
+    live.checkNow();
+    QCOMPARE(doc.index().records.size(), 6);
+    all = doc.fileStats();
+    QCOMPARE(all.error, 2);
+    QCOMPARE(all.lastTimestamp, doc.index().records.at(5).timestamp);
+    QCOMPARE(all.error, sumOfRuns().error);
+
+    // And a re-detect — which drops every memo, this one included — leaves the file's
+    // own counts where they were: where the runs fall says nothing about them.
+    doc.setRunStart(QStringLiteral("nothing matches this"), false, Qt::CaseInsensitive);
+    QVERIFY(doc.runs().isEmpty());
+    all = doc.fileStats();
+    QCOMPARE(all.fatal, 1);
+    QCOMPARE(all.error, 2);
+    QCOMPARE(all.warn, 1);
 }
 
 QTEST_GUILESS_MAIN(TestRunSelect)

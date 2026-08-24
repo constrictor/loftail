@@ -132,7 +132,7 @@ private slots:
     void changingAFilterInThePaneKeepsTheViewWhereItWas();
     void everyViewOfOneFileKeepsItsOwnPlace();
     void clearFiltersFromTheViewMenuKeepsThePlaceToo();
-    void pickingAnEarlierRunStillLandsAtItsTop();
+    void pickingAnEarlierRunStillLandsAtItsEnd();
 };
 
 void TestFilterAnchor::initTestCase()
@@ -269,11 +269,13 @@ void TestFilterAnchor::clearFiltersFromTheViewMenuKeepsThePlaceToo()
     QCOMPARE(log->currentRecord() - sb->value(), offsetBefore);
 }
 
-void TestFilterAnchor::pickingAnEarlierRunStillLandsAtItsTop()
+void TestFilterAnchor::pickingAnEarlierRunStillLandsAtItsEnd()
 {
     // A run selection re-applies the filters and then positions every view itself
     // (KeepPosition::No). The claim here is only that the anchor did not get in the
-    // way of that — the run still opens at its own first record, with follow detached.
+    // way of that — the run still opens at its own LAST record (SPEC.md §3a). The view
+    // is sent to the TOP first, so a surviving anchor and the explicit positioning pull
+    // in opposite directions and the assertion can tell them apart.
     MainWindow w;
     w.resize(1200, 800);
     w.show();
@@ -294,16 +296,17 @@ void TestFilterAnchor::pickingAnEarlierRunStillLandsAtItsTop()
 
     LogView *log = v->logView();
     log->setWrapMode(LogView::WrapMode::Off);
-    log->verticalScrollBar()->setValue(log->verticalScrollBar()->maximum());
+    log->verticalScrollBar()->setValue(0);
 
     auto *runList = w.findChild<QListWidget *>(QStringLiteral("runList"));
     QVERIFY(runList);
-    QVERIFY(runList->count() >= 4);  // "Last run" + "All runs" + one row per run
+    QVERIFY(runList->count() >= 4);  // "All runs" + one row per run + "Follow the last"
     runList->setCurrentRow(RunPane::kFirstRunRow); // the older of the two runs
 
-    QCOMPARE(log->currentRecord(), 0);
-    QCOMPARE(log->verticalScrollBar()->value(), 0);
-    QVERIFY(!log->following()); // an earlier, finished run detaches follow (SPEC.md §3a)
+    QCOMPARE(log->recordCount(), 101); // the run's banner and its 100 records
+    QCOMPARE(log->currentRecord(), 100);
+    QVERIFY(log->verticalScrollBar()->maximum() > 0); // the run does not fit...
+    QCOMPARE(log->verticalScrollBar()->value(), log->verticalScrollBar()->maximum());
 }
 
 int main(int argc, char *argv[])

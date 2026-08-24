@@ -2792,7 +2792,7 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
         if (ctx->pendingRunRestore->all)
             doc->selectRun(RunPane::kAllRuns);
         else if (ctx->pendingRunRestore->startOffset < 0)
-            // No offset saved with runAll false is how "Last run" is written: it names
+            // No offset saved with runAll false is how "Follow the last" is written: it names
             // no run because it names none — see saveSession(), which is also why this
             // needed no schema bump.
             doc->selectLastRun();
@@ -3430,7 +3430,7 @@ void MainWindow::onRunSelected(int runIndex)
         return;
     Document *doc = ctx->doc.get();
 
-    // "Last run" is not an ordinal, so it cannot travel as one: it is the standing
+    // "Follow the last" is not an ordinal, so it cannot travel as one: it is the standing
     // instruction the document keeps and re-points itself by as runs appear (§3a).
     if (runIndex == RunPane::kLastRun)
         doc->selectLastRun();
@@ -3458,16 +3458,29 @@ void MainWindow::onRunSelected(int runIndex)
     if (m_highlighterPane)
         m_highlighterPane->refreshTimeBounds();
 
-    // Follow only makes sense for the live tail: the newest run (or "all runs") jumps
-    // to the end and keeps following; an earlier, finished run scrolls to its start,
-    // which detaches follow so the history stays put while the file grows (§3a).
+    // EVERY choice in this pane opens at the END of what it selects — a run, "All runs"
+    // or "Follow the last" alike (§3a): a run is picked because of how it went, and what went
+    // wrong is the last thing in it, since a crash writes its stack and stops. Opening
+    // at the first record put the one part nobody is looking for on screen and left the
+    // reader scrolling the whole run to reach the part they are.
+    //
+    // The last record is SELECTED and not merely scrolled to, so the reader lands on the
+    // record they came for and walks back up from it with the keyboard — and it is the
+    // same gesture for all three choices, because "what happened at the end" is the same
+    // question whichever of them was picked.
+    //
+    // What still differs is only what the end is worth afterwards. The newest run (or
+    // "all runs") is still being written, so it FOLLOWS: the end moves and the view goes
+    // with it. A finished run has a fixed end and nothing is ever appended to it, so
+    // follow is left to the view's own rule (at the bottom = following) rather than
+    // forced — there is nothing there for it to follow.
     const int newest = doc->runs().isEmpty() ? -1 : int(doc->runs().size()) - 1;
     const bool isLive = runIndex < 0 || runIndex == newest;
     for (DocumentView *v : std::as_const(ctx->views)) {
+        LogView *log = v->logView();
+        log->setCurrentRecord(log->recordCount() - 1);
         if (isLive)
-            v->logView()->followTail();
-        else
-            v->logView()->setCurrentRecord(0); // top of the run; detaches follow
+            log->followTail(); // ...and stay on the end as it moves
     }
 }
 
