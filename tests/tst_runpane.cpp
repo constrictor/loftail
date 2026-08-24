@@ -3,6 +3,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QFile>
+#include <QFontDatabase>
+#include <QImage>
 #include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -14,6 +16,9 @@
 #include <QTemporaryFile>
 
 #include "Document.h"
+#include "Highlight.h"
+#include "Palette.h"
+#include "Priority.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
 #include "LogFormat.h"
@@ -52,11 +57,24 @@ private:
         "2026-01-01 10:00:05,000 [main] INFO  boot - RUN START three\n"
         "2026-01-01 10:00:06,000 [main] INFO  app - working\n";
 
-    static bool openLog(Document &doc, QTemporaryFile &file)
+    // The same three runs, with something outstanding in two of them and nothing in the
+    // third: run 1 has an ERROR and two WARNs, run 2 a FATAL, run 3 nothing above INFO.
+    static constexpr auto kNoisyLog =
+        "2026-01-01 10:00:00,000 [main] INFO  boot - preamble line\n"
+        "2026-01-01 10:00:01,000 [main] INFO  boot - RUN START one\n"
+        "2026-01-01 10:00:02,000 [main] WARN  app - careful\n"
+        "2026-01-01 10:00:03,000 [main] ERROR app - broken\n"
+        "2026-01-01 10:00:04,000 [main] WARN  app - careful again\n"
+        "2026-01-01 10:00:05,000 [main] INFO  boot - RUN START two\n"
+        "2026-01-01 10:00:06,000 [main] FATAL app - gone\n"
+        "2026-01-01 10:00:07,000 [main] INFO  boot - RUN START three\n"
+        "2026-01-01 10:00:08,000 [main] INFO  app - working\n";
+
+    static bool openLog(Document &doc, QTemporaryFile &file, const char *text = kLog)
     {
         if (!file.open())
             return false;
-        file.write(kLog);
+        file.write(text);
         file.flush();
         if (!doc.open(file.fileName(), QString::fromLatin1(kPattern),
                       Encoding::Utf8, QTimeZone::utc()))
@@ -152,6 +170,15 @@ private slots:
     void tickingABoxNeitherResplitsTheLogNorPersistsThePattern();
     void tickingABoxLeavesAPinnedRunPinned();
     void withNoLogOpenTheListStillExplainsItself();
+
+    // A run row is three lines — its name, the span it covers, what is outstanding in
+    // it (SPEC.md §3a) — and none of that is reachable through the item's own text, so
+    // the parts are asserted where the delegate reads them and the chips are read back
+    // off rendered pixels, which is the only place a colour exists at all.
+    void aRunRowCarriesItsNameItsSpanAndItsCounts();
+    void theTwoModeRowsCarryNoneOfIt();
+    void aRunRowIsGivenThreeLinesOfHeight();
+    void theCountsAreDrawnInTheDefaultLevelColours();
 };
 
 void TestRunPane::theRunsAreAListWithTheSelectedRunOnIt()
@@ -532,6 +559,189 @@ void TestRunPane::withNoLogOpenTheListStillExplainsItself()
     QVERIFY(info);
     QVERIFY(!info->text().isEmpty());
     QCOMPARE(runList(pane)->count(), 2);
+}
+
+// The pane's own reading of a run: what the three lines are built from. Asserted at the
+// item-data seam rather than on a label, because there is no label — the delegate
+// composes the row from these and the DisplayRole string is a one-line fallback for
+// type-ahead and accessibility.
+void TestRunPane::aRunRowCarriesItsNameItsSpanAndItsCounts()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kNoisyLog), qPrintable(doc.lastError()));
+
+    RunPane pane;
+    pane.setDocument(&doc);
+    QListWidget *list = runList(pane);
+    QVERIFY(list);
+    QCOMPARE(list->count(), 6); // "Last run" + "All runs" + preamble + three
+
+    // The preamble is named for what it is; every other row is named by its ORDINAL,
+    // which is what runSelected() carries and what the session stores.
+    QCOMPARE(list->item(RunPane::kFirstRunRow + 1)->data(RunPane::kRunTitleRole).toString(),
+             QStringLiteral("Run 1"));
+
+    QListWidgetItem *run1 = list->item(RunPane::kFirstRunRow + 1);
+    QCOMPARE(run1->data(RunPane::kRunErrorRole).toInt(), 1);
+    QCOMPARE(run1->data(RunPane::kRunWarnRole).toInt(), 2);
+    QCOMPARE(run1->data(RunPane::kRunFatalRole).toInt(), 0);
+
+    QListWidgetItem *run2 = list->item(RunPane::kFirstRunRow + 2);
+    QCOMPARE(run2->data(RunPane::kRunFatalRole).toInt(), 1);
+    QCOMPARE(run2->data(RunPane::kRunErrorRole).toInt(), 0);
+
+    // Nothing outstanding is zeros and not an absent role: the delegate distinguishes a
+    // run row from a mode row by the TITLE role, so a run with a quiet log is still a
+    // three-line row.
+    QListWidgetItem *run3 = list->item(RunPane::kFirstRunRow + 3);
+    QVERIFY(run3->data(RunPane::kRunTitleRole).isValid());
+    QCOMPARE(run3->data(RunPane::kRunFatalRole).toInt(), 0);
+    QCOMPARE(run3->data(RunPane::kRunErrorRole).toInt(), 0);
+    QCOMPARE(run3->data(RunPane::kRunWarnRole).toInt(), 0);
+
+    // The span is the run's own first and last instant, rendered in the DISPLAY zone
+    // (invariant #10 — the stored value is UTC ms and the digits are a rendering of it).
+    // Run 1 spans 10:00:01 to 10:00:04; the second stamp drops its date, which is the
+    // same date, and that is what keeps the line inside a dock's width.
+    const QString times = run1->data(RunPane::kRunTimesRole).toString();
+    QVERIFY2(times.contains(QStringLiteral("2026-01-01 10:00:01")), qPrintable(times));
+    QVERIFY2(times.endsWith(QStringLiteral("10:00:04")), qPrintable(times));
+    QVERIFY2(!times.contains(QStringLiteral("2026-01-01 10:00:04")), qPrintable(times));
+
+    // Whatever the row cannot fit is on the tooltip, counts included.
+    QVERIFY(run1->toolTip().contains(QStringLiteral("1 ERROR")));
+    QVERIFY(run1->toolTip().contains(QStringLiteral("2 WARN")));
+}
+
+void TestRunPane::theTwoModeRowsCarryNoneOfIt()
+{
+    // "Last run" and "All runs" say something ABOUT the list rather than name a member
+    // of it, and neither has a span or a count to report. The absence of the title role
+    // is exactly how the delegate leaves them to the base class, so they stay the italic
+    // one-liners they have always been.
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kNoisyLog), qPrintable(doc.lastError()));
+
+    RunPane pane;
+    pane.setDocument(&doc);
+    QListWidget *list = runList(pane);
+    QVERIFY(list);
+
+    for (int row : { RunPane::kLastRunRow, RunPane::kAllRunsRow }) {
+        QVERIFY(!list->item(row)->data(RunPane::kRunTitleRole).isValid());
+        QVERIFY(!list->item(row)->data(RunPane::kRunTimesRole).isValid());
+        QVERIFY(list->item(row)->font().italic());
+        QVERIFY(!list->item(row)->text().isEmpty());
+    }
+}
+
+void TestRunPane::aRunRowIsGivenThreeLinesOfHeight()
+{
+    // A height claim, so it needs a resolved font: Windows offscreen has no font
+    // database at all and every advance there comes back 0 (CLAUDE.md).
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolvable on this platform");
+
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kNoisyLog), qPrintable(doc.lastError()));
+
+    RunPane pane;
+    pane.setDocument(&doc);
+    QListWidget *list = runList(pane);
+    QVERIFY(list);
+    list->resize(300, 420);
+
+    // NOT uniform: with uniform item sizes Qt measures the first item — the single-line
+    // "Last run" — and gives every run row that height, clipping two lines off each.
+    QVERIFY(!list->uniformItemSizes());
+
+    const int modeRow = list->visualItemRect(list->item(RunPane::kLastRunRow)).height();
+    const int runRow = list->visualItemRect(list->item(RunPane::kFirstRunRow + 1)).height();
+    QVERIFY2(runRow >= 3 * QFontMetrics(list->font()).height(),
+             qPrintable(QStringLiteral("run row %1 px, one line %2 px")
+                            .arg(runRow).arg(QFontMetrics(list->font()).height())));
+    QVERIFY2(runRow > 2 * modeRow, qPrintable(QStringLiteral("run %1, mode %2")
+                                                  .arg(runRow).arg(modeRow)));
+}
+
+void TestRunPane::theCountsAreDrawnInTheDefaultLevelColours()
+{
+    // The claim is a COLOUR, which exists nowhere but in pixels: every widget here holds
+    // the same values whatever the chips are painted in. What it pins is that the pane
+    // and the log make one statement rather than two — a run's ERROR count wears the
+    // colour HighlighterSet::defaults() gives an ERROR record (SPEC.md §7).
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolvable on this platform");
+
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kNoisyLog), qPrintable(doc.lastError()));
+
+    RunPane pane;
+    pane.setDocument(&doc);
+    // Shown and settled, because what is grabbed below is the list's LAID-OUT size: a
+    // resize() on a child inside an unshown layout is redistributed the moment anything
+    // activates that layout, and the grab would then be of a viewport too short to hold
+    // the rows the rects are read from.
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    pane.resize(360, 700);
+    for (int i = 0; i < 8; ++i)
+        QApplication::processEvents();
+
+    QListWidget *list = runList(pane);
+    QVERIFY(list);
+    // Not the selected row: a selection fill is the style's and would be what is being
+    // measured if the chip happened not to be drawn at all.
+    list->setCurrentRow(RunPane::kLastRunRow);
+
+    const bool dark = isDarkPalette(list->palette());
+    QColor errorBg;
+    QColor fatalBg;
+    for (const HighlightRule &r : HighlighterSet::defaults().rules) {
+        if (!r.match.priorityEnabled)
+            continue;
+        if (r.match.minPriority == Priority::Error)
+            errorBg = HighlightPalette::color(r.background, dark);
+        if (r.match.minPriority == Priority::Fatal)
+            fatalBg = HighlightPalette::color(r.background, dark);
+    }
+    QVERIFY(errorBg.isValid() && fatalBg.isValid());
+    QVERIFY(errorBg != fatalBg); // or the two assertions below prove nothing
+
+    const QImage shot = list->grab().toImage().convertToFormat(QImage::Format_RGB32);
+
+    const auto rowHolds = [&shot, list](int row, const QColor &c) {
+        const QRect r = list->visualItemRect(list->item(row));
+        // A row read against a viewport too short to hold it would answer "no colour"
+        // for the most ordinary of reasons, so the rect being on screen IS the test's
+        // precondition rather than something to quietly clip away.
+        if (!shot.rect().contains(r))
+            return false;
+        for (int y = r.top(); y <= r.bottom(); ++y)
+            for (int x = r.left(); x <= r.right(); ++x)
+                if (shot.pixelColor(x, y).rgb() == c.rgb())
+                    return true;
+        return false;
+    };
+
+    for (int row = 0; row < list->count(); ++row)
+        QVERIFY2(shot.rect().contains(list->visualItemRect(list->item(row))),
+                 "the list is not tall enough to hold every row it is asked about");
+
+    // Run 1 has the ERROR and run 2 the FATAL, and neither wears the other's colour —
+    // which is what makes this a test of the mapping and not of "something red".
+    QVERIFY(rowHolds(RunPane::kFirstRunRow + 1, errorBg));
+    QVERIFY(!rowHolds(RunPane::kFirstRunRow + 1, fatalBg));
+    QVERIFY(rowHolds(RunPane::kFirstRunRow + 2, fatalBg));
+    QVERIFY(!rowHolds(RunPane::kFirstRunRow + 2, errorBg));
+
+    // ...and a run with nothing outstanding wears neither.
+    QVERIFY(!rowHolds(RunPane::kFirstRunRow + 3, errorBg));
+    QVERIFY(!rowHolds(RunPane::kFirstRunRow + 3, fatalBg));
 }
 
 int main(int argc, char *argv[])

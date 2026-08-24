@@ -345,6 +345,35 @@ public:
     int  selectedRun() const { return m_selectedRun; }
     // Records in run i: derived so the last run's count tracks live appends.
     int  runRecordCount(int i) const;
+
+    // What a run holds beyond its extent, for the Runs pane's list (SPEC.md §3a):
+    // the instants its first and last TIMESTAMPED records carry, and how many FATAL,
+    // ERROR and WARN records are in it — the three levels HighlighterSet::defaults()
+    // colours, which is what makes the pane's counts and the log's own colours the
+    // same statement rather than two.
+    //
+    // `lastTimestamp` is the LAST timestamped record's instant and not the largest
+    // one: log4cplus appends in the order threads reach the appender, so a run's tail
+    // can be a few milliseconds out of order, and "where the run ends" is a position
+    // in the file rather than a maximum over it.
+    //
+    // Both stay kNoTimestamp for a run holding no timestamped record at all (a format
+    // with no %d, or a run that is one unparsed banner line).
+    struct RunStats
+    {
+        qint64 firstTimestamp = Record::kNoTimestamp;
+        qint64 lastTimestamp  = Record::kNoTimestamp;
+        int    fatal = 0;
+        int    error = 0;
+        int    warn  = 0;
+    };
+
+    // Memoised with a resume cursor, exactly as runBaseTimestamp() is and for the same
+    // reason: RunPane::refresh() runs on every live append, so a fresh O(records) pass
+    // per run per tick is a scan of the whole log on the GUI thread once a second.
+    // Records only ever APPEND within a run, so the counts resume where the last call
+    // gave up. Integer fields only — nothing here decodes (invariant #1).
+    RunStats runStats(int i) const;
     // True when a run currently narrows the view (drives subset materialization and
     // the live-append branch, exactly like FilterSet::anyActive()).
     bool viewRestricted() const { return m_viewRestricted; }
@@ -546,9 +575,9 @@ private:
     // Derive m_displayZone from m_timeDisplay and m_sourceZone (§5.1). Call after
     // either changes.
     void recomputeDisplayZone();
-    // Drop every memoised RunSeconds baseline. Call whenever the run partition or
-    // the timestamps themselves change under it.
-    void invalidateTimeBaselines() const;
+    // Drop every per-run memo — the RunSeconds baselines AND the run statistics.
+    // Call whenever the run partition or the timestamps themselves change under it.
+    void invalidateRunMemos() const;
     // First timestamped record in [from, end), resuming from b's cursor.
     qint64 resolveBaseline(Baseline &b, int from, int end) const;
     // The whole first decoded physical line of a record (the run-start match target).
@@ -631,6 +660,15 @@ private:
     mutable QVector<Baseline> m_runBase;    // parallel to m_runs
     mutable Baseline          m_fileBase;   // the no-run-pattern whole-file baseline
     mutable int               m_runHint = -1;
+
+    // Run statistics, memoised on the same terms (see runStats()). `scanned` is the
+    // next record to examine; the stats are the fold of [Run::startRecord, scanned).
+    struct RunStatsMemo
+    {
+        RunStats stats;
+        int      scanned = -1;
+    };
+    mutable QVector<RunStatsMemo> m_runStats;  // parallel to m_runs
 };
 
 } // namespace loftail

@@ -106,6 +106,14 @@ private slots:
     // the rendering tests, which cover the formatting.
     void runBaseTimestampBinarySearch();
     void runBaseTimestampFollowsAppend();
+
+    // What the Runs pane puts under a run's name (SPEC.md §3a): the span of instants
+    // it covers and how many FATAL/ERROR/WARN records are in it. Memoised on the same
+    // terms as the baselines above, so the live cases are the ones that matter: a memo
+    // that froze would stop counting a tailed run, and one that refolded would double.
+    void runStatsSpanAndCounts();
+    void runStatsFollowALiveAppend();
+    void aNewRunsRecordsStopBeingCountedInTheRunBeforeIt();
 };
 
 void TestRunSelect::detectsRunsAndSelectsNewest()
@@ -639,6 +647,134 @@ void TestRunSelect::runBaseTimestampFollowsAppend()
     QVERIFY(run2 != run1);
     QCOMPARE(doc.runBaseTimestamp(4), run2);
     QCOMPARE(doc.runBaseTimestamp(5), run2);
+}
+
+void TestRunSelect::runStatsSpanAndCounts()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("stats.log"));
+
+    // Run 0: banner + WARN + ERROR. Run 1: banner + FATAL + INFO + DEBUG.
+    QByteArray whole;
+    int sec = 0;
+    whole += banner(sec++, 0);
+    whole += rec(sec++, "t1", "WARN ", "svc", "w");
+    whole += rec(sec++, "t1", "ERROR", "svc", "e");
+    whole += banner(sec++, 1);
+    whole += rec(sec++, "t1", "FATAL", "svc", "f");
+    whole += rec(sec++, "t1", "INFO ", "svc", "i");
+    whole += rec(sec++, "t1", "DEBUG", "svc", "d");
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY(openDoc(doc, path));
+    doc.setRunStart(QString::fromLatin1(kMarker), false, Qt::CaseInsensitive);
+    QCOMPARE(doc.runs().size(), 2);
+
+    const Document::RunStats a = doc.runStats(0);
+    QCOMPARE(a.fatal, 0);
+    QCOMPARE(a.error, 1);
+    QCOMPARE(a.warn, 1);
+    // The span is the run's OWN records and stops at the boundary: the first and third
+    // record, never the file's last one. Both come off Record::timestamp, which is UTC
+    // epoch ms (invariant #10), so the comparison is against the same.
+    QCOMPARE(a.firstTimestamp, doc.index().records.at(0).timestamp);
+    QCOMPARE(a.lastTimestamp, doc.index().records.at(2).timestamp);
+
+    const Document::RunStats b = doc.runStats(1);
+    QCOMPARE(b.fatal, 1);
+    QCOMPARE(b.error, 0);
+    QCOMPARE(b.warn, 0);
+    QCOMPARE(b.firstTimestamp, doc.index().records.at(3).timestamp);
+    QCOMPARE(b.lastTimestamp, doc.index().records.at(6).timestamp);
+
+    // Asking twice answers the same — the memo is a resume cursor, not an accumulator
+    // that folds every call in again.
+    QCOMPARE(doc.runStats(1).fatal, 1);
+    QCOMPARE(doc.runStats(1).warn, 0);
+
+    // Out of range is not a crash and not a count.
+    QCOMPARE(doc.runStats(-1).error, 0);
+    QCOMPARE(doc.runStats(7).error, 0);
+}
+
+void TestRunSelect::runStatsFollowALiveAppend()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("statslive.log"));
+
+    QByteArray whole;
+    int sec = 0;
+    whole += banner(sec++, 0);
+    whole += rec(sec++, "t1", "WARN ", "svc", "w");
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY(openDoc(doc, path));
+    doc.setRunStart(QString::fromLatin1(kMarker), false, Qt::CaseInsensitive);
+    doc.applyFilters();
+    QCOMPARE(doc.runStats(0).warn, 1);   // memoised HERE, before the append
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+
+    QByteArray chunk;
+    chunk += rec(sec++, "t1", "ERROR", "svc", "e");
+    chunk += rec(sec++, "t1", "WARN ", "svc", "w2");
+    QVERIFY(append(path, chunk));
+    live.checkNow();
+    QCOMPARE(doc.index().records.size(), 4);
+
+    const Document::RunStats s = doc.runStats(0);
+    QCOMPARE(s.warn, 2);    // the memo resumed rather than froze...
+    QCOMPARE(s.error, 1);
+    QCOMPARE(s.lastTimestamp, doc.index().records.at(3).timestamp); // ...and the end moved
+}
+
+void TestRunSelect::aNewRunsRecordsStopBeingCountedInTheRunBeforeIt()
+{
+    // A restart mid-tail: the counts either side of the new boundary are each the
+    // records of their OWN run, with a memo of run 0 standing from before the split.
+    // (It holds because the split lands exactly where that memo stopped — the guard in
+    // runStats() for an end that moves backwards is a consistency guard on the memo and
+    // not a path any caller reaches; Document.cpp says so where the guard is.)
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("statssplit.log"));
+
+    QByteArray whole;
+    int sec = 0;
+    whole += banner(sec++, 0);
+    whole += rec(sec++, "t1", "WARN ", "svc", "w");
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY(openDoc(doc, path));
+    doc.setRunStart(QString::fromLatin1(kMarker), false, Qt::CaseInsensitive);
+    doc.applyFilters();
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+
+    // Two ERROR records land, and the memo is asked about them...
+    QVERIFY(append(path, rec(sec++, "t1", "ERROR", "svc", "e0")
+                       + rec(sec++, "t1", "ERROR", "svc", "e1")));
+    live.checkNow();
+    QCOMPARE(doc.runStats(0).error, 2);
+
+    // ...and only THEN does the application restart.
+    QVERIFY(append(path, banner(sec++, 1) + rec(sec++, "t1", "FATAL", "svc", "f")));
+    live.checkNow();
+    QCOMPARE(doc.runs().size(), 2);
+
+    QCOMPARE(doc.runStats(0).error, 2);  // run 0 keeps its own two...
+    QCOMPARE(doc.runStats(0).fatal, 0);
+    QCOMPARE(doc.runStats(1).fatal, 1);  // ...and the new run counts only what is its
+    QCOMPARE(doc.runStats(1).error, 0);
 }
 
 QTEST_GUILESS_MAIN(TestRunSelect)

@@ -253,7 +253,7 @@ void Document::clearIndex()
     m_runs.clear();
     m_selectedRun = -1;
     recomputeViewBounds();
-    invalidateTimeBaselines();
+    invalidateRunMemos();
     m_index.rebuildBlockSums(); // an empty index still has a valid (zero) total
 }
 
@@ -369,7 +369,7 @@ bool Document::reopen()
     // two that promise to agree.
     m_filtered.clear();
     clearDigest();
-    invalidateTimeBaselines(); // every record is about to be replaced
+    invalidateRunMemos(); // every record is about to be replaced
     // Reuse, not Interactive: the rotation caller runs from the live watch tick on the
     // GUI thread, so a rotation must not become a reconnect there. A remote file's spool
     // is shared and already live, which makes this a pointer swap rather than any network
@@ -427,7 +427,7 @@ bool Document::reformat(IFormatProvider &provider,
     // The run SELECTION does go, with the records it named — clearIndex() below.
     m_filtered.clear();
     clearDigest();
-    invalidateTimeBaselines();
+    invalidateRunMemos();
 
     QString openError;
     if (!openAndSettleFormat(provider, OpenPolicy::Reuse, &openError)) {
@@ -898,7 +898,7 @@ void Document::setRunStart(const QString &pattern, bool regex, Qt::CaseSensitivi
 void Document::detectRuns()
 {
     m_runs.clear();
-    invalidateTimeBaselines(); // the run partition is being rebuilt underneath them
+    invalidateRunMemos(); // the run partition is being rebuilt underneath them
     if (!m_runStartActive || m_runStartMatcher.isEmpty() || !m_runStartMatcher.isValid()) {
         recomputeViewBounds();
         return;
@@ -1028,11 +1028,12 @@ void Document::selectRunByStart(qint64 startOffset, qint64 startTimestamp)
         selectLastRun();
 }
 
-void Document::invalidateTimeBaselines() const
+void Document::invalidateRunMemos() const
 {
     m_runBase.clear();
     m_fileBase = Baseline();
     m_runHint = -1;
+    m_runStats.clear();
 }
 
 qint64 Document::resolveBaseline(Baseline &b, int from, int end) const
@@ -1090,6 +1091,55 @@ qint64 Document::runBaseTimestamp(int sourceRow) const
     return resolveBaseline(m_runBase[i], m_runs.at(i).startRecord, endOf(i));
 }
 
+Document::RunStats Document::runStats(int i) const
+{
+    if (i < 0 || i >= m_runs.size())
+        return RunStats();
+
+    if (m_runStats.size() != m_runs.size())
+        m_runStats.resize(m_runs.size()); // grows on append; existing memos survive
+
+    const int from = m_runs.at(i).startRecord;
+    const int end  = (i + 1 < m_runs.size()) ? m_runs.at(i + 1).startRecord
+                                             : int(m_index.records.size());
+
+    RunStatsMemo &memo = m_runStats[i];
+    // A count is not undoable the way runBaseTimestamp()'s first-instant memo is: the
+    // baseline survives its run's end moving because the FIRST instant cannot change,
+    // and a fold over a range does not. So an end that has moved BACKWARDS — a new
+    // marker splitting this run, everything from it on becoming the next run's — is
+    // recounted from the run's start rather than resumed.
+    //
+    // No caller reaches that today: updateRunsAfterAppend() only ever finds a marker in
+    // records appended since the last tick, so the split always lands at or beyond what
+    // the memo has folded, and detectRuns() drops every memo outright. It is a guard on
+    // the memo's own consistency rather than on a known path — which is the whole reason
+    // it is written down here instead of being asserted in a test that cannot fail.
+    if (memo.scanned < from || memo.scanned > end) {
+        memo.stats = RunStats();
+        memo.scanned = from;
+    }
+    for (; memo.scanned < end; ++memo.scanned) {
+        const Record &r = m_index.records.at(memo.scanned);
+        if (r.timestamp != Record::kNoTimestamp) {
+            if (memo.stats.firstTimestamp == Record::kNoTimestamp)
+                memo.stats.firstTimestamp = r.timestamp;
+            memo.stats.lastTimestamp = r.timestamp;
+        }
+        switch (r.priorityEnum()) {
+        case Priority::Fatal: ++memo.stats.fatal; break;
+        case Priority::Error: ++memo.stats.error; break;
+        case Priority::Warn:  ++memo.stats.warn;  break;
+        case Priority::Unknown:
+        case Priority::Trace:
+        case Priority::Debug:
+        case Priority::Info:
+            break;
+        }
+    }
+    return memo.stats;
+}
+
 int Document::runRecordCount(int i) const
 {
     if (i < 0 || i >= m_runs.size())
@@ -1103,7 +1153,7 @@ void Document::reparseTimestamps(const QTimeZone &sourceZone)
 {
     m_sourceZone = sourceZone.isValid() ? sourceZone : inferSourceZone(m_format);
     recomputeDisplayZone();    // "as written" follows the source zone
-    invalidateTimeBaselines(); // every timestamp is about to be rewritten
+    invalidateRunMemos(); // every timestamp is about to be rewritten
 
     // No date field, or nothing to read: the source zone is inert (§5.1).
     if (m_format.dateGroup <= 0 || !m_source)

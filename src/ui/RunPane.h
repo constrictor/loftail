@@ -42,6 +42,17 @@ public:
     static constexpr int kLastRun     = -2;  // runSelected() payload for row 0
     static constexpr int kAllRuns     = -1;  // ...and for row 1
 
+    // A run row is drawn as THREE lines — its name in bold, the span of instants it
+    // covers, and what is outstanding in it — so its parts travel as item data and the
+    // delegate composes them, rather than one label string being taken apart again at
+    // paint time. The two rows above the runs carry none of these, and that absence is
+    // exactly how the delegate tells a run row from a mode row.
+    static constexpr int kRunTitleRole = Qt::UserRole + 1;  // "Run 3"
+    static constexpr int kRunTimesRole = Qt::UserRole + 2;  // "10:04:11 - 10:41:57"
+    static constexpr int kRunFatalRole = Qt::UserRole + 3;  // int, 0 == absent
+    static constexpr int kRunErrorRole = Qt::UserRole + 4;
+    static constexpr int kRunWarnRole  = Qt::UserRole + 5;
+
     // Rebind to a document (or nullptr to clear). Fills the pattern field from the
     // document's configured matcher and rebuilds the run list.
     void setDocument(Document *document);
