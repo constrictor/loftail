@@ -65,6 +65,6 @@ void diagLogEvery(qint64 everyMs, const char *area, const QString &key,
 void diagLogSessionStart();
 
 // The cap, and the size the rolled-over copy is bounded by too.
-constexpr qint64 kDiagLogMaxBytes = 1024 * 1024;
+constexpr qint64 kDiagLogMaxBytes = 1024LL * 1024;
 
 } // namespace loftail

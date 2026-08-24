@@ -39,7 +39,8 @@ class PatternCompiler
 public:
     static Expected<LogFormat, CompileError> compile(QStringView pattern);
 
-private:
+    // Public: see FormatDetector.h — a deleted function says so more clearly than an
+    // inaccessible one, and this class is a namespace of static functions.
     PatternCompiler() = delete;
 };
 

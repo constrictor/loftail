@@ -39,7 +39,7 @@ public:
     // The `wc` rung reads the WHOLE file to answer, so it refuses to take on a file
     // bigger than this. It exists as an exactness backstop for an `ls` output shape
     // nobody anticipated, not as a way to poll a large log once a second.
-    static constexpr qint64 kWcSettleCeiling = 8 * 1024 * 1024;
+    static constexpr qint64 kWcSettleCeiling = 8LL * 1024 * 1024;
 
     // Pick the cheapest rung this server can actually answer with, and fill `first` with
     // the attributes that settled it so the caller does not pay for a second round trip.

@@ -45,7 +45,8 @@ public:
     static PreviewResult build(const LogFormat &format, QByteArrayView sample,
                                const Decoder &decoder, int maxRecords = 20);
 
-private:
+    // Public: see FormatDetector.h — a deleted function says so more clearly than an
+    // inaccessible one, and this class is a namespace of static functions.
     FormatPreview() = delete;
 };
 

@@ -2,6 +2,7 @@
 
 #include "RecordIndex.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace loftail {
@@ -34,7 +35,7 @@ void EstimatedGeometry::reset(const RecordIndex *idx, int wrapWidth)
     if (!m_idx)
         return;
 
-    const int n = m_idx->records.size();
+    const int n = int(m_idx->records.size());
     const int blocks = (n + RecordIndex::kBlockSize - 1) / RecordIndex::kBlockSize;
     m_blockPhysical.resize(blocks);
     m_blockLines.fill(-1, blocks); // all unmeasured
@@ -56,12 +57,12 @@ void EstimatedGeometry::reset(const RecordIndex *idx, int wrapWidth)
 // Block identity helpers
 // ---------------------------------------------------------------------------
 
-int EstimatedGeometry::blockOfRecord(int r) const
+int EstimatedGeometry::blockOfRecord(int r)
 {
     return r / RecordIndex::kBlockSize;
 }
 
-int EstimatedGeometry::blockStartRecord(int block) const
+int EstimatedGeometry::blockStartRecord(int block)
 {
     return block * RecordIndex::kBlockSize;
 }
@@ -70,7 +71,7 @@ int EstimatedGeometry::recordsInBlock(int block) const
 {
     if (!m_idx)
         return 0;
-    const int n = m_idx->records.size();
+    const int n = int(m_idx->records.size());
     const int start = block * RecordIndex::kBlockSize;
     return qMax(0, qMin(start + RecordIndex::kBlockSize, n) - start);
 }
@@ -144,8 +145,7 @@ void EstimatedGeometry::measureBlock(int block, const QVector<quint16> &visualLi
     const int count = recordsInBlock(block);
     if (count <= 0)
         return;
-    if (first < 0)
-        first = 0;
+    first = std::max(first, 0);
     const int have = measuredRecordsInBlock(block);
     if (first > have)
         return; // a run starting past the measured prefix would leave a hole
@@ -227,7 +227,7 @@ bool EstimatedGeometry::syncTail()
 {
     if (!m_idx)
         return false;
-    const int n = m_idx->records.size();
+    const int n = int(m_idx->records.size());
     const int tail = n > 0 ? int(RecordIndex::displayLines(m_idx->records.at(n - 1))) : 0;
     if (n == m_boundRecords && tail == m_tailLines)
         return false;
@@ -251,7 +251,7 @@ bool EstimatedGeometry::syncTail()
         m_blockMeasuredPhysical[b] = 0;
     }
 
-    const int had = m_blockLines.size();
+    const int had = int(m_blockLines.size());
     m_blockPhysical.resize(blocks);
     m_blockLines.resize(blocks);
     m_blockMeasuredPhysical.resize(blocks);
@@ -296,7 +296,7 @@ qint64 EstimatedGeometry::blockLines(int block) const
 
 void EstimatedGeometry::rebuild()
 {
-    const int blocks = m_blockPhysical.size();
+    const int blocks = int(m_blockPhysical.size());
     m_prefix.resize(blocks + 1);
     qint64 acc = 0;
     for (int b = 0; b < blocks; ++b) {
@@ -315,7 +315,7 @@ qint64 EstimatedGeometry::firstLineOfRecord(int r) const
 {
     if (!m_idx || r <= 0 || m_idx->records.isEmpty())
         return 0;
-    const int n = m_idx->records.size();
+    const int n = int(m_idx->records.size());
     if (r >= n)
         return m_total;
 
@@ -353,7 +353,7 @@ int EstimatedGeometry::recordAtLine(qint64 line) const
 {
     if (!m_idx)
         return -1;
-    const int n = m_idx->records.size();
+    const int n = int(m_idx->records.size());
     if (n == 0)
         return -1;
     if (line <= 0)
@@ -362,7 +362,8 @@ int EstimatedGeometry::recordAtLine(qint64 line) const
         return n - 1;
 
     // Binary search the block prefix: largest b with m_prefix[b] <= line.
-    int lo = 0, hi = m_blockPhysical.size() - 1;
+    int lo = 0;
+    int hi = int(m_blockPhysical.size()) - 1;
     while (lo < hi) {
         const int mid = (lo + hi + 1) / 2;
         if (m_prefix.at(mid) <= line)
@@ -396,7 +397,7 @@ int EstimatedGeometry::recordAtLine(qint64 line) const
     if (physRest <= 0 || estRest <= 0)
         return start + have;
     const qint64 localRest = qMax<qint64>(0, local - exact);
-    const qint64 targetPhys = qint64(double(localRest) * double(physRest) / double(estRest));
+    const auto targetPhys = qint64(double(localRest) * double(physRest) / double(estRest));
     // Walk the block's physical heights directly (O(1) per record) rather than
     // differencing firstLineOfRecord, which would make this O(blockSize^2).
     qint64 acc = 0;

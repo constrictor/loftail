@@ -114,7 +114,7 @@ void LogFileStore::load()
     // JSON silently collapses to whichever came last. Two instances racing on an
     // allocation is exactly how one arises.
     const QJsonArray entries = root.value(QLatin1String(kEntriesKey)).toArray();
-    for (const QJsonValue &v : entries) {
+    for (const auto &v : entries) {
         const QJsonObject o = v.toObject();
         Entry e;
         e.address = o.value(QLatin1String(kAddressKey)).toString();
@@ -128,8 +128,7 @@ void LogFileStore::load()
         // rather than re-homed: a record whose slot was taken from it is unreadable
         // anyway, since read() checks the address in the file.
         bool dropped = false;
-        for (int i = 0; i < m_entries.size(); ++i) {
-            Entry &x = m_entries[i];
+        for (auto &x : m_entries) {
             if (x.address != e.address && x.slot != e.slot)
                 continue;
             m_mapDirty = true;
@@ -258,7 +257,7 @@ bool LogFileStore::save(LogFileSettings s, const LogProfile &inherited, QString 
         if (slot < 0)
             return false;
         m_entries.push_back(Entry{s.address, slot, ++m_tick});
-        i = m_entries.size() - 1;
+        i = int(m_entries.size()) - 1;
         m_mapDirty = true;
     }
 
@@ -306,7 +305,7 @@ void LogFileStore::touch(const QString &address)
     m_mapDirty = true;
 }
 
-void LogFileStore::setPinned(QSet<QString> addresses)
+void LogFileStore::setPinned(const QSet<QString> &addresses)
 {
     m_pinned.clear();
     m_pinned.reserve(addresses.size());
@@ -317,7 +316,7 @@ void LogFileStore::setPinned(QSet<QString> addresses)
 QStringList LogFileStore::addresses() const
 {
     QVector<Entry> sorted = m_entries;
-    std::stable_sort(sorted.begin(), sorted.end(),
+    std::ranges::stable_sort(sorted,
                      [](const Entry &a, const Entry &b) { return a.used > b.used; });
     QStringList out;
     out.reserve(sorted.size());
@@ -358,7 +357,7 @@ int LogFileStore::pruneAgainst(const LogSettingsTree &tree)
 
     int changed = 0;
     // Backwards, so removing one entry does not step over the next.
-    for (int i = m_entries.size() - 1; i >= 0; --i) {
+    for (int i = int(m_entries.size()) - 1; i >= 0; --i) {
         const QString address = m_entries.at(i).address;
         const int slot = m_entries.at(i).slot;
 
@@ -408,7 +407,7 @@ int LogFileStore::adoptLegacy(const QVector<LegacyFileNode> &nodes, const LogSet
     // The tail, for the reason the header gives: insertion order is the closest thing to
     // an MRU the old array carries, so if there are more nodes than slots the ones kept
     // are the ones most recently given settings.
-    const int first = qMax(0, nodes.size() - kSlots);
+    const int first = qMax(0, int(nodes.size()) - kSlots);
 
     int adopted = 0;
     for (int i = first; i < nodes.size(); ++i) {

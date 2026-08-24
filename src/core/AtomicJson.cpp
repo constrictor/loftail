@@ -76,7 +76,7 @@ QJsonDocument AtomicJson::read(const QString &path, bool *ok)
     if (!file.open(QIODevice::ReadOnly)) {
         if (ok)
             *ok = false;
-        return QJsonDocument();
+        return {};
     }
     QJsonParseError err{};
     const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &err);

@@ -214,7 +214,7 @@ bool Document::openAndSettleFormat(IFormatProvider &provider, OpenPolicy policy,
 
     // Resolve the encoding by sniffing the first ~64 KB (§6.1). The same sample is
     // handed to the provider — the manual provider ignores it, a detector uses it.
-    const qint64 sampleLen = qMin<qint64>(64 * 1024, m_source->size());
+    const qint64 sampleLen = qMin<qint64>(64LL * 1024, m_source->size());
     const QByteArrayView sample = sampleLen > 0 ? m_source->bytes(0, sampleLen) : QByteArrayView();
     m_decoder = Decoder::detect(sample, m_requestedEncoding);
 
@@ -478,10 +478,10 @@ bool Document::rescan()
 QString Document::messageText(const Record &rec) const
 {
     if (!m_source)
-        return QString();
+        return {};
     const QByteArrayView bytes = m_source->bytes(rec.offset, rec.length);
     if (bytes.isEmpty())
-        return QString();
+        return {};
 
     bool hadNl = false;
     const qsizetype firstEnd = m_decoder.lineEnd(bytes, 0, &hadNl);
@@ -540,7 +540,7 @@ void Document::applyFilters()
         return;
     }
 
-    const int n = m_index.records.size();
+    const int n = int(m_index.records.size());
     QVector<qint32> visible;
     QVector<quint8> context;
     visible.reserve(n);
@@ -588,8 +588,8 @@ bool Document::publishDigest(bool force)
             ordinals.append(row);
     // Ordinal order first, because that is what std::unique needs and two rules whose
     // last match is the SAME record must contribute one row, not two.
-    std::sort(ordinals.begin(), ordinals.end());
-    ordinals.erase(std::unique(ordinals.begin(), ordinals.end()), ordinals.end());
+    std::ranges::sort(ordinals);
+    ordinals.erase(std::ranges::unique(ordinals).begin(), ordinals.end());
 
     // Then chronologically. File order is very nearly timestamp order and on a
     // single-threaded writer is exactly it — but log4cplus appends in the order threads
@@ -625,7 +625,7 @@ bool Document::publishDigest(bool force)
     for (const qint32 o : ordinals)
         if (placeable(o))
             chronological.append(o);
-    std::stable_sort(chronological.begin(), chronological.end(),
+    std::ranges::stable_sort(chronological,
                      [this](qint32 a, qint32 b) {
                          return m_index.records.at(a).timestamp
                               < m_index.records.at(b).timestamp;
@@ -678,8 +678,7 @@ void Document::rebuildDigest()
     // How many rules are still looking, so the walk can stop the moment they are all
     // answered rather than always paying the fence.
     int outstanding = 0;
-    for (int i = 0; i < m_highlighters.rules.size(); ++i) {
-        const HighlightRule &r = m_highlighters.rules.at(i);
+    for (const auto &r : m_highlighters.rules) {
         if (r.enabled && r.actions.testFlag(HighlightAction::Digest) && r.match.anyActive())
             ++outstanding;
     }
@@ -688,7 +687,7 @@ void Document::rebuildDigest()
     // so a log split into runs never scans past the selected run's first record — and
     // a record outside the bound is skipped on one integer comparison.
     int examined = 0;
-    for (int row = m_index.records.size() - 1; row >= 0 && outstanding > 0; --row) {
+    for (int row = int(m_index.records.size()) - 1; row >= 0 && outstanding > 0; --row) {
         const Record &rec = m_index.records.at(row);
         if (!inRunBound(rec))
             continue;
@@ -796,7 +795,7 @@ bool Document::updateDigestAfterAppend(int firstNewRow, bool provisionalChanged,
 int Document::findLastMatchBefore(int ruleIndex, int fromRow) const
 {
     int examined = 0;
-    for (int row = qMin(fromRow, m_index.records.size() - 1); row >= 0; --row) {
+    for (int row = qMin(fromRow, int(m_index.records.size()) - 1); row >= 0; --row) {
         const Record &rec = m_index.records.at(row);
         if (!inRunBound(rec))
             continue;
@@ -856,10 +855,10 @@ int Document::contextWindowStart(int row, int before) const
 QString Document::recordFirstLine(const Record &rec) const
 {
     if (!m_source)
-        return QString();
+        return {};
     const QByteArrayView bytes = m_source->bytes(rec.offset, rec.length);
     if (bytes.isEmpty())
-        return QString();
+        return {};
 
     // The run-start regexp matches the WHOLE first line (timestamp, thread, priority,
     // logger, message), not the message tail — so decode the first physical line in
@@ -915,7 +914,7 @@ void Document::detectRuns()
         return run;
     };
 
-    const int n = m_index.records.size();
+    const int n = int(m_index.records.size());
     int firstMarker = -1;
     for (int i = 0; i < n; ++i) {
         if (m_runStartMatcher.matches(recordFirstLine(m_index.records.at(i)))) {
@@ -943,7 +942,7 @@ bool Document::updateRunsAfterAppend(int oldRecordCount)
     if (!m_runStartActive || m_runStartMatcher.isEmpty() || !m_runStartMatcher.isValid())
         return false;
 
-    const int n = m_index.records.size();
+    const int n = int(m_index.records.size());
     bool changed = false;
     for (int i = qMax(0, oldRecordCount); i < n; ++i) {
         const Record &r = m_index.records.at(i);
@@ -1080,6 +1079,11 @@ qint64 Document::runBaseTimestamp(int sourceRow) const
     if (i < 0 || i >= m_runs.size()
         || sourceRow < m_runs.at(i).startRecord || sourceRow >= endOf(i)) {
         // Runs ascend by startRecord: take the last one starting at or before the row.
+        // std::ranges::upper_bound cannot take this comparator: it requires the
+        // predicate to order the projected element against itself as well as against
+        // the value, and this one is heterogeneous (int against Run) — which is exactly
+        // what the iterator form allows.
+        // NOLINTNEXTLINE(modernize-use-ranges)
         const auto it = std::upper_bound(m_runs.cbegin(), m_runs.cend(), sourceRow,
                                          [](int row, const Run &r) { return row < r.startRecord; });
         i = int(it - m_runs.cbegin()) - 1;
@@ -1094,7 +1098,7 @@ qint64 Document::runBaseTimestamp(int sourceRow) const
 Document::RunStats Document::runStats(int i) const
 {
     if (i < 0 || i >= m_runs.size())
-        return RunStats();
+        return {};
 
     if (m_runStats.size() != m_runs.size())
         m_runStats.resize(m_runs.size()); // grows on append; existing memos survive

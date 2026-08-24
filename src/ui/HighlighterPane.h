@@ -181,7 +181,7 @@ private:
 
     int currentRow() const;
     void setCurrentRow(int row);
-    QString ruleSummary(const HighlightRule &r) const;
+    static QString ruleSummary(const HighlightRule &r);
     // Paint a rule's row in its own colours, so the table previews the rule rather
     // than only naming it.
     void paintRow(int row, const HighlightRule &r) const;
@@ -194,8 +194,8 @@ private:
     // One row's swatch picker: icon-only, so the pair fits ONE table column beside
     // everything else a rule row carries.
     QComboBox *makeSwatchCombo(int row, ColourRole role, QWidget *parent);
-    void setSwatchCombo(QComboBox *combo, int paletteIndex);
-    int swatchValue(const QComboBox *combo) const;
+    static void setSwatchCombo(QComboBox *combo, int paletteIndex);
+    static int swatchValue(const QComboBox *combo);
     // Paint every swatch in one row's TWO pickers. A swatch previews the rule's PAIR —
     // the letter is its text colour, the tile behind it its background — so each picker's
     // items are drawn against the value the other one holds, and choosing in either

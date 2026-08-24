@@ -38,7 +38,7 @@ struct ZoneChoice
         case Kind::FixedOffset: return QTimeZone(offsetSeconds);
         case Kind::Default:     break;
         }
-        return QTimeZone();
+        return {};
     }
 
     // Round-trip through a plain string for QSettings persistence.

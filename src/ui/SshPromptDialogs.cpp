@@ -121,7 +121,7 @@ void paintEye(QPainter *painter, const QRectF &bounds, bool struck, const QColor
 class EyeIconEngine final : public QIconEngine
 {
 public:
-    EyeIconEngine(bool struck, QColor color) : m_struck(struck), m_color(std::move(color)) {}
+    EyeIconEngine(bool struck, QColor color) : m_struck(struck), m_color(color) {}
 
     void paint(QPainter *painter, const QRect &rect, QIcon::Mode, QIcon::State) override
     {

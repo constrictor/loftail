@@ -160,7 +160,8 @@ public:
     // wholesale so a shrunk list leaves no stale tail.
     static void save(QSettings &settings, const Session &session);
 
-private:
+    // Public: see FormatDetector.h — a deleted function says so more clearly than an
+    // inaccessible one, and this class is a namespace of static functions.
     SessionStore() = delete;
 };
 

@@ -240,7 +240,7 @@ private:
     // Here rather than in SshSession::authenticate() because that would bury an
     // AppConfigLocation read inside a network auth routine, in a class whose header says
     // it knows nothing but a RemoteLocation (ARCHITECTURE.md §6.3.2).
-    void primeRemoteCredentials(const QString &path);
+    static void primeRemoteCredentials(const QString &path);
 
     void buildMenus();
     // The exclusive timestamp-display group offered on the Date column's header menu
@@ -304,7 +304,7 @@ private:
     // Recompute one file's digest subset and republish it to its model. A wholesale
     // ordinal remap, so it is bracketed by a model reset exactly as applyFiltersFor()
     // is — the contrast with applyActiveHighlighters()'s bare repaint is the point.
-    void rebuildDigestFor(DocumentContext *ctx);
+    static void rebuildDigestFor(DocumentContext *ctx);
 
     // What a finished ingest tick's matches mean for the tab marker and the
     // notification. Called from the `ingested` handler ABOVE its
@@ -458,7 +458,7 @@ private:
     //
     // saveSession()'s three-way branch, moved here so the quit path and every other
     // write cannot come to disagree about what "last run" saves.
-    std::optional<RunSelection> runSelectionOf(const DocumentContext *ctx) const;
+    static std::optional<RunSelection> runSelectionOf(const DocumentContext *ctx);
 
     // THE ONE PLACE A PER-LOG RECORD IS WRITTEN. Everything a gesture may have changed is
     // folded in from the context, compared against what this context last stored, and

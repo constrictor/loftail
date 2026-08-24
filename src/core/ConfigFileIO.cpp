@@ -34,7 +34,7 @@ struct Tr
 // A config file is a config file, not a log: it is read whole, into an editor, by
 // somebody about to change it. A cap keeps a mistyped path — a core dump, a database, a
 // log — from being pulled into a QPlainTextEdit that would then try to lay it out.
-constexpr qint64 kMaxConfigBytes = 16 * 1024 * 1024;
+constexpr qint64 kMaxConfigBytes = 16LL * 1024 * 1024;
 
 // The same bound the log transport puts on a connect. A config file open is a deliberate
 // gesture with somebody waiting, so it gets the attended timeout rather than the shorter
@@ -69,7 +69,7 @@ ConfigReadResult readConfigFile(const QString &address)
     if (info.size() > kMaxConfigBytes) {
         out.error = Tr::tr("%1 is too large to edit as a config file (%2 MB).")
                         .arg(address)
-                        .arg(info.size() / (1024 * 1024));
+                        .arg(info.size() / (1024LL * 1024));
         return out;
     }
 
@@ -214,7 +214,7 @@ ConfigTransfer::~ConfigTransfer()
     // and ends without reporting.
     m_shared->abandoned = true;
 #if defined(LOFTAIL_HAVE_SSH)
-    std::lock_guard<std::mutex> lock(m_shared->mutex);
+    std::scoped_lock lock(m_shared->mutex);
     if (m_shared->session)
         m_shared->session->abort();
 #endif
@@ -264,7 +264,7 @@ void reapFinishedLocked()
 // Start `body` on a thread of its own, reaping any that have already finished.
 void startWorker(std::function<void()> body)
 {
-    std::lock_guard<std::mutex> lock(g_workersMutex);
+    std::scoped_lock lock(g_workersMutex);
     reapFinishedLocked();
     auto *worker = new TransferThread;
     worker->body = std::move(body);
@@ -293,12 +293,12 @@ QString withSession(const QString &address, SshPrompter *prompter,
     // that a config transfer can be in flight beside a log's own reconnect.
     SshConnectHold hold(location->target(), [shared]() { return shared->abandoned.load(); });
     if (!hold.held() || shared->abandoned)
-        return QString(); // asked to stop; the caller reports nothing
+        return {}; // asked to stop; the caller reports nothing
 
     auto session = std::make_unique<SshSession>();
     session->setAbandonCheck([shared]() { return shared->abandoned.load(); });
     {
-        std::lock_guard<std::mutex> lock(shared->mutex);
+        std::scoped_lock lock(shared->mutex);
         shared->session = session.get();
     }
     // Whatever happens below, the pointer must stop being publishable before the session
@@ -308,7 +308,7 @@ QString withSession(const QString &address, SshPrompter *prompter,
         std::shared_ptr<ConfigTransfer::Shared> shared;
         ~Unpublish()
         {
-            std::lock_guard<std::mutex> lock(shared->mutex);
+            std::scoped_lock lock(shared->mutex);
             shared->session = nullptr;
         }
     } unpublish{shared};
@@ -317,7 +317,7 @@ QString withSession(const QString &address, SshPrompter *prompter,
     if (!session->connectTo(*location, prompter, kConnectTimeoutMs, &error, nullptr))
         return error;
     if (shared->abandoned)
-        return QString();
+        return {};
     return body(*session, location->path);
 }
 #endif
@@ -347,7 +347,7 @@ void drainConfigTransfers(int budgetMs)
     clock.start();
     forever {
         {
-            std::lock_guard<std::mutex> lock(g_workersMutex);
+            std::scoped_lock lock(g_workersMutex);
             reapFinishedLocked();
             if (g_workers.empty())
                 return;

@@ -506,9 +506,12 @@ void LiveController::doRescan(ReloadCause cause)
     // the thing a reader later describes as "it jumped" or "it lost my place", and the
     // transient notice is gone long before they think to mention it. Untranslated and
     // greppable by design, `cause` included, exactly as the outcome beside it is.
-    const char *why = cause == ReloadCause::Replaced    ? "replaced"
-                      : cause == ReloadCause::Truncated ? "truncated"
-                                                        : "retry";
+    const char *why = "retry";
+    switch (cause) {
+    case ReloadCause::Replaced:  why = "replaced";  break;
+    case ReloadCause::Truncated: why = "truncated"; break;
+    case ReloadCause::Retry:     break;
+    }
     diagLog("wait", QStringLiteral("%1 reloaded — %2, %3, records=%4")
                         .arg(m_document->path(), QString::fromLatin1(why),
                              QString::fromLatin1(ok ? "rescanned" : "could not reopen"))
@@ -533,7 +536,7 @@ void LiveController::ingestAppended()
     FilteredIndex &filtered = m_document->filtered();
     const bool filterActive = filtered.active();
 
-    const int oldCount = idx.records.size();
+    const int oldCount = int(idx.records.size());
     const qint64 startOffset = oldCount > 0 ? idx.records.last().offset : dec.bomLength();
     Record oldLast{};
     if (oldCount > 0)
@@ -552,7 +555,7 @@ void LiveController::ingestAppended()
     // tail[0] re-reads the previous provisional record (same start offset); it may
     // have grown or flipped unparsed->parsed. tail[1..] are brand new.
     const bool provisionalChanged =
-        oldCount > 0 && std::memcmp(&tail[0], &oldLast, sizeof(Record)) != 0;
+        oldCount > 0 && std::memcmp(tail.data(), &oldLast, sizeof(Record)) != 0;
     const int base = oldCount > 0 ? oldCount - 1 : 0; // source row of tail[0]
     const int firstTailNew = oldCount > 0 ? 1 : 0;    // index of the first brand-new tail record
 
@@ -561,7 +564,7 @@ void LiveController::ingestAppended()
         if (provisionalChanged)
             idx.records[base] = tail[0]; // in-place height/flip update of the tail
 
-        const int newCount = tail.size() - firstTailNew;
+        const int newCount = int(tail.size()) - firstTailNew;
 
         if (newCount > 0) {
             m_model->beginAppendRows(newCount); // first == idx.records.size() (oldCount)
@@ -669,14 +672,14 @@ void LiveController::ingestAppended()
         QVector<QPair<int, bool>> passing; // (source row, is context)
         passing.reserve(tail.size() + before);
         emitWithContext(
-            candidateStart, idx.records.size() - 1, before, after, st,
+            candidateStart, int(idx.records.size()) - 1, before, after, st,
             [this, &idx](int row) { return m_document->inContextStream(idx.records.at(row)); },
             [this, &idx](int row) { return m_document->matchesTextAxis(idx.records.at(row)); },
             [&passing](int row, bool isContext) { passing.append({row, isContext}); });
 
         if (!passing.isEmpty()) {
             const int firstViewRow = filtered.recordCount();
-            m_model->beginAppendRows(passing.size());
+            m_model->beginAppendRows(int(passing.size()));
             for (const auto &p : passing)
                 filtered.appendVisible(p.first, idx.records.at(p.first), p.second);
             filtered.extendCompactSums(firstViewRow);

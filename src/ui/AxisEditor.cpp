@@ -529,7 +529,9 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
                        "what is ticked here is ever shown."));
     (subsystem ? m_loggerOthers : m_threadOthers) = others;
 
-    QAbstractButton *all = nullptr, *none = nullptr, *invert = nullptr;
+    QAbstractButton *all = nullptr;
+    QAbstractButton *none = nullptr;
+    QAbstractButton *invert = nullptr;
     auto *listRow = new QHBoxLayout;
     listRow->addWidget(list, 1);
     listRow->addLayout(makeListButtons(a.body, prefix, all, none, invert));
@@ -889,7 +891,8 @@ void AxisEditor::refreshObservedSpan()
     // those two lines — which is a record-menu time filter that silently does nothing.
     if (m_populating)
         return;
-    qint64 lo = 0, hi = 0;
+    qint64 lo = 0;
+    qint64 hi = 0;
     if (!observedSpan(lo, hi))
         return; // nothing parsed yet — leave the editors alone and try again next time
 
@@ -978,7 +981,7 @@ double AxisEditor::secondsOf(qint64 utcMs) const
 
 qint64 AxisEditor::instantOfSeconds(double seconds) const
 {
-    return m_renderBase + qint64(qRound64(seconds * 1000.0));
+    return m_renderBase + qRound64(seconds * 1000.0);
 }
 
 qint64 AxisEditor::boundInstant(TimeBound which) const
@@ -1488,7 +1491,8 @@ void AxisEditor::setTimeBound(TimeBound which, qint64 utcMs)
     // is the honest "open end": the editors cannot hold "no bound", and leaving an
     // unseeded end at the year 2000 — which is what a file that had no timestamps
     // when the pane bound to it leaves behind — would hide everything.
-    qint64 lo = 0, hi = 0;
+    qint64 lo = 0;
+    qint64 hi = 0;
     const bool span = observedSpan(lo, hi);
     const qint64 openEnd = span ? qMax(hi, utcMs) : utcMs;
     const qint64 openStart = span ? qMin(lo, utcMs) : utcMs;
@@ -1662,7 +1666,7 @@ bool AxisEditor::allChecked(const QListWidget *list)
     return true; // an empty list excludes nothing
 }
 
-QSet<QString> AxisEditor::checkedNames(const QListWidget *list) const
+QSet<QString> AxisEditor::checkedNames(const QListWidget *list)
 {
     QSet<QString> out;
     if (!list)

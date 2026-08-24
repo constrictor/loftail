@@ -90,7 +90,7 @@ QByteArrayView BufferedLogSource::bytes(qint64 offset, qint64 length)
         return {};
     const qint64 clamped = qMin(length, m_size - offset);
     m_buffer = m_file.read(offset, clamped);
-    return QByteArrayView(m_buffer.constData(), m_buffer.size());
+    return {m_buffer.constData(), m_buffer.size()};
 }
 
 } // namespace loftail

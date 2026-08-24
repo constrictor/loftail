@@ -6,6 +6,8 @@
 #include <QString>
 #include <QVector>
 
+#include <utility>
+
 namespace loftail {
 
 // A remembered SSH host and the logs worth opening on it (SPEC.md §3, M11).
@@ -61,7 +63,7 @@ public:
 
     // Constructed against a directory so tests can isolate it, exactly as PresetStore
     // is; production passes defaultDir().
-    explicit HostBookmarkStore(const QString &dir) : m_dir(dir) {}
+    explicit HostBookmarkStore(QString dir) : m_dir(std::move(dir)) {}
 
     // The AppConfigLocation-based directory used in production (no hardcoded paths —
     // CLAUDE.md conventions). Empty if the location cannot be resolved.
@@ -84,8 +86,8 @@ public:
     // the same are indistinguishable to the person picking one, whatever differs
     // underneath. Saving therefore overwrites silently — there is nothing to confirm,
     // since the user named the thing they are saving.
-    bool save(const HostBookmark &bookmark);
-    bool remove(const QString &name);
+    bool save(const HostBookmark &bookmark) const;
+    bool remove(const QString &name) const;
 
     // Names are compared trimmed and case-insensitively: "Prod" and "prod " are the
     // same entry, for the same reason as above.
@@ -93,7 +95,7 @@ public:
     static int indexOfName(const QVector<HostBookmark> &bookmarks, const QString &name);
 
     // Replace the whole list — what the Open Remote dialog does on OK.
-    bool replaceAll(const QVector<HostBookmark> &bookmarks);
+    bool replaceAll(const QVector<HostBookmark> &bookmarks) const;
 
     // The FIRST bookmark matching a location, if any, so an open can pick up its auth
     // choice, poll cadence and remembered password. Uniqueness is by name, so one

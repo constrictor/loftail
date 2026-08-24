@@ -5,6 +5,8 @@
 #include <QVector>
 #include <QtGlobal>
 
+#include <utility>
+
 namespace loftail {
 
 // Maps strings to dense quint32 ids so filter predicates compare integers, not
@@ -31,7 +33,7 @@ public:
         auto it = m_ids.constFind(s);
         if (it != m_ids.constEnd())
             return it.value();
-        const quint32 id = static_cast<quint32>(m_names.size());
+        const auto id = static_cast<quint32>(m_names.size());
         m_ids.insert(s, id);
         m_names.append(s);
         return id;
@@ -40,7 +42,7 @@ public:
     // The display string for an id, or empty if out of range.
     QString name(quint32 id) const
     {
-        return id < static_cast<quint32>(m_names.size()) ? m_names.at(id) : QString();
+        return std::cmp_less(id, m_names.size()) ? m_names.at(id) : QString();
     }
 
     // Resolve a name to its id WITHOUT interning it (const, unlike intern()). Used
@@ -58,7 +60,7 @@ public:
         return has ? it.value() : 0;
     }
 
-    int count() const { return m_names.size(); }
+    int count() const { return int(m_names.size()); }
     const QVector<QString> &names() const { return m_names; }
 
 private:

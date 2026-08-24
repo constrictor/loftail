@@ -77,7 +77,8 @@ public:
     // date specifier, whose numeric shape is a strong anchor against false matches.
     static QStringList candidateLibrary();
 
-private:
+    // Public rather than private so the diagnostic on an attempted construction reads
+    // "deleted" and not "inaccessible" — the class is a namespace of static functions.
     FormatDetector() = delete;
 };
 

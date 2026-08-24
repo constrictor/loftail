@@ -131,7 +131,7 @@ qint64 SharedReadFile::size() const
 QByteArray SharedReadFile::read(qint64 offset, qint64 length)
 {
     if (offset < 0 || length <= 0 || !m_file.isOpen() || !m_file.seek(offset))
-        return QByteArray();
+        return {};
     return m_file.read(length);
 }
 

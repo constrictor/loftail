@@ -39,7 +39,7 @@ public:
     // batch and get the full index back unchanged.
     using Batch = std::function<void(const RecordIndex &index, bool final)>;
 
-    Indexer(const LogFormat &format, const Decoder &decoder, const QTimeZone &sourceZone);
+    Indexer(const LogFormat &format, const Decoder &decoder, QTimeZone sourceZone);
 
     // Index the whole source. `progress` may cancel; a cancelled run returns what
     // was indexed so far with `cancelled` set. `batch`, when set, is called at each
@@ -60,7 +60,7 @@ public:
                                      InternTable &loggers, InternTable &threads) const;
 
     // Chunk size for reading from the source. Public for the perf harness.
-    static constexpr qint64 kChunkBytes = 4 * 1024 * 1024;
+    static constexpr qint64 kChunkBytes = 4LL * 1024 * 1024;
 
 private:
     // Shared core of index()/scanAppendedTail(): a forward pass over

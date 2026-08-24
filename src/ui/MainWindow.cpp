@@ -76,10 +76,10 @@
 #include <QSystemTrayIcon>
 #include <QTabBar>
 #include <QTabWidget>
-#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <utility>
 
 namespace loftail {
@@ -1754,7 +1754,7 @@ void MainWindow::showOpenRefusals()
             // Not tr(): a name, a colon and a reason, both halves already translated.
             lines.append(QStringLiteral("%1: %2").arg(refusal.first, refusal.second));
         }
-        if (const int more = m_openRefusals.size() - lines.size(); more > 0)
+        if (const int more = int(m_openRefusals.size() - lines.size()); more > 0)
             lines.append(tr("… and %1 more").arg(more));
         text = tr("Cannot open these logs:") + u'\n' + lines.join(u'\n');
     }
@@ -1776,6 +1776,12 @@ void MainWindow::clearOpenNotice()
     m_openNotice->setVisible(false);
 }
 
+// openFiles() and openFile() call each other by design — picking several members out
+// of one archive opens them through openFiles(), which is why beginOpenBatch() /
+// endOpenBatch() nest and only the outermost renders. The recursion is one level deep
+// and cannot become more: an archive inside an archive is refused in words rather than
+// expanded (CLAUDE.md, M12).
+// NOLINTNEXTLINE(misc-no-recursion)
 bool MainWindow::openFiles(const QStringList &rawPaths, const QString &pattern)
 {
     // ONE message for the lot, and the bracket is what makes it one: each refusal
@@ -1795,6 +1801,7 @@ bool MainWindow::openFiles(const QStringList &rawPaths, const QString &pattern)
     return allOpened;
 }
 
+// NOLINTNEXTLINE(misc-no-recursion): the other half of the openFiles() cycle above.
 bool MainWindow::openFile(const QString &rawPath, const QString &pattern)
 {
     // Normalize a remote URL to its one spelling FIRST, before it becomes a Document
@@ -1960,7 +1967,7 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     // why an ordinary open now restores one and not only a session restore. Inert
     // until a run-start pattern actually splits the log, so it costs nothing on a log
     // that has no runs.
-    ctx->pendingRunRestore = std::move(runRestore);
+    ctx->pendingRunRestore = runRestore;
     if (!ctx->pendingRunRestore && !settings.runStartPattern.isEmpty()
         && !ctx->fileSettings.run.saysNothing())
         ctx->pendingRunRestore = ctx->fileSettings.run;
@@ -2260,7 +2267,7 @@ void MainWindow::buildViewAndIndex(DocumentContext *ctx)
 // half of offerFormat() that asks nobody anything, for the callers that must not.
 bool MainWindow::formatFits(Document *doc, const FormatSettings &settings)
 {
-    const qint64 sampleLen = qMin<qint64>(64 * 1024, doc->source()->size());
+    const qint64 sampleLen = qMin<qint64>(64LL * 1024, doc->source()->size());
     const QByteArray sample = sampleLen > 0
         ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
     Decoder decoder = Decoder::detect(sample, settings.encoding);
@@ -2273,7 +2280,7 @@ MainWindow::FormatOutcome MainWindow::offerFormat(Document *doc, const QString &
     if (formatFits(doc, *settings))
         return FormatOutcome::Matched;
 
-    const qint64 sampleLen = qMin<qint64>(64 * 1024, doc->source()->size());
+    const qint64 sampleLen = qMin<qint64>(64LL * 1024, doc->source()->size());
     const QByteArray sample = sampleLen > 0
         ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
 
@@ -2309,7 +2316,7 @@ void MainWindow::showPreferences()
     // with an empty window, which is when someone most wants to set this up.
     QByteArray sample;
     if (DocumentContext *ctx = activeContext(); ctx && ctx->doc && ctx->doc->source()) {
-        const qint64 sampleLen = qMin<qint64>(64 * 1024, ctx->doc->source()->size());
+        const qint64 sampleLen = qMin<qint64>(64LL * 1024, ctx->doc->source()->size());
         if (sampleLen > 0)
             sample = ctx->doc->source()->bytes(0, sampleLen).toByteArray();
     }
@@ -2562,7 +2569,7 @@ LogProfile MainWindow::resolvedProfile(const QString &address)
     return m_logSettings.inherited(address);
 }
 
-std::optional<RunSelection> MainWindow::runSelectionOf(const DocumentContext *ctx) const
+std::optional<RunSelection> MainWindow::runSelectionOf(const DocumentContext *ctx)
 {
     // NOTHING TO READ YET, so nothing is written and the stored section is left exactly
     // as it was. While the scan is running — or while a restore is still armed, which is
@@ -2680,7 +2687,7 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
         if (const int index = m_tabs->indexOf(view); index >= 0)
             indices.append(index);
     }
-    std::sort(indices.begin(), indices.end());
+    std::ranges::sort(indices);
     const bool numbered = indices.size() > 1;
     for (int i = 0; i < indices.size(); ++i) {
         const QString title =
@@ -2730,7 +2737,11 @@ void MainWindow::onIndexProgress(DocumentContext *ctx, qint64 done, qint64 total
     if (total > 0)
         ctx->progressPercent = int((done * 100) / total);
     updateTabTitles(ctx);
-    if (ctx == activeContext()) {
+    // Guarded the way isBeingRead() is, and for the same reason: activeContext() is
+    // null when no tab is current, and a bare `ctx == activeContext()` then reads as
+    // true for a null ctx — which cannot happen (the handler is a lambda holding the
+    // context that owns this controller) but which nothing in the signature says.
+    if (ctx && ctx == activeContext()) {
         m_progressBar->setValue(ctx->progressPercent);
         updateStatus();
     }
@@ -2913,7 +2924,10 @@ void MainWindow::startWatching(DocumentContext *ctx)
                     // message is window chrome and there is one status bar: a background
                     // tab's rotation would spend it on a log the reader is not looking
                     // at, and cover the count of the one they are.
-                    if (ctx != activeContext())
+                    // The `!ctx ||` half is what onIndexProgress()'s comment records:
+                    // activeContext() is null with no current tab, so the bare
+                    // inequality would let a null ctx through to the dereference below.
+                    if (!ctx || ctx != activeContext())
                         return;
                     announceReload(cause, ctx->doc->path());
                 });
@@ -3103,10 +3117,16 @@ void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
         // have got before the connect moved off this thread.
         const bool mayAsk = owedADialog && ctx == activeContext();
         FormatSettings settled = ctx->settings;
-        const FormatOutcome outcome =
-            mayAsk ? offerFormat(doc, doc->path(), &settled)
-                   : (formatFits(doc, ctx->settings) ? FormatOutcome::Matched
-                                                     : FormatOutcome::Declined);
+        // Statements rather than one expression, so formatFits() stays on the branch
+        // that needs it: it reads and decodes 64 KB, offerFormat() asks it first thing
+        // anyway, and this runs on every resume of a log that comes and goes. With
+        // nobody to ask, the remembered format stands or falls on its own — Declined is
+        // what aborts the open, the same answer a person gives by cancelling.
+        FormatOutcome outcome = FormatOutcome::Declined;
+        if (mayAsk)
+            outcome = offerFormat(doc, doc->path(), &settled);
+        else if (formatFits(doc, ctx->settings))
+            outcome = FormatOutcome::Matched;
 
         switch (outcome) {
         case FormatOutcome::Matched:
@@ -3657,7 +3677,7 @@ void MainWindow::updateStatus()
         return;
     }
 
-    const int total = doc->index().records.size();
+    const int total = int(doc->index().records.size());
     // Filtered/total counts (SPEC.md §5, §6): show the shown-vs-total pair only
     // when a filter narrows the view, otherwise a plain record count.
     QString text;
@@ -3872,7 +3892,8 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
     // A multi-record selection contributes exactly one item: the two bounds it
     // already names. Everything else reads the record that was clicked, because the
     // union of five records' subsystems is not a gesture anyone means.
-    qint64 selLo = 0, selHi = 0;
+    qint64 selLo = 0;
+    qint64 selHi = 0;
     int    selTimed = 0;
     for (const QModelIndex &i : view->logView()->selectionModel()->selectedRows(0)) {
         const int s = doc->filtered().sourceRow(i.row());
@@ -4170,7 +4191,7 @@ void MainWindow::refreshRecentFilesMenu()
         // a path is what a person recognises a remembered file by.
         const QStringList labels = prefixedLabelsFor(recent);
         for (int i = 0; i < recent.size(); ++i) {
-            const QString path = recent.at(i);
+            const QString &path = recent.at(i);
             QString label = labels.at(i);
             label.replace(u'&', QLatin1String("&&")); // a menu reads '&' as a mnemonic
             QAction *a = m_recentMenu->addAction(label);
@@ -4557,7 +4578,7 @@ void MainWindow::restoreSession()
         // A local file that has gone and a remote host that would not answer are
         // different problems, so say which one this is rather than telling someone
         // their server's log "no longer exists".
-        const bool anyRemote = std::any_of(missing.cbegin(), missing.cend(),
+        const bool anyRemote = std::ranges::any_of(missing,
                                            [](const QString &p) {
                                                return RemoteLocation::isRemote(p);
                                            });
@@ -4586,7 +4607,7 @@ void MainWindow::restoreSession()
     // backing store for unsaved work, and resurrecting a buffer over a file somebody
     // changed in the meantime would be worse than losing it.
     QVector<SessionEditor> editors = session.editors;
-    std::sort(editors.begin(), editors.end(),
+    std::ranges::sort(editors,
               [](const SessionEditor &a, const SessionEditor &b) {
                   return a.tabIndex < b.tabIndex;
               });

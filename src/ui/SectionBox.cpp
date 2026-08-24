@@ -103,7 +103,7 @@ QSize SectionBox::titleRowHint() const
     // Bottom edges, not heights: the title row starts wherever the style put it, and what
     // has to fit inside the widget is where it ENDS.
     const int bottom = qMax(label.bottom(), indicator.bottom());
-    return QSize(indicator.width() + kTitleGap + label.width(), bottom + 1);
+    return {indicator.width() + kTitleGap + label.width(), bottom + 1};
 }
 
 QSize SectionBox::sizeHint() const
@@ -114,14 +114,14 @@ QSize SectionBox::sizeHint() const
     // title row is the whole answer rather than a floor under one.
     if (!box.isValid())
         return title;
-    return QSize(qMax(box.width(), title.width()), qMax(box.height(), title.height()));
+    return {qMax(box.width(), title.width()), qMax(box.height(), title.height())};
 }
 
 QSize SectionBox::minimumSizeHint() const
 {
     const QSize box = QGroupBox::minimumSizeHint();
     const QSize title = titleRowHint();
-    return QSize(qMax(box.width(), title.width()), qMax(box.height(), title.height()));
+    return {qMax(box.width(), title.width()), qMax(box.height(), title.height())};
 }
 
 void SectionBox::paintEvent(QPaintEvent *event)

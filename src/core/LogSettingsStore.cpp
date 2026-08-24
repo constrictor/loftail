@@ -101,7 +101,7 @@ LogSettingsTree LogSettingsStore::load()
         tree.setDefaults(logProfileFromJson(root.value(QLatin1String(kDefaultsKey)).toObject()));
 
     const QJsonArray patterns = root.value(QLatin1String(kPatternsKey)).toArray();
-    for (const QJsonValue &v : patterns) {
+    for (const auto &v : patterns) {
         const QJsonObject o = v.toObject();
         LogPatternNode n;
         n.id = o.value(QLatin1String(kIdKey)).toString();
@@ -121,7 +121,7 @@ LogSettingsTree LogSettingsStore::load()
     // discarded because it is somebody's whole per-log format configuration, and the
     // upgrade must not be the thing that loses it.
     const QJsonArray files = root.value(QLatin1String(kFilesKey)).toArray();
-    for (const QJsonValue &v : files) {
+    for (const auto &v : files) {
         const QJsonObject o = v.toObject();
         const QString path = o.value(QLatin1String(kPathKey)).toString();
         if (path.isEmpty())
@@ -133,7 +133,7 @@ LogSettingsTree LogSettingsStore::load()
     return tree;
 }
 
-bool LogSettingsStore::save(const LogSettingsTree &tree, QString *error)
+bool LogSettingsStore::save(const LogSettingsTree &tree, QString *error) const
 {
     if (m_readOnly) {
         if (error)

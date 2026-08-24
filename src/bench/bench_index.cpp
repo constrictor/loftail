@@ -51,7 +51,7 @@ int main(int argc, char *argv[])
 
     const qint64 sizeBytes = doc.source()->size();
     const RecordIndex &idx = doc.index();
-    const int records = idx.records.size();
+    const int records = int(idx.records.size());
     const double mb = double(sizeBytes) / (1024.0 * 1024.0);
     const double mbPerSec = indexMs > 0 ? mb / (double(indexMs) / 1000.0) : 0.0;
 
@@ -101,7 +101,7 @@ int main(int argc, char *argv[])
     timer.restart();
     quint64 charSink = 0;
     for (int fr = 0; fr < frames; ++fr) {
-        const qint64 topLine = qint64(rng->bounded(quint32(lines)));
+        const auto topLine = qint64(rng->bounded(quint32(lines)));
         int r = idx.recordAtLine(topLine);
         for (int row = 0; row < rowsPerFrame && r < records; ++row, ++r)
             for (int c = 0; c < columns; ++c)
@@ -156,7 +156,7 @@ int main(int argc, char *argv[])
             timer.restart();
             quint64 cs = 0;
             for (int fr = 0; fr < frames; ++fr) {
-                const qint64 topLine = qint64(rng->bounded(quint32(vlines)));
+                const auto topLine = qint64(rng->bounded(quint32(vlines)));
                 int r = geo.recordAtLine(topLine);
                 for (int row = 0; row < rowsPerFrame && r < geo.records.size(); ++row, ++r)
                     for (int c = 0; c < columns; ++c)

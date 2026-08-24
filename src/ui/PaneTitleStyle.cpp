@@ -10,6 +10,8 @@
 #include <QPixmap>
 #include <QStyleOptionDockWidget>
 
+#include <algorithm>
+
 namespace loftail {
 
 namespace {
@@ -69,7 +71,7 @@ class GlyphIconEngine final : public QIconEngine
 {
 public:
     GlyphIconEngine(QStyle::StandardPixmap which, QColor color)
-        : m_which(which), m_color(std::move(color))
+        : m_which(which), m_color(color)
     {
     }
 
@@ -117,7 +119,7 @@ QColor glyphColor(const QWidget *widget)
 
 } // namespace
 
-PaneTitleStyle::PaneTitleStyle(QObject *parent) : QProxyStyle()
+PaneTitleStyle::PaneTitleStyle(QObject *parent)
 {
     setParent(parent);
 }
@@ -134,11 +136,8 @@ bool PaneTitleStyle::isTabbedWithAnother(const QDockWidget *dock)
     // appears and the title bar has to carry it again.
     const QList<QDockWidget *> siblings =
         window->tabifiedDockWidgets(const_cast<QDockWidget *>(dock));
-    for (const QDockWidget *sibling : siblings) {
-        if (!sibling->isHidden())
-            return true;
-    }
-    return false;
+    return std::ranges::any_of(siblings,
+                              [](const QDockWidget *sibling) { return !sibling->isHidden(); });
 }
 
 void PaneTitleStyle::drawControl(ControlElement element, const QStyleOption *option,

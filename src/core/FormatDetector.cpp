@@ -65,7 +65,7 @@ Scored scoreCandidate(const QString &pattern, QByteArrayView sample, const Decod
     if (!compiled)
         return s; // an uncompilable candidate simply cannot win
     s.format = compiled.value();
-    s.fields = s.format.fields.size();
+    s.fields = int(s.format.fields.size());
     s.valid = true;
 
     // Match rate == matched records / total records over the leading sample, using
@@ -249,7 +249,7 @@ LeftPart buildLeft(const QString &left, DateOrder order)
     int c = dm.length;
     while (c < left.size()) {
         if (left[c] == QLatin1Char('[')) {
-            const int close = left.indexOf(QLatin1Char(']'), c);
+            const int close = int(left.indexOf(QLatin1Char(']'), c));
             if (close > c) {
                 out.pattern += QStringLiteral("[%t]");
                 digitRun = 0;
@@ -306,7 +306,7 @@ QStringList synthesizeFromLine(const QString &line, const QRegularExpression &pr
     // Consume a bracketed run at `c` (if any), returning the specifier to emit.
     const auto takeBracketed = [&right](int &c, QLatin1String spec) {
         if (c < right.size() && right[c] == QLatin1Char('[')) {
-            const int close = right.indexOf(QLatin1Char(']'), c);
+            const int close = int(right.indexOf(QLatin1Char(']'), c));
             if (close > c) {
                 c = close + 1;
                 return QStringLiteral("[") + spec + QStringLiteral("]");
@@ -347,13 +347,12 @@ QStringList synthesizeFromLine(const QString &line, const QRegularExpression &pr
         QString ndcPart;
         QString sepNdc;
         if (withNdc) {
-            const int save = c;
             sepNdc = takeSpace(c);
             ndcPart = takeBracketed(c, QLatin1String("%x"));
-            if (ndcPart.isEmpty()) {
-                c = save; // nothing bracketed here — this variant duplicates the other
+            // Nothing bracketed here — this variant duplicates the other. No need to
+            // put `c` back: it is declared inside this loop and starts again at 0.
+            if (ndcPart.isEmpty())
                 continue;
-            }
         }
 
         QString sep2;

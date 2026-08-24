@@ -159,7 +159,7 @@ QIcon swatchIcon(const QColor &c, HighlighterPane::ColourRole role, const QColor
         const qreal in = foreground ? 2.0 : 1.5;
         p.drawLine(QPointF(edge.left() + in, edge.bottom() - in),
                    QPointF(edge.right() - in, edge.top() + in));
-        return QIcon(pm);
+        return {pm};
     }
 
     const QColor text = foreground ? c : counterpart;
@@ -185,7 +185,7 @@ QIcon swatchIcon(const QColor &c, HighlighterPane::ColourRole role, const QColor
     p.setPen(QPen(line, 1.0));
     p.setBrush(Qt::NoBrush);
     outline();
-    return QIcon(pm);
+    return {pm};
 }
 
 // The three action glyphs, drawn for the same reason the letter above is.
@@ -320,7 +320,7 @@ public:
         QStyle *style = w ? w->style() : QApplication::style();
         const int side = style->pixelMetric(QStyle::PM_IndicatorWidth, &option, w);
         const int pad = style->pixelMetric(QStyle::PM_FocusFrameHMargin, &option, w) + 3;
-        return QSize(side + 2 * pad, side + 4);
+        return {side + 2 * pad, side + 4};
     }
 
     bool editorEvent(QEvent *event, QAbstractItemModel *model,
@@ -668,7 +668,7 @@ void HighlighterPane::setSwatchCombo(QComboBox *combo, int paletteIndex)
     combo->setCurrentIndex(at >= 0 ? at : 0); // fall back to Default
 }
 
-int HighlighterPane::swatchValue(const QComboBox *combo) const
+int HighlighterPane::swatchValue(const QComboBox *combo)
 {
     const QVariant v = combo->currentData();
     return v.isValid() ? v.toInt() : HighlightPalette::kDefault;
@@ -897,7 +897,7 @@ void HighlighterPane::buildUi()
         m_rules.append(r);
         commit();
         reloadRuleTable();
-        setCurrentRow(m_rules.size() - 1);
+        setCurrentRow(int(m_rules.size()) - 1);
     });
     connect(m_removeBtn, &QPushButton::clicked, this, [this] {
         const int row = currentRow();
@@ -906,7 +906,7 @@ void HighlighterPane::buildUi()
         m_rules.remove(row);
         commit();
         reloadRuleTable();
-        setCurrentRow(qMin(row, m_rules.size() - 1));
+        setCurrentRow(qMin(row, int(m_rules.size()) - 1));
     });
     connect(m_clearBtn, &QPushButton::clicked, this, [this] {
         // The counterpart of the Filters pane's Clear: one action back to an
@@ -960,7 +960,7 @@ void HighlighterPane::setCurrentRow(int row)
         m_ruleTable->setCurrentCell(-1, -1);
 }
 
-QString HighlighterPane::ruleSummary(const HighlightRule &r) const
+QString HighlighterPane::ruleSummary(const HighlightRule &r)
 {
     // What the rule MATCHES, and nothing else: its colours are what the row is painted
     // in and what its two swatches show, and its other three actions are three ticks on
@@ -1067,7 +1067,7 @@ void HighlighterPane::reloadRuleTable()
     // per-row swatch pickers with them, and a stale picker still carrying its old
     // "ruleRow" would write a later edit into whatever rule now sits at that index.
     m_ruleTable->setRowCount(0);
-    m_ruleTable->setRowCount(m_rules.size());
+    m_ruleTable->setRowCount(int(m_rules.size()));
     for (int row = 0; row < m_rules.size(); ++row)
         buildRow(row);
     m_updating = false;
@@ -1377,7 +1377,7 @@ void HighlighterPane::addRule(const MatchCriteria &criteria)
     m_rules.append(r);
     commit();
     reloadRuleTable();
-    setCurrentRow(m_rules.size() - 1);
+    setCurrentRow(int(m_rules.size()) - 1);
 }
 
 QJsonObject HighlighterPane::saveState() const
@@ -1389,9 +1389,9 @@ QJsonObject HighlighterPane::saveState() const
     return o;
 }
 
-void HighlighterPane::restoreState(const QJsonObject &o)
+void HighlighterPane::restoreState(const QJsonObject &state)
 {
-    m_rules = HighlighterSet::fromJson(o.value(QStringLiteral("rules")).toArray()).rules;
+    m_rules = HighlighterSet::fromJson(state.value(QStringLiteral("rules")).toArray()).rules;
     normaliseRules();
     syncToDocument();
     reloadRuleTable();

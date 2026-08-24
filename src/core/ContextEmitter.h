@@ -107,7 +107,7 @@ void emitWithContext(int first, int last, int before, int after, ContextState &s
                 if (inBound(q))
                     lead.append(q);
             }
-            for (int k = lead.size() - 1; k >= 0; --k) // gathered descending, emit ascending
+            for (int k = int(lead.size()) - 1; k >= 0; --k) // gathered descending, emit ascending
                 sink(lead[k], true);
             sink(r, false);
             st.lastMatch = r;

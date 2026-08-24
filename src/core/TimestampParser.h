@@ -27,7 +27,7 @@ public:
 
     // `qtFormat` is LogFormat::impliedDateFormat.qtFormat; `sourceZone` is the
     // zone the log was written in (inferred from the pattern or set by the user).
-    TimestampParser(const QString &qtFormat, const QTimeZone &sourceZone);
+    TimestampParser(const QString &qtFormat, QTimeZone sourceZone);
 
     bool isValid() const { return m_valid; }
 

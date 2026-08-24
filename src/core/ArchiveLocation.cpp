@@ -149,9 +149,9 @@ QString ArchiveLocation::normalize(const QString &path)
 QString ArchiveLocation::toString() const
 {
     if (container.isEmpty())
-        return QString();
+        return {};
 
-    const QString base = RemoteLocation::isRemote(container)
+    QString base = RemoteLocation::isRemote(container)
         ? RemoteLocation::normalize(container)
         : QFileInfo(QDir::fromNativeSeparators(container)).absoluteFilePath();
 
@@ -169,7 +169,7 @@ QString ArchiveLocation::displayMember() const
 
     // One unnamed member: it is the container's own name with the compression suffix
     // taken off, which is what the writer called the log before it was compressed.
-    const QString name = QFileInfo(lastComponent(container).toString()).fileName();
+    QString name = QFileInfo(lastComponent(container).toString()).fileName();
     for (const char *suffix : kSingleStreamSuffixes) {
         const auto s = QLatin1String(suffix);
         if (name.size() > s.size() && name.endsWith(s, Qt::CaseInsensitive))

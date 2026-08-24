@@ -71,8 +71,8 @@ public:
     void invalidateMeasurements();
 
     // --- Measurement -------------------------------------------------------
-    int blockCount() const { return m_blockPhysical.size(); }
-    int blockOfRecord(int r) const;
+    int blockCount() const { return int(m_blockPhysical.size()); }
+    static int blockOfRecord(int r);
     int recordsInBlock(int block) const;
     // How many of `block`'s records have an exact cached height. Equal to
     // recordsInBlock() when the block is fully measured, and SHORT of it when the
@@ -125,7 +125,7 @@ private:
     void truncateBlockMeasurement(int block, int keep);
     const QVector<quint16> *cachedLines(int block) const;
     qint64 blockPhysical(int block) const { return m_blockPhysical.at(block); }
-    int    blockStartRecord(int block) const;
+    static int blockStartRecord(int block);
 
     const RecordIndex *m_idx = nullptr;
     int    m_wrapWidth = 1;

@@ -92,8 +92,8 @@ ConfigSyntax sniffSyntax(QByteArrayView head)
         //    and why reaching here means it was not JSON.
         if (line.startsWith('[') && line.endsWith(']'))
             return ConfigSyntax::Ini;
-        const int eq = line.indexOf('=');
-        const int colon = line.indexOf(':');
+        const int eq = int(line.indexOf('='));
+        const int colon = int(line.indexOf(':'));
         const int sep = (eq >= 0 && (colon < 0 || eq < colon)) ? eq : colon;
         if (sep > 0) {
             // A key is a word, not a sentence: something with spaces before the
@@ -214,8 +214,8 @@ void ConfigHighlighter::highlightBlock(const QString &text)
         auto it = rule.re.globalMatch(text);
         while (it.hasNext()) {
             const QRegularExpressionMatch m = it.next();
-            const int start = m.capturedStart(rule.capture);
-            const int length = m.capturedLength(rule.capture);
+            const int start = int(m.capturedStart(rule.capture));
+            const int length = int(m.capturedLength(rule.capture));
             if (start < 0 || length <= 0)
                 continue;
             setFormat(start, length, formatFor(rule.role));
@@ -231,22 +231,22 @@ void ConfigHighlighter::highlightBlock(const QString &text)
     int start = 0;
     if (previousBlockState() != 1) {
         const auto m = m_commentStart.match(text);
-        start = m.hasMatch() ? m.capturedStart() : -1;
+        start = m.hasMatch() ? int(m.capturedStart()) : -1;
     }
     while (start >= 0) {
         const auto end = m_commentEnd.match(text, start);
         int length = 0;
         if (end.hasMatch()) {
-            length = end.capturedEnd() - start;
+            length = int(end.capturedEnd()) - start;
         } else {
             setCurrentBlockState(1);
-            length = text.length() - start;
+            length = int(text.length()) - start;
         }
         setFormat(start, length, formatFor(ConfigRole::Comment));
         if (!end.hasMatch())
             break;
         const auto next = m_commentStart.match(text, start + length);
-        start = next.hasMatch() ? next.capturedStart() : -1;
+        start = next.hasMatch() ? int(next.capturedStart()) : -1;
     }
 }
 

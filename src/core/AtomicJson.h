@@ -3,8 +3,6 @@
 #include <QJsonDocument>
 #include <QString>
 
-namespace loftail {
-
 // Atomic JSON file I/O for the preset and export/import files (ARCHITECTURE.md
 // §8.1). Because SPEC.md §3 allows several instances to run at once, a preset file
 // is a shared mutable resource: a crash or a concurrent write must never leave a
@@ -13,7 +11,7 @@ namespace loftail {
 // always sees either the old complete file or the new complete file, never a
 // partial one. (QSettings gives its own store the same guarantee; this is the
 // piece SPEC/ARCHITECTURE flags as "ours to get right".)
-namespace AtomicJson {
+namespace loftail::AtomicJson {
 
 // Serialize `doc` and replace `path` atomically (temp file + rename, via QSaveFile).
 // Creates parent directories as needed. Returns false without leaving a partial or
@@ -30,6 +28,4 @@ bool writePrivate(const QString &path, const QJsonDocument &doc, QString *error 
 // error; the returned document is then null.
 QJsonDocument read(const QString &path, bool *ok = nullptr);
 
-} // namespace AtomicJson
-
-} // namespace loftail
+} // namespace loftail::AtomicJson

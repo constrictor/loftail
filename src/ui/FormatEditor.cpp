@@ -24,6 +24,8 @@
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include <utility>
+
 namespace loftail {
 
 namespace {
@@ -44,7 +46,7 @@ const Encoding kEncodingByIndex[] = {
 
 int encodingToIndex(Encoding e)
 {
-    for (int i = 0; i < int(std::size(kEncodingByIndex)); ++i)
+    for (int i = 0; std::cmp_less(i, std::size(kEncodingByIndex)); ++i)
         if (kEncodingByIndex[i] == e)
             return i;
     return 0;
@@ -64,7 +66,7 @@ QString encodingName(Encoding e)
     case Encoding::System:  return QCoreApplication::translate("loftail::FormatEditor",
                                                                "System 8-bit");
     }
-    return QString();
+    return {};
 }
 } // namespace
 
@@ -312,7 +314,7 @@ void FormatEditor::setSettings(const FormatSettings &s)
 Encoding FormatEditor::currentEncoding() const
 {
     const int i = m_encodingCombo->currentIndex();
-    return (i >= 0 && i < int(std::size(kEncodingByIndex))) ? kEncodingByIndex[i] : Encoding::Auto;
+    return (i >= 0 && std::cmp_less(i, std::size(kEncodingByIndex))) ? kEncodingByIndex[i] : Encoding::Auto;
 }
 
 FormatSettings FormatEditor::settings() const
@@ -406,11 +408,11 @@ void FormatEditor::refresh()
 
     const QStringList headers =
         pv.headers.isEmpty() ? QStringList{tr("Text (unparsed)")} : pv.headers;
-    const int cols = headers.size();
+    const int cols = int(headers.size());
     m_previewTable->clear();
     m_previewTable->setColumnCount(cols);
     m_previewTable->setHorizontalHeaderLabels(headers);
-    m_previewTable->setRowCount(pv.rows.size());
+    m_previewTable->setRowCount(int(pv.rows.size()));
 
     for (int r = 0; r < pv.rows.size(); ++r) {
         const PreviewRow &row = pv.rows.at(r);

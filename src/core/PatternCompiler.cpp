@@ -46,7 +46,7 @@ QString compileLiteral(QStringView text)
 {
     QString out;
     int i = 0;
-    const int n = text.size();
+    const int n = int(text.size());
     while (i < n) {
         if (text[i].isSpace()) {
             while (i < n && text[i].isSpace())
@@ -81,7 +81,7 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
     QString &qt = result.format.qtFormat;
 
     int i = 0;
-    const int n = fmt.size();
+    const int n = int(fmt.size());
     while (i < n) {
         const QChar c = fmt[i];
         if (c != QLatin1Char('%')) {
@@ -149,7 +149,7 @@ QString fieldName(FieldRole role)
     case FieldRole::Mdc:        return Tr::tr("MDC");
     case FieldRole::EnvVar:     return Tr::tr("Env");
     }
-    return QString();
+    return {};
 }
 
 // The three context specifiers (%x, %X, %E) produce arbitrary application text:
@@ -208,7 +208,7 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
         }
     };
 
-    const int len = pattern.size();
+    const int len = int(pattern.size());
     int i = 0;
     int groupCounter = 0;
 
@@ -313,7 +313,8 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
             } else {
                 defaultHolder = QString(kDefaultDateFormat);
                 innerFmt = defaultHolder;
-                fmtOffset = j;
+                // fmtOffset stays at j: with no {inner-format} the whole specifier is
+                // what an error points at.
             }
 
             auto translated = translateDateFormat(innerFmt, fmtOffset);

@@ -13,6 +13,7 @@
 #include <QHash>
 #include <QThread>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -37,12 +38,12 @@ namespace {
 // Read size per SFTP round trip. Large enough that priming a big log is not dominated
 // by round-trip latency, small enough that committedSize advances often during a long
 // prime so the user sees the view fill rather than a frozen count.
-constexpr qint64 kChunkBytes = 256 * 1024;
+constexpr qint64 kChunkBytes = 256LL * 1024;
 
 // Fetched synchronously in start(), before the Document takes its 64 KB format sample
 // (Document::prepare) — so autodetection and the format preview see real bytes rather
 // than an empty file. The rest streams in on the fetcher thread.
-constexpr qint64 kPrimeBytes = 128 * 1024;
+constexpr qint64 kPrimeBytes = 128LL * 1024;
 
 // Compared against the spool's head when a server's FSTAT cannot be trusted to follow
 // the handle. Only ever read on suspicion, never on the ordinary poll path.
@@ -67,7 +68,7 @@ constexpr qint64 kStallProbeMs = 30000;
 // numbers are about the SERVER: observing a log must not disturb the machine producing
 // it (invariant #5), and a note in the status bar is not a substitute for not doing it.
 constexpr int    kWcMinPollMs = 15000;
-constexpr qint64 kWcAbandonBytes = 64 * 1024 * 1024;
+constexpr qint64 kWcAbandonBytes = 64LL * 1024 * 1024;
 
 } // namespace
 
@@ -121,7 +122,7 @@ public:
     QString spoolPath(quint64 generation) const override
     {
         if (m_spoolDir.isEmpty())
-            return QString();
+            return {};
         return m_spoolDir + QStringLiteral("/gen-%1.log").arg(generation);
     }
 
@@ -584,8 +585,7 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
 void SshFetcher::publishHeldCommits()
 {
     std::unique_lock<std::mutex> lock(m_mutex);
-    if (m_heldCommit > m_status.committedSize)
-        m_status.committedSize = m_heldCommit;
+    m_status.committedSize = std::max(m_heldCommit, m_status.committedSize);
 }
 
 bool SshFetcher::stallProbeDue()
@@ -649,7 +649,7 @@ void SshFetcher::pollOnce()
                         "except by reading all of it. Installing `stat` or `ls` on the "
                         "server fixes this.")
                      .arg(m_location.path)
-                     .arg(kWcAbandonBytes / (1024 * 1024))
+                     .arg(kWcAbandonBytes / (1024LL * 1024))
                      .arg(m_location.host));
         return;
     }
@@ -695,13 +695,14 @@ void SshFetcher::pollOnce()
         // SIGNAL caught it is the whole diagnostic value of the line — a log that keeps
         // rotating by content compare is a log being rewritten in place, which reads
         // nothing like logrotate and is what somebody would be here to find out.
+        const char *how = "handle/name size";
+        if (byContent)
+            how = "content compare";
+        else if (byName.size < consumed)
+            how = "shrink";
         diagLog("ssh", QStringLiteral("rotation detected: %1 — by %2 (size %3 → %4, "
                                       "consumed %5)")
-                           .arg(m_location.toString(),
-                                QString::fromLatin1(byContent ? "content compare"
-                                                    : byName.size < consumed
-                                                        ? "shrink"
-                                                        : "handle/name size"))
+                           .arg(m_location.toString(), QString::fromLatin1(how))
                            .arg(m_lastSize).arg(byName.size).arg(consumed));
     }
 

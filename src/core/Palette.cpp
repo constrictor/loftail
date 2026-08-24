@@ -72,7 +72,7 @@ const PaletteSlot &HighlightPalette::slot(int index)
 QColor HighlightPalette::color(int index, bool dark)
 {
     if (!isSlot(index))
-        return QColor(); // kDefault (or corrupt): invalid == "use the theme color"
+        return {}; // kDefault (or corrupt): invalid == "use the theme color"
     const PaletteSlot &s = kSlots[index];
     return dark ? s.dark : s.light;
 }

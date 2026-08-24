@@ -121,7 +121,7 @@ public:
     void touch(const QString &address);
 
     // Logs that may never be evicted: the ones open in a tab.
-    void setPinned(QSet<QString> addresses);
+    void setPinned(const QSet<QString> &addresses);
 
     // Every remembered address, most recently opened first.
     QStringList addresses() const;

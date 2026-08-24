@@ -41,6 +41,12 @@ int main(int argc, char *argv[])
     // The desktop's own style, minus the themed icons Qt hangs on standard dialog
     // buttons (AppStyle.h). Installed before any window exists so nothing is polished
     // twice; the palette is untouched, so a dark theme stays dark.
+    // setStyle() takes ownership of the style and deletes the one it replaces, so
+    // there is no handle to hold and nothing here to free. The analyzer sees only the
+    // bare `new`, and anchors the report not at it but at whichever later statement it
+    // stops tracking the pointer at — hence a REGION rather than a NOLINTNEXTLINE,
+    // which would have to be moved every time a line is added below.
+    // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
     QApplication::setStyle(new loftail::AppStyle);
 
     // Organization/application names must be set before any QSettings is
@@ -52,6 +58,7 @@ int main(int argc, char *argv[])
     // binary downloaded from a workflow run has to be able to say which run built it
     // (Version.h). The packages keep naming the plain release in their filenames.
     QApplication::setApplicationVersion(loftail::applicationVersionString());
+    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
     // No setApplicationDisplayName(): QPlatformWindow::formatWindowTitle() appends it to
     // every window title that does not already END with it, so "loftail — app.log" reached
     // the window manager as "loftail — app.log - loftail". MainWindow writes the whole
@@ -94,5 +101,5 @@ int main(int argc, char *argv[])
     // so ten unreachable hosts on one command line still show ten tabs at once.
     window.openFiles(cmdLine.files(), cmdLine.pattern());
 
-    return app.exec();
+    return QApplication::exec();
 }

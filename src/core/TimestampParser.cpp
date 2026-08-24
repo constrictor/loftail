@@ -1,5 +1,7 @@
 #include "TimestampParser.h"
 
+#include <utility>
+
 namespace loftail {
 
 namespace {
@@ -16,8 +18,8 @@ int runLength(const QString &s, int i)
 
 } // namespace
 
-TimestampParser::TimestampParser(const QString &qtFormat, const QTimeZone &sourceZone)
-    : m_zone(sourceZone), m_qtFormat(qtFormat)
+TimestampParser::TimestampParser(const QString &qtFormat, QTimeZone sourceZone)
+    : m_zone(std::move(sourceZone)), m_qtFormat(qtFormat)
 {
     if (qtFormat.isEmpty())
         return;
@@ -102,9 +104,15 @@ qint64 TimestampParser::parse(QStringView text) const
         return dt.toMSecsSinceEpoch();
     }
 
-    int year = 1970, month = 1, day = 1, hour = 0, minute = 0, second = 0, millis = 0;
+    int year = 1970;
+    int month = 1;
+    int day = 1;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    int millis = 0;
     int pos = 0;
-    const int n = text.size();
+    const int n = int(text.size());
 
     auto readInt = [&](int maxWidth, int &out) -> bool {
         int value = 0;
@@ -129,7 +137,10 @@ qint64 TimestampParser::parse(QStringView text) const
             break;
         case Tok::Month:  if (!readInt(2, month))  return Record::kNoTimestamp; break;
         case Tok::Day:    if (!readInt(2, day))    return Record::kNoTimestamp; break;
-        case Tok::Hour24: if (!readInt(2, hour))   return Record::kNoTimestamp; break;
+        // Hour12 reads exactly as Hour24 does because it never gets here: a 'h' run
+        // clears m_fastPath (12-hour needs an AM/PM token this parser does not carry),
+        // so such a format goes to QDateTime instead. The label stays for exhaustiveness.
+        case Tok::Hour24:
         case Tok::Hour12: if (!readInt(2, hour))   return Record::kNoTimestamp; break;
         case Tok::Minute: if (!readInt(2, minute)) return Record::kNoTimestamp; break;
         case Tok::Second: if (!readInt(2, second)) return Record::kNoTimestamp; break;

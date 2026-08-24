@@ -47,7 +47,11 @@ Checks: >
   -readability-function-cognitive-complexity,
   -readability-identifier-length,
   -readability-implicit-bool-conversion,
-  -readability-magic-numbers
+  -readability-magic-numbers,
+  -readability-math-missing-parentheses,
+  -readability-named-parameter,
+  -readability-redundant-access-specifiers,
+  -readability-use-concise-preprocessor-directives
 
 # Why each exclusion, in the order it appears above. The counts are from the first
 # full sweep over src/ with clang-tidy 21: 3918 reported lines (997 distinct
@@ -107,6 +111,31 @@ Checks: >
 #   readability-magic-numbers
 #       the geometry code is measured pixel and character constants, which is the
 #       point of it (ARCHITECTURE.md §7.1.1); every one is deliberate and commented.
+#   readability-math-missing-parentheses                                 48 findings
+#       wants `(2 * pad) + side` for `2 * pad + side`. Every finding is `*` or `/`
+#       under `+` or `-`, which is the precedence every reader of this tree already
+#       has; the parentheses buy nothing and the geometry expressions are long
+#       enough already. Semantically the fix is a no-op, so it is pure churn.
+#   readability-named-parameter                                          11 findings
+#       every one is a parameter DELIBERATELY left unnamed because the override does
+#       not use it: `void paintEvent(QPaintEvent *) override`, `QIcon::Mode` and
+#       `QIcon::State` on the two QIconEngine::paint overrides, the no-backend
+#       SecretStore stubs. That is the Qt idiom for "this argument is ignored", and
+#       the proposed fix is to write the name back as a /*comment*/.
+#   readability-redundant-access-specifiers                               7 findings
+#       DANGEROUS, not merely noisy. Every finding is a Qt `public slots:` or
+#       `private slots:` section whose access level repeats the one above it —
+#       `private:` then `private slots:` in MainWindow.h, a public section then
+#       `public slots:` in IndexController.h. To clang-tidy the second specifier is
+#       redundant; to moc it is what makes the declarations after it slots. Applying
+#       the fix would silently unregister them, which no compiler diagnoses.
+#   readability-use-concise-preprocessor-directives                      36 findings
+#       wants `#if defined(X)` written `#ifdef X`. The tree writes `#if defined(...)`
+#       at all 36 sites — LOFTAIL_HAVE_SSH, _ARCHIVE, _KEYCHAIN, _PRESETS, Q_OS_WIN —
+#       and the check cannot rewrite a compound condition, so taking the fix would
+#       leave the same file switching between the two spellings. It is also a check
+#       clang-tidy 18 does not have (see the version note below), so CI would never
+#       see the findings this box was churning for.
 #
 # Kept ON deliberately, against its count: bugprone-narrowing-conversions, 292
 # findings, 144 of them in RecordIndex.h and 48 in FilteredIndex.h. That is not an

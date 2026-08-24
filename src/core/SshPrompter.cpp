@@ -8,6 +8,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <utility>
 
 namespace loftail {
 
@@ -83,25 +84,25 @@ namespace SshCredentialCache {
 
 bool has(const QString &target)
 {
-    std::lock_guard<std::mutex> lock(cacheMutex());
+    std::scoped_lock lock(cacheMutex());
     return cache().contains(target);
 }
 
 QString password(const QString &target)
 {
-    std::lock_guard<std::mutex> lock(cacheMutex());
+    std::scoped_lock lock(cacheMutex());
     return cache().value(target);
 }
 
 void remember(const QString &target, const QString &password)
 {
-    std::lock_guard<std::mutex> lock(cacheMutex());
+    std::scoped_lock lock(cacheMutex());
     cache().insert(target, password);
 }
 
 void forget(const QString &target)
 {
-    std::lock_guard<std::mutex> lock(cacheMutex());
+    std::scoped_lock lock(cacheMutex());
     if (auto it = cache().find(target); it != cache().end()) {
         it.value().fill(QChar(u'\0')); // overwrite before releasing the buffer
         cache().erase(it);
@@ -110,7 +111,7 @@ void forget(const QString &target)
 
 void clear()
 {
-    std::lock_guard<std::mutex> lock(cacheMutex());
+    std::scoped_lock lock(cacheMutex());
     for (auto it = cache().begin(); it != cache().end(); ++it)
         it.value().fill(QChar(u'\0'));
     cache().clear();
@@ -118,8 +119,8 @@ void clear()
 
 } // namespace SshCredentialCache
 
-SshConnectHold::SshConnectHold(const QString &target, const std::function<bool()> &abandon)
-    : m_target(target)
+SshConnectHold::SshConnectHold(QString target, const std::function<bool()> &abandon)
+    : m_target(std::move(target))
 {
     std::unique_lock<std::mutex> lock(connectMutex());
     while (connecting().contains(m_target)) {
@@ -139,7 +140,7 @@ SshConnectHold::~SshConnectHold()
     if (!m_held)
         return;
     {
-        std::lock_guard<std::mutex> lock(connectMutex());
+        std::scoped_lock lock(connectMutex());
         connecting().remove(m_target);
     }
     connectFreed().notify_all();

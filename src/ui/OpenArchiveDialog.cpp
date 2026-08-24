@@ -25,6 +25,7 @@
 #include <QVBoxLayout>
 
 #include <atomic>
+#include <utility>
 
 namespace loftail {
 
@@ -55,9 +56,9 @@ int likeliestMember(const QVector<ArchiveEntry> &members)
 
 } // namespace
 
-OpenArchiveDialog::OpenArchiveDialog(const QString &container,
+OpenArchiveDialog::OpenArchiveDialog(QString container,
                                      const QVector<ArchiveEntry> &members, QWidget *parent)
-    : QDialog(parent), m_container(container), m_members(members)
+    : QDialog(parent), m_container(std::move(container)), m_members(members)
 {
     setWindowTitle(tr("Choose a Log"));
     setObjectName(QStringLiteral("openArchiveDialog"));

@@ -307,10 +307,10 @@ private:
     // from and what fromJson() infers from an empty name list; the two answers are
     // indistinguishable while the axis is off, and only this one round-trips.
     bool          coversAllFor(ValueAxis axis) const;
-    QSet<QString> checkedNames(const QListWidget *list) const;
-    void          setAllChecked(QListWidget *list, bool checked);
-    void          invertChecked(QListWidget *list);
-    void          narrowList(QListWidget *list, const QString &needle);
+    static QSet<QString> checkedNames(const QListWidget *list);
+    static void   setAllChecked(QListWidget *list, bool checked);
+    static void   invertChecked(QListWidget *list);
+    static void   narrowList(QListWidget *list, const QString &needle);
     // Per axis, because the two are loaded under rules that need not agree: a stored
     // state can cover every subsystem and name three threads.
     void          repopulate(const QSet<QString> &loggerChecked,

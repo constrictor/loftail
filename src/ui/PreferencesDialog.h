@@ -75,7 +75,7 @@ class PreferencesDialog : public QDialog
 public:
     // `sample` is the leading bytes of whichever log the preview should run over, or
     // EMPTY when there is none; `sampleName` names it in the preview caption.
-    PreferencesDialog(const LogSettingsTree &tree,
+    PreferencesDialog(LogSettingsTree tree,
                       const QString &sampleName,
                       const QByteArray &sample,
                       QWidget *parent = nullptr);

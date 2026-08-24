@@ -44,7 +44,7 @@ public:
     // take real time for a compressed tar, which has no index and must be decompressed
     // to be enumerated; the caller does that first and passes the result in, so this
     // dialog never blocks on I/O of its own.
-    OpenArchiveDialog(const QString &container, const QVector<ArchiveEntry> &members,
+    OpenArchiveDialog(QString container, const QVector<ArchiveEntry> &members,
                       QWidget *parent = nullptr);
 
     // The chosen members as full nested addresses, valid once exec() returned Accepted.

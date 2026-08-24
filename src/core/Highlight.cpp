@@ -3,6 +3,8 @@
 #include "LogFormat.h"
 #include "RecordIndex.h"
 
+#include <algorithm>
+
 namespace loftail {
 
 namespace {
@@ -25,7 +27,7 @@ MatchCriteria legacyCriteriaFromJson(const QJsonObject &o)
 {
     MatchCriteria c;
     c.loggerEnabled = o.value(QStringLiteral("matchLogger")).toBool(false);
-    for (const QJsonValue &v : o.value(QStringLiteral("loggerNames")).toArray()) {
+    for (const auto &v : o.value(QStringLiteral("loggerNames")).toArray()) {
         const QString n = v.toString();
         if (!n.isEmpty() && !c.loggerNames.contains(n))
             c.loggerNames.append(n);
@@ -70,7 +72,7 @@ QJsonArray actionsToJson(HighlightActions actions)
 HighlightActions actionsFromJson(const QJsonArray &a)
 {
     HighlightActions actions;
-    for (const QJsonValue &v : a) {
+    for (const auto &v : a) {
         const QString s = v.toString();
         for (const ActionToken &t : kActionTokens)
             if (s == QLatin1String(t.token))
@@ -185,18 +187,16 @@ void HighlighterSet::resolve(const RecordIndex &idx, const LogFormat &format,
 
 bool HighlighterSet::anyEnabled() const
 {
-    for (const HighlightRule &r : rules)
-        if (r.enabled && r.match.anyActive())
-            return true;
-    return false;
+    return std::ranges::any_of(rules, [](const HighlightRule &r) {
+        return r.enabled && r.match.anyActive();
+    });
 }
 
 bool HighlighterSet::anyEnabled(HighlightActions actions) const
 {
-    for (const HighlightRule &r : rules)
-        if (r.enabled && (r.actions & actions) && r.match.anyActive())
-            return true;
-    return false;
+    return std::ranges::any_of(rules, [actions](const HighlightRule &r) {
+        return r.enabled && (r.actions & actions) && r.match.anyActive();
+    });
 }
 
 QJsonArray HighlighterSet::toJson() const
@@ -210,7 +210,7 @@ QJsonArray HighlighterSet::toJson() const
 HighlighterSet HighlighterSet::fromJson(const QJsonArray &a)
 {
     HighlighterSet set;
-    for (const QJsonValue &v : a)
+    for (const auto &v : a)
         set.rules.append(HighlightRule::fromJson(v.toObject()));
     return set;
 }

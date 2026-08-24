@@ -59,7 +59,7 @@ PreviewResult FormatPreview::build(const LogFormat &format, QByteArrayView sampl
                 row.fields << ((f.group > 0 && fm.hasMatch()) ? fm.captured(f.group) : QString());
             out.rows.push_back(row);
             out.matchedCount++;
-            openRow = out.rows.size() - 1;
+            openRow = int(out.rows.size()) - 1;
             openMatched = true;
         } else if (openRow >= 0 && openMatched) {
             // Continuation of a matched record (invariant #2): fold it into the
@@ -76,12 +76,12 @@ PreviewResult FormatPreview::build(const LogFormat &format, QByteArrayView sampl
             for (int k = 0; k < format.fields.size(); ++k)
                 row.fields << QString();
             out.rows.push_back(row);
-            openRow = out.rows.size() - 1;
+            openRow = int(out.rows.size()) - 1;
             openMatched = false;
         }
     }
 
-    out.totalCount = out.rows.size();
+    out.totalCount = int(out.rows.size());
     return out;
 }
 

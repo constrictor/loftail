@@ -18,6 +18,8 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
+#include <utility>
+
 namespace loftail {
 
 namespace {
@@ -71,8 +73,8 @@ QString dominantLineEnding(const QString &text)
 }
 } // namespace
 
-ConfigView::ConfigView(const QString &address, QWidget *parent)
-    : QWidget(parent), m_address(address)
+ConfigView::ConfigView(QString address, QWidget *parent)
+    : QWidget(parent), m_address(std::move(address))
 {
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(0, 0, 0, 0);
@@ -221,7 +223,7 @@ void ConfigView::setContents(const QByteArray &bytes, bool existed)
         // never second-guessed — a `.json` holding a mistake is a JSON file with a
         // mistake in it, and colouring it as something else hides it.
         const QString name = logSourceBareName(m_address);
-        const int dot = name.lastIndexOf(u'.');
+        const int dot = int(name.lastIndexOf(u'.'));
         ConfigSyntax picked = dot >= 0
             ? syntaxForExtension(QStringView(name).mid(dot + 1))
             : ConfigSyntax::PlainText;
@@ -400,8 +402,8 @@ void ConfigView::runFind(bool forward, bool fromStart)
                                   : doc->find(pattern, position, flags);
     };
 
-    const int from = fromStart ? (forward ? 0 : doc->characterCount() - 1)
-                               : m_edit->textCursor().position();
+    const int fromEnd = forward ? 0 : doc->characterCount() - 1;
+    const int from = fromStart ? fromEnd : m_edit->textCursor().position();
     QTextCursor hit = findFrom(from);
     bool wrapped = false;
     if (hit.isNull()) {

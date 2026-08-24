@@ -303,9 +303,9 @@ QJsonObject FilterPane::saveState() const
     return o;
 }
 
-void FilterPane::restoreState(const QJsonObject &o)
+void FilterPane::restoreState(const QJsonObject &state)
 {
-    m_axes->setCriteria(MatchCriteria::fromJson(o));
+    m_axes->setCriteria(MatchCriteria::fromJson(state));
     // Blocked: the single filtersChanged() at the end of this function is the pane's
     // one notification for the whole restore, exactly as it was before the spinners
     // existed. An absent key means zero — what every pre-context preset and session
@@ -313,8 +313,8 @@ void FilterPane::restoreState(const QJsonObject &o)
     {
         const QSignalBlocker blockBefore(m_contextBefore);
         const QSignalBlocker blockAfter(m_contextAfter);
-        m_contextBefore->setValue(o.value(QStringLiteral("contextBefore")).toInt(0));
-        m_contextAfter->setValue(o.value(QStringLiteral("contextAfter")).toInt(0));
+        m_contextBefore->setValue(state.value(QStringLiteral("contextBefore")).toInt(0));
+        m_contextAfter->setValue(state.value(QStringLiteral("contextAfter")).toInt(0));
     }
     // Merge the restored selection with whatever the scan has discovered so far, then
     // push it into the document and let the caller recompute the visible set.

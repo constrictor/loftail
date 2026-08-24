@@ -56,7 +56,7 @@ class NullSecretStore final : public SecretStore
 {
 public:
     bool available() override { return false; }
-    QString backendName() override { return QString(); }
+    QString backendName() override { return {}; }
     // No default arguments repeated here: the base declares them, and a default that
     // differs between a base and an override is resolved statically and silently.
     Result read(const QString &, QString *, QString *) override { return Result::NoBackend; }

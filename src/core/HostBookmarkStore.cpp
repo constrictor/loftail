@@ -72,7 +72,7 @@ HostBookmark fromJson(const QJsonObject &o)
     b.pollMs = o.value(QStringLiteral("pollMs")).toInt(1000);
     b.tailStartBytes = static_cast<qint64>(o.value(QStringLiteral("tailStartBytes")).toDouble());
     const QJsonArray paths = o.value(QStringLiteral("paths")).toArray();
-    for (const QJsonValue &v : paths) {
+    for (const auto &v : paths) {
         if (v.isString())
             b.paths.append(v.toString());
     }
@@ -114,7 +114,7 @@ QString HostBookmarkStore::defaultDir()
 QString HostBookmarkStore::filePath() const
 {
     if (m_dir.isEmpty())
-        return QString();
+        return {};
     return m_dir + u'/' + QLatin1String(kFileName);
 }
 
@@ -138,7 +138,7 @@ QVector<HostBookmark> HostBookmarkStore::all() const
 
     const QJsonArray hosts = root.value(QLatin1String(kHostsKey)).toArray();
     out.reserve(hosts.size());
-    for (const QJsonValue &v : hosts) {
+    for (const auto &v : hosts) {
         if (!v.isObject())
             continue;
         HostBookmark b = fromJson(v.toObject());
@@ -168,7 +168,7 @@ int HostBookmarkStore::indexOfName(const QVector<HostBookmark> &bookmarks, const
     return -1;
 }
 
-bool HostBookmarkStore::replaceAll(const QVector<HostBookmark> &bookmarks)
+bool HostBookmarkStore::replaceAll(const QVector<HostBookmark> &bookmarks) const
 {
     const QString path = filePath();
     if (path.isEmpty())
@@ -194,7 +194,7 @@ bool HostBookmarkStore::replaceAll(const QVector<HostBookmark> &bookmarks)
     return anySecret ? AtomicJson::writePrivate(path, doc) : AtomicJson::write(path, doc);
 }
 
-bool HostBookmarkStore::save(const HostBookmark &bookmark)
+bool HostBookmarkStore::save(const HostBookmark &bookmark) const
 {
     QVector<HostBookmark> bookmarks = all();
     const int at = indexOfName(bookmarks, bookmark.displayName());
@@ -205,7 +205,7 @@ bool HostBookmarkStore::save(const HostBookmark &bookmark)
     return replaceAll(bookmarks);
 }
 
-bool HostBookmarkStore::remove(const QString &name)
+bool HostBookmarkStore::remove(const QString &name) const
 {
     QVector<HostBookmark> bookmarks = all();
     const int at = indexOfName(bookmarks, name);

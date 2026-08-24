@@ -46,7 +46,7 @@ public:
         // including plural lookups, where returning the source leaves %n to be
         // substituted by the caller, which is what an untranslated build already does.
         if (!sourceText || !*sourceText)
-            return QString();
+            return {};
         return QString::fromUtf8(sourceText);
     }
 
@@ -75,7 +75,7 @@ QString loadFirstMatch(QTranslator *translator, const QString &name, const QStri
         if (translator->load(name + QLatin1Char('_') + language, dir))
             return language;
     }
-    return QString();
+    return {};
 }
 
 } // namespace

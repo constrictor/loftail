@@ -317,7 +317,7 @@ void OpenRemoteDialog::preset(const HostBookmark &bookmark, const QString &path)
     m_remember->setChecked(bookmark.savePassword && m_remember->isEnabled());
     m_tailOnly->setChecked(bookmark.tailStartBytes > 0);
     if (bookmark.tailStartBytes > 0)
-        m_tailMb->setValue(int(bookmark.tailStartBytes / (1024 * 1024)));
+        m_tailMb->setValue(int(bookmark.tailStartBytes / (1024LL * 1024)));
 
     // A host whose defaults have been changed should say so without being unfolded.
     if (bookmark.tailStartBytes > 0 || (bookmark.pollMs > 0 && bookmark.pollMs != 1000))

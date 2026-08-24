@@ -60,7 +60,9 @@ Resolved sniff(QByteArrayView sample)
     // 2. No BOM: count NUL bytes at even vs odd positions. UTF-16 ASCII-heavy
     //    text has a NUL in every other byte; which parity carries them gives the
     //    byte order (LE => NULs at odd positions, BE => at even positions).
-    qint64 nulEven = 0, nulOdd = 0, total = 0;
+    qint64 nulEven = 0;
+    qint64 nulOdd = 0;
+    qint64 total = 0;
     for (qsizetype i = 0; i < n; ++i) {
         if (p[i] == 0x00) {
             if ((i & 1) == 0)

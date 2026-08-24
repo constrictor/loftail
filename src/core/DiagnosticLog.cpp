@@ -148,14 +148,14 @@ void writeSessionStartLocked(LogState &s)
 QString diagLogPath()
 {
     LogState &s = state();
-    std::lock_guard<std::mutex> lock(s.mutex);
+    std::scoped_lock lock(s.mutex);
     return resolvedPathLocked(s);
 }
 
 void diagLogSetDirectory(const QString &dir)
 {
     LogState &s = state();
-    std::lock_guard<std::mutex> lock(s.mutex);
+    std::scoped_lock lock(s.mutex);
     if (s.file.isOpen())
         s.file.close();
     s.directory = dir;
@@ -167,7 +167,7 @@ void diagLogSetDirectory(const QString &dir)
 void diagLog(const char *area, const QString &message)
 {
     LogState &s = state();
-    std::lock_guard<std::mutex> lock(s.mutex);
+    std::scoped_lock lock(s.mutex);
     writeSessionStartLocked(s);
     writeLineLocked(s, area, message);
 }
@@ -176,7 +176,7 @@ void diagLogEvery(qint64 everyMs, const char *area, const QString &key,
                   const QString &message)
 {
     LogState &s = state();
-    std::lock_guard<std::mutex> lock(s.mutex);
+    std::scoped_lock lock(s.mutex);
 
     const qint64 now = s.clock.elapsed();
     int suppressed = 0;
@@ -214,7 +214,7 @@ void diagLogEvery(qint64 everyMs, const char *area, const QString &key,
 void diagLogSessionStart()
 {
     LogState &s = state();
-    std::lock_guard<std::mutex> lock(s.mutex);
+    std::scoped_lock lock(s.mutex);
     writeSessionStartLocked(s);
 }
 

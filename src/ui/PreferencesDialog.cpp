@@ -24,6 +24,8 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <utility>
+
 namespace loftail {
 
 namespace {
@@ -163,11 +165,11 @@ PreferencesDialog::NodeRef PreferencesDialog::refFromString(const QString &s)
     return r;
 }
 
-PreferencesDialog::PreferencesDialog(const LogSettingsTree &tree,
+PreferencesDialog::PreferencesDialog(LogSettingsTree tree,
                                      const QString &sampleName,
                                      const QByteArray &sample,
                                      QWidget *parent)
-    : QDialog(parent), m_settings(tree)
+    : QDialog(parent), m_settings(std::move(tree))
 {
     setObjectName(QStringLiteral("preferencesDialog")); // findChild, for tests
     setWindowTitle(tr("Preferences"));
@@ -1082,7 +1084,7 @@ QString PreferencesDialog::nodeDisplayName(const NodeRef &ref) const
         // row the reader is looking at instead of the one the request points at.
         return ref.key != m_currentAddress ? QString() : logSourceDisplayName(ref.key);
     }
-    return QString();
+    return {};
 }
 
 void PreferencesDialog::updateApplyNotice()

@@ -82,7 +82,7 @@ qint64 MappedLogSource::refreshSize()
     if (::fstat(m_fd, &st) != 0)
         return m_mappedSize;
 
-    const qint64 current = static_cast<qint64>(st.st_size);
+    const auto current = static_cast<qint64>(st.st_size);
     const quint64 id = (static_cast<quint64>(st.st_dev) << 32) ^ static_cast<quint64>(st.st_ino);
 
     // Shrink or identity change => the file was rotated/truncated (invariant #5,
@@ -145,7 +145,7 @@ QByteArrayView MappedLogSource::bytes(qint64 offset, qint64 length)
     if (offset >= m_mappedSize)
         return {};
     const qint64 clamped = qMin(length, m_mappedSize - offset);
-    return QByteArrayView(static_cast<const char *>(m_map) + offset, clamped);
+    return {static_cast<const char *>(m_map) + offset, clamped};
 }
 
 } // namespace loftail

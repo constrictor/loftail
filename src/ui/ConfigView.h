@@ -37,7 +37,7 @@ class ConfigView : public QWidget
 public:
     // `address` is a resolved config address (ConfigLocation.h) — already normalized and
     // never carrying a password.
-    ConfigView(const QString &address, QWidget *parent = nullptr);
+    ConfigView(QString address, QWidget *parent = nullptr);
 
     QString address() const { return m_address; }
 

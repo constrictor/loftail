@@ -113,7 +113,7 @@ int WrapMetrics::linesForParagraph(QStringView paragraph, int width) const
 {
     if (width <= 0)
         return 1;
-    const qreal limit = qreal(width);
+    const auto limit = qreal(width);
     int lines = 1;
     qreal x = 0;
     const QChar *const begin = paragraph.begin();

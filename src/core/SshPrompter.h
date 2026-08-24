@@ -118,7 +118,7 @@ class SshConnectHold
 public:
     // Blocks until this target's slot is free, `abandon` returns true, or the process is
     // shutting down. Check held() before relying on it.
-    SshConnectHold(const QString &target, const std::function<bool()> &abandon);
+    SshConnectHold(QString target, const std::function<bool()> &abandon);
     ~SshConnectHold();
 
     SshConnectHold(const SshConnectHold &) = delete;

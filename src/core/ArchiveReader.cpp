@@ -35,7 +35,7 @@ namespace {
 // Handed to libarchive one block at a time. Big enough that the decompressor is not
 // dominated by callback overhead, small enough that a growing input is re-checked
 // often while a remote container is still arriving.
-constexpr qint64 kInputChunk = 256 * 1024;
+constexpr qint64 kInputChunk = 256LL * 1024;
 
 // A member path as recorded in an archive may be written "./var/log/app.log" or
 // "/var/log/app.log" or "var/log/app.log" for the same thing. One spelling, so a

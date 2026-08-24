@@ -6,6 +6,9 @@
 #include <QVector>
 #include <QtGlobal>
 
+#include <algorithm>
+#include <utility>
+
 namespace loftail {
 
 // The indexed form of one file: the record array, the logger and thread intern
@@ -33,15 +36,15 @@ public:
         return qMin<quint16>(r.lineCount, kDisplayLineCap);
     }
 
-    int recordCount() const { return records.size(); }
-    qint64 totalLines() const { return m_blockSums.isEmpty() ? 0 : m_blockSums.last(); }
+    int recordCount() const { return int(records.size()); }
+    qint64 totalLines() const { return m_blockSums.isEmpty() ? 0 : qint64(m_blockSums.last()); }
 
     // Rebuild the block prefix sums over the current `records`. One linear pass,
     // no parsing — cheap enough to rerun on every filter change (§7.2, §11).
     void rebuildBlockSums()
     {
         m_blockSums.clear();
-        const int n = records.size();
+        const int n = int(records.size());
         m_blockSums.reserve(n / kBlockSize + 2);
         quint64 acc = 0;
         for (int i = 0; i < n; ++i) {
@@ -63,11 +66,9 @@ public:
     // oldRecordCount - 1 so the reconsidered last record is recomputed too.
     void extendBlockSums(int validCount)
     {
-        const int n = records.size();
-        if (validCount < 0)
-            validCount = 0;
-        if (validCount > n)
-            validCount = n;
+        const int n = int(records.size());
+        validCount = std::max(validCount, 0);
+        validCount = std::min(validCount, n);
         if (m_blockSums.isEmpty()) {
             // No baseline to extend (sums were never built): fall back to a full
             // build. Cheap and keeps `resize(startBlock)` below from fabricating
@@ -97,7 +98,7 @@ public:
         if (r <= 0 || records.isEmpty())
             return 0;
         const int block = r / kBlockSize;
-        qint64 line = m_blockSums.at(block);
+        auto line = qint64(m_blockSums.at(block));
         for (int i = block * kBlockSize; i < r; ++i)
             line += displayLines(records.at(i));
         return line;
@@ -107,17 +108,18 @@ public:
     // scan within one block). Returns the last record for an out-of-range line.
     int recordAtLine(qint64 line) const
     {
-        const int n = records.size();
+        const int n = int(records.size());
         if (n == 0)
             return -1;
         if (line < 0)
             return 0;
 
         // Largest block index b with m_blockSums[b] <= line.
-        int lo = 0, hi = m_blockSums.size() - 1;
+        int lo = 0;
+        int hi = int(m_blockSums.size()) - 1;
         while (lo < hi) {
             const int mid = (lo + hi + 1) / 2;
-            if (m_blockSums.at(mid) <= line)
+            if (std::cmp_less_equal(m_blockSums.at(mid), line))
                 lo = mid;
             else
                 hi = mid - 1;
@@ -126,7 +128,7 @@ public:
         if (block >= (n + kBlockSize - 1) / kBlockSize)
             return n - 1;
 
-        qint64 acc = m_blockSums.at(block);
+        auto acc = qint64(m_blockSums.at(block));
         int i = block * kBlockSize;
         const int end = qMin(i + kBlockSize, n);
         for (; i < end; ++i) {
@@ -138,7 +140,7 @@ public:
         return n - 1;
     }
 
-    int blockCount() const { return m_blockSums.size(); }
+    int blockCount() const { return int(m_blockSums.size()); }
 
 private:
     // m_blockSums[b] = cumulative display lines of all records before block b.

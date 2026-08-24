@@ -83,7 +83,12 @@ bool SpooledLogSource::notReadyYet() const
     if (status.committedSize > 0)
         return false; // there is something to read, whatever the fetcher is doing next
 
+    // Error answers `true` for a different reason from the three states below it —
+    // not "on its way" but "it stopped, and the tab stays up to say so" — and the two
+    // are one edit away from diverging. Folding them into one label would leave that
+    // distinction in a comment only.
     switch (status.state) {
+    // NOLINTNEXTLINE(bugprone-branch-clone)
     case FetchStatus::State::Idle:
     case FetchStatus::State::Connecting:
     case FetchStatus::State::Priming:
@@ -165,7 +170,7 @@ QString sourceStatusText(const LogSource &source, const QString &path)
 {
     const auto *spooled = dynamic_cast<const SpooledLogSource *>(&source);
     if (!spooled)
-        return QString(); // an ordinary local file has nothing to report, ever
+        return {}; // an ordinary local file has nothing to report, ever
 
     const FetchStatus status = spooled->fetchStatus();
     const QLocale locale;
@@ -180,7 +185,7 @@ QString sourceStatusText(const LogSource &source, const QString &path)
         // case. Saying so would be noise that trains the user to ignore the line, and
         // that goes for HOW the log is being read as well: an exec-mode fallback that is
         // keeping up is still just a working tail (§6.3.1). Only trouble gets a line.
-        return QString();
+        return {};
 
     case FetchStatus::State::Error:
         return status.error;
@@ -211,7 +216,7 @@ QString sourceStatusText(const LogSource &source, const QString &path)
         return Tr::tr("%1 — %2 so far").arg(verb, sized(status.committedSize));
     }
     }
-    return QString();
+    return {};
 }
 
 } // namespace loftail

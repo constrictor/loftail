@@ -99,8 +99,8 @@ public:
     int recordCount() const
     {
         if (m_active)
-            return m_compact.records.size();
-        return m_source ? m_source->records.size() : 0;
+            return int(m_compact.records.size());
+        return m_source ? int(m_source->records.size()) : 0;
     }
 
     // Map a view row to its source record ordinal. Identity when inactive; -1 for an
@@ -178,7 +178,7 @@ public:
     // trailing context rows, which the emission rule bounds at `after` of them.
     int lastMatchSource() const
     {
-        for (int i = m_visible.size() - 1; i >= 0; --i) {
+        for (int i = int(m_visible.size()) - 1; i >= 0; --i) {
             if (!m_context.at(i))
                 return int(m_visible.at(i));
         }
@@ -190,7 +190,7 @@ public:
     int trailingCountFrom(int minSourceRow) const
     {
         int n = 0;
-        for (int i = m_visible.size() - 1; i >= 0 && m_visible.at(i) >= minSourceRow; --i)
+        for (int i = int(m_visible.size()) - 1; i >= 0 && m_visible.at(i) >= minSourceRow; --i)
             ++n;
         return n;
     }
@@ -242,7 +242,7 @@ private:
     // First index into m_visible whose ordinal is >= sourceRow. Ascending subsets only.
     int lowerBound(int sourceRow) const
     {
-        const auto it = std::lower_bound(m_visible.cbegin(), m_visible.cend(), qint32(sourceRow));
+        const auto it = std::ranges::lower_bound(m_visible, qint32(sourceRow));
         return int(it - m_visible.cbegin());
     }
 

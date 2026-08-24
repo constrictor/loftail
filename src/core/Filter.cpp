@@ -51,7 +51,7 @@ QVector<TextMatcher::Span> TextMatcher::spans(const QString &text, int limit) co
         QRegularExpressionMatchIterator it = m_re.globalMatch(text);
         while (it.hasNext()) {
             const QRegularExpressionMatch m = it.next();
-            const int length = m.capturedLength();
+            const int length = int(m.capturedLength());
             if (length <= 0)
                 continue; // a zero-width match covers no glyph
             out.append(Span{int(m.capturedStart()), length});
@@ -64,7 +64,7 @@ QVector<TextMatcher::Span> TextMatcher::spans(const QString &text, int limit) co
     const int patternLength = int(m_pattern.size());
     int from = 0;
     while (true) {
-        const int at = text.indexOf(m_pattern, from, m_cs);
+        const int at = int(text.indexOf(m_pattern, from, m_cs));
         if (at < 0)
             break;
         out.append(Span{at, patternLength});

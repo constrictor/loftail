@@ -16,7 +16,7 @@ namespace {
 
 QStringList splitSegments(const QString &path)
 {
-    QString p = path;
+    const QString &p = path;
 #ifdef Q_OS_WIN
     // Native separators, and only here: a backslash is an ordinary character in a
     // POSIX file name, so folding it into a separator everywhere would split one
@@ -228,7 +228,7 @@ QStringList prefixParentSegments(const QString &path)
     QStringList segs = splitSegments(local);
     if (!segs.isEmpty())
         segs.removeLast(); // the leaf is the log's own name, already in the base
-    std::reverse(segs.begin(), segs.end());
+    std::ranges::reverse(segs);
     return segs;
 }
 

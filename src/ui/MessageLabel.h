@@ -60,7 +60,7 @@ private:
         // is as good as anything — it is only ever used to get the first pass started.
         if (width() <= 0)
             return base;
-        return QSize(base.width(), heightForWidth(width()));
+        return {base.width(), heightForWidth(width())};
     }
 };
 

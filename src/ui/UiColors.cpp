@@ -89,9 +89,12 @@ constexpr QRgb kSyntaxValueDark   = 0xff6fb8e8;
 
 QColor mix(const QColor &from, const QColor &to, qreal amount)
 {
-    return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * amount,
-                            from.greenF() + (to.greenF() - from.greenF()) * amount,
-                            from.blueF() + (to.blueF() - from.blueF()) * amount);
+    // Blended in float, which is what QColor's channels and fromRgbF() are: computing
+    // at double width only to narrow on the way in buys nothing and hides the cast.
+    const auto t = float(amount);
+    return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * t,
+                            from.greenF() + (to.greenF() - from.greenF()) * t,
+                            from.blueF() + (to.blueF() - from.blueF()) * t);
 }
 
 } // namespace
@@ -119,8 +122,10 @@ qreal contrastRatio(const QColor &a, const QColor &b)
 
 QColor compositeOver(const QColor &over, const QColor &under)
 {
-    const qreal alpha = over.alphaF();
-    if (alpha >= 1.0)
+    // float, not qreal: alphaF() and fromRgbF() are both float, so a double here is
+    // only ever narrowed back again (mix() above, same reasoning).
+    const float alpha = over.alphaF();
+    if (alpha >= 1.0F)
         return over;
     return QColor::fromRgbF(over.redF() * alpha + under.redF() * (1 - alpha),
                             over.greenF() * alpha + under.greenF() * (1 - alpha),

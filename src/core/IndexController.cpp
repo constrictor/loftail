@@ -36,8 +36,8 @@ void IndexWorker::run()
     auto flush = [&](const RecordIndex &idx, bool final) {
         // On a non-final flush the last record is still open for continuations, so
         // hold it back (§4); on the final flush everything is settled.
-        const int upto = final ? idx.records.size()
-                               : qMax(emittedRecords, idx.records.size() - 1);
+        const int upto = final ? int(idx.records.size())
+                               : qMax(emittedRecords, int(idx.records.size()) - 1);
 
         IndexBatch batch;
         batch.final = final;
@@ -132,7 +132,7 @@ void IndexController::onBatch(const IndexBatch &batch)
         idx.threads.intern(name);
 
     if (!batch.records.isEmpty()) {
-        m_model->beginAppendRows(batch.records.size());
+        m_model->beginAppendRows(int(batch.records.size()));
         idx.records.append(batch.records);
         idx.rebuildBlockSums(); // one linear pass; cheap enough per batch (§7.2, §11)
         m_model->endAppendRows();

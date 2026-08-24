@@ -13,6 +13,7 @@
 #include <QStorageInfo>
 #include <QThread>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -37,12 +38,12 @@ namespace {
 // Written per pass through the expansion loop. Large enough that decompression is not
 // dominated by loop overhead, small enough that committedSize advances often during a
 // long expansion, so the user watches the view fill rather than a frozen count.
-constexpr qint64 kChunkBytes = 256 * 1024;
+constexpr qint64 kChunkBytes = 256LL * 1024;
 
 // Expanded synchronously in start(), before the Document takes its 64 KB format sample
 // (Document::prepare) — so autodetection and the format preview see real bytes rather
 // than an empty file. The rest streams in on the fetcher thread.
-constexpr qint64 kPrimeBytes = 128 * 1024;
+constexpr qint64 kPrimeBytes = 128LL * 1024;
 
 // How long the reader waits before asking again about a container it cannot yet read —
 // one still arriving over the wire, or one that has not been written at all. A local
@@ -114,7 +115,7 @@ public:
     QString spoolPath(quint64 generation) const override
     {
         if (m_spoolDir.isEmpty())
-            return QString();
+            return {};
         return m_spoolDir + QStringLiteral("/gen-%1.log").arg(generation);
     }
 
@@ -598,9 +599,9 @@ bool ArchiveFetcher::checkFreeSpace(qint64 expandedSize, QString *error) const
     // The archive records the expanded size for a tar or zip member. A raw stream does
     // not, so guess from the compressed input — which is exactly where a zip bomb wins,
     // and is why this is a courtesy rather than a defence.
-    const qint64 needed = expandedSize > 0
-        ? expandedSize
-        : (m_input ? m_input->size() * kAssumedRatio : 0);
+    qint64 needed = expandedSize;
+    if (needed <= 0)
+        needed = m_input ? m_input->size() * kAssumedRatio : 0;
     if (needed <= 0 || storage.bytesAvailable() >= needed)
         return true;
 
@@ -731,8 +732,7 @@ bool ArchiveFetcher::expand(qint64 limit, bool *finished)
 void ArchiveFetcher::publishHeldCommits()
 {
     std::unique_lock<std::mutex> lock(m_mutex);
-    if (m_heldCommit > m_status.committedSize)
-        m_status.committedSize = m_heldCommit;
+    m_status.committedSize = std::max(m_heldCommit, m_status.committedSize);
 }
 
 void ArchiveFetcher::expandRest()

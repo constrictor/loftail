@@ -38,6 +38,7 @@
 #include <QWheelEvent>
 #include <QtMath>
 
+#include <algorithm>
 #include <limits>
 
 namespace loftail {
@@ -286,7 +287,7 @@ int layoutWrappedText(const QString &text, const QFont &font, int width, bool wo
             line.setLineWidth(width);
             // Positioned on the view's own line pitch rather than the layout's, so a record
             // occupies exactly the lines the geometry model gave it.
-            line.setPosition(QPointF(0, (placed + lines.size()) * lineHeight));
+            line.setPosition(QPointF(0, qreal(placed + lines.size()) * lineHeight));
             lines.append(line);
         }
         layout.endLayout();
@@ -358,7 +359,9 @@ void drawWrappedCell(QPainter &p, const QRect &rect, const QString &text, int li
 // wrapped height differs, patching a single delta rather than rebuilding (§7.1.1).
 // ---------------------------------------------------------------------------
 
-static qint64 selExtraLines(const RecordIndex &idx, int selRecord, int selWrapLines)
+namespace {
+
+qint64 selExtraLines(const RecordIndex &idx, int selRecord, int selWrapLines)
 {
     if (selRecord < 0 || selRecord >= idx.records.size())
         return 0;
@@ -366,6 +369,8 @@ static qint64 selExtraLines(const RecordIndex &idx, int selRecord, int selWrapLi
     // cap the wrapped height is >= the unwrapped height: the delta is non-negative.
     return qMax<qint64>(0, qint64(selWrapLines) - RecordIndex::displayLines(idx.records.at(selRecord)));
 }
+
+} // namespace
 
 qint64 LogView::totalScrollLines(const RecordIndex &idx, int selRecord, int selWrapLines)
 {
@@ -802,7 +807,7 @@ void LogView::measureBlockOfRecord(int record)
         return;
     ensureEstimatorBound();
     if (record >= 0 && record < recordCount())
-        measureBlock(m_estimated.blockOfRecord(record));
+        measureBlock(EstimatedGeometry::blockOfRecord(record));
     updateScrollBars();
     viewport()->update();
 }
@@ -824,8 +829,8 @@ void LogView::measureVisibleBlocks()
     // A viewport of V lines holds at most V records (each >= 1 line), so
     // [topRec, topRec+V] bounds everything paintable this frame.
     const int lastRec = qMin(n - 1, topRec + visibleLines());
-    const int b0 = m_estimated.blockOfRecord(topRec);
-    const int b1 = m_estimated.blockOfRecord(lastRec);
+    const int b0 = EstimatedGeometry::blockOfRecord(topRec);
+    const int b1 = EstimatedGeometry::blockOfRecord(lastRec);
 
     bool measured = false;
     for (int b = b0; b <= b1; ++b) {
@@ -963,8 +968,8 @@ QSize LogView::sizeHint() const
 
     // Display lines, not rows: a digest record renders at full height exactly as it
     // does in the log, which is the point of showing it here rather than summarising it.
-    return QSize(QAbstractScrollArea::sizeHint().width(),
-                 frameWidth() * 2 + int(digestContentLines(nullptr)) * lineHeight());
+    return {QAbstractScrollArea::sizeHint().width(),
+                 frameWidth() * 2 + int(digestContentLines(nullptr)) * lineHeight()};
 }
 
 void LogView::setHorizontalOffset(int value)
@@ -1177,7 +1182,8 @@ void LogView::resolveRowColors(int row, bool selected, QColor &bg, QColor &fg) c
     // One call, not two data() lookups: highlighting is per record, and a rule may
     // now match on message text, so resolving the roles separately would run the rule
     // list — and potentially the decode — twice per painted record (SPEC.md §7).
-    QColor ruleBg, ruleFg;
+    QColor ruleBg;
+    QColor ruleFg;
     m_model->rowColors(row, ruleBg, ruleFg);
 
     if (ruleBg.isValid()) {
@@ -1233,7 +1239,7 @@ void LogView::paintEvent(QPaintEvent *event)
     p.fillRect(event->rect(), palette().base());
 
     const RecordIndex &idx = geom();
-    const int n = idx.records.size();
+    const int n = int(idx.records.size());
     if (n == 0) {
         // An empty grid is indistinguishable from an empty log, so a view with nothing
         // in it says WHY when it has something to say — "app.log has not appeared yet"
@@ -1292,7 +1298,8 @@ void LogView::paintEvent(QPaintEvent *event)
             const int rowH = hLines * lh;
             const bool selected = m_selection->isSelected(m_model->index(r, 0));
 
-            QColor band, fg;
+            QColor band;
+            QColor fg;
             resolveRowColors(r, selected, band, fg);
             p.fillRect(QRect(0, y, vw, rowH), band);
             p.setPen(fg);
@@ -1357,7 +1364,8 @@ void LogView::paintEvent(QPaintEvent *event)
         const int rowH = hLines * lh;
         const bool selected = m_selection->isSelected(m_model->index(r, 0));
 
-        QColor band, fg;
+        QColor band;
+        QColor fg;
         resolveRowColors(r, selected, band, fg);
         p.fillRect(QRect(0, y, vw, rowH), band);
         p.setPen(fg);
@@ -1526,7 +1534,7 @@ QVector<QPair<int, int>> LogView::selectedRecordRanges() const
     if (ranges.isEmpty() && m_current >= 0 && m_current < n)
         ranges.push_back({m_current, m_current});
 
-    std::sort(ranges.begin(), ranges.end());
+    std::ranges::sort(ranges);
     QVector<QPair<int, int>> merged;
     merged.reserve(ranges.size());
     for (const QPair<int, int> &r : ranges) {
@@ -1944,7 +1952,7 @@ void LogView::contextMenuEvent(QContextMenuEvent *event)
     // clamps to the last record instead (it backs a click, which selects the nearest
     // row). A menu for a record the cursor is not on would act on a record the user
     // cannot see themselves pointing at.
-    const int record = recordUnderPoint(int(event->pos().y()));
+    const int record = recordUnderPoint(event->pos().y());
     if (record < 0) {
         QAbstractScrollArea::contextMenuEvent(event);
         return;
@@ -1958,7 +1966,7 @@ void LogView::contextMenuEvent(QContextMenuEvent *event)
         setCurrentRecord(record);
     setFocus();
 
-    emit recordMenuRequested(record, m_header->logicalIndexAt(int(event->pos().x())),
+    emit recordMenuRequested(record, m_header->logicalIndexAt(event->pos().x()),
                              event->globalPos());
     event->accept();
 }
@@ -2359,7 +2367,7 @@ int LogView::widestInternedWidth(int logical, int maxChars) const
     const RecordIndex &idx = m_document->index();
     const QVector<QString> &names =
         (role == FieldRole::Logger) ? idx.loggers.names() : idx.threads.names();
-    const int n = qMin<int>(names.size(), kFitNamesScanned);
+    const int n = qMin<int>(int(names.size()), kFitNamesScanned);
     int best = 0;
     for (int i = 0; i < n; ++i) {
         const QString &name = names.at(i);

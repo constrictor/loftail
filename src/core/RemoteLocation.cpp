@@ -90,20 +90,20 @@ QString RemoteLocation::withoutPassword(const QString &s)
     // longer the one the user typed. The authority is the span between "://" and the
     // next '/', the userinfo is what precedes its last '@', and a password is what
     // follows the first ':' inside that.
-    const int schemeEnd = s.indexOf(QLatin1String("://"));
+    const int schemeEnd = int(s.indexOf(QLatin1String("://")));
     if (schemeEnd < 0)
         return s;
     const int authorityStart = schemeEnd + 3;
-    int authorityEnd = s.indexOf(u'/', authorityStart);
+    int authorityEnd = int(s.indexOf(u'/', authorityStart));
     if (authorityEnd < 0)
         authorityEnd = int(s.size());
     if (authorityEnd <= authorityStart)
         return s;
 
-    const int at = s.lastIndexOf(u'@', authorityEnd - 1);
+    const int at = int(s.lastIndexOf(u'@', authorityEnd - 1));
     if (at < authorityStart)
         return s;
-    const int colon = s.indexOf(u':', authorityStart);
+    const int colon = int(s.indexOf(u':', authorityStart));
     if (colon < 0 || colon > at)
         return s;
     return s.left(colon) + s.mid(at); // the user is kept; only the secret goes
@@ -146,7 +146,7 @@ QString tailName(const QString &address)
     QString rest = RemoteLocation::withoutPassword(address);
     QString scheme;
     if (RemoteLocation::isRemote(address)) {
-        const int mark = rest.indexOf(QLatin1String("://"));
+        const int mark = int(rest.indexOf(QLatin1String("://")));
         scheme = rest.left(mark); // "ssh" / "sftp" — the last thing an `ssh://` has
         rest = rest.mid(mark + 3);
     }
@@ -269,7 +269,7 @@ QString logSettingsKey(const QString &path)
 
 QString logMatchTarget(const QString &path, bool fullPath)
 {
-    const QString normalized = normalizeLogPath(path);
+    QString normalized = normalizeLogPath(path);
     if (fullPath)
         return normalized;
 

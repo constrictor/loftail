@@ -28,7 +28,7 @@ class LogSettingsStore
 public:
     static constexpr int kSchemaVersion = 1;
 
-    explicit LogSettingsStore(const QString &dir) : m_dir(dir) {}
+    explicit LogSettingsStore(QString dir) : m_dir(std::move(dir)) {}
 
     // The AppConfigLocation-based directory used in production. Empty if the location
     // cannot be resolved.
@@ -59,7 +59,7 @@ public:
 
     // Replace the file. Returns false on a write failure, or when the file on disk was
     // written by a LATER schema version — see readOnly().
-    bool save(const LogSettingsTree &tree, QString *error = nullptr);
+    bool save(const LogSettingsTree &tree, QString *error = nullptr) const;
 
     // Whether the file on disk is from a schema version this build does not understand,
     // as last seen by load(). Such a file is never overwritten: running an older build

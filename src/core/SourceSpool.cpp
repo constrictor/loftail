@@ -53,7 +53,7 @@ QString spoolRoot()
 {
     const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     if (cache.isEmpty())
-        return QString();
+        return {};
     return cache + u'/' + QLatin1String(kSpoolRootName);
 }
 
@@ -82,7 +82,7 @@ constexpr auto kExpandPrefix = "expand\n";
 std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error)
 {
     if (key.startsWith(QLatin1String(kExpandPrefix))) {
-        const QString address = key.mid(qstrlen(kExpandPrefix));
+        const QString address = key.mid(qsizetype(qstrlen(kExpandPrefix)));
         if (const auto archive = ArchiveLocation::split(address)) {
 #if defined(LOFTAIL_HAVE_ARCHIVE)
             return makeArchiveFetcher(*archive, error);
@@ -233,7 +233,7 @@ void SourceSpoolRegistry::retire(std::unique_ptr<SourceFetcher> fetcher, const Q
 
     QObject *reaper = nullptr;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::scoped_lock lock(m_mutex);
         m_retired.push_back(Retired{std::move(fetcher), dir});
         reaper = m_reaper.get();
     }
@@ -255,7 +255,7 @@ int SourceSpoolRegistry::collectRetired()
     // run under it.
     std::vector<Retired> pending;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::scoped_lock lock(m_mutex);
         pending.swap(m_retired);
     }
 
@@ -272,7 +272,7 @@ int SourceSpoolRegistry::collectRetired()
 
     const int remaining = static_cast<int>(stillRunning.size());
     if (remaining > 0) {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::scoped_lock lock(m_mutex);
         for (Retired &r : stillRunning)
             m_retired.push_back(std::move(r));
     }
@@ -292,7 +292,7 @@ void SourceSpoolRegistry::drainRetired(int budgetMs)
         QThread::msleep(kDrainSliceMs);
     }
 
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::scoped_lock lock(m_mutex);
 
     // Out of budget with a thread still running — a connect to a host that is not
     // answering, most likely. Deleting the fetcher would join that thread and hang the
@@ -335,14 +335,14 @@ QString SourceSpoolRegistry::instanceDir()
 
     const QString root = spoolRoot();
     if (root.isEmpty() || !QDir().mkpath(root))
-        return QString();
+        return {};
 
     // Abandoned spools are swept once, when this process first needs the directory —
     // by which point the lock below exists, so a concurrently-starting sibling cannot
     // mistake us for abandoned.
     auto dir = std::make_unique<QTemporaryDir>(root + QStringLiteral("/instance-"));
     if (!dir->isValid())
-        return QString();
+        return {};
     dir->setAutoRemove(true);
 
     auto lock = std::make_unique<QLockFile>(dir->path() + u'/' + QLatin1String(kInstanceLockName));
@@ -397,13 +397,13 @@ void SourceSpoolRegistry::sweepAbandonedSpools()
 
 std::shared_ptr<SourceSpool> SourceSpoolRegistry::find(const QString &key) const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::scoped_lock lock(m_mutex);
     return m_spools.value(key).lock();
 }
 
 void SourceSpoolRegistry::forget(const QString &key)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::scoped_lock lock(m_mutex);
     m_spools.remove(key);
 }
 
@@ -458,7 +458,7 @@ std::shared_ptr<SourceSpool> SourceSpoolRegistry::acquire(const QString &key, QS
                                            delete p;
                                        });
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::scoped_lock lock(m_mutex);
         m_spools.insert(key, spool);
     }
     return spool;
@@ -484,7 +484,7 @@ void SourceSpoolRegistry::clear()
     // kept alive by that handle and torn down when it drops, which is the point of
     // the weak map. Forgetting the entries just means the next acquire() of the same
     // key builds a fresh spool instead of joining the old one.
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::scoped_lock lock(m_mutex);
     m_spools.clear();
 }
 

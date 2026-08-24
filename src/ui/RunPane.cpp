@@ -121,7 +121,7 @@ public:
         QStyleOptionViewItem o(option);
         initStyleOption(&o, index);
         const int lh = lineHeight(o);
-        return QSize(naturalWidth(o, index), 3 * lh + 2 * kLineGap + 2 * kVMargin);
+        return {naturalWidth(o, index), 3 * lh + 2 * kLineGap + 2 * kVMargin};
     }
 
     void paint(QPainter *p, const QStyleOptionViewItem &option,
@@ -473,9 +473,8 @@ void RunPane::rebuildRunList()
         // is doing its job, and telling them apart is the whole feature — a run the
         // user pinned while it was last must not silently start moving.
         const int sel = m_document->selectedRun();
-        m_runList->setCurrentRow(m_document->followingLastRun() ? kLastRunRow
-                                 : sel >= 0                     ? sel + kFirstRunRow
-                                                                : kAllRunsRow);
+        const int pinnedRow = sel >= 0 ? sel + kFirstRunRow : kAllRunsRow;
+        m_runList->setCurrentRow(m_document->followingLastRun() ? kLastRunRow : pinnedRow);
         m_runList->verticalScrollBar()->setValue(scroll);
 
         // Status line under the pattern field.

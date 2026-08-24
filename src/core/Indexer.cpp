@@ -5,10 +5,12 @@
 
 #include <QRegularExpression>
 
+#include <utility>
+
 namespace loftail {
 
-Indexer::Indexer(const LogFormat &format, const Decoder &decoder, const QTimeZone &sourceZone)
-    : m_format(format), m_decoder(decoder), m_sourceZone(sourceZone)
+Indexer::Indexer(const LogFormat &format, const Decoder &decoder, QTimeZone sourceZone)
+    : m_format(format), m_decoder(decoder), m_sourceZone(std::move(sourceZone))
 {
 }
 
@@ -61,7 +63,7 @@ bool Indexer::forwardScan(LogSource &source, qint64 startPos, QVector<Record> &r
                                   : Record::kNoTimestamp;
 
                 records.append(r);
-                currentRecord = records.size() - 1;
+                currentRecord = int(records.size()) - 1;
                 currentIsParsed = true;
             }
         }
@@ -87,7 +89,7 @@ bool Indexer::forwardScan(LogSource &source, qint64 startPos, QVector<Record> &r
                 r.priority = static_cast<quint8>(Priority::Unknown);
                 r.reserved = 0;
                 records.append(r);
-                currentRecord = records.size() - 1;
+                currentRecord = int(records.size()) - 1;
                 currentIsParsed = false;
             }
         }

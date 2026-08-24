@@ -30,7 +30,7 @@ public:
 private:
     // The round trip behind available(), split out so available() can run it with a short
     // leash while the ordinary operations keep a generous one.
-    Result probe();
+    static Result probe();
 
     QString m_backendName;
     bool    m_probed = false;

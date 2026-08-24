@@ -112,7 +112,7 @@ void LogSettingsTree::movePattern(int index, int delta)
 int LogSettingsTree::addPattern(LogPatternNode node)
 {
     if (node.id.isEmpty() || indexOfPatternId(node.id) >= 0) {
-        int n = m_patterns.size() + 1;
+        int n = int(m_patterns.size()) + 1;
         // Ids are generated rather than taken from the match text: two patterns may
         // legitimately read the same while they are being edited.
         while (indexOfPatternId(QStringLiteral("p%1").arg(n)) >= 0)
@@ -120,7 +120,7 @@ int LogSettingsTree::addPattern(LogPatternNode node)
         node.id = QStringLiteral("p%1").arg(n);
     }
     m_patterns.push_back(node);
-    return m_patterns.size() - 1;
+    return int(m_patterns.size()) - 1;
 }
 
 } // namespace loftail

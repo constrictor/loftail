@@ -42,9 +42,9 @@ struct Anchor
 // so that the two cannot come to disagree about what "the directory it is in" means.
 QString posixDirOf(const QString &path)
 {
-    const int slash = path.lastIndexOf(u'/');
+    const int slash = int(path.lastIndexOf(u'/'));
     if (slash < 0)
-        return QString();
+        return {};
     if (slash == 0)
         return QStringLiteral("/"); // "/app.log" -> "/", not ""
     return path.left(slash);

@@ -150,7 +150,7 @@ void SessionStore::save(QSettings &settings, const Session &session)
     settings.setValue(QLatin1String(kActiveView), session.activeView);
     settings.setValue(QLatin1String(kActiveTab), session.activeTab);
 
-    settings.beginWriteArray(QLatin1String(kDocuments), session.documents.size());
+    settings.beginWriteArray(QLatin1String(kDocuments), int(session.documents.size()));
     for (int i = 0; i < session.documents.size(); ++i) {
         settings.setArrayIndex(i);
         const SessionDocument &d = session.documents.at(i);
@@ -167,7 +167,7 @@ void SessionStore::save(QSettings &settings, const Session &session)
     }
     settings.endArray();
 
-    settings.beginWriteArray(QLatin1String(kViews), session.views.size());
+    settings.beginWriteArray(QLatin1String(kViews), int(session.views.size()));
     for (int i = 0; i < session.views.size(); ++i) {
         settings.setArrayIndex(i);
         const SessionView &v = session.views.at(i);
@@ -177,7 +177,7 @@ void SessionStore::save(QSettings &settings, const Session &session)
     }
     settings.endArray();
 
-    settings.beginWriteArray(QLatin1String(kEditors), session.editors.size());
+    settings.beginWriteArray(QLatin1String(kEditors), int(session.editors.size()));
     for (int i = 0; i < session.editors.size(); ++i) {
         settings.setArrayIndex(i);
         const SessionEditor &e = session.editors.at(i);

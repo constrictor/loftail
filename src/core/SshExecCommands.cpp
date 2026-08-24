@@ -2,6 +2,8 @@
 
 #include <QList>
 
+#include <ranges>
+
 namespace loftail {
 
 QString shellQuote(const QString &path)
@@ -157,12 +159,12 @@ ExecTools parseProbeOutput(const QByteArray &output)
 QByteArray lastNonEmptyLine(const QByteArray &output)
 {
     const QList<QByteArray> lines = output.split('\n');
-    for (auto it = lines.crbegin(); it != lines.crend(); ++it) {
-        const QByteArray trimmed = it->trimmed();
+    for (const auto &line : std::ranges::reverse_view(lines)) {
+        const QByteArray trimmed = line.trimmed();
         if (!trimmed.isEmpty())
             return trimmed;
     }
-    return QByteArray();
+    return {};
 }
 
 ExecAttrs parseStatOutput(const QByteArray &output)

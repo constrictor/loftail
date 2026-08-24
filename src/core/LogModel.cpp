@@ -94,25 +94,25 @@ int LogModel::columnCount(const QModelIndex &parent) const
 {
     if (parent.isValid() || !m_document)
         return 0;
-    return m_document->format().fields.size();
+    return int(m_document->format().fields.size());
 }
 
 QString LogModel::cellText(int row, int column) const
 {
     if (!m_document)
-        return QString();
+        return {};
 
     const RecordIndex &idx = m_document->index();
     const LogFormat &format = m_document->format();
     if (column < 0 || column >= format.fields.size())
-        return QString();
+        return {};
 
     // `row` is a VIEW row: map it to the source record ordinal (identity when no
     // filter is active). The intern tables and byte reads all key off the source
     // index; only the row addressing goes through the filtered mapping (M4).
     const int srcRow = view().sourceRow(row);
     if (srcRow < 0 || srcRow >= idx.records.size())
-        return QString();
+        return {};
 
     const Record &rec = idx.records.at(srcRow);
     const Field &field = format.fields.at(column);
@@ -120,7 +120,7 @@ QString LogModel::cellText(int row, int column) const
     switch (field.role) {
     case FieldRole::Date: {
         if (rec.timestamp == Record::kNoTimestamp)
-            return QString(); // an unparsed line, or a format with no %d
+            return {}; // an unparsed line, or a format with no %d
         const TimeDisplay mode = m_document->timeDisplay();
         if (mode == TimeDisplay::EpochSeconds || mode == TimeDisplay::RunSeconds) {
             // Zone-free (§5.1): Record::timestamp is already UTC epoch ms
@@ -163,12 +163,12 @@ QString LogModel::cellText(int row, int column) const
     // Lazy decode from the mapped bytes for fields not carried on the Record.
     LogSource *src = m_document->source();
     if (!src)
-        return QString();
+        return {};
     const Decoder &dec = m_document->decoder();
 
     QByteArrayView bytes = src->bytes(rec.offset, rec.length);
     if (bytes.isEmpty())
-        return QString();
+        return {};
 
     bool hadNl = false;
     const qsizetype firstEnd = dec.lineEnd(bytes, 0, &hadNl);
@@ -292,7 +292,8 @@ bool LogModel::rowIsContext(int row) const
 
 QColor LogModel::highlightColor(int row, bool background) const
 {
-    QColor bg, fg;
+    QColor bg;
+    QColor fg;
     rowColors(row, bg, fg);
     return background ? bg : fg;
 }

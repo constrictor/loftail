@@ -56,7 +56,7 @@ QString knownHostsPath()
 {
     const QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
     if (home.isEmpty())
-        return QString();
+        return {};
     return home + QStringLiteral("/.ssh/known_hosts");
 }
 
@@ -66,7 +66,7 @@ QString sha256Fingerprint(LIBSSH2_SESSION *session)
 {
     const char *hash = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
     if (!hash)
-        return QString();
+        return {};
     const QByteArray raw(hash, 32);
     QByteArray b64 = raw.toBase64();
     while (b64.endsWith('='))
@@ -191,7 +191,7 @@ struct SshSession::Impl
     // it exists for.
     ExecSizeProbe sizeProbe()
     {
-        return ExecSizeProbe(
+        return {
             location.path, execTools,
             [this](const QString &command, QByteArray *out) {
                 int exitCode = 0;
@@ -201,7 +201,7 @@ struct SshSession::Impl
                 QByteArray buffer;
                 buffer.resize(int(length));
                 return execRead(offset, buffer.data(), length, nullptr);
-            });
+            }};
     }
 
     // Run `command` on the server and collect its stdout. Blocking, bounded by the
@@ -209,7 +209,7 @@ struct SshSession::Impl
     // not be opened or the command could not be started; a command that RAN and failed
     // returns true with whatever it printed, because "stat said nothing" and "stat
     // could not be launched" want different handling upstream.
-    bool runCommand(const QString &command, QByteArray *stdOut, int *exitCode);
+    bool runCommand(const QString &command, QByteArray *stdOut, int *exitCode) const;
 
     // The same, with BYTES ON STDIN — which is the whole of the exec transport's write
     // path: `cat > 'path'` takes what it is given and puts it in the file. Separate
@@ -217,7 +217,7 @@ struct SshSession::Impl
     // handle short writes and send EOF, and mixing that into the read path would put
     // channel-write bookkeeping on every `stat`.
     bool runCommandWithInput(const QString &command, const QByteArray &stdIn, int *exitCode,
-                             QString *error);
+                             QString *error) const;
 
     void teardown()
     {
@@ -237,7 +237,7 @@ struct SshSession::Impl
         // The descriptor goes LAST: libssh2_session_disconnect above writes a farewell
         // packet, and it needs a socket to write it to.
         {
-            std::lock_guard<std::mutex> lock(fdMutex);
+            std::scoped_lock lock(fdMutex);
             closeDetachedSocket(fd);
             fd = -1;
         }
@@ -250,12 +250,12 @@ struct SshSession::Impl
     // Read `length` bytes at `offset` by running a command. Mode::Exec's readAt().
     qint64 execRead(qint64 offset, char *buffer, qint64 length, QString *error);
     bool authenticate(SshPrompter *prompter, QString *error, SshSession::Failure *failure);
-    bool tryAgent();
-    bool tryDefaultKeys();
-    bool tryPassword(const QByteArray &password);
+    bool tryAgent() const;
+    bool tryDefaultKeys() const;
+    bool tryPassword(const QByteArray &password) const;
 };
 
-bool SshSession::Impl::runCommand(const QString &command, QByteArray *stdOut, int *exitCode)
+bool SshSession::Impl::runCommand(const QString &command, QByteArray *stdOut, int *exitCode) const
 {
     if (!session)
         return false;
@@ -304,7 +304,7 @@ bool SshSession::Impl::runCommand(const QString &command, QByteArray *stdOut, in
 }
 
 bool SshSession::Impl::runCommandWithInput(const QString &command, const QByteArray &stdIn,
-                                           int *exitCode, QString *error)
+                                           int *exitCode, QString *error) const
 {
     const auto fail = [error](const QString &text) {
         if (error)
@@ -509,7 +509,7 @@ bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error,
     return true;
 }
 
-bool SshSession::Impl::tryAgent()
+bool SshSession::Impl::tryAgent() const
 {
     LIBSSH2_AGENT *agent = libssh2_agent_init(session);
     if (!agent)
@@ -533,7 +533,7 @@ bool SshSession::Impl::tryAgent()
     return ok;
 }
 
-bool SshSession::Impl::tryDefaultKeys()
+bool SshSession::Impl::tryDefaultKeys() const
 {
     const QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
     if (home.isEmpty())
@@ -544,6 +544,10 @@ bool SshSession::Impl::tryDefaultKeys()
     // prompting for one here would be a second, differently-shaped password dialog.
     static const char *const names[] = {"id_ed25519", "id_ecdsa", "id_rsa"};
     const QByteArray user = location.user.toUtf8();
+    // This is an auth LADDER, not a predicate — each step talks to the server and the
+    // one that succeeds has already authenticated the session. std::ranges::any_of over
+    // a side-effecting ten-line lambda would read as a question about the file names.
+    // NOLINTNEXTLINE(readability-use-anyofallof)
     for (const char *name : names) {
         const QString priv = home + QStringLiteral("/.ssh/") + QLatin1String(name);
         if (!QFile::exists(priv))
@@ -561,7 +565,7 @@ bool SshSession::Impl::tryDefaultKeys()
     return false;
 }
 
-bool SshSession::Impl::tryPassword(const QByteArray &password)
+bool SshSession::Impl::tryPassword(const QByteArray &password) const
 {
     const QByteArray user = location.user.toUtf8();
     if (libssh2_userauth_password(session, user.constData(), password.constData()) == 0)
@@ -767,7 +771,7 @@ void SshSession::abort()
     // Everything this deliberately does not do is the point: no teardown, no free, no
     // touching the session. The thread inside libssh2 owns all of that and will do it
     // when its call returns — which is what this is for, and all it is for.
-    std::lock_guard<std::mutex> lock(d->fdMutex);
+    std::scoped_lock lock(d->fdMutex);
     shutdownDetachedSocket(d->fd);
 }
 
@@ -824,7 +828,7 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     // Connected — now take the socket off Qt before a single SSH byte moves, because
     // from here on libssh2 must be its only reader (detachFromQt).
     {
-        std::lock_guard<std::mutex> lock(d->fdMutex);
+        std::scoped_lock lock(d->fdMutex);
         d->fd = detachSocketFromQt(d->socket);
     }
     if (d->fd < 0) {

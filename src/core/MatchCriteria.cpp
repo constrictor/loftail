@@ -30,7 +30,7 @@ QJsonArray namesToArray(const QStringList &names)
 QStringList arrayToNames(const QJsonArray &a)
 {
     QStringList out;
-    for (const QJsonValue &v : a) {
+    for (const auto &v : a) {
         const QString s = v.toString();
         if (!s.isEmpty() && !out.contains(s))
             out.append(s);
@@ -83,7 +83,7 @@ FilterSet MatchCriteria::resolve(const RecordIndex &idx, const LogFormat &format
     // selectable minimum, so "enabled at TRACE" excludes nothing and collapses.
     fs.minPriority = minPriority;
     fs.priorityEnabled = priorityEnabled
-                         && !(collapse && minPriority == kPriorityByIndex[0]);
+                         && (!collapse || minPriority != kPriorityByIndex[0]);
 
     // Subsystem / thread: names -> interned ids (invariant #4). An all-inclusive
     // selection collapses only when asked; see loggerCoversAll's comment for why the
