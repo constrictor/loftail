@@ -11,6 +11,10 @@ namespace loftail {
 //
 // `code` lets tests and UI branch on the failure kind without matching the
 // human-readable `message`, which is free to change wording.
+// NOLINTNEXTLINE(clang-analyzer-core.uninitialized.Assign): every field below has a
+// default member initializer, so no CompileError can hold a garbage `code`. The report
+// comes from PatternCompiler returning one out of Expected's std::variant, whose active
+// alternative the analyzer cannot track — so it reads std::get<E> as returning nothing.
 struct CompileError
 {
     enum class Code {

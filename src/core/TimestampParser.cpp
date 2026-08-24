@@ -18,8 +18,10 @@ int runLength(const QString &s, int i)
 
 } // namespace
 
-TimestampParser::TimestampParser(const QString &qtFormat, QTimeZone sourceZone)
-    : m_zone(std::move(sourceZone)), m_qtFormat(qtFormat)
+// const reference, not by value + move — see Indexer's constructor for why QTimeZone in
+// particular must not take modernize-pass-by-value's advice at the Qt 6.4 floor.
+TimestampParser::TimestampParser(const QString &qtFormat, const QTimeZone &sourceZone)
+    : m_zone(sourceZone), m_qtFormat(qtFormat)
 {
     if (qtFormat.isEmpty())
         return;

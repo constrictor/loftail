@@ -16,7 +16,12 @@ namespace {
 
 QStringList splitSegments(const QString &path)
 {
-    const QString &p = path;
+    // A COPY, and performance-unnecessary-copy-initialization is wrong about it: the only
+    // thing that modifies it is under the #ifdef below, so on a Linux run clang-tidy sees a
+    // local that is never written. Taking its advice compiles here and breaks the Windows
+    // leg, which is the one platform the mutation exists for.
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+    QString p = path;
 #ifdef Q_OS_WIN
     // Native separators, and only here: a backslash is an ordinary character in a
     // POSIX file name, so folding it into a separator everywhere would split one

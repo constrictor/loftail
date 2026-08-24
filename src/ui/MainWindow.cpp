@@ -1990,9 +1990,12 @@ bool MainWindow::openWithSettings(const QString &path, FormatSettings settings,
     // seed; one carrying an EMPTY list is the user having deleted every rule, and it
     // stays deleted. Reading the emptiness instead re-seeds the level colours on every
     // launch, which is the shape of a bug nobody can get rid of.
-    ctx->doc->highlighters() = ctx->fileSettings.highlighters
-        ? HighlighterSet::fromJson(*ctx->fileSettings.highlighters)
-        : HighlighterSet::defaults();
+    // Bound to a local first, and not `ctx->fileSettings.highlighters` twice over: the
+    // check that reads an optional cannot follow the second mention back through
+    // unique_ptr's operator-> to the first, and calls the dereference unguarded.
+    const std::optional<QJsonArray> &storedRules = ctx->fileSettings.highlighters;
+    ctx->doc->highlighters() = storedRules ? HighlighterSet::fromJson(*storedRules)
+                                           : HighlighterSet::defaults();
     ctx->doc->resolveHighlighters();
 
     m_contexts.push_back(std::move(ctx));

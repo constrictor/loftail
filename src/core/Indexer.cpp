@@ -9,8 +9,12 @@
 
 namespace loftail {
 
-Indexer::Indexer(const LogFormat &format, const Decoder &decoder, QTimeZone sourceZone)
-    : m_format(format), m_decoder(decoder), m_sourceZone(std::move(sourceZone))
+// By const reference and NOT by value + std::move, which is what modernize-pass-by-value
+// asks for: QTimeZone gained a move constructor after Qt 6.4, the version floor, so on the
+// reference toolchain the move silently binds to the copy constructor and the by-value
+// parameter is a second copy for nothing. clang-tidy 18 says so; 21 against Qt 6.10 does not.
+Indexer::Indexer(const LogFormat &format, const Decoder &decoder, const QTimeZone &sourceZone)
+    : m_format(format), m_decoder(decoder), m_sourceZone(sourceZone)
 {
 }
 
