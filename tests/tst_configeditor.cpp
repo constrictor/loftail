@@ -174,7 +174,7 @@ void TestConfigEditor::theEditorUsesTheLogFontAndFollowsAZoom()
         QSKIP("no font database (Windows offscreen ships no fonts)");
 
     const QString log = writeLog(QStringLiteral("font.log"));
-    QFile(configPathFor(log, QStringLiteral("f.properties"))).open(QIODevice::WriteOnly);
+    QVERIFY(QFile(configPathFor(log, QStringLiteral("f.properties"))).open(QIODevice::WriteOnly));
     std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("f.properties")));
     w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
     auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
@@ -194,7 +194,7 @@ void TestConfigEditor::theEditorUsesTheLogFontAndFollowsAZoom()
 void TestConfigEditor::saveIsVisibleOnlyOnAnEditorTab()
 {
     const QString log = writeLog(QStringLiteral("save-vis.log"));
-    QFile(configPathFor(log, QStringLiteral("v.properties"))).open(QIODevice::WriteOnly);
+    QVERIFY(QFile(configPathFor(log, QStringLiteral("v.properties"))).open(QIODevice::WriteOnly));
     std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("v.properties")));
     auto *save = w->findChild<QAction *>(QStringLiteral("saveConfigAction"));
     QVERIFY(save);
@@ -315,7 +315,7 @@ void TestConfigEditor::aMissingDirectoryIsRefusedByName()
 void TestConfigEditor::perLogActionsDoNotActOnTheLogBehindTheEditor()
 {
     const QString log = writeLog(QStringLiteral("actions.log"));
-    QFile(configPathFor(log, QStringLiteral("a.properties"))).open(QIODevice::WriteOnly);
+    QVERIFY(QFile(configPathFor(log, QStringLiteral("a.properties"))).open(QIODevice::WriteOnly));
     std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("a.properties")));
     w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
 
@@ -405,7 +405,7 @@ void TestConfigEditor::theSyntaxIsShownAndCanBeOverridden()
 void TestConfigEditor::closingAnEditorTabWorksAndDoesNotDisturbTheLogs()
 {
     const QString log = writeLog(QStringLiteral("close.log"));
-    QFile(configPathFor(log, QStringLiteral("c.properties"))).open(QIODevice::WriteOnly);
+    QVERIFY(QFile(configPathFor(log, QStringLiteral("c.properties"))).open(QIODevice::WriteOnly));
     std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("c.properties")));
     w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
     auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
@@ -503,10 +503,14 @@ void TestConfigEditor::cancellingTheUnsavedPromptAbortsTheQuitAndWritesNoSession
 // An address that cannot answer. TEST-NET-1 (RFC 5737) is reserved for documentation and
 // is not routed anywhere, so a connect to it hangs rather than being refused — which is
 // what makes it a connect worth proving we did not run.
+// Guarded like its two callers: without SSH built in, both of them are a QSKIP and this
+// is a function nobody names.
+#if defined(LOFTAIL_HAVE_SSH)
 static QString blackHoleConfig()
 {
     return QStringLiteral("ssh://198.51.100.7/etc/log4cplus.properties");
 }
+#endif
 
 void TestConfigEditor::aRemoteConfigPutsItsTabUpBeforeTheFarEndAnswers()
 {

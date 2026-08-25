@@ -1,5 +1,6 @@
 #include "RestartRunner.h"
 
+#include "DiagnosticLog.h"
 #include "SshExecCommands.h"
 #include "SshWorkerPool.h"
 
@@ -251,10 +252,22 @@ void RestartRunner::startLocal(const RestartTarget &target)
     // is not there, which from outside is indistinguishable from a slow restart.
     m_process->setStandardInputFile(QProcess::nullDevice());
 
+    // Both are opened, and a failure is REPORTED rather than ignored: drainLocalOutput()
+    // skips a reader that is not open, so the run still finishes and still reports its
+    // exit status — with the script's own words missing, which is half of what the dialog
+    // has to say. Neither call is short-circuited out of the other's failure.
     m_outReader = new QFile(outPath);
     m_errReader = new QFile(errPath);
-    m_outReader->open(QIODevice::ReadOnly);
-    m_errReader->open(QIODevice::ReadOnly);
+    const bool outOpened = m_outReader->open(QIODevice::ReadOnly);
+    const bool errOpened = m_errReader->open(QIODevice::ReadOnly);
+    if (!outOpened || !errOpened) {
+        diagLog("restart", QStringLiteral("could not read back the script's output: "
+                                          "stdout=%1 stderr=%2")
+                               .arg(outOpened ? QStringLiteral("ok")
+                                              : m_outReader->errorString(),
+                                    errOpened ? QStringLiteral("ok")
+                                              : m_errReader->errorString()));
+    }
 
     m_pump = new QTimer(this);
     m_pump->setInterval(kPumpMs);

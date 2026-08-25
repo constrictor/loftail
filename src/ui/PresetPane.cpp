@@ -188,6 +188,8 @@ void PresetPane::exportPreset(PresetStore::Kind kind)
 
 void PresetPane::importPreset(PresetStore::Kind kind)
 {
+    // Deliberately unread: see the comment below on where an imported preset lands.
+    Q_UNUSED(kind);
     const QString file = QFileDialog::getOpenFileName(
         this, tr("Import preset"), QString(),
         tr("JSON files (*.json)"));

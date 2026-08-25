@@ -203,7 +203,7 @@ Expected<LogFormat, CompileError> PatternCompiler::compile(QStringView pattern)
 
     auto flushLiteral = [&]() {
         if (!literalBuf.isEmpty()) {
-            pieces.append(Piece{compileLiteral(literalBuf), false, FieldRole::Message, false});
+            pieces.append(Piece{compileLiteral(literalBuf), false, FieldRole::Message, false, {}});
             literalBuf.clear();
         }
     };

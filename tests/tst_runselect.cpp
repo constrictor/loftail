@@ -436,8 +436,9 @@ void TestRunSelect::followingSurvivesAPatternWithNoMatchesYet()
     const QString path = dir.filePath(QStringLiteral("nomarkers.log"));
 
     int sec = 0;
-    QVERIFY(writeWhole(path, rec(sec++, "t1", "INFO ", "svc", "a0")
-                                 + rec(sec++, "t1", "INFO ", "svc", "a1")));
+    const QByteArray a0 = rec(sec++, "t1", "INFO ", "svc", "a0");
+    const QByteArray a1 = rec(sec++, "t1", "INFO ", "svc", "a1");
+    QVERIFY(writeWhole(path, a0 + a1));
     Document doc;
     QVERIFY(openDoc(doc, path));
     doc.setRunStart(QString::fromLatin1(kMarker), false, Qt::CaseInsensitive);
@@ -452,7 +453,9 @@ void TestRunSelect::followingSurvivesAPatternWithNoMatchesYet()
     live.start();
     QCOMPARE(doc.filtered().recordCount(), 2);
 
-    QVERIFY(append(path, banner(sec++, 0) + rec(sec++, "t1", "INFO ", "svc", "b0")));
+    const QByteArray mark = banner(sec++, 0);
+    const QByteArray first = rec(sec++, "t1", "INFO ", "svc", "b0");
+    QVERIFY(append(path, mark + first));
     live.checkNow();
     QCOMPARE(doc.runs().size(), 2); // the preamble the marker created, and the run
 
@@ -762,13 +765,16 @@ void TestRunSelect::aNewRunsRecordsStopBeingCountedInTheRunBeforeIt()
     live.start();
 
     // Two ERROR records land, and the memo is asked about them...
-    QVERIFY(append(path, rec(sec++, "t1", "ERROR", "svc", "e0")
-                       + rec(sec++, "t1", "ERROR", "svc", "e1")));
+    const QByteArray e0 = rec(sec++, "t1", "ERROR", "svc", "e0");
+    const QByteArray e1 = rec(sec++, "t1", "ERROR", "svc", "e1");
+    QVERIFY(append(path, e0 + e1));
     live.checkNow();
     QCOMPARE(doc.runStats(0).error, 2);
 
     // ...and only THEN does the application restart.
-    QVERIFY(append(path, banner(sec++, 1) + rec(sec++, "t1", "FATAL", "svc", "f")));
+    const QByteArray mark = banner(sec++, 1);
+    const QByteArray first = rec(sec++, "t1", "FATAL", "svc", "f");
+    QVERIFY(append(path, mark + first));
     live.checkNow();
     QCOMPARE(doc.runs().size(), 2);
 

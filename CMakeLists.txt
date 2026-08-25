@@ -520,6 +520,63 @@ else()
                    "clang_tidy / clang_tidy_all targets)")
 endif()
 
+# ---------------------------------------------------------------------------
+# Warnings, and warnings as errors.
+#
+# Three things here are easy to undo.
+#
+# The block sits BELOW every FetchContent block above it, and must stay there.
+# add_compile_options only reaches directories added AFTER the call, which is the one
+# thing keeping libssh2 and QtKeychain — third-party sources this project neither
+# writes nor can fix — out of a -Werror build. Hoist it up beside the other options
+# and the Windows CI job (the one leg that configures with LOFTAIL_SSH_FETCH and
+# LOFTAIL_KEYCHAIN_FETCH) starts failing on somebody else's code.
+#
+# It IS global, unlike the clang-tidy property directly above and like the sanitizer
+# block: tests/ is where a warning most often lands first (every -Wextra finding this
+# was introduced with but three was in a test), so a per-target list covering
+# loftail_core/loftail_ui/loftail would gate the third of the tree that matters least.
+# The exclusion above is by ORDERING, not by target, and that is the whole mechanism.
+#
+# And MSVC is deliberately left out of the default. The reference Qt is 6.4 with a
+# modern MSVC — a combination that already needs the _HAS_DEPRECATED_STDEXT_ARR_ITERS
+# workaround at the top of this file — and Windows CI is the only cross-platform check
+# this project has, so a warning nobody on a Linux box can reproduce would gate every
+# Windows build with no way to see it first. -DLOFTAIL_WERROR=ON there turns /WX on for
+# anyone who wants it.
+if(MSVC)
+    set(loftail_werror_default OFF)
+else()
+    set(loftail_werror_default ON)
+endif()
+option(LOFTAIL_WERROR "Treat compiler warnings as errors"
+       ${loftail_werror_default})
+
+if(MSVC)
+    # No /W4: MSVC's level 4 over Qt headers is untested here, and raising a level
+    # nobody reads is noise. /WX applies to whatever level the generator sets.
+    if(LOFTAIL_WERROR)
+        add_compile_options(/WX)
+    endif()
+else()
+    add_compile_options(-Wall -Wextra)
+    if(LOFTAIL_WERROR)
+        add_compile_options(-Werror)
+    endif()
+endif()
+
+if(LOFTAIL_WERROR)
+    # Named in the message because the gate CAN fire on a compiler or Qt this tree has
+    # never been built against: the dev machine runs GCC 15 and Qt 6.10, the reference
+    # build GCC 13 and Qt 6.4 (ARCHITECTURE.md §1), and the two disagree about what is
+    # worth warning about — a deprecation added in Qt 6.8 does not exist on the floor.
+    message(STATUS "Warnings as errors: ENABLED "
+                   "(-DLOFTAIL_WERROR=OFF to build through a warning)")
+else()
+    message(STATUS "Warnings as errors: DISABLED "
+                   "(-DLOFTAIL_WERROR=ON to fail the build on a warning)")
+endif()
+
 enable_testing()
 
 add_subdirectory(src)

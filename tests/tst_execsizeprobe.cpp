@@ -270,9 +270,11 @@ void TestExecSizeProbe::wcWillNotTakeOnALargeFile()
     // observing a log must not disturb the machine producing it (invariant #5). Past the
     // ceiling the rung declines rather than being allowed with a warning attached.
     const QString path = m_dir.filePath(QStringLiteral("huge.log"));
-    const qint64 huge = ExecSizeProbe::kWcSettleCeiling + 1;
+    constexpr qint64 huge = ExecSizeProbe::kWcSettleCeiling + 1;
 
-    auto bigRunner = [huge](const QString &command, QByteArray *out) {
+    // No capture: `huge` is a constant expression, so naming it inside the lambda odr-uses
+    // nothing — and clang treats capturing it anyway as an unused capture.
+    auto bigRunner = [](const QString &command, QByteArray *out) {
         if (command.startsWith(QStringLiteral("wc -c <")))
             *out = QByteArray::number(huge) + "\n";
         return true; // every other rung runs and prints nothing: not available

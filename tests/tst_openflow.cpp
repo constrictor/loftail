@@ -202,7 +202,7 @@ void TestOpenFlow::acceptedPatternOpensTheFile()
     // Type the layout that does parse this file, then accept.
     Dismisser d;
     d.timer.setInterval(10);
-    connect(&d.timer, &QTimer::timeout, [&d, &w]() {
+    connect(&d.timer, &QTimer::timeout, [&d]() {
         auto *dlg = qobject_cast<PreferencesDialog *>(QApplication::activeModalWidget());
         if (!dlg)
             return;

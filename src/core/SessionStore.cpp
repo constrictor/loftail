@@ -17,11 +17,6 @@ constexpr auto kActiveDocumentV1 = "activeDocument";
 constexpr auto kDocuments = "documents";
 constexpr auto kViews = "views";
 
-QString jsonToString(const QJsonObject &o)
-{
-    return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
-}
-
 QJsonObject stringToJson(const QString &s)
 {
     return QJsonDocument::fromJson(s.toUtf8()).object();

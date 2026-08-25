@@ -41,7 +41,16 @@ bool Indexer::forwardScan(LogSource &source, qint64 startPos, QVector<Record> &r
     auto processLine = [&](qint64 fileOffset, qint64 byteLen, QStringView text) {
         bool isStart = false;
         if (haveFormat) {
+            // matchView() rather than match(QStringView), which Qt 6.8 deprecates for
+            // taking a view it does not own — the same non-owning semantics this call
+            // has always had, since `text` is a view into the decoded block and the
+            // match is consumed before it goes anywhere. matchView() arrived in Qt 6.5,
+            // above the 6.4 floor (ARCHITECTURE.md §1), so the old spelling stays for it.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+            const QRegularExpressionMatch m = startRe.matchView(text);
+#else
             const QRegularExpressionMatch m = startRe.match(text);
+#endif
             // A leading '^' anchor means a match necessarily begins at 0.
             if (m.hasMatch()) {
                 isStart = true;

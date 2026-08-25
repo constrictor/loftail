@@ -3929,6 +3929,10 @@ public:
         case PdmPhysicalDpiY: return 96;
         case PdmDevicePixelRatio: return 1;
         case PdmDevicePixelRatioScaled: return int(devicePixelRatioFScale());
+        // Qt adds metrics (6.8 added the two encoded device-pixel-ratio ones) and this
+        // enumerates the ones it needs; a default keeps a newer Qt from turning -Wswitch
+        // into a build failure over a metric no caller here asks for.
+        default: break;
         }
         return 0;
     }
