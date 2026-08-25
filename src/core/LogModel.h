@@ -127,12 +127,25 @@ public:
     // undimmed — they are the QTableView prototype path, not the paint path.
     bool rowIsContext(int row) const;
 
-private:
     // The matched rule for a view row, or -1. Supplies HighlighterSet::match with the
     // lazy message decode so the text axis costs nothing until a rule's integer axes
     // have admitted the record (invariant #4).
+    //
+    // Public because the density strip beside the scrollbar records a rule INDEX per
+    // bucket rather than a colour (ARCHITECTURE.md §7.1.7): an index is theme-free, so
+    // switching themes repaints the strip instead of rescanning the log for it.
     int matchedRule(int row) const;
 
+    // Whether `matcher` matches anything on screen in this view row — the predicate
+    // Find searches with (SPEC.md §5). Every column's text, falling back to a
+    // message-only scan when the format defines no columns.
+    //
+    // Here rather than at either call site because there are now two of them — the
+    // search itself and the density strip's find lane — and a strip marking rows the
+    // search would not land on is worse than a strip with no find lane at all.
+    bool rowMatchesText(int row, const TextMatcher &matcher) const;
+
+private:
     // The subset this model shows: m_view when set, the document's own otherwise. Every
     // place that maps between view rows and source records goes through here and
     // nowhere else.

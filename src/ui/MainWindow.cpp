@@ -105,6 +105,11 @@ constexpr auto kRecentFilesKey = "recentFiles";
 // session group: the session describes one window's tabs, and two windows would
 // otherwise disagree about how big the text is. Absent means "the platform's own size".
 constexpr auto kLogFontSizeKey = "logFontPointSize";
+// Whether the density strip beside the scrollbar is shown (SPEC.md §5). An application
+// preference like the log text size directly above, and for the same reason: it answers
+// a question about how somebody reads rather than about a particular log, so it lives in
+// plain QSettings and applies to every view at once. Default ON — it is the feature.
+constexpr auto kDensityStripKey = "densityStrip";
 
 // How long a rotation notice stays up (SPEC.md §3). Longer than announceLogFontSize()'s
 // 2000, because a zoom is a setting the reader just pressed and this is something that
@@ -185,6 +190,10 @@ MainWindow::MainWindow(QWidget *parent)
         const int savedFontSize = store.value(QLatin1String(kLogFontSizeKey), 0).toInt();
         if (savedFontSize > 0)
             setLogFontPointSize(savedFontSize);
+
+        // And whether the density strip is shown, for the same reason and at the same
+        // moment: createView() reads it, and restoreSession() below builds views.
+        m_densityStripOn = store.value(QLatin1String(kDensityStripKey), true).toBool();
     }
 
     setWindowTitle(QStringLiteral("loftail"));
@@ -723,6 +732,15 @@ void MainWindow::buildMenus()
         }
         announceLogFontSize();
     });
+
+    // The density strip beside the scrollbar (SPEC.md §5). Enabled with no file open,
+    // like the zoom items above and for the same reason: it is a preference about how
+    // logs are read, and the next one opens with it.
+    m_densityAction = viewMenu->addAction(tr("&Density Strip"));
+    m_densityAction->setObjectName(QStringLiteral("densityStripAction")); // findChild, for tests
+    m_densityAction->setCheckable(true);
+    m_densityAction->setChecked(m_densityStripOn);
+    connect(m_densityAction, &QAction::toggled, this, &MainWindow::setDensityStripVisible);
 
     buildTimeDisplayMenu();
     buildColumnWidthActions();
@@ -2112,6 +2130,10 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
     // §5) — a seed, not a per-file property: the view owns it from here, and the
     // session restores each view's own saved mode over this one.
     logView->setWrapMode(resolvedProfile(ctx->doc->path()).wrapMode);
+    // The density strip is application-wide (see kDensityStripKey), so a view made
+    // after the reader switched it on comes up with it rather than waiting for the next
+    // toggle.
+    logView->setDensityStripVisible(m_densityStripOn);
     // A view made for a document that is ALREADY waiting — the first view of a waiting
     // open, a restored tab, or a second view onto one — needs the message now; the
     // waitingChanged signal it would otherwise learn from has already fired.
@@ -2905,6 +2927,10 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
 
     for (DocumentView *v : std::as_const(ctx->views)) {
         v->logView()->viewport()->update(); // repaint with resolved highlights
+        // A rule naming a subsystem discovered late in the scan matched nothing until
+        // resolveHighlighters() above; anything the strip scanned before that is an
+        // answer given against the rules as they were half-resolved.
+        v->logView()->invalidateDensityRules();
         v->logView()->scrollToEnd();        // open at the file's end (SPEC.md §3)
     }
     if (isActive)
@@ -3326,6 +3352,12 @@ void MainWindow::applyActiveHighlighters()
         ctx->digestModel->endFilterReset();
     for (DocumentView *v : std::as_const(ctx->views))
         v->logView()->viewport()->update();
+    // The density strip describes the WHOLE view, not what is on screen, so a repaint
+    // does not reach it: which records a rule colours has moved, and its rule lane has to
+    // be scanned again. Its find lane is left alone — that is invalidated by the Find
+    // bar, and one gesture must not throw away the other's work.
+    for (DocumentView *v : std::as_const(ctx->views))
+        v->logView()->invalidateDensityRules();
     // Whether any rule still asks to be notified may have changed with that edit.
     updateTrayPresence();
     // The pane's own notification that a rule edit has landed, and the only one there is.
@@ -3704,15 +3736,12 @@ void MainWindow::runFind(bool forward, bool fromStart)
     }
 
     // Search every visible column's text so Find matches anything on screen, but
-    // fall back to a message-only scan when the format defines no columns.
-    const int cols = model->columnCount();
-    auto rowMatches = [model, &matcher, cols](int row) {
-        if (cols == 0)
-            return matcher.matches(model->cellText(row, 0));
-        for (int c = 0; c < cols; ++c)
-            if (matcher.matches(model->cellText(row, c)))
-                return true;
-        return false;
+    // fall back to a message-only scan when the format defines no columns. The predicate
+    // itself is LogModel's, because the density strip's find lane runs the same one over
+    // the whole view — a strip marking rows this search would not land on would be worse
+    // than a strip with no find lane at all.
+    auto rowMatches = [model, &matcher](int row) {
+        return model->rowMatchesText(row, matcher);
     };
 
     const int from = fromStart ? -1 : logView->currentRecord();
@@ -4416,6 +4445,25 @@ void MainWindow::setLogFontSize(int points)
     // second window opened meanwhile should come up at the size the reader just chose.
     QSettings().setValue(QLatin1String(kLogFontSizeKey), logFontPointSize());
     announceLogFontSize();
+}
+
+void MainWindow::setDensityStripVisible(bool visible)
+{
+    if (visible == m_densityStripOn)
+        return;
+    m_densityStripOn = visible;
+    // Written immediately rather than at closeEvent, exactly as the log text size is:
+    // this is not window state, and a second window opened meanwhile should come up the
+    // way the reader just asked for.
+    QSettings().setValue(QLatin1String(kDensityStripKey), m_densityStripOn);
+    if (m_densityAction && m_densityAction->isChecked() != m_densityStripOn)
+        m_densityAction->setChecked(m_densityStripOn);
+    // EVERY view of every open log, not just the active one: the setting is
+    // application-wide, and a background tab raised later must not still be wearing the
+    // old answer.
+    for (const auto &ctx : m_contexts)
+        for (DocumentView *v : std::as_const(ctx->views))
+            v->logView()->setDensityStripVisible(m_densityStripOn);
 }
 
 void MainWindow::stepLogFontSize(int steps)

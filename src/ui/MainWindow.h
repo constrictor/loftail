@@ -371,6 +371,13 @@ private:
     // strips included, being re-fonted and the setting written.
     void setLogFontSize(int points);
     void stepLogFontSize(int steps);
+
+    // Show or hide the density strip beside the scrollbar in EVERY view (SPEC.md §5).
+    // Application-wide for the reason the font size directly above is: it says how
+    // somebody reads, which does not differ between two tabs — so plain QSettings, not
+    // the log's own settings node and not the session. The single funnel: the menu item
+    // and the restore both go through it.
+    void setDensityStripVisible(bool visible);
     void applyLogFontToViews();
     // Say what the size is now, transiently. The bounds clamp silently, and a key held
     // down at 32 pt with no answer at all reads as a broken shortcut.
@@ -699,6 +706,12 @@ private:
     // mode actions above rather than setting the mode itself — there is one path that
     // sets wrap, and it is the one that also remembers the choice for the log.
     QAction *m_toggleWrapAction = nullptr;
+
+    // The density strip's menu item and the preference behind it. The flag is read by
+    // createView(), so a tab opened later comes up the way the reader last asked for
+    // rather than at the built-in default.
+    QAction *m_densityAction = nullptr;
+    bool     m_densityStripOn = true;
 
     // --- Notification surface (M19) ------------------------------------------------
     // Created only while some rule asks for one; see updateTrayPresence().

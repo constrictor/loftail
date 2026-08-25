@@ -472,6 +472,25 @@ Reading a log for a stall means subtracting one timestamp from the one above it,
 
 ---
 
+## M25 — a density strip beside the scrollbar
+
+A scrollbar says where you are and nothing about what is further down. The strip beside it says where the rule-coloured records and the current Find matches are in the **whole** log, in the colours the records themselves wear, and clicking it goes there. Behaviour in `SPEC.md` §5; design in `ARCHITECTURE.md` §7.1.7. Promoted from `ideas.md` Tier 3 #10, whose colour note held and whose *tier* did not — the cost is not the drawing.
+
+- [x] **`DensityMap`** (core, no `QObject`, no timer) — buckets of a fixed ROW COUNT over the view, two lanes, and a `scan()` the owner feeds a budget. Fixed count and not a fraction of the view is what makes an APPEND free on a tailed log; pairwise merging past `kMaxBuckets` is what keeps that true as the log grows, keeping the lower rule index so a bucket holding a FATAL and a WARN reads as the FATAL.
+- [x] **Bounded per slice, never sampled, never capped in total.** Every row is asked — the one FATAL in ten million records is the case the strip exists for — under a 4 ms wall-clock budget every 20 ms, so it fills in and converges. Wall clock and not rows, because the two lanes cost different amounts per row. The timer runs **only while the strip is visible**, or ten open logs are ten scans.
+- [x] **Marks are placed in LINE units** (`LogView::scrollFractionOfRow`), shared with the click that jumps there (`scrollToFraction`, through the scrollbar, so follow detaches as it does on a drag). By record index they would disagree with the thumb on any log carrying multi-line records.
+- [x] **Two lanes, invalidated separately** — rules from `applyActiveHighlighters`/`onIndexFinished`, find from `setFindMatcher`/`clearFindMatcher`, both from a model reset. Shared invalidation would throw the rule scan away on every keystroke in the Find bar.
+- [x] **One predicate for Find**, `LogModel::rowMatchesText()`, shared with `runFind()` rather than copied; and the rule lane stores a rule INDEX, not a colour, so a theme change repaints.
+- [x] **`layoutChrome()`** — the header band and the strip in ONE `setViewportMargins` call, decided on `isHidden()` so a background tab does not re-measure every wrapped record on the way in and out.
+- [x] **View ▸ Density Strip**, application-wide in plain `QSettings` like the log text size, on by default; switching it off DESTROYS the strip rather than hiding it, so the scan stops with it.
+- [x] **Tests.** `tst_densitymap` (applesless) pins the two things that have to hold on a live log: growth never rescans, and coarsening never loses a mark. `tst_densitystrip` drives a real `MainWindow` and reads RENDERED PIXELS, because where a mark sits is the whole feature and every widget holds the same values whether it is drawn in the right place or not — the placement case takes its expected fraction from the file it wrote, not from the function under test.
+
+**Done when:** a log whose only FATAL is four fifths of the way through shows a red mark four fifths of the way down the strip; clicking it lands on that record with it in the middle of the view and follow detached; typing in the Find bar adds a second lane without disturbing the first; and switching the strip off gives its width back to the message column.
+
+**Risk.** Moderate, and it is the scan rather than the widget. The failure mode to watch is a lane invalidated too eagerly — anything that clears the rule lane on the ingest path would turn a tailed log into a permanent rescan, which is exactly what the fixed-row-count bucketing exists to prevent.
+
+---
+
 ---
 
 ## Deliberately deferred

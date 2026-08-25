@@ -20,6 +20,7 @@ QT_END_NAMESPACE
 
 namespace loftail {
 
+class DensityStrip;
 class Document;
 class LogModel;
 class RecordIndex;
@@ -290,6 +291,34 @@ public:
     static constexpr int kMinWrapCols = 20;
     int messageWrapWidth() const;
 
+    // --- The density strip beside the scrollbar (SPEC.md §5, ARCHITECTURE.md §7.1.7) --
+    //
+    // Where the highlighted records and the current Find matches sit in the WHOLE view,
+    // as a narrow strip between the table and the vertical scrollbar. Role::Main only —
+    // the digest strip has no scrollbar to sit beside — and null when the reader has
+    // switched it off, which every caller must therefore expect.
+    DensityStrip *densityStrip() const { return m_density; }
+    // Show or hide it. One application-wide preference (MainWindow keeps it in
+    // QSettings, exactly as it keeps the log text size): it answers a question about how
+    // somebody reads, which does not differ between two tabs. It moves a VIEWPORT
+    // MARGIN, so every wrapped height is re-measured — this is not a repaint.
+    void setDensityStripVisible(bool visible);
+    bool densityStripVisible() const;
+    // The highlight rules moved, so the strip's rule lane has to be scanned again. The
+    // Find lane is untouched: it is invalidated by setFindMatcher/clearFindMatcher, and
+    // one gesture must not throw away the other one's work.
+    void invalidateDensityRules();
+
+    // Where view row `r` sits in the vertical scroll range, 0..1. In LINE units, which
+    // is what the scrollbar beside the strip is in — placing a mark by record index
+    // instead would put it somewhere the thumb never goes on any log carrying a
+    // multi-line record, which is most of them.
+    qreal scrollFractionOfRow(int r) const;
+    // Put `fraction` of the scroll range in the MIDDLE of the viewport, as the user
+    // scrolling — so follow detaches exactly as it does on a scrollbar drag. What a
+    // click on the density strip does.
+    void scrollToFraction(qreal fraction);
+
     // --- Pure geometry mapping (public for unit tests; no widget state) ---------
     // These express the exact-mode line<->record mapping with the selected record's
     // measured wrapped height folded in. `selRecord` is -1 when nothing wraps;
@@ -492,7 +521,10 @@ private:
 
     void recomputeGeometry();     // recompute selection-dependent wrap + scrollbars
     void updateScrollBars();
-    void layoutHeader();
+    // The header band and the density strip, which are the two things the viewport's
+    // margins are spent on — ONE setViewportMargins call, because two would each undo
+    // the other's margin.
+    void layoutChrome();
     void ensureRecordVisible(int record);
     // Focus a record and select it WITHOUT scrolling. setCurrentRecord() is the
     // interactive form and deliberately scrolls; a filter restore must not, because
@@ -578,6 +610,10 @@ private:
     // QAbstractScrollArea installs the view itself as an event filter on its own
     // scrollbars, so eventFilter() is called during construction — before this exists.
     QHeaderView    *m_header = nullptr;
+    // The density strip in the right viewport margin (Role::Main only, and null while
+    // the reader has it switched off). Hidden rather than destroyed when switched off
+    // would keep a scan alive for a strip nobody can see, so it is genuinely destroyed.
+    DensityStrip   *m_density = nullptr;
     QItemSelectionModel *m_selection;
 
     // Which columns the user has spoken for — dragged, fitted, or brought back by a

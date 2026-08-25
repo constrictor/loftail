@@ -24,6 +24,13 @@ add_library(loftail_core STATIC
     Decoder.h
     LogSource.h
     LogSourceFactory.cpp
+    # The data behind the density strip beside the scrollbar: a coarse, bucketed map of
+    # where the highlighted records and find matches are in the whole view. Pure and
+    # timer-free — the slice budget comes from the owner — so the one thing that has to
+    # be right about it (a bounded scan that survives a tailed log growing under it) is
+    # testable with no QApplication.
+    DensityMap.cpp
+    DensityMap.h
     # M11 — remote sources. RemoteLocation is the ssh:// URL value type and the
     # path-shaped helpers built on it; it never touches libssh2 and is ALWAYS
     # compiled, so a build without SSH support still recognises, persists and

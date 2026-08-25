@@ -86,8 +86,19 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
 8. **Jump to timestamp** (Ctrl+G). `SPEC.md` §4 names it as something parsed timestamps make
    possible, but it does not appear to have shipped.
 9. **Find across all open tabs**, with a results list.
-10. **A density strip** beside the scrollbar showing where highlighted records and find matches sit
-    in the whole file. Navigation aid, not a chart; reuses colors the highlighter already resolves.
+10. ~~**A density strip** beside the scrollbar showing where highlighted records and find matches sit
+    in the whole file. Navigation aid, not a chart; reuses colors the highlighter already resolves.~~
+    **Shipped in M25.** The "reuses colors the highlighter already resolves" note held exactly and
+    was the cheap half — a mark stores a rule INDEX, so a theme change repaints rather than
+    rescans. What the note did not see is where the whole cost is: the strip's subject is the
+    part of the log that is NOT on screen, which is the one question §7.1 had never had to answer,
+    and sampling is ruled out by the very case the feature exists for (one FATAL in ten million
+    records). So it is a bounded-per-slice resumable scan into buckets of a fixed ROW COUNT —
+    fixed count and not a fraction of the view, which is what makes an append free on a tailed
+    log. Two decisions fell out of it rather than out of code: marks are placed in LINE units, not
+    record units, or they disagree with the thumb beside them; and the rule and find lanes are
+    invalidated separately, or typing in the Find bar throws the rule scan away on every
+    keystroke. See `SPEC.md` §5 and `ARCHITECTURE.md` §7.1.7.
 11. **Bookmarks** — already scoped in `FUTURE.md`, including the open question of what identifies a
     bookmarked record across a reindex.
 
@@ -179,3 +190,11 @@ obvious next small one.
 had none of #1's depth, and the whole of it is one branch in `LogModel::cellText` plus an enum
 value. Of the rest, #8 (jump to timestamp) is the next small one and #3 (the unread marker) the
 next one worth a milestone; #4 remains the one that unlocks #5 for free.
+
+**Update, 2026-08-25 (later the same day):** #10 shipped as M25, out of the Tier 3 order — it was
+picked by name. It was NOT the small win its tier suggested: the plumbing is one widget in a
+viewport margin, but the scan behind it is a new kind of question for this codebase (about the
+whole view rather than the visible part) and it needed a bucket structure of its own to stay
+affordable on a log being tailed. Tier 3's estimate was wrong because it read the feature as a
+rendering job. Of the rest, #8 (jump to timestamp) is still the next genuinely small one and #3
+(the unread marker) the next one worth a milestone; #4 remains the one that unlocks #5 for free.

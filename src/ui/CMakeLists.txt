@@ -30,6 +30,11 @@ add_library(loftail_ui STATIC
     # overhanging glyph's ink are both wider than a column count can express)
     LogView.cpp
     LogView.h
+    # The density strip in that view's right viewport margin: where the highlighted
+    # records and the current find matches are in the whole log, drawn in the colours the
+    # highlighter already resolves, and clickable to jump there.
+    DensityStrip.cpp
+    DensityStrip.h
     WrapMetrics.cpp
     WrapMetrics.h
     # M3 — the format editor. Its controls live in FormatEditor, shared with

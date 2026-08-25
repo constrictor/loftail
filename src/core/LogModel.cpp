@@ -295,6 +295,17 @@ int LogModel::matchedRule(int row) const
     return set.match(rec, m_action, [this, &rec] { return m_document->messageText(rec); });
 }
 
+bool LogModel::rowMatchesText(int row, const TextMatcher &matcher) const
+{
+    const int cols = columnCount();
+    if (cols == 0)
+        return matcher.matches(cellText(row, 0));
+    for (int c = 0; c < cols; ++c)
+        if (matcher.matches(cellText(row, c)))
+            return true;
+    return false;
+}
+
 void LogModel::rowColors(int row, QColor &background, QColor &foreground) const
 {
     background = QColor();

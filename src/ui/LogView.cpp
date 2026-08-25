@@ -1,5 +1,7 @@
 #include "LogView.h"
 
+#include "DensityStrip.h"
+
 #include "UiColors.h"
 
 #include "Decoder.h"
@@ -541,7 +543,7 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent, Rol
         connect(m_model, &QAbstractItemModel::rowsRemoved, this, [this] { refreshDigestCap(); });
     }
 
-    layoutHeader();
+    layoutChrome();
     recomputeGeometry();
 }
 
@@ -907,21 +909,105 @@ void LogView::updateScrollBars()
     horizontalScrollBar()->setPageStep(viewport()->width());
     horizontalScrollBar()->setSingleStep(qMax(1, fontMetrics().averageCharWidth() * 2));
     m_header->setOffset(horizontalScrollBar()->value());
+    // The line mapping is what the strip places its marks by, and this is the one funnel
+    // every change to it goes through — a resize, a wrap-mode change, a font change, an
+    // append. A repaint only: nothing about WHICH rows are marked has moved.
+    if (m_density)
+        m_density->refresh();
 }
 
-void LogView::layoutHeader()
+void LogView::layoutChrome()
 {
+    // ONE setViewportMargins call for both. Two would each undo the other's margin,
+    // which is exactly the kind of thing that shows up as the density strip appearing
+    // and then vanishing on the next resize.
+    //
     // A hidden header reserves NOTHING. Asking unconditionally would leave a
     // header-tall blank band above the digest strip — which reads as a rendering fault
     // rather than a bug, in the one widget whose whole claim is that it is exactly as
     // tall as its rows.
-    if (m_header->isHidden()) {
-        setViewportMargins(0, 0, 0, 0);
-        return;
+    const int top = m_header->isHidden() ? 0 : m_header->sizeHint().height();
+    // isHidden(), not isVisible(): the strip is a child of a view that is itself hidden
+    // while its tab is in the background, and a margin that came and went with the tab
+    // would re-measure every wrapped record on every tab switch.
+    const int right = (m_density && !m_density->isHidden()) ? m_density->stripWidth() : 0;
+    setViewportMargins(0, top, right, 0);
+    if (top > 0)
+        m_header->setGeometry(viewport()->x(), viewport()->y() - top, viewport()->width(), top);
+    if (right > 0) {
+        // Between the viewport and the vertical scrollbar, spanning the viewport's own
+        // height. It cannot line up with the scrollbar GROOVE exactly — a style spends
+        // the ends of the bar on arrow buttons and loftail does not get to say how many
+        // — so the strip spans the scrollable range instead, which is the quantity its
+        // marks are fractions of.
+        m_density->setGeometry(viewport()->x() + viewport()->width(), viewport()->y(),
+                               right, viewport()->height());
     }
-    const int h = m_header->sizeHint().height();
-    setViewportMargins(0, h, 0, 0);
-    m_header->setGeometry(viewport()->x(), viewport()->y() - h, viewport()->width(), h);
+}
+
+// --- The density strip beside the scrollbar (ARCHITECTURE.md §7.1.7) ---------------
+
+void LogView::setDensityStripVisible(bool visible)
+{
+    // The digest strip does not scroll, so there is no range for a mark to be a fraction
+    // of and no scrollbar for one to sit beside.
+    if (m_role != Role::Main)
+        return;
+    if (visible == densityStripVisible())
+        return;
+
+    if (visible) {
+        m_density = new DensityStrip(this, m_document, m_model);
+        m_density->show();
+        m_density->rebind();
+    } else {
+        // Destroyed, not hidden. A hidden strip would keep its scan state and its timer
+        // alive for something nobody can see, and the whole point of switching it off is
+        // to stop paying for it.
+        delete m_density;
+        m_density = nullptr;
+    }
+    // A viewport margin moved, so the message column's wrap width moved with it and
+    // every measured height is stale — this is a geometry change, not a repaint.
+    layoutChrome();
+    recomputeGeometry();
+}
+
+bool LogView::densityStripVisible() const
+{
+    return m_density != nullptr;
+}
+
+void LogView::invalidateDensityRules()
+{
+    if (m_density)
+        m_density->invalidateRules();
+}
+
+qreal LogView::scrollFractionOfRow(int r) const
+{
+    const qint64 total = mapTotalLines();
+    if (total <= 0 || recordCount() <= 0)
+        return 0.0;
+    const int row = qBound(0, r, recordCount() - 1);
+    return qBound(0.0, qreal(mapLineOfRecord(row)) / qreal(total), 1.0);
+}
+
+void LogView::scrollToFraction(qreal fraction)
+{
+    const qint64 total = mapTotalLines();
+    if (total <= 0)
+        return;
+    const qint64 line = qint64(qBound(0.0, fraction, 1.0) * qreal(total));
+    QScrollBar *bar = verticalScrollBar();
+    // CENTRED, not put at the top: the click names a place to READ, and a mark landed
+    // exactly on the first visible line is one the reader has to scroll back for.
+    const qint64 want = line - visibleLines() / 2;
+    // Through the scrollbar, which is what makes this the USER scrolling: follow
+    // detaches here exactly as it does on a bar drag (see updateFollowFromScrollPosition).
+    const qint64 lo = bar->minimum();
+    const qint64 hi = bar->maximum();
+    bar->setValue(int(qBound(lo, want, hi)));
 }
 
 qint64 LogView::digestContentLines(bool *capped) const
@@ -994,7 +1080,7 @@ void LogView::resizeEvent(QResizeEvent *event)
     // width as licence to overwrite widths the reader had settled on.
     if (viewport()->width() > 0)
         m_viewportLaidOut = true;
-    layoutHeader();
+    layoutChrome();
     positionFollowButton();
     if (estimating()) {
         // Debounce (§7.1.1): a drag-resize fires a burst of these. Keep the view
@@ -1106,7 +1192,7 @@ void LogView::applyFontChange()
     // text size and not about somebody's column layout.
     seedColumnWidths();
     // The header band is as tall as the header's own font asks for.
-    layoutHeader();
+    layoutChrome();
     positionFollowButton();
     // THE ONE THAT IS EASY TO MISS. ensureEstimatorBound() rebinds on the index's
     // ADDRESS and folds in what its TAIL has grown, and a font change moves neither —
@@ -1223,6 +1309,12 @@ void LogView::setFindMatcher(const TextMatcher &matcher)
 {
     m_findMatcher = matcher;
     viewport()->update(); // the marks are re-derived per paint; asking for one is all it takes
+    // The strip's find lane is the one thing here that is NOT re-derived per paint: it
+    // describes the whole view, not what is on screen, so it has to be scanned again.
+    // The rule lane is left alone, or typing in the Find bar would throw away the rule
+    // scan on every keystroke.
+    if (m_density)
+        m_density->invalidateFind();
 }
 
 void LogView::clearFindMatcher()
@@ -1231,6 +1323,8 @@ void LogView::clearFindMatcher()
         return;
     m_findMatcher = TextMatcher();
     viewport()->update();
+    if (m_density)
+        m_density->invalidateFind();
 }
 
 void LogView::paintEvent(QPaintEvent *event)
@@ -2660,6 +2754,8 @@ void LogView::handleRowsInserted()
     if (m_followButton && !m_following)
         positionFollowButton();
     viewport()->update();
+    if (m_density)
+        m_density->rowsChanged();
 }
 
 void LogView::handleRowsRemoved()
@@ -2673,6 +2769,8 @@ void LogView::handleRowsRemoved()
     if (m_following)
         scrollToEnd();
     viewport()->update();
+    if (m_density)
+        m_density->rowsChanged();
 }
 
 void LogView::handleTailChanged()
@@ -2685,6 +2783,8 @@ void LogView::handleTailChanged()
     if (m_following)
         scrollToEnd();
     viewport()->update();
+    if (m_density)
+        m_density->refresh();
 }
 
 void LogView::beginFilterUpdate()
@@ -2787,6 +2887,10 @@ void LogView::handleModelReset()
     // (with fresh measurements) on the next AlwaysOn geometry query.
     m_estimated.clear();
     recomputeGeometry();
+    // The row space itself was replaced, so every bucket the strip holds names a
+    // different record now. Nothing survives a reset, exactly as nothing above it does.
+    if (m_density)
+        m_density->rebind();
     if (m_followButton)
         m_followButton->setVisible(!m_following);
 }
