@@ -145,6 +145,36 @@ qt_add_executable(tst_configlocation tst_configlocation.cpp)
 target_link_libraries(tst_configlocation PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_configlocation COMMAND tst_configlocation)
 
+# M23 — the restart script, path layer: which machine the script runs on, and what
+# LOGFILE/ARCHIVE/MEMBER are. The same kind of test as the one above and for a sharper
+# reason: a wrong answer there writes a file at a path nobody asked for, a wrong answer
+# here RUNS A SCRIPT on a machine nobody asked for. UNGATED, so the answer cannot depend
+# on which optional dependencies were compiled in.
+qt_add_executable(tst_restarttarget tst_restarttarget.cpp)
+target_link_libraries(tst_restarttarget PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_restarttarget COMMAND tst_restarttarget)
+
+# M23 — running a restart script LOCALLY. A real shell and real scripts; no ssh server,
+# no network and no libssh2, which is what the whole local branch needs and all it needs.
+# The case worth the file on its own is the backgrounded child holding stdout: with pipes
+# the stream never reaches EOF, so a "restart the service" script looks hung for ever —
+# and closing loftail's read end would SIGPIPE the daemon it had just started. Labelled
+# `threading` so the by-hand TSan sweep picks it up: it drives a QProcess and a timer.
+qt_add_executable(tst_restartrunner tst_restartrunner.cpp)
+target_link_libraries(tst_restartrunner PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_restartrunner COMMAND tst_restartrunner)
+set_tests_properties(tst_restartrunner PROPERTIES LABELS threading)
+
+# M23 — File ▸ Restart App as the user meets it: the shortcut sweep, the gating, the
+# explanation a log with no script gets, and the dialog's two rules — a clean run closes
+# itself, anything else stays up. Through a real MainWindow for the menu half and a
+# stack-built dialog for the rest, because a modal exec()'d from a test is a nested event
+# loop looking for somewhere to deadlock.
+qt_add_executable(tst_restartgui tst_restartgui.cpp)
+target_link_libraries(tst_restartgui PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_restartgui COMMAND tst_restartgui)
+set_tests_properties(tst_restartgui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # The config-file editor, syntax layer: which grammar a config file is coloured in, and
 # whether those colours can be read. The extension decides where it says anything and the
 # contents only where it does not — and the contrast half is measured in BOTH themes,

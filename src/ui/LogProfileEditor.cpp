@@ -1,13 +1,16 @@
 #include "LogProfileEditor.h"
 
 #include "FormatEditor.h"
+#include "Fonts.h"
 #include "SectionBox.h"
+#include "UiColors.h"
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QVBoxLayout>
 
 namespace loftail {
@@ -119,6 +122,44 @@ LogProfileEditor::LogProfileEditor(QWidget *parent)
                                 "always on the same machine as the log."));
     configForm->addRow(tr("Path:"), m_configPath);
     root->addWidget(configBox);
+
+    // The script that restarts the application writing this log (SPEC.md §4). Its own
+    // section for the reason the config path has one, and more so: this is not a property
+    // of the log's format, not run splitting and not a display choice — it names an
+    // ACTION on another program.
+    auto *restartBox = new SectionBox(tr("Restart script"), this);
+    restartBox->setObjectName(QStringLiteral("profileRestartGroup")); // findChild, for tests
+    restartBox->setFlat(true);
+    restartBox->setTitleDivider(true);
+    auto *restartLayout = new QVBoxLayout(restartBox);
+
+    m_restartScript = new QPlainTextEdit(restartBox);
+    m_restartScript->setObjectName(QStringLiteral("profileRestartScript")); // findChild
+    // A QPlainTextEdit, not a QTextEdit: rich text would let a pasted script arrive with
+    // formatting and, worse, with smart quotes — which a shell reads as ordinary
+    // characters and then cannot find a command called `“systemctl”`.
+    m_restartScript->setFont(monospaceFont()); // it is code
+    // Tab must LEAVE the field. In a dialog the alternative is a control the keyboard
+    // cannot get out of, and a tab is not something a shell script needs to contain.
+    m_restartScript->setTabChangesFocus(true);
+    m_restartScript->setPlaceholderText(tr("Leave empty for no restart script"));
+    ensureReadablePlaceholder(m_restartScript);
+    // FIXED, and modest. The dialog's right-hand panel has no scroll area of its own and
+    // the format editor above already takes the stretch, so a field that grew with its
+    // content would push the format preview off the bottom of the dialog.
+    m_restartScript->setFixedHeight(6 * m_restartScript->fontMetrics().lineSpacing()
+                                    + 2 * m_restartScript->frameWidth() + 8);
+    m_restartScript->setToolTip(
+        tr("A shell script that restarts the application writing this log. It is run as a "
+           "whole by your default shell — on the remote machine for an ssh:// log, and on "
+           "the machine holding the container for an archived one.\n\n"
+           "It is given LOGFILE, this log's path on the machine the script runs on; and "
+           "for an archived log ARCHIVE and MEMBER, the container's path and the log's "
+           "path inside it. Write them $LOGFILE, and %LOGFILE% on Windows.\n\n"
+           "A script that leaves a program running in the background should redirect its "
+           "output — mycmd >/dev/null 2>&1 & — or loftail goes on waiting for it."));
+    restartLayout->addWidget(m_restartScript);
+    root->addWidget(restartBox);
 }
 
 void LogProfileEditor::setSample(const QByteArray &sample)
@@ -148,6 +189,7 @@ void LogProfileEditor::setProfile(const LogProfile &p)
     selectData(m_timeDisplay, int(p.format.timeDisplay));
     selectData(m_wrap, int(p.wrapMode));
     m_configPath->setText(p.configPath);
+    m_restartScript->setPlainText(p.restartScript);
 }
 
 LogProfile LogProfileEditor::profile() const
@@ -163,6 +205,14 @@ LogProfile LogProfileEditor::profile() const
         static_cast<TimeDisplay>(m_timeDisplay->currentData().toInt());
     p.wrapMode = static_cast<WrapMode>(m_wrap->currentData().toInt());
     p.configPath = m_configPath->text().trimmed();
+    // TRIMMED AT THE ENDS ONLY, and the trim is load-bearing rather than tidy: a stray
+    // trailing newline is a difference from what the log inherits, and a difference is
+    // what gives a log a per-log record of its own — so without it, merely looking at a
+    // log in Preferences would leave an entry behind saying nothing. The interior is
+    // untouched, because a script's blank lines and indentation are the script's.
+    p.restartScript = m_restartScript->toPlainText()
+                          .replace(QLatin1String("\r\n"), QLatin1String("\n"))
+                          .trimmed();
     return p;
 }
 

@@ -49,6 +49,27 @@ add_library(loftail_core STATIC
     # else's file safe.
     ConfigFileIO.cpp
     ConfigFileIO.h
+    # Where a log physically is — the filesystem it sits on and its path there, with an
+    # archived log peeled to its container. Shared by the two things that have to place
+    # something against a log: its config file, and the script that restarts the
+    # application writing it. One copy because the archive-peel rule has a trap in it.
+    LogAnchor.cpp
+    LogAnchor.h
+    # M23 — the restart script. Which machine it runs on and what LOGFILE/ARCHIVE/MEMBER
+    # are, derived from the log's address. Pure value work like the location types above,
+    # ALWAYS compiled, so a build without SSH derives the same answer and tests it.
+    RestartTarget.cpp
+    RestartTarget.h
+    # Running it: a QProcess locally, an exec channel on a worker thread remotely.
+    RestartRunner.cpp
+    RestartRunner.h
+    # The lifetime rules for running SSH work off the application thread — abandon and
+    # never join, the relay the worker owns, the bounded shutdown drain. One copy, shared
+    # by the config transfer and the restart runner, because every rule in it was learned
+    # from a crash.
+    SshWorkerPool.cpp
+    SshWorkerPool.h
+    SshWorkerPool.inl
     ArchiveFetcher.h
     # Declares the member listing and the reader; free of libarchive types, so the
     # member-picker dialog compiles either way and both builds' UI looks the same.

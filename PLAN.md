@@ -433,6 +433,28 @@ M21 puts everything one log says about itself in one record per log, in a bounde
 
 **Risk.** The migration is once-and-never-again, as M20's was, and now has two sources. Both are covered in `tst_logsettings` and by an end-to-end run against a hand-built legacy `logsettings.json`. The eviction cap is a new way to lose user data on purpose: it is bounded by never taking an open log, and by the fact that what is lost is only what that log said of its own.
 
+## M23 — restarting the application that writes the log
+
+The other half of M22's errand. Having changed a log's configuration you have to restart the service before it takes effect, which today means leaving loftail for a terminal, on a machine that may not be this one.
+
+- [x] **`LogProfile::restartScript`** — a fourth non-format field beside `wrapMode` and `configPath`, at all three levels, with the whole checklist in one commit: the `operator==` clause (without it `reduce()` deletes the record and the setting is gone silently), the JSON key read as a plain value, the editor control, and `applyProfileToActive()`'s by-hand line. **No schema bump** — an added key is a backward read, and a bump would make an older binary refuse to write the file at all.
+- [x] **`logAnchorOf()` extracted from `ConfigLocation.cpp`** into `LogAnchor.h/.cpp`, gaining `member` (from the *first* peel only) and `archived` (asked of `split()` at the settled address, because a bare `.gz` names no member and would otherwise stop being an archive). One copy, because the peel loop terminates on inequality and nothing else.
+- [x] **`RestartTarget`** — `ConfigAddress`'s twin. Pure string work, three states not a bool, no-I/O refusals only, and `restartTargetIsRunnable()` kept separate so the answer a settings file yields does not depend on which dependencies were compiled in.
+- [x] **`restartScriptCommand()` in `SshExecCommands`** — ungated, like `shellQuote()` and for its reason. Values quoted, script not; inapplicable variables omitted rather than emptied; stdin closed over a brace group; CRLF normalised.
+- [x] **`SshSession::runScript()`** — stderr KEPT (unlike `runCommand()`, whose discard is right where it is), session non-blocking for the duration, timeout suspended and restored before the close.
+- [x] **`SshWorkerPool` extracted from `ConfigFileIO.cpp`** — the shared block, the `QThread` subclass, the reaper, `withSshSession()`, the bounded drain. `drainConfigTransfers()` survives as a name and now drains both users.
+- [x] **`RestartRunner`** — one class, two transports. Local output to **files, not pipes**, so a daemon the script leaves running cannot be `SIGPIPE`d by loftail closing the run; completion on `QProcess::finished`, never on EOF; a running child disowned to a reaper because `~QProcess` kills and blocks. Remote through the shared pool, abandoned and never joined.
+- [x] **`RestartDialog`** — modal, streaming, auto-closing after a second on exit 0 with nothing on stderr and staying up on anything else. Two buttons rather than one that changes its text; Escape, ✕ and Abort on one path.
+- [x] **Preferences scrolls.** Forced by this milestone rather than chosen: each non-format section added its height to the dialog's *minimum*, which took it to 819 px — off the bottom of a 1366x768 screen, OK and Cancel with it. `m_editor` in a frameless `QScrollArea`, horizontal bar off and minimum width preserved, opening height derived and clamped once.
+- [x] **Menu and gating** — File ▸ Restart App… (`Ctrl+R`, free because Reload deliberately took F5), on `hasFile` rather than `activePageIsLog()`, and **live with no script configured** because a disabled action swallows its accelerator and there is an answer to give.
+- [x] **Tests.** New `tst_restarttarget` (ungated, the address derivation including the remote-archive case a length-based peel gets wrong, and the password sweep), `tst_restartrunner` (the whole local branch against real scripts, including the `SIGPIPE` experiment and the destructor bound), `tst_restartgui` (the `Ctrl+R` sweep, the gating, the not-configured box leading to Preferences, and the dialog's two rules). `tst_sshexec` gains six cases through a real `/bin/sh`; `tst_logsettings`, `tst_preferences` and `tst_sshlive` are extended.
+
+**Done when:** a script set on a file pattern restarts the right service for two logs matching it; a remote log's script runs on that log's host and its stderr reaches the dialog; an archived log's script sees the container as `$ARCHIVE` and the log inside it as `$MEMBER`; an exit-0 run with nothing on stderr closes itself after a second and anything else stays up; a hanging script is abortable and closing the dialog returns at once; a daemon the script left running is still running afterwards; and a log with no script explains itself and offers Preferences.
+
+**Risk.** This is code execution, on the user's machine and on somebody else's. Three bounds, all structural: one gesture and no trigger, only what the user wrote, and only on the machine the log is already open from. The quoting asymmetry is the sharp edge and is pinned against a real `/bin/sh` with a canary file. `SPEC.md` §11 and invariant #5 are both amended rather than quietly contradicted.
+
+---
+
 ---
 
 ## Deliberately deferred

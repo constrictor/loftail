@@ -38,6 +38,8 @@ private slots:
     void legacyStoresMigrateOnceAndAreRemoved();
     void aNewerSchemaLoadsEmptyAndRefusesToSave();
     void aProfileDiffersWhenAnyOneFieldOfItDoes();
+    void aRestartScriptRoundTripsThroughJsonIncludingItsNewlines();
+    void aProfileStoredBeforeRestartScriptsExistedReadsAsNotConfigured();
 };
 
 namespace {
@@ -460,11 +462,44 @@ void TestLogSettings::aProfileDiffersWhenAnyOneFieldOfItDoes()
     QVERIFY(differsFrom([](LogProfile &p) { p.format.runStartCaseSensitive = true; }));
     QVERIFY(differsFrom([](LogProfile &p) { p.wrapMode = WrapMode::AlwaysOn; }));
     QVERIFY(differsFrom([](LogProfile &p) { p.configPath = QStringLiteral("x.properties"); }));
+    QVERIFY(differsFrom(
+        [](LogProfile &p) { p.restartScript = QStringLiteral("systemctl restart app"); }));
 
     // And the other direction, so the comparison cannot be satisfied by always
     // answering "different": two profiles built the same way are equal, which is what
     // reduce() relies on to delete an entry that says nothing of its own.
     QVERIFY(LogProfile::builtIn() == base);
+}
+
+void TestLogSettings::aRestartScriptRoundTripsThroughJsonIncludingItsNewlines()
+{
+    // A restart script is the first MULTI-LINE value either store holds. JSON carries a
+    // newline as \n with no encoding of its own, but that is worth an assertion rather
+    // than an assumption: a script that came back as one line would run its first command
+    // and silently drop the rest.
+    LogProfile p = LogProfile::builtIn();
+    p.restartScript = QStringLiteral("#!/bin/sh\nset -e\n\nsystemctl restart app\n"
+                                     "echo \"done $LOGFILE\"");
+
+    const LogProfile back = logProfileFromJson(logProfileToJson(p));
+    QCOMPARE(back.restartScript, p.restartScript);
+    QCOMPARE(back, p);
+}
+
+void TestLogSettings::aProfileStoredBeforeRestartScriptsExistedReadsAsNotConfigured()
+{
+    // THE ASSERTION THE "NO SCHEMA BUMP" ARGUMENT RESTS ON. An added key is exactly what
+    // a backward read handles: an older file simply has none, and the struct default —
+    // empty, meaning "not configured" — is the correct answer for it. Bumping instead
+    // would make an older binary refuse to write the file AT ALL, freezing every setting
+    // for every log rather than losing one field.
+    QJsonObject old = logProfileToJson(LogProfile::builtIn());
+    old.remove(QStringLiteral("restartScript"));
+    QVERIFY(!old.contains(QStringLiteral("restartScript")));
+
+    const LogProfile back = logProfileFromJson(old);
+    QVERIFY(back.restartScript.isEmpty());
+    QCOMPARE(back, LogProfile::builtIn());
 }
 
 QTEST_APPLESS_MAIN(TestLogSettings)

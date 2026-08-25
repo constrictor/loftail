@@ -3,6 +3,8 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
+#include <QPlainTextEdit>
+#include <QScrollArea>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -172,6 +174,8 @@ private slots:
     void askingAgainOnTheSameEntryWithdrawsTheRequest();
     void theSettingsAppliedAreWhatTheEntrySaysWhenOkIsPressed();
     void everyProfileFieldRoundTripsThroughTheEditor();
+    void trailingWhitespaceInTheRestartScriptLeavesNoEntryBehind();
+    void theDialogsFloorDoesNotGrowWithTheSettingsPanel();
     void emptySampleIsHarmless();
     void theEmptyPreviewSaysSoOnTheTableAndTheMatchCountBelowIt();
     void theMenuEntryHasAnAcceleratorOnEveryPlatform();
@@ -885,6 +889,10 @@ void TestPreferences::everyProfileFieldRoundTripsThroughTheEditor()
     p.format.runStartCaseSensitive = true;
     p.wrapMode = WrapMode::AlwaysOn;
     p.configPath = QStringLiteral("../conf/log4cplus.properties");
+    // MULTI-LINE deliberately: this is the first field either store holds whose value can
+    // contain a newline, and a control that flattened it would run the first command and
+    // silently drop the rest.
+    p.restartScript = QStringLiteral("#!/bin/sh\nset -e\nsystemctl restart app");
     t.setDefaults(p);
 
     PreferencesDialog dlg(t, QStringLiteral("app.log"), sample());
@@ -901,11 +909,73 @@ void TestPreferences::everyProfileFieldRoundTripsThroughTheEditor()
              int(WrapMode::AlwaysOn));
     QCOMPARE(dlg.findChild<QLineEdit *>(QStringLiteral("profileConfigPath"))->text(),
              QStringLiteral("../conf/log4cplus.properties"));
+    auto *restart = dlg.findChild<QPlainTextEdit *>(QStringLiteral("profileRestartScript"));
+    QVERIFY(restart);
+    QCOMPARE(restart->toPlainText(), p.restartScript);
 
     // Read back off the TREE, not off the editor: what matters is that a trip through
     // the dialog leaves the node holding what it held.
     dlg.accept();
     QVERIFY(dlg.tree().defaults() == p);
+}
+
+void TestPreferences::trailingWhitespaceInTheRestartScriptLeavesNoEntryBehind()
+{
+    // The redundancy rule's second-order failure, and the reason profile() trims the ends.
+    //
+    // A per-log entry exists only while it says something its parents do not. A stray
+    // trailing newline — which a QPlainTextEdit will happily accumulate from an editor
+    // paste — is a difference, so without the trim every log the user merely LOOKS at in
+    // Preferences would be left with an entry of its own saying nothing.
+    LogSettingsTree t;
+    LogProfile inherited = LogProfile::builtIn();
+    inherited.restartScript = QStringLiteral("systemctl restart app");
+    t.setDefaults(inherited);
+
+    PreferencesDialog dlg(t, QStringLiteral("app.log"), sample());
+    dlg.selectLog(QStringLiteral("/var/log/app.log"), std::nullopt, inherited);
+
+    auto *restart = dlg.findChild<QPlainTextEdit *>(QStringLiteral("profileRestartScript"));
+    QVERIFY(restart);
+    QCOMPARE(restart->toPlainText(), inherited.restartScript);
+    restart->setPlainText(inherited.restartScript + QStringLiteral("\n\n  "));
+
+    dlg.accept();
+    QVERIFY2(!dlg.fileProfile().has_value(),
+             "whitespace at the end of the script gave the log an entry of its own");
+}
+
+void TestPreferences::theDialogsFloorDoesNotGrowWithTheSettingsPanel()
+{
+    // The settings panel gains a section per non-format field, and before the editor
+    // scrolled each one added its full height to the DIALOG'S MINIMUM — which is a floor,
+    // so it cannot be dragged smaller. Measured: the restart script alone took that
+    // minimum from 675 px to 819, taller than the usable height of a 1366x768 screen, and
+    // the row holding OK and Cancel goes off the bottom with no way to reach it.
+    //
+    // The claim is stated as a RELATION and not as a pixel count, because a number written
+    // down here is a number that passes under one style and one font and fails under the
+    // next — the trap tst_logview's seed cases record. What has to stay true is that the
+    // dialog's floor is no longer a function of how tall the settings are.
+    LogSettingsTree t;
+    PreferencesDialog dlg(t, QStringLiteral("app.log"), sample());
+    auto *editor = dlg.findChild<QWidget *>(QStringLiteral("profileEditor"));
+    QVERIFY(editor);
+
+    // It is in a scroll area, which is the mechanism.
+    QVERIFY2(dlg.findChild<QScrollArea *>(QStringLiteral("profileEditorScroll")),
+             "the settings panel is no longer scrolled");
+
+    // No font sweep here, deliberately: both sides of the comparison move together with
+    // the font, so one measurement says as much as ten and this case leaves the
+    // application font alone for the ones after it.
+    const int floor = dlg.minimumSizeHint().height();
+    const int panel = editor->minimumSizeHint().height();
+    QVERIFY2(floor < panel,
+             qPrintable(QStringLiteral("the dialog's floor (%1) still carries the whole "
+                                       "settings panel (%2)")
+                            .arg(floor)
+                            .arg(panel)));
 }
 
 void TestPreferences::emptySampleIsHarmless()

@@ -13,6 +13,11 @@
 #include "LogSource.h"
 #include "RemoteLocation.h"
 #include "SshExecCommands.h"
+
+// std::thread and not QThread: ARCHITECTURE.md §13.1 — a QThread join goes through a
+// QWaitCondition, which breaks TSan's happens-before chain at the unannotated system Qt.
+#include <chrono>
+#include <thread>
 #include "SourceSpool.h"
 #include "SshPrompter.h"
 #include "SshSession.h"
@@ -133,6 +138,13 @@ private slots:
     void aConfigFileIsReadAndWrittenWholeOverSftp();
     void writingAConfigKeepsItsPermissions();
     void theExecFallbackWritesTheSameBytes();
+
+    // M23 — the restart script over a real link. The only place SshSession::runScript()
+    // is executed at all: CI has no server, so everything above it is compiled and never
+    // run until somebody sets LOFTAIL_TEST_SSH_URL.
+    void aRestartScriptRunsOnTheFarEndAndKeepsItsStderr();
+    void aRestartScriptOutlivesTheConnectTimeout();
+    void abortingARemoteScriptReturnsAtOnce();
 };
 
 void TestSshLive::initTestCase()
@@ -425,6 +437,99 @@ void TestSshLive::reportsAnUnreachableHostClearly()
     // on, not as a bare "cannot open".
     QVERIFY(!doc.lastError().isEmpty());
     QVERIFY(doc.lastError().contains(QStringLiteral("127.0.0.1")));
+}
+
+void TestSshLive::aRestartScriptRunsOnTheFarEndAndKeepsItsStderr()
+{
+    // THE ONLY EXECUTION of the streaming channel loop. It differs from runCommand() in
+    // three ways at once — stderr kept, session non-blocking, timeout suspended — and
+    // none of the three can be faked usefully: a stub returns instantly and satisfies the
+    // contract exactly as well whether or not any of it works.
+    const QString marker = m_remotePath + QStringLiteral(".restart-ran");
+    QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(marker)));
+
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(m_location, nullptr, 20000, &error), qPrintable(error));
+
+    const QList<QPair<QString, QString>> vars = {
+        {QStringLiteral("LOGFILE"), m_remotePath},
+        {QStringLiteral("MEMBER"), QStringLiteral("var/log/app.log")},
+    };
+    const QString script = QStringLiteral(
+        "printf 'out:%s' \"$LOGFILE\"\n"
+        "printf 'err:%s' \"$MEMBER\" >&2\n"
+        "touch %1\n"
+        "exit 5\n").arg(marker);
+
+    QByteArray out, err;
+    int code = -1;
+    const bool ran = session.runScript(
+        restartScriptCommand(script, vars),
+        [&out, &err](const QByteArray &bytes, bool isStdErr) {
+            (isStdErr ? err : out).append(bytes);
+        },
+        &code, &error);
+    QVERIFY2(ran, qPrintable(error));
+
+    // The two streams stay apart — which is what the dialog's success rule is built on —
+    // and the script's own exit status survives the brace group and the redirect.
+    QCOMPARE(out, ("out:" + m_remotePath).toUtf8());
+    QCOMPARE(err, QByteArray("err:var/log/app.log"));
+    QCOMPARE(code, 5);
+    QCOMPARE(remoteShellOutput(QStringLiteral("test -e %1 && printf yes").arg(marker)),
+             QByteArray("yes"));
+
+    QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(marker)));
+}
+
+void TestSshLive::aRestartScriptOutlivesTheConnectTimeout()
+{
+    // connectTo() leaves libssh2's session timeout at the connect budget. Without the
+    // suspension inside runScript(), any restart taking longer than that is reported as a
+    // dropped link — and most interesting restarts do. Twenty-five seconds against a
+    // twenty-second budget, which is the smallest gap that proves anything.
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(m_location, nullptr, 20000, &error), qPrintable(error));
+
+    QElapsedTimer clock;
+    clock.start();
+    int code = -1;
+    const bool ran = session.runScript(
+        restartScriptCommand(QStringLiteral("sleep 25\nprintf late\n"), {}), nullptr, &code,
+        &error);
+    QVERIFY2(ran, qPrintable(error));
+    QCOMPARE(code, 0);
+    QVERIFY2(clock.elapsed() > 20000,
+             "the script did not actually outlast the connect budget");
+}
+
+void TestSshLive::abortingARemoteScriptReturnsAtOnce()
+{
+    // abort() shuts the socket, which is the only thing that unblocks a read inside
+    // libssh2 — there is no cancel flag to poll in there. What the far end makes of the
+    // resulting hangup is the far end's business, which is why SPEC.md §4 says an abort
+    // means loftail stopped waiting and never that the command stopped.
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(m_location, nullptr, 20000, &error), qPrintable(error));
+
+    std::thread stopper([&session]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        session.abort();
+    });
+
+    QElapsedTimer clock;
+    clock.start();
+    int code = -1;
+    session.runScript(restartScriptCommand(QStringLiteral("sleep 120\n"), {}), nullptr, &code,
+                      &error);
+    const qint64 elapsed = clock.elapsed();
+    stopper.join();
+
+    QVERIFY2(elapsed < 5000,
+             qPrintable(QStringLiteral("abort took %1 ms").arg(elapsed)));
 }
 
 QTEST_GUILESS_MAIN(TestSshLive)

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QByteArray>
+#include <QList>
+#include <QPair>
 #include <QString>
 #include <QtGlobal>
 
@@ -153,6 +155,27 @@ QString configExistsCommand(const QString &path);
 // rename would have left the old one intact. That is stated in SPEC.md §4 rather than
 // left to be discovered, and the caller verifies the size afterwards.
 QString configWriteCommand(const QString &path);
+
+// The user's restart script, preceded by the variables it is given (SPEC.md §4).
+//
+// TWO HALVES WITH OPPOSITE RULES, and confusing them is the whole risk in this function.
+// The VALUES are data: every one goes through shellQuote(), because a log path arrives
+// from a URL somebody typed, was handed or restored from a session — exactly
+// readCommand()'s provenance, and exactly its consequence, since without the quoting
+// `'; rm -rf ~; '` is not a strange filename but remote code execution. The SCRIPT is
+// code: it is deliberately NOT quoted, because it is what the user wrote for this to run
+// and quoting it would execute a string instead of a script. Its trust comes from where
+// it lives — the user's own settings tree — and from nowhere else.
+//
+// The variable NAMES are constants of loftail's (RestartTarget.h) and never anything
+// typed, which is what makes writing them bare on the left of an `=` safe. A variable
+// that does not apply is ABSENT from the list and therefore never assigned, not assigned
+// empty, so `${ARCHIVE-}` tells an archived log from a plain one — the same promise the
+// local QProcessEnvironment makes, and the two are pinned against each other.
+//
+// STDIN IS CLOSED for the whole script, and CRLF is normalised to LF. See the .cpp.
+QString restartScriptCommand(const QString &script,
+                             const QList<QPair<QString, QString>> &variables);
 
 // Read what configExistsCommand() printed. False for anything unparseable, which is what
 // a shell error, a restricted account and a missing marker all look like from here.

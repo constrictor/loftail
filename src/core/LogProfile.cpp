@@ -23,6 +23,7 @@ constexpr auto kRunStartRegexKey = "runStartRegex";
 constexpr auto kRunStartCaseKey  = "runStartCase";
 constexpr auto kWrapModeKey      = "wrapMode";
 constexpr auto kConfigPathKey    = "configPath";
+constexpr auto kRestartScriptKey = "restartScript";
 } // namespace
 
 LogProfile LogProfile::builtIn()
@@ -47,6 +48,7 @@ QJsonObject logProfileToJson(const LogProfile &p)
     o.insert(QLatin1String(kRunStartCaseKey), p.format.runStartCaseSensitive);
     o.insert(QLatin1String(kWrapModeKey), int(p.wrapMode));
     o.insert(QLatin1String(kConfigPathKey), p.configPath);
+    o.insert(QLatin1String(kRestartScriptKey), p.restartScript);
     return o;
 }
 
@@ -74,6 +76,11 @@ LogProfile logProfileFromJson(const QJsonObject &o)
     // generalise — it exists because an empty pattern is a DIFFERENT answer from an
     // unset one.
     p.configPath = o.value(QLatin1String(kConfigPathKey)).toString();
+    // A plain value read for the same reason configPath is one: an empty restart script
+    // and an absent key both mean "no restart command", so there is nothing for a
+    // presence test to tell apart. Newlines survive JSON as \n, so a multi-line script
+    // round-trips with no encoding of its own.
+    p.restartScript = o.value(QLatin1String(kRestartScriptKey)).toString();
     return p;
 }
 

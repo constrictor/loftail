@@ -3,6 +3,7 @@
 #include "RemoteLocation.h"
 #include "SshExecCommands.h" // SizeSource, kUnknownMtime — no libssh2, always compiled
 
+#include <QByteArray>
 #include <QString>
 
 #include <functional>
@@ -171,6 +172,32 @@ public:
     // halfway leaves a short file, which SPEC.md §4 states rather than leaving to be
     // discovered, and which the size check afterwards is there to catch.
     bool writeFileAt(const QString &path, const QByteArray &bytes, QString *error);
+
+    // --- Running the user's restart script (SPEC.md §4) -----------------------
+
+    // Run `command` on a plain exec channel, streaming stdout and stderr SEPARATELY to
+    // `onChunk` as they arrive, and answering the command's exit status.
+    //
+    // WORKS IN EITHER MODE. An exec channel needs only the session, not SFTP, so a server
+    // that does do SFTP still runs this the same way — the exec fallback and this are
+    // different uses of the same facility, not the same code path.
+    //
+    // STDERR IS KEPT, which is the one thing this does not share with the transport's own
+    // runCommand(): that one drains stderr and DISCARDS it, deliberately, because a
+    // server's warning is not the size it was asked for. Here it is half the answer — a
+    // byte on stderr is one of the two ways a restart is reported as having gone wrong.
+    //
+    // BLOCKS FOR AS LONG AS THE SCRIPT RUNS, with the session timeout suspended for the
+    // duration and restored afterwards: left at the connect budget, any restart taking
+    // longer than that would be reported as a dropped link. Interrupting it is abort()'s
+    // job, from another thread — the same mechanism a config transfer relies on.
+    //
+    // The exit status is only available once the channel closes, so a script that leaves
+    // a child holding stdout open never returns one. That is stated in SPEC.md §4 and is
+    // what the dialog's Abort button is for.
+    bool runScript(const QString &command,
+                   const std::function<void(const QByteArray &bytes, bool isStdErr)> &onChunk,
+                   int *exitCode, QString *error);
 
     // Read up to `length` bytes at `offset` of the open file. Returns the number of
     // bytes read, 0 at EOF, or -1 on error (with `error` filled). Forward-only in

@@ -7,6 +7,8 @@
 #include "DocumentContext.h"
 #include "ConfigFileIO.h"
 #include "ConfigLocation.h"
+#include "RestartDialog.h"
+#include "RestartTarget.h"
 #include "ConfigView.h"
 #include "DocumentView.h"
 #include "Fonts.h"
@@ -64,6 +66,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QUrl>
 #include <QMimeData>
 #include <QProgressBar>
@@ -480,6 +483,25 @@ void MainWindow::buildMenus()
     m_saveConfigAction->setVisible(false);
     m_saveConfigAction->setEnabled(false);
     connect(m_saveConfigAction, &QAction::triggered, this, &MainWindow::saveActiveConfig);
+
+    fileMenu->addSeparator();
+
+    // Restart the application that WRITES this log (SPEC.md §4). The third verb in the
+    // same errand as the two above — read the log, tune what goes into it, bounce the
+    // thing producing it — so it sits with them and not among the closes.
+    //
+    // Ctrl+R, which is free precisely because Reload deliberately took F5 instead (see
+    // the comment on the reload action). Mnemonic T: this menu already spends R twice,
+    // on Open Recent and Reconnect, and a third would make the cycle useless.
+    //
+    // NOT hidden without SSH, exactly as Open Remote is not: a remote target in such a
+    // build refuses in words through restartTargetIsRunnable(), which is a sentence
+    // somebody can act on where a missing menu item is a mystery.
+    m_restartAppAction = fileMenu->addAction(tr("Res&tart App..."));
+    m_restartAppAction->setObjectName(QStringLiteral("restartAppAction")); // findChild
+    m_restartAppAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
+    m_restartAppAction->setEnabled(false);
+    connect(m_restartAppAction, &QAction::triggered, this, &MainWindow::restartActiveApp);
 
     fileMenu->addSeparator();
     m_closeTabAction = fileMenu->addAction(tr("&Close Tab"));
@@ -1084,6 +1106,63 @@ void MainWindow::openConfigEditor()
     openConfigAt(target.address);
 }
 
+void MainWindow::restartActiveApp()
+{
+    DocumentContext *ctx = activeContext();
+    if (!ctx || !ctx->doc)
+        return;
+    const QString path = ctx->doc->path();
+    const QString name = logSourceDisplayName(path);
+
+    const RestartTarget target =
+        resolveRestartTarget(path, resolvedProfile(path).restartScript);
+
+    if (target.state == RestartTarget::State::Refused) {
+        // The strip above the document well, never the status bar: updateStatus() rewrites
+        // m_statusLabel from the active document on every ingest tick, so beside a live log
+        // a reason written there is gone before it is read.
+        reportOpenRefusal(name, target.reason);
+        return;
+    }
+
+    if (target.state == RestartTarget::State::Unset) {
+        // NOT a refusal, which is why the menu item is not disabled for it: a disabled
+        // QAction swallows Ctrl+R with no feedback, and there is an answer to give. So it
+        // explains itself, and offers the one place the answer can be written.
+        QMessageBox box(this);
+        box.setObjectName(QStringLiteral("restartNotConfiguredBox")); // findChild, for tests
+        box.setWindowTitle(tr("Restart App"));
+        box.setIcon(QMessageBox::Information); // Information, not Warning: nothing is wrong
+        box.setTextFormat(Qt::PlainText);      // a log name is a path; `<` is not markup
+        box.setText(tr("No restart script is configured for %1.").arg(name));
+        box.setInformativeText(
+            tr("A restart script is a shell script loftail runs to restart the application "
+               "that writes this log. Set one in File ▸ Preferences, at whichever of the "
+               "three levels it belongs to — one entry on a file pattern can serve every "
+               "log it matches."));
+        QPushButton *prefs = box.addButton(tr("Open &Preferences..."), QMessageBox::ActionRole);
+        prefs->setObjectName(QStringLiteral("restartNotConfiguredPreferences")); // findChild
+        QPushButton *close = box.addButton(QMessageBox::Close);
+        close->setObjectName(QStringLiteral("restartNotConfiguredClose")); // findChild
+        box.setDefaultButton(prefs);
+        box.exec();
+        // AFTER exec() returns, never from the button's own handler: Preferences opening
+        // over a message box that is still up is two modals deep on one gesture.
+        if (box.clickedButton() == prefs)
+            showPreferences();
+        return;
+    }
+
+    if (QString why; !restartTargetIsRunnable(target, &why)) {
+        reportOpenRefusal(name, why);
+        return;
+    }
+
+    RestartDialog dlg(name, target, this);
+    dlg.run();
+    dlg.exec();
+}
+
 ConfigView *MainWindow::openConfigAt(const QString &address)
 {
     // Already open: RAISE it rather than opening a second tab onto one file, which is
@@ -1436,6 +1515,17 @@ void MainWindow::updateActionStates()
         m_saveConfigAction->setVisible(editor != nullptr);
         m_saveConfigAction->setEnabled(editor != nullptr && editor->isModified());
     }
+    // hasFile, NOT onLog, and for openConfigAction's reason one line up: this acts on the
+    // BOUND log's address and never on the view in front, so it stays live on that log's
+    // config-editor page — which is exactly where somebody is standing when they decide to
+    // bounce the service they have just reconfigured. It is live on a WAITING log too,
+    // which is the case it is most wanted in: the application is down, which is why the
+    // log has not turned up.
+    //
+    // Deliberately NOT gated on a script being configured. A disabled QAction swallows
+    // Ctrl+R with no feedback, and there is an answer to give — see restartActiveApp().
+    if (m_restartAppAction)
+        m_restartAppAction->setEnabled(hasFile);
     // Find and its two navigations, on hasFile and nothing else. NOT on the query being
     // non-empty: these two carry F3 and Shift+F3, and a disabled QAction swallows its
     // shortcut with no feedback at all — so gating on the query would delete the only
@@ -2376,6 +2466,7 @@ void MainWindow::applyProfileToActive(const LogProfile &p)
     LogProfile stored = resolvedProfile(path);
     stored.wrapMode = p.wrapMode;
     stored.configPath = p.configPath;
+    stored.restartScript = p.restartScript;
     ctx->fileSettings.profile = stored;
     persistFileSettings(ctx);
     for (DocumentView *v : std::as_const(ctx->views))

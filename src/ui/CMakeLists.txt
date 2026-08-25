@@ -11,6 +11,10 @@ add_library(loftail_ui STATIC
     OpenRemoteDialog.h
     SshPromptDialogs.cpp
     SshPromptDialogs.h
+    # M23 — what the restart script did. Modal, because this is the one thing loftail
+    # does that changes something on a machine, and abortable for the same reason.
+    RestartDialog.cpp
+    RestartDialog.h
     MainWindow.cpp
     MainWindow.h
     # Per-file machinery (model, controllers, format choice) and one view onto it

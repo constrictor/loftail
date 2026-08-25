@@ -93,6 +93,41 @@ QString configWriteCommand(const QString &path)
     return QStringLiteral("cat > %1").arg(shellQuote(path));
 }
 
+QString restartScriptCommand(const QString &script,
+                             const QList<QPair<QString, QString>> &variables)
+{
+    QString out;
+    for (const auto &v : variables) {
+        // The name is written bare and the value is quoted. See the header: the names are
+        // loftail's own constants and the values are paths from an address the user typed.
+        //
+        // `NAME=value` and `export NAME` as two statements rather than `export NAME=value`,
+        // which several of the older /bin/sh implementations this transport exists for do
+        // not take; and never a `NAME=value cmd` prefix, which binds to one command where
+        // a script is many.
+        out += v.first + QLatin1Char('=') + shellQuote(v.second) + QLatin1Char('\n')
+            + QLatin1String("export ") + v.first + QLatin1Char('\n');
+    }
+
+    // CRLF NORMALISED TO LF. A script typed on Windows, or hand-edited into
+    // logsettings.json there, reaches a POSIX shell as `systemctl\r` — "command not
+    // found", about a command that is plainly right on screen.
+    QString body = script;
+    body.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+    body.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+
+    // A BRACE GROUP WITH STDIN CLOSED. An exec channel's stdin is the channel itself, so
+    // a script that runs `read` — or a `ssh`, or an `apt` that decides to ask something —
+    // would otherwise wait forever on a link nobody is writing to. The group is what makes
+    // the redirect cover the whole script rather than its first command, and a group
+    // rather than a subshell so the exit status is still the script's last command's.
+    //
+    // The newlines matter as much as the braces: a script whose first line is `#!/bin/sh`
+    // or any other comment would swallow the rest of its line, and one opening with a
+    // here-document has to begin at a line start.
+    return out + QLatin1String("{\n") + body + QLatin1String("\n} < /dev/null\n");
+}
+
 bool parseConfigExistsOutput(const QByteArray &output, bool *exists)
 {
     const QByteArray line = lastNonEmptyLine(output);

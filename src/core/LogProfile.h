@@ -40,6 +40,22 @@ struct LogProfile
     // misplaced field.
     QString        configPath;
 
+    // The script that RESTARTS the application writing this log (SPEC.md §4). Shell
+    // source, run as a whole in the default shell of whichever machine the log is on —
+    // so a log opened over ssh:// restarts the service THERE, over the exec channel the
+    // transport already has. Empty means "not configured", which is what makes the menu
+    // item explain itself instead of running nothing. RestartTarget.h turns this plus the
+    // log's address into something runnable, and supplies LOGFILE/ARCHIVE/MEMBER.
+    //
+    // BESIDE FormatSettings for the same reason wrapMode and configPath are: MainWindow
+    // diffs FormatSettings to pick what a change COSTS, and nothing about a restart
+    // command changes how a single record is read.
+    //
+    // NOT trimmed of its interior: a script's blank lines and indentation are the
+    // script's. LogProfileEditor trims the ENDS only, so a box holding nothing but
+    // whitespace reads as unconfigured.
+    QString        restartScript;
+
     // What a log nobody has said anything about gets, before any node exists: the
     // conventional log4cplus layout, auto-detected encoding, zone inferred from the
     // pattern, no wrapping. This is the value the ROOT node is created with.
@@ -53,7 +69,8 @@ struct LogProfile
     // by tst_logsettings::aProfileDiffersWhenAnyOneFieldOfItDoes.
     bool operator==(const LogProfile &o) const
     {
-        return format == o.format && wrapMode == o.wrapMode && configPath == o.configPath;
+        return format == o.format && wrapMode == o.wrapMode && configPath == o.configPath
+            && restartScript == o.restartScript;
     }
     bool operator!=(const LogProfile &o) const { return !(*this == o); }
 };

@@ -73,6 +73,16 @@ private slots:
     void aHostileConfigPathCannotRunAnything();
     void theProbeReportsWhichToolsExist();
 
+    // M23 — the restart script. The one command loftail builds whose payload is CODE
+    // rather than data, so the whole of what these pin is the asymmetry: the values are
+    // quoted and the script is not.
+    void aRestartScriptRunsAsAWholeWithItsVariablesExported();
+    void aVariableThatDoesNotApplyIsNotExportedAtAll();
+    void aHostileLogPathCannotRunAnythingInARestartScript();
+    void aRestartScriptKeepsItsOwnExitStatus();
+    void aRestartScriptThatReadsStandardInputDoesNotHang();
+    void aScriptStoredWithWindowsLineEndingsStillRuns();
+
     // The rotation ladder: what one poll's stat justifies doing about it. Ungated and
     // here for the same reason the quoting and the size ladder are — it is the only
     // judgement the remote transport makes on its own, and a rule compiled in one
@@ -617,6 +627,123 @@ void TestSshExec::aHostileConfigPathCannotRunAnything()
     bool exists = false;
     QVERIFY(parseConfigExistsOutput(runSh(configExistsCommand(weird)), &exists));
     QVERIFY(exists);
+}
+
+
+void TestSshExec::aRestartScriptRunsAsAWholeWithItsVariablesExported()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh to run the script through");
+
+    // AS A WHOLE, not line by line: an `if` opened on one line and closed on another, and
+    // a variable set on one and read on the next, are what "as a whole" means in practice.
+    const QList<QPair<QString, QString>> vars = {
+        {QStringLiteral("LOGFILE"), QStringLiteral("/var/log/my app's $HOME `id`.log")},
+        {QStringLiteral("ARCHIVE"), QStringLiteral("/srv/b u n.zip")},
+        {QStringLiteral("MEMBER"), QStringLiteral("var/log/app.log")},
+    };
+    const QString script = QStringLiteral(
+        "#!/bin/sh\n"
+        "n=''\n"
+        "for x in a b c; do n=\"${n}${x}\"; done\n"
+        "if [ -n \"$LOGFILE\" ]; then\n"
+        "  printf '%s|%s|%s|%s' \"$LOGFILE\" \"$ARCHIVE\" \"$MEMBER\" \"$n\"\n"
+        "fi\n");
+
+    int code = -1;
+    const QByteArray out = runSh(restartScriptCommand(script, vars), &code);
+    QCOMPARE(code, 0);
+    QCOMPARE(QString::fromUtf8(out),
+             QStringLiteral("/var/log/my app's $HOME `id`.log|/srv/b u n.zip|"
+                            "var/log/app.log|abc"));
+}
+
+void TestSshExec::aVariableThatDoesNotApplyIsNotExportedAtAll()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh to run the script through");
+
+    // UNSET, never assigned empty, so `${ARCHIVE-unset}` tells an archived log from a
+    // plain one. RestartTarget's half of the same promise is pinned in tst_restarttarget;
+    // this is the half that would break silently if the builder started writing empties.
+    const QList<QPair<QString, QString>> vars = {
+        {QStringLiteral("LOGFILE"), QStringLiteral("/var/log/app.log")}};
+    const QByteArray out = runSh(restartScriptCommand(
+        QStringLiteral("printf '%s' \"${ARCHIVE-unset}${MEMBER-unset}\"\n"), vars));
+    QCOMPARE(out, QByteArray("unsetunset"));
+}
+
+void TestSshExec::aHostileLogPathCannotRunAnythingInARestartScript()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh to prove the quoting against");
+
+    // THE VALUES ARE DATA. A log path arrives from a URL somebody typed or was handed,
+    // and here it lands in a command a shell on somebody else's machine interprets —
+    // without the quoting that is remote code execution from a filename.
+    const QString canary = m_dir.filePath(QStringLiteral("script-canary"));
+    const QString hostile = QStringLiteral("/var/log/x'; touch %1; echo '").arg(canary);
+
+    const QList<QPair<QString, QString>> vars = {
+        {QStringLiteral("LOGFILE"), hostile},
+        {QStringLiteral("ARCHIVE"), hostile},
+        {QStringLiteral("MEMBER"), hostile},
+    };
+    const QString command =
+        restartScriptCommand(QStringLiteral("printf '%s' \"$LOGFILE\"\n"), vars);
+    const QByteArray out = runSh(command);
+
+    QVERIFY2(!QFileInfo::exists(canary), qPrintable(command));
+    // And the other half of the claim: the quoting does not merely stop things running,
+    // it passes the whole string through as one value.
+    QCOMPARE(QString::fromUtf8(out), hostile);
+}
+
+void TestSshExec::aRestartScriptKeepsItsOwnExitStatus()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh to run the script through");
+
+    // The brace group and the /dev/null redirect must not eat the status: the exit code
+    // is one of the two things the dialog decides success from.
+    int code = -1;
+    runSh(restartScriptCommand(QStringLiteral("exit 7\n"), {}), &code);
+    QCOMPARE(code, 7);
+
+    code = -1;
+    runSh(restartScriptCommand(QStringLiteral("true\n"), {}), &code);
+    QCOMPARE(code, 0);
+}
+
+void TestSshExec::aRestartScriptThatReadsStandardInputDoesNotHang()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh to run the script through");
+
+    // An exec channel's stdin is the channel, so a script that reads it would wait for
+    // ever on a link nobody is writing to. `< /dev/null` is what makes `read` return at
+    // once instead — and the 10 s bound inside runSh() is what would catch its removal.
+    QElapsedTimer clock;
+    clock.start();
+    int code = -1;
+    const QByteArray out = runSh(
+        restartScriptCommand(QStringLiteral("read line\nprintf 'after'\n"), {}), &code);
+    QCOMPARE(out, QByteArray("after"));
+    QVERIFY2(clock.elapsed() < 5000, qPrintable(QString::number(clock.elapsed())));
+}
+
+void TestSshExec::aScriptStoredWithWindowsLineEndingsStillRuns()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh to run the script through");
+
+    // A script typed on Windows reaches a POSIX shell as `printf\r` — "command not
+    // found", about a command that is plainly right on screen.
+    int code = -1;
+    const QByteArray out =
+        runSh(restartScriptCommand(QStringLiteral("printf 'ok'\r\nexit 0\r\n"), {}), &code);
+    QCOMPARE(out, QByteArray("ok"));
+    QCOMPARE(code, 0);
 }
 
 QTEST_GUILESS_MAIN(TestSshExec)

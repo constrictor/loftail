@@ -16,6 +16,8 @@
 #include <QLineEdit>
 #include <QPainter>
 #include <QPushButton>
+#include <QScreen>
+#include <QScrollArea>
 #include <QRegularExpression>
 #include <QShowEvent>
 #include <QSplitter>
@@ -390,13 +392,50 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
 
     rightLayout->addWidget(m_nodeTitle);
 
-    m_editor = new LogProfileEditor(right);
+    // THE EDITOR SCROLLS, and that is what keeps this dialog usable on a laptop.
+    //
+    // The settings panel grows a section per non-format field — run splitting, display,
+    // the config path, the restart script — and each one adds its full height to the
+    // dialog's MINIMUM, which a minimum cannot be shrunk below. The restart script alone
+    // took that minimum from 675 px to 819, which is taller than the usable height of a
+    // 1366x768 screen: the row holding OK and Cancel goes off the bottom and there is no
+    // way to reach it. Scrolling the editor puts the floor back where the tree and the
+    // button rows put it, and the next field added here costs nothing at all.
+    //
+    // Frameless, like the panes' own scroll areas (FilterPane, HighlighterPane): the
+    // sections inside already draw their own rules, and a box around them would read as a
+    // second frame inside the dialog.
+    m_editorScroll = new QScrollArea(right);
+    QScrollArea *editorScroll = m_editorScroll;
+    editorScroll->setObjectName(QStringLiteral("profileEditorScroll")); // findChild, for tests
+    editorScroll->setWidgetResizable(true);
+    editorScroll->setFrameShape(QFrame::NoFrame);
+
+    m_editor = new LogProfileEditor(editorScroll);
     m_editor->setObjectName(QStringLiteral("profileEditor")); // findChild, for tests
     m_editor->setPreviewCaption(
         sample.isEmpty() ? tr("Preview (open a log to see these settings applied to it):")
                          : tr("Preview (%1, split into fields):").arg(sampleName));
     m_editor->setSample(sample);
-    rightLayout->addWidget(m_editor, 1);
+    editorScroll->setWidget(m_editor);
+
+    // WIDTH IS NOT SCROLLED, only height. A QScrollArea reports a tiny minimum in both
+    // directions, so without this the dialog could be dragged narrower than the settings
+    // it holds and answer with a horizontal bar — which is the one thing the splitter's
+    // 40% tree cap already exists to prevent. The editor's own minimum is what it was
+    // before this wrapper.
+    editorScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    editorScroll->setMinimumWidth(m_editor->minimumSizeHint().width());
+
+    rightLayout->addWidget(editorScroll, 1);
+
+    // AND IT STILL OPENS AT ITS FULL HEIGHT where there is room for one. A QScrollArea
+    // reports a small size hint as well as a small minimum, so wrapping the editor would
+    // otherwise make the dialog OPEN scrolled on a screen with plenty of space — which is
+    // the opposite failure from the one above and just as unwelcome. The initial height is
+    // therefore taken from what the editor actually wants, and clamped to the screen; only
+    // the FLOOR was given up, which is the half that made the dialog unusable.
+    m_preferredEditorHeight = m_editor->sizeHint().height();
 
     auto *actionRow = new QHBoxLayout;
     m_applyButton = new QPushButton(tr("&Apply to current file"), right);
@@ -736,6 +775,28 @@ void PreferencesDialog::applyInitialSplit()
     const int cap = qMax(kTreeMinWidth, int(total * kTreeMaxShare));
     const int wanted = qBound(kTreeMinWidth, treeContentWidth() + chrome, cap);
     m_splitter->setSizes({wanted, qMax(1, total - wanted)});
+}
+
+void PreferencesDialog::applyInitialHeight()
+{
+    // Once, like the split beside it: recomputing on every show would take a height the
+    // user had dragged back off them.
+    if (m_heightSettled)
+        return;
+    m_heightSettled = true;
+
+    // What the dialog wants if the editor is not scrolled at all, less what the wrapper
+    // now reports for it.
+    const int wanted = sizeHint().height() + qMax(0, m_preferredEditorHeight)
+        - (m_editorScroll ? m_editorScroll->sizeHint().height() : 0);
+
+    // Clamped to the screen, leaving room for a title bar and a panel: this is precisely
+    // the case the scrolling exists for, and asking for more than the screen has would
+    // put the button row back off the bottom.
+    int available = wanted;
+    if (const QScreen *screen = this->screen())
+        available = int(screen->availableGeometry().height() * 0.9);
+    resize(width(), qBound(minimumSizeHint().height(), wanted, qMax(1, available)));
 }
 
 void PreferencesDialog::commitCurrent()
@@ -1139,6 +1200,7 @@ void PreferencesDialog::keyPressEvent(QKeyEvent *event)
 void PreferencesDialog::showEvent(QShowEvent *event)
 {
     QDialog::showEvent(event);
+    applyInitialHeight();
     // QDialogButtonBox makes its first accept button the dialog's default as it is
     // shown, which draws a ring saying "Enter presses this". It does not, so the ring is
     // cleared once the box has drawn it. autoDefault goes too, or any of these buttons

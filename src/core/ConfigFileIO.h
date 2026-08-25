@@ -84,13 +84,13 @@ void drainConfigTransfers(int budgetMs = 3000);
 // (ARCHITECTURE.md §6.3.3). So this does the work on a thread of its own and delivers
 // the answer back through a queued signal.
 //
-// LIFETIME, which is the whole difficulty. A transfer must not be JOINED on the way out:
-// closing a tab on a host that is not answering would then wait out the connect, and a
-// worker that can be blocked asking the application thread for a password makes that
-// wait a deadlock — the reason ~SourceSpool retires its fetcher instead of joining it.
-// So the thread is detached and the two sides share a small state block: the destructor
-// abandons the work and aborts the session, which makes the blocking libssh2 call return
-// at once, and the thread then finds nobody to report to and simply ends.
+// LIFETIME, which is the whole difficulty, LIVES IN SshWorkerPool.h. A transfer must not
+// be JOINED on the way out: closing a tab on a host that is not answering would then wait
+// out the connect, and a worker that can be blocked asking the application thread for a
+// password makes that wait a deadlock — the reason ~SourceSpool retires its fetcher
+// instead of joining it. The thread, the shared state block, the relay it owns and the
+// bounded shutdown drain are all shared with the restart runner (M23), because they are
+// the same promise made twice and each rule in them was learned from a crash.
 class ConfigTransfer : public QObject
 {
     Q_OBJECT

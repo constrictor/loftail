@@ -9,6 +9,7 @@ QT_BEGIN_NAMESPACE
 class QCheckBox;
 class QComboBox;
 class QLineEdit;
+class QPlainTextEdit;
 QT_END_NAMESPACE
 
 namespace loftail {
@@ -18,7 +19,8 @@ class FormatEditor;
 // Everything one node of the settings tree holds, on one page (SPEC.md §4): the format
 // (through the existing FormatEditor — pattern, encoding, source zone, live preview and
 // Detect), the run-start pattern and its two flags, how timestamps are displayed, the
-// wrap mode a new view of the log starts in, and where the log's config file is.
+// wrap mode a new view of the log starts in, where the log's config file is, and the
+// script that restarts the application writing it.
 //
 // A wrapper rather than more controls inside FormatEditor. That class's contract is that
 // a trip through it cannot reset a choice made elsewhere, so it stashes the fields it
@@ -56,6 +58,7 @@ private:
     QComboBox    *m_timeDisplay = nullptr;
     QComboBox    *m_wrap = nullptr;
     QLineEdit    *m_configPath = nullptr;
+    QPlainTextEdit *m_restartScript = nullptr;
 };
 
 } // namespace loftail

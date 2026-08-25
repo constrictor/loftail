@@ -14,6 +14,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QScrollArea;
 class QSplitter;
 class QToolButton;
 class QTreeWidget;
@@ -157,6 +158,7 @@ private:
     // Give the tree that width, ONCE, and never again: the first show is the last moment
     // at which nobody has an opinion about where the handle goes. See m_splitSettled.
     void applyInitialSplit();
+    void applyInitialHeight();
     void refreshPatternValidity();
     void updateButtons();
     // What is still to happen when OK is pressed, said out loud. A request that leaves no
@@ -215,6 +217,13 @@ private:
     // every rebuild would take the handle back off the user the next time they added a
     // pattern, and one that re-derived it on a long pattern would jump as it was typed.
     bool              m_splitSettled = false;
+
+    // The same once-and-never-again rule for the dialog's HEIGHT, and for the same
+    // reason: the editor scrolls now, so the initial height is derived rather than
+    // inherited from a floor, and re-deriving it would take a resize back off the user.
+    bool              m_heightSettled = false;
+    int               m_preferredEditorHeight = 0;
+    QScrollArea      *m_editorScroll = nullptr;
     QTreeWidget      *m_treeWidget = nullptr;
     QToolButton      *m_addPattern = nullptr;
     QToolButton      *m_deleteNode = nullptr;

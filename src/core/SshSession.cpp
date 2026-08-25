@@ -18,6 +18,7 @@
 #include <QHostInfo>
 #include <QStandardPaths>
 #include <QTcpSocket>
+#include <QThread>
 
 #include <libssh2.h>
 #include <libssh2_sftp.h>
@@ -219,6 +220,18 @@ struct SshSession::Impl
     bool runCommandWithInput(const QString &command, const QByteArray &stdIn, int *exitCode,
                              QString *error) const;
 
+    // Run `command` and stream BOTH streams back as they arrive, keeping them apart.
+    //
+    // Its own function rather than a flag on runCommand(), because it differs from that
+    // one in three ways at once and each of them would be wrong there: stderr is KEPT
+    // (there it is noise; here it is half the answer), the session runs NON-BLOCKING for
+    // the duration (so that a script writing only to stderr is neither invisible nor able
+    // to wedge the channel by filling its window), and the session timeout is SUSPENDED
+    // (a restart that takes a minute is not a dropped link).
+    bool runScriptStreaming(const QString &command,
+                            const std::function<void(const QByteArray &, bool)> &onChunk,
+                            int *exitCode, QString *error) const;
+
     void teardown()
     {
         if (file) {
@@ -300,6 +313,111 @@ bool SshSession::Impl::runCommand(const QString &command, QByteArray *stdOut, in
 
     if (stdOut)
         *stdOut = out;
+    return true;
+}
+
+namespace {
+// How long the script loop sleeps when neither stream has anything yet.
+//
+// This is a POLL, which the rest of this file deliberately is not — the price of running
+// non-blocking so that stdout and stderr can be watched at once. 50 ms is imperceptible
+// beside a service restart and costs nothing next to the process being started on the
+// far end.
+constexpr int kScriptPollMs = 50;
+} // namespace
+
+bool SshSession::Impl::runScriptStreaming(
+    const QString &command, const std::function<void(const QByteArray &, bool)> &onChunk,
+    int *exitCode, QString *error) const
+{
+    const auto fail = [error](const QString &text) {
+        if (error)
+            *error = text;
+        return false;
+    };
+
+    if (!session)
+        return fail(Tr::tr("Not connected."));
+
+    LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(session);
+    if (!channel)
+        return fail(sessionError(session, Tr::tr("Opening a command channel failed")));
+
+    const QByteArray line = command.toUtf8();
+    if (libssh2_channel_exec(channel, line.constData()) != 0) {
+        const QString why = sessionError(session, Tr::tr("Starting the command failed"));
+        libssh2_channel_free(channel);
+        return fail(why);
+    }
+
+    // SUSPEND THE TIMEOUT, and remember what it was. connectTo() leaves it at the connect
+    // budget, so without this every restart script that outlives twenty seconds — which
+    // is most of the interesting ones — would be reported as a dropped link rather than
+    // as a script still running. Restored before the close below, which DOES want a bound.
+    const long savedTimeout = libssh2_session_get_timeout(session);
+    libssh2_session_set_timeout(session, 0);
+    libssh2_session_set_blocking(session, 0);
+
+    char buffer[8192];
+    QString transportError;
+    forever {
+        bool moved = false;
+        bool wouldBlock = false;
+        bool broken = false;
+
+        const ssize_t out = libssh2_channel_read(channel, buffer, sizeof(buffer));
+        if (out > 0) {
+            if (onChunk)
+                onChunk(QByteArray(buffer, int(out)), false);
+            moved = true;
+        } else if (out == LIBSSH2_ERROR_EAGAIN) {
+            wouldBlock = true;
+        } else if (out < 0) {
+            broken = true;
+        }
+
+        // BOTH STREAMS EVERY PASS, never stderr-only-when-stdout-is-quiet. A restart
+        // script that says nothing on stdout and complains on stderr is the ordinary
+        // failure, and reading stderr only after stdout has ended would hold every byte
+        // of it back until the script finished — and, once its window filled, would stop
+        // the far end writing at all.
+        const ssize_t err = libssh2_channel_read_stderr(channel, buffer, sizeof(buffer));
+        if (err > 0) {
+            if (onChunk)
+                onChunk(QByteArray(buffer, int(err)), true);
+            moved = true;
+        } else if (err == LIBSSH2_ERROR_EAGAIN) {
+            wouldBlock = true;
+        } else if (err < 0) {
+            broken = true;
+        }
+
+        if (broken) {
+            // The ordinary way out of an ABORTED run: abort() shuts the descriptor, so
+            // the next read fails. Whatever arrived before that is what the reader keeps.
+            transportError = sessionError(session, Tr::tr("The command was interrupted"));
+            break;
+        }
+        if (moved)
+            continue;
+        if (!wouldBlock)
+            break; // both streams at EOF: the command has finished writing
+        QThread::msleep(kScriptPollMs);
+    }
+
+    // Back to blocking, and BOUNDED again, for the orderly close. The exit status is only
+    // published once the channel is closed, and a close with no timeout on a socket that
+    // abort() has just shut down is exactly the hang this whole layer exists to avoid.
+    libssh2_session_set_timeout(session, savedTimeout > 0 ? savedTimeout : 20000);
+    libssh2_session_set_blocking(session, 1);
+    libssh2_channel_close(channel);
+    libssh2_channel_wait_closed(channel);
+    if (exitCode)
+        *exitCode = libssh2_channel_get_exit_status(channel);
+    libssh2_channel_free(channel);
+
+    if (!transportError.isEmpty())
+        return fail(transportError);
     return true;
 }
 
@@ -1331,6 +1449,18 @@ SshSession::Attrs SshSession::statHandle() const
     out.size = static_cast<qint64>(attrs.filesize);
     out.mtime = static_cast<qint64>(attrs.mtime);
     return out;
+}
+
+bool SshSession::runScript(
+    const QString &command,
+    const std::function<void(const QByteArray &bytes, bool isStdErr)> &onChunk,
+    int *exitCode, QString *error)
+{
+    // NO MODE BRANCH, alone among the operations on this class. An exec channel needs the
+    // session and nothing else, so a server that does SFTP perfectly well runs a restart
+    // script exactly the way one that refused it does — the fallback and this are two uses
+    // of the same facility rather than two paths through one.
+    return d->runScriptStreaming(command, onChunk, exitCode, error);
 }
 
 qint64 SshSession::readAt(qint64 offset, char *buffer, qint64 length, QString *error)

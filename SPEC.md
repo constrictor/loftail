@@ -191,7 +191,7 @@ Most people have a handful of house layouts and a great many log files. So the s
 | **A file pattern** | every log whose name matches — `*.log`, `audit-*`, a regular expression |
 | **One log** | that log alone, local or remote |
 
-Each level holds the same complete set: the conversion pattern, the character encoding, the source time zone, how timestamps are displayed, the run-start pattern with its two flags, the line wrapping a newly opened view starts in, and where the log's **configuration file** is. **The deepest level that names a log supplies all of them** — the levels are not merged field by field, so what a log opens with is always exactly what one entry says.
+Each level holds the same complete set: the conversion pattern, the character encoding, the source time zone, how timestamps are displayed, the run-start pattern with its two flags, the line wrapping a newly opened view starts in, where the log's **configuration file** is, and the **script that restarts the application writing it**. **The deepest level that names a log supplies all of them** — the levels are not merged field by field, so what a log opens with is always exactly what one entry says.
 
 **File ▸ Preferences** (`Ctrl+P`, or the platform's own convention where it has one — `⌘,` on macOS) shows the arrangement as a tree, with the selected entry's settings beside it. The tree opens as wide as its own longest row asks for, and every row gives its full self on hover — a pattern its whole expression, and the one log row the whole address of the log it stands for — since the divider can be dragged narrower than any of them. What the selected entry *is* comes first: the entry's **own name** heads the panel — the log's file name, the pattern's expression, or **Default settings** — with the level it sits at named quietly under it, so which of the three is being edited is readable at a glance. A log's full address, which its name is short for, is on the tooltip. For a pattern the fields defining it follow, and a rule under them separates what the entry *is* from what it gives its logs. Then the settings, as three named blocks: **File format** (the conversion pattern, the encoding, the source time zone) with a live preview of the sample under it, **Run splitting**, and **Display**.
 
@@ -232,6 +232,31 @@ An application that writes a log4cplus log is *configured* by a file saying whic
   - **Saving writes the file in place**, which is what keeps its owner, its group and its mode — a configuration that was readable only by its owner stays that way. The cost is that a remote save is **not atomic**: a connection lost halfway through leaves a short file rather than the previous one intact. loftail checks the size afterwards and says so if that happened, but it cannot undo it.
   - A missing **directory** on the far end is refused by name, exactly as it is locally; loftail creates directories on nobody's machine.
   - Where SSH support is not built in, a remote config file says so instead of opening.
+
+### Restarting the application
+
+Having changed what a log records, the next thing anyone does is restart the service so it takes effect — which today means leaving loftail for a terminal, on a machine that may not be this one. So a log can be told how to restart the application behind it.
+
+- **The restart script is a setting like any other**, at whichever of the three levels it belongs to. One entry on a file pattern can serve every log it matches, which is what makes it worth stating above the per-log level.
+- **File ▸ Restart App…** (`Ctrl+R`) runs it. Nothing else ever does: not opening a log, not restoring a session, not a rotation, not a log that has gone quiet. There is no schedule and no trigger — loftail runs the script when you ask it to and at no other time.
+- **It is run as a whole, by your default shell**, not a line at a time — so an `if` opened on one line and closed on another, a loop, and a variable set on one line and read on the next all work the way they do in a file.
+- **It runs where the log is.** A log opened over `ssh://` restarts the service **on that machine**, over the same connection the log is read through. A log inside an archive has no running service behind it, so its script runs on the machine holding the **container**.
+- **The script is told which log this is**, through three environment variables — `$LOGFILE`, and `%LOGFILE%` on Windows:
+
+  | | |
+  | --- | --- |
+  | `LOGFILE` | the log's path **on the machine the script runs on** — the remote path for a remote log, never the `ssh://` address |
+  | `ARCHIVE` | for a log inside an archive, the container's path; the same value as `LOGFILE` |
+  | `MEMBER` | for a log inside an archive, the log's path inside the container |
+
+  For a plain log, `ARCHIVE` and `MEMBER` are **not set at all** rather than set empty, so a script can tell the two cases apart. A path containing a space, a quote or a `$` reaches the script exactly as it is, and cannot break it or run anything of its own.
+- **The output appears as it arrives**, in a dialog, with anything written to standard error marked apart from the rest.
+- **A clean run closes itself after a second** — long enough to be seen to have worked, short enough not to be a thing to dismiss. Clean means it exited **0** *and* wrote **nothing to standard error**. Anything else leaves the dialog up with the reason on it and everything that was printed still there: a non-zero exit, an abort, a shell that could not be started — and a warning on standard error, even from a script that succeeded. That last one is stricter than it looks, since `sudo`'s lecture and `systemctl`'s "unit changed on disk" both go there; adding `2>/dev/null` to the line that produces one is the answer.
+- **A script that hangs can be stopped.** *Abort* is there for the whole run, and Escape and closing the window mean the same thing. On a **remote** log an abort means *loftail has stopped waiting* — it closes the connection, and what the machine at the other end does about that is its own business, so the dialog says so rather than claiming the command stopped.
+- **A script that leaves something running in the background should redirect that program's output** — `mycmd >/dev/null 2>&1 &`. Locally it costs nothing either way. On a remote log the connection stays open as long as anything on the far end still holds it, so without the redirect the run looks like it is still going until you abort it.
+- **Nothing loftail does can disturb what the script started.** A program left running by a restart script keeps running, and closing the dialog does not touch it.
+- **With no script set for a log**, the item still answers: it explains what a restart script is and offers to open Preferences, rather than being greyed out with nothing to say.
+- Where SSH support is not built in, a **remote** log's restart script says so instead of running.
 
 ### Character encoding
 
@@ -523,8 +548,10 @@ If a file from the last session is not there, its tab comes back **waiting for i
 These are things loftail will **not** do — as distinct from features not yet built, which are in `FUTURE.md`. loftail does not:
 
 - Edit, write, or delete log files — it is strictly a reader. **loftail does write one kind of file you name: the configuration file a log is opened alongside (§4).** That is not an exception to this rule but the boundary of it — the thing being edited is what *produces* the log, never the log, and no log is written, moved or removed under any circumstances.
+
+  **loftail also runs one kind of program you name: the restart script a log is configured with (§4).** That is the same boundary one step further — it acts on the application that *produces* the log, never on the log — and three things bound it. It runs **only when you ask**, from the menu item or `Ctrl+R`; there is no schedule, no trigger, and nothing in a log ever causes it. It runs **only what you wrote**, out of your own settings; loftail never composes a command of its own. And for a log on another machine it runs **on that machine and nowhere else**, over the connection that log was already opened with — loftail opens no session to run a script that it would not have opened to read the file.
 - Read log formats from other logging frameworks (the format is configurable, so some will happen to work; none are supported)
 - Aggregate several files into a single merged, time-ordered view — distinct from simply opening several files, which loftail does (§5a). Merging is not planned at all: each tab stays an independent log
-- Provide charts, statistics, or alerting
+- Provide charts, statistics, or alerting. The restart script (§4) is not an exception: it is a gesture, not a trigger, and nothing in a log ever causes loftail to run anything
 - Install itself as the **default** system handler for `.log` files — loftail advertises that it *can* open them (so it appears in the OS "Open With" list), but claiming the default handler is a user/installer concern, not something the application does
 - Speak any language but English, **for now**. This is the one entry here that is a *not yet* rather than a *never*: the interface is written so a translation can be dropped in without touching the code, and until one is, loftail keeps Qt's own buttons and messages in English too rather than showing a dialog half in your language and half in its own

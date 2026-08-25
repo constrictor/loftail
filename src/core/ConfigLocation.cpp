@@ -1,6 +1,7 @@
 #include "ConfigLocation.h"
 
 #include "ArchiveLocation.h"
+#include "LogAnchor.h"
 #include "RemoteLocation.h"
 
 #include <QCoreApplication>
@@ -20,18 +21,6 @@ namespace {
 struct Tr
 {
     Q_DECLARE_TR_FUNCTIONS(loftail::ConfigLocation)
-};
-
-// Where a log physically IS: a filesystem, and a path on it.
-//
-// `remote` empty means the local machine. `path` is a path on whichever that is, so the
-// two travel together — placing a config path means keeping the filesystem and replacing
-// the path, which is exactly what keeps "the config is on the same device as the log"
-// true without any caller having to restate it.
-struct Anchor
-{
-    std::optional<RemoteLocation> remote; // nullopt == local
-    QString path;
 };
 
 // The directory part of a POSIX-style path, WITHOUT going through QFileInfo.
@@ -65,61 +54,8 @@ QString placedIn(const QString &dir, const QString &configured)
     return QDir::cleanPath(dir + u'/' + configured);
 }
 
-// The log's filesystem and its own path on it, or nullopt when the address is one we
-// cannot place anything against.
-//
-// The archive branch reduces ONCE MORE rather than returning the container directly,
-// because a container may itself be remote (`ssh://h/srv/b.tar.gz/app.log`): the anchor
-// then has to be the host plus the container's path, not the container string.
-std::optional<Anchor> anchorOf(const QString &logAddress)
-{
-    if (logAddress.isEmpty())
-        return std::nullopt;
-
-    // Peel containers until the address names something that sits on a filesystem
-    // rather than inside a file. `ssh://h/srv/b.tar.gz/app.log` peels once, to
-    // `ssh://h:22/srv/b.tar.gz`, whose directory is then the base.
-    //
-    // split() is reused verbatim rather than the rule being re-derived, which is what
-    // keeps a real directory named `bundle.zip` working (its own rule 0).
-    //
-    // TERMINATION IS ON INEQUALITY AND NOTHING ELSE. split() applied to a BARE container
-    // answers with that same container and an empty member — a `.zip` with nothing
-    // picked, a `.gz` whose member is implied — so peeling unconditionally spins on an
-    // unchanged string and overflows the stack. It must NOT also test that the container
-    // got shorter: for a remote address split() returns the container in NORMAL FORM,
-    // with the port spelled out, so `ssh://host/srv/b.zip/m` peels to the strictly
-    // LONGER `ssh://host:22/srv/b.zip`, and a length test would refuse the one peel that
-    // address needs. The loop bound is a backstop against a cycle no known input
-    // produces, not the argument for why this ends.
-    QString address = logAddress;
-    for (int peel = 0; peel < 8; ++peel) {
-        const auto archive = ArchiveLocation::split(address);
-        if (!archive || archive->container == address)
-            break;
-        address = archive->container;
-    }
-
-    if (RemoteLocation::isRemote(address)) {
-        const auto loc = RemoteLocation::parse(address);
-        if (!loc || !loc->isValid())
-            return std::nullopt; // refused by the caller, which words it
-        Anchor a;
-        a.remote = loc;
-        a.path = loc->path;
-        return a;
-    }
-
-    // The peeled address, NOT the one we were handed: for an archived log this is the
-    // container, and anchoring on the original would put the config inside the archive —
-    // the exact thing the ruling forbids.
-    Anchor a;
-    a.path = address;
-    return a;
-}
-
 // Put `path` back on the anchor's filesystem as an address.
-QString addressOn(const Anchor &anchor, const QString &path)
+QString addressOn(const LogAnchor &anchor, const QString &path)
 {
     if (!anchor.remote)
         return path;
@@ -151,7 +87,7 @@ ConfigAddress resolveConfigAddress(const QString &logAddress, const QString &con
         return out;
     }
 
-    const auto anchor = anchorOf(logAddress);
+    const auto anchor = logAnchorOf(logAddress);
     if (!anchor) {
         out.state = ConfigAddress::State::Refused;
         // withoutPassword() is the ONE filter for an address that is about to be shown,

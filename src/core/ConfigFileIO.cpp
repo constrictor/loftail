@@ -3,6 +3,7 @@
 #include "PromptRelay.h"
 #include "RemoteLocation.h"
 #include "SshPrompter.h"
+#include "SshWorkerPool.h"
 
 #if defined(LOFTAIL_HAVE_SSH)
 #include "SshSession.h"
@@ -13,15 +14,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QPointer>
-#include <QElapsedTimer>
 #include <QSaveFile>
 #include <QTimer>
-
-#include <QThread>
-
-#include <atomic>
-#include <mutex>
-#include <vector>
 
 namespace loftail {
 
@@ -36,10 +30,6 @@ struct Tr
 // log — from being pulled into a QPlainTextEdit that would then try to lay it out.
 constexpr qint64 kMaxConfigBytes = 16LL * 1024 * 1024;
 
-// The same bound the log transport puts on a connect. A config file open is a deliberate
-// gesture with somebody waiting, so it gets the attended timeout rather than the shorter
-// unattended one a background retry uses.
-constexpr int kConnectTimeoutMs = 20000;
 } // namespace
 
 ConfigReadResult readConfigFile(const QString &address)
@@ -179,25 +169,12 @@ bool configAddressIsWritable(const QString &address, QString *reason)
 
 // --- ConfigTransfer ---------------------------------------------------------
 
-struct ConfigTransfer::Shared
+// The shared block is SshWorkerPool's, not one of this file's own: a config transfer and
+// a restart run make exactly the same lifetime promises, and two copies of the abandon
+// rule would be two places for it to rot. See SshWorkerPool.h, where every rule in it is
+// written down beside the crash that taught it.
+struct ConfigTransfer::Shared : SshWorkerShared
 {
-    // Set when the owner goes. The worker checks it before doing anything expensive and
-    // again before reporting, so an abandoned transfer stops as soon as it can and never
-    // reports to a destroyed object.
-    std::atomic<bool> abandoned{false};
-
-    // GUARDED because abort() is reached from the OWNER's thread while the worker is
-    // inside libssh2 — the one call on SshSession that is safe to make concurrently, and
-    // the reason it is safe is that it shuts the socket and touches nothing else.
-    std::mutex        mutex;
-#if defined(LOFTAIL_HAVE_SSH)
-    SshSession       *session = nullptr;
-#endif
-
-    // OWNED HERE, and that placement is the whole point: the worker holds a strong
-    // reference to this block, so the relay it asks through cannot be destroyed while a
-    // connect is still using it. Stateless by design, so one per transfer is free.
-    PromptRelay       relay;
 };
 
 ConfigTransfer::ConfigTransfer(QObject *parent)
@@ -207,156 +184,16 @@ ConfigTransfer::ConfigTransfer(QObject *parent)
 
 ConfigTransfer::~ConfigTransfer()
 {
-    // ABANDON, NEVER JOIN. Waiting here would make closing a tab on a host that is not
-    // answering cost the whole connect timeout — and because the worker can be blocked
-    // asking this very thread for a password, that wait can be a deadlock. The abort
-    // makes the blocking call return now; the detached thread then finds `abandoned` set
-    // and ends without reporting.
-    m_shared->abandoned = true;
-#if defined(LOFTAIL_HAVE_SSH)
-    std::scoped_lock lock(m_shared->mutex);
-    if (m_shared->session)
-        m_shared->session->abort();
-#endif
+    // Abandon, never join — the rule and its reasoning are in SshWorkerShared::abandon().
+    m_shared->abandon();
 }
-
-namespace {
-#if defined(LOFTAIL_HAVE_SSH)
-
-// A QThread, NOT a std::thread, and that is not a style choice.
-//
-// SshSession::connectTo() ends in QTcpSocket::waitForConnected(), and a QAbstractSocket
-// needs the Qt event dispatcher of the thread it is used on. A raw std::thread has no
-// QThreadData and therefore no dispatcher, so that call dereferenced a null one and
-// crashed inside libQt6Network — a SEGV on a near-null address, on the worker thread,
-// which is what AddressSanitizer caught in CI. SshFetcher::Worker is a QThread subclass
-// for exactly this reason; this follows it.
-class TransferThread : public QThread
-{
-public:
-    std::function<void()> body;
-    void run() override { body(); }
-};
-
-// Threads that have been started and not yet reaped.
-//
-// A finished one is deleted when the next transfer starts. Anything STILL RUNNING when
-// the process ends stays here — reachable, so the leak checker does not report it, which
-// is the device SourceSpool::drainRetired() uses for an abandoned fetcher and for the
-// same reason: the alternative is joining, and joining a worker that may be blocked
-// asking the application thread for a password is a deadlock.
-std::mutex g_workersMutex;
-std::vector<QThread *> g_workers;
-
-// Delete the ones that have already ended. Caller holds g_workersMutex.
-void reapFinishedLocked()
-{
-    for (auto it = g_workers.begin(); it != g_workers.end();) {
-        if ((*it)->isFinished()) {
-            delete *it;
-            it = g_workers.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
-
-// Start `body` on a thread of its own, reaping any that have already finished.
-void startWorker(std::function<void()> body)
-{
-    std::scoped_lock lock(g_workersMutex);
-    reapFinishedLocked();
-    auto *worker = new TransferThread;
-    worker->body = std::move(body);
-    g_workers.push_back(worker);
-    worker->start();
-}
-#endif
-} // namespace
-
-namespace {
-#if defined(LOFTAIL_HAVE_SSH)
-// Connect for `address` and hand the open session to `body`, which does the one
-// operation this transfer is for. Everything both directions share lives here.
-template <class Body>
-QString withSession(const QString &address, SshPrompter *prompter,
-                    const std::shared_ptr<ConfigTransfer::Shared> &shared, Body body)
-{
-    const auto location = RemoteLocation::parse(address);
-    if (!location || !location->isValid()) {
-        return QCoreApplication::translate(
-                   "loftail::ConfigFileIO", "Not a valid remote address: %1")
-            .arg(RemoteLocation::withoutPassword(address));
-    }
-
-    // ONE CONNECT AT A TIME PER HOST, which is what keeps "one prompt per host" true now
-    // that a config transfer can be in flight beside a log's own reconnect.
-    SshConnectHold hold(location->target(), [shared]() { return shared->abandoned.load(); });
-    if (!hold.held() || shared->abandoned)
-        return {}; // asked to stop; the caller reports nothing
-
-    auto session = std::make_unique<SshSession>();
-    session->setAbandonCheck([shared]() { return shared->abandoned.load(); });
-    {
-        std::scoped_lock lock(shared->mutex);
-        shared->session = session.get();
-    }
-    // Whatever happens below, the pointer must stop being publishable before the session
-    // is destroyed, or a late abort() would aim at freed memory.
-    struct Unpublish
-    {
-        std::shared_ptr<ConfigTransfer::Shared> shared;
-        ~Unpublish()
-        {
-            std::scoped_lock lock(shared->mutex);
-            shared->session = nullptr;
-        }
-    } unpublish{shared};
-
-    QString error;
-    if (!session->connectTo(*location, prompter, kConnectTimeoutMs, &error, nullptr))
-        return error;
-    if (shared->abandoned)
-        return {};
-    return body(*session, location->path);
-}
-#endif
-} // namespace
 
 void drainConfigTransfers(int budgetMs)
 {
-#if !defined(LOFTAIL_HAVE_SSH)
-    Q_UNUSED(budgetMs);
-#else
-    // WAITING HERE IS THE POINT, and it is the one place this layer waits at all.
-    //
-    // A transfer is abandoned rather than joined when its tab goes (see ~ConfigTransfer),
-    // which is right while the process is alive: the thread notices within a poll slice
-    // and ends on its own. At SHUTDOWN that is not enough. Qt's own globals — the socket
-    // engine handlers, the thread data — are torn down when the application object goes,
-    // and a worker still inside QTcpSocket at that moment writes through a pointer that
-    // has just become null. It crashed exactly there: a SEGV in
-    // QAbstractSocketPrivate::initSocketLayer(), on the worker, under a leak-checking
-    // run whose exit timing loses that race every time.
-    //
-    // So the owner drains before it goes. The wait is BOUNDED because a budget that can
-    // be exceeded is better than a quit that can hang: every transfer has already been
-    // told to stop by the time this runs, and the connect loop checks that between
-    // 250 ms slices, so the budget is ample rather than tight.
-    QElapsedTimer clock;
-    clock.start();
-    forever {
-        {
-            std::scoped_lock lock(g_workersMutex);
-            reapFinishedLocked();
-            if (g_workers.empty())
-                return;
-        }
-        if (clock.elapsed() >= budgetMs)
-            return; // left parked and reachable; better than blocking the quit
-        QThread::msleep(10);
-    }
-#endif
+    // Kept as a name of its own so MainWindow's one call site still reads as what it is,
+    // and because the drain now covers the RESTART runner too — the pool is shared, so a
+    // caller draining "config transfers" is draining both, which is what shutdown needs.
+    drainSshWorkers(budgetMs);
 }
 
 void ConfigTransfer::startRead(const QString &address)
@@ -368,9 +205,9 @@ void ConfigTransfer::startRead(const QString &address)
 #else
     auto shared = m_shared;
     QPointer<ConfigTransfer> self(this);
-    startWorker([address, shared, self]() {
+    startSshWorker([address, shared, self]() {
         ConfigReadResult out;
-        const QString error = withSession(
+        const QString error = withSshSession(
             address, &shared->relay, shared, [&out, &address](SshSession &session, const QString &path) {
                 QString why;
                 if (!session.readFileAt(path, &out.bytes, &out.existed, &why))
@@ -415,10 +252,10 @@ void ConfigTransfer::startWrite(const QString &address, const QByteArray &bytes)
 #else
     auto shared = m_shared;
     QPointer<ConfigTransfer> self(this);
-    startWorker([address, bytes, shared, self]() {
+    startSshWorker([address, bytes, shared, self]() {
         ConfigWriteResult out;
         const QString error =
-            withSession(address, &shared->relay, shared,
+            withSshSession(address, &shared->relay, shared,
                         [&out, &bytes](SshSession &session, const QString &path) {
                             QString why;
                             if (!session.writeFileAt(path, bytes, &why))

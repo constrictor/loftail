@@ -106,6 +106,15 @@ public:
     // are there.
     void buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, int column);
 
+    // File ▸ Restart App (Ctrl+R). Runs the active log's restart script and shows what it
+    // did (SPEC.md §4); with none configured, explains and offers Preferences.
+    //
+    // Public for the reason openConfigAt() and buildRecordMenu() are: it is the seam a
+    // test drives, and the claims that matter — that a clean run closes itself, that a
+    // hanging one is abortable, that a log with no script is not a refusal — cannot be
+    // made through a menu item.
+    void restartActiveApp();
+
     // Put one settings node onto the log that is open: its wrap mode into the tree and
     // the live views, then its format through applySettings(), which re-reads the log in
     // place when the pattern or the encoding moved (SPEC.md §4).
@@ -591,6 +600,7 @@ private:
     // window's idiom. Like m_views, it carries no ORDER — the tab bar does.
     QVector<ConfigView *> m_editors;
     QAction *m_openConfigAction = nullptr;
+    QAction *m_restartAppAction = nullptr;
     QAction *m_saveConfigAction = nullptr;
     DocumentView *m_activeView = nullptr;
 
