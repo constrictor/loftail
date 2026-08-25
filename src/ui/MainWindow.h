@@ -632,7 +632,7 @@ private:
     // The timestamp-column header submenu and its five exclusive actions, indexed by
     // TimeDisplay. Owned by the window (see buildTimeDisplayMenu).
     QMenu   *m_timeDisplayMenu = nullptr;
-    QAction *m_timeDisplayActions[5] = {};
+    QAction *m_timeDisplayActions[6] = {};
     // Column widths, offered on the same header menu (see buildColumnWidthActions).
     QAction *m_fitColumnsAction = nullptr;
     QAction *m_resetColumnWidthsAction = nullptr;

@@ -3847,6 +3847,8 @@ void MainWindow::buildTimeDisplayMenu()
         { TimeDisplay::EpochSeconds, QT_TR_NOOP("&Seconds"),    "timeDisplaySecondsAction" },
         { TimeDisplay::RunSeconds,   QT_TR_NOOP("Seconds from &Run Start"),
           "timeDisplayRunSecondsAction" },
+        { TimeDisplay::SincePrevious, QT_TR_NOOP("Seconds Since &Previous Record"),
+          "timeDisplaySincePreviousAction" },
     };
     for (const Item &item : kItems) {
         QAction *a = m_timeDisplayMenu->addAction(tr(item.text));

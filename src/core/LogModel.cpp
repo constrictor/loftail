@@ -14,13 +14,14 @@ namespace loftail {
 
 namespace {
 
-// Seconds rendering for the two numeric display modes (SPEC.md §4). Integer
+// Seconds rendering for the three numeric display modes (SPEC.md §4). Integer
 // seconds when the file's own %d carries no milliseconds, s.mmm when it does —
 // see DateFormat::hasMillis.
 //
 // Signed throughout: RunSeconds goes negative for a record that precedes its run's
-// baseline (an out-of-order or back-dated line), and epoch seconds are negative for
-// a pre-1970 log.
+// baseline (an out-of-order or back-dated line), epoch seconds are negative for
+// a pre-1970 log, and SincePrevious is negative wherever two records reached the
+// appender out of the order they stamped, which log4cplus does not prevent.
 QString formatSeconds(qint64 ms, bool withMillis)
 {
     if (!withMillis) {
@@ -59,6 +60,17 @@ void LogModel::setViewIndex(const FilteredIndex *index)
 const FilteredIndex &LogModel::view() const
 {
     return m_view ? *m_view : m_document->filtered();
+}
+
+qint64 LogModel::rowTimestamp(int row) const
+{
+    if (!m_document || row < 0)
+        return Record::kNoTimestamp;
+    const int srcRow = view().sourceRow(row);
+    const RecordIndex &idx = m_document->index();
+    if (srcRow < 0 || srcRow >= idx.records.size())
+        return Record::kNoTimestamp;
+    return idx.records.at(srcRow).timestamp;
 }
 
 const RecordIndex &LogModel::viewGeometry() const
@@ -122,6 +134,22 @@ QString LogModel::cellText(int row, int column) const
         if (rec.timestamp == Record::kNoTimestamp)
             return {}; // an unparsed line, or a format with no %d
         const TimeDisplay mode = m_document->timeDisplay();
+        if (mode == TimeDisplay::SincePrevious) {
+            // The gap to the row ABOVE in this table, not to the previous record in the
+            // file: that is what makes the column read a filtered log's cadence, and it
+            // costs one index lookup on the paint path rather than any stored state.
+            //
+            // Blank rather than "0" where there is nothing to measure from — the first
+            // visible row, and a predecessor whose own date did not parse. A zero there
+            // would be a claim (that no time passed) where the honest answer is that
+            // there is no interval to state. There is deliberately NO walk back past an
+            // unparsed row: it is unbounded, and this runs per painted Date cell.
+            const qint64 previous = rowTimestamp(row - 1);
+            if (previous == Record::kNoTimestamp)
+                return {};
+            return formatSeconds(rec.timestamp - previous,
+                                 format.impliedDateFormat.hasMillis);
+        }
         if (mode == TimeDisplay::EpochSeconds || mode == TimeDisplay::RunSeconds) {
             // Zone-free (§5.1): Record::timestamp is already UTC epoch ms
             // (invariant #10), so seconds need no "out" conversion at all.

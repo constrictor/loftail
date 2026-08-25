@@ -46,6 +46,13 @@ private slots:
     void timeDisplayLeavesUnparsedCellEmpty();
     void timeDisplayRunSecondsSurvivesReparse();
 
+    // The gap column (SPEC.md §4). The one mode whose cell is a function of ANOTHER
+    // ROW, so each of the four things that can stand above a row gets a case.
+    void timeDisplaySincePreviousMeasuresTheRowAbove();
+    void timeDisplaySincePreviousCountsVisibleRecordsAndNotOrdinals();
+    void timeDisplaySincePreviousLeavesAGapItCannotStateEmpty();
+    void timeDisplaySincePreviousWithoutMillisAndBackwards();
+
     // M15 — the seam LogView dims through. Core has no palette, so the model's whole
     // contribution is this one question about a view row.
     void rowIsContextTracksTheFilteredSubset();
@@ -411,6 +418,121 @@ void TestLogModel::rowIsContextTracksTheFilteredSubset()
     QVERIFY(!model.rowIsContext(1));
     QVERIFY(model.rowIsContext(2));
     QVERIFY(!model.rowIsContext(3)); // out of range, not a crash
+}
+
+// The gap is to the record on the row above, and the first row has no gap to state
+// (SPEC.md §4). Millisecond precision comes from the file's own %d, exactly as the
+// other two numeric modes take it.
+void TestLogModel::timeDisplaySincePreviousMeasuresTheRowAbove()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 14:32:05,000 [main] INFO  app - a\n"
+        "2026-07-21 14:32:06,250 [main] INFO  app - b\n"
+        "2026-07-21 14:32:07,000 [main] INFO  app - c\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kMsPattern),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    doc.setTimeDisplay(TimeDisplay::SincePrevious);
+
+    LogModel model(&doc);
+    auto cell = [&](int r) { return model.data(model.index(r, 0)).toString(); };
+    // Nothing above row 0: blank, NOT "0.000", which would claim an interval of zero
+    // where there is no interval at all.
+    QCOMPARE(cell(0), QString());
+    QCOMPARE(cell(1), QStringLiteral("1.250"));
+    QCOMPARE(cell(2), QStringLiteral("0.750"));
+
+    // Storage never moved (invariant #10), and the mode is a repaint: switching away
+    // gives the file's own digits straight back.
+    doc.setTimeDisplay(TimeDisplay::AsWritten);
+    QCOMPARE(cell(1), QStringLiteral("2026-07-21 14:32:06,250"));
+}
+
+// "Previous" means the previous VISIBLE record — the row above in this table — which
+// is the whole reason the mode composes with filters: filter to one subsystem and the
+// column reads that subsystem's cadence rather than the file's.
+void TestLogModel::timeDisplaySincePreviousCountsVisibleRecordsAndNotOrdinals()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 14:32:00,000 [main] INFO  net - a\n"
+        "2026-07-21 14:32:01,000 [main] INFO  db  - noise\n"
+        "2026-07-21 14:32:02,000 [main] INFO  db  - noise\n"
+        "2026-07-21 14:32:10,000 [main] INFO  net - b\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kMsPattern),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    doc.setTimeDisplay(TimeDisplay::SincePrevious);
+
+    LogModel model(&doc);
+    auto cell = [&](int r) { return model.data(model.index(r, 0)).toString(); };
+    QCOMPARE(cell(3), QStringLiteral("8.000")); // unfiltered: the gap to the db record
+
+    doc.filters().loggerEnabled = true;
+    doc.filters().loggerIds = {doc.index().loggers.idOf(QStringLiteral("net"))};
+    doc.applyFilters();
+    QCOMPARE(model.rowCount(), 2);
+
+    // The two `net` records are 10 s apart; the hidden records between them are not
+    // what the column is being asked about.
+    QCOMPARE(cell(0), QString());
+    QCOMPARE(cell(1), QStringLiteral("10.000"));
+}
+
+// Two rows have no interval to state, and both must come out EMPTY rather than zero:
+// the first visible row, and one whose predecessor's own date did not parse. There is
+// deliberately no walk further back — that is unbounded on the paint path.
+void TestLogModel::timeDisplaySincePreviousLeavesAGapItCannotStateEmpty()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "not a log line at all\n"
+        "2026-07-21 14:32:05,000 [main] INFO  app - a\n"
+        "2026-07-21 14:32:06,000 [main] INFO  app - b\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kMsPattern),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 3);
+    QCOMPARE(doc.index().records.at(0).timestamp, Record::kNoTimestamp);
+    doc.setTimeDisplay(TimeDisplay::SincePrevious);
+
+    LogModel model(&doc);
+    auto cell = [&](int r) { return model.data(model.index(r, 0)).toString(); };
+    QCOMPARE(cell(0), QString()); // the unparsed line itself has no time of its own
+    QCOMPARE(cell(1), QString()); // nothing above it that a gap could be measured from
+    QCOMPARE(cell(2), QStringLiteral("1.000"));
+}
+
+// The precision rule is the file's, not the mode's — a log written without sub-second
+// precision must not grow a fabricated ".000" — and the gap is SIGNED, because
+// log4cplus appends in the order threads reach the appender rather than the order they
+// stamped, so a later row can carry an earlier instant.
+void TestLogModel::timeDisplaySincePreviousWithoutMillisAndBackwards()
+{
+    QTemporaryFile file;
+    QVERIFY(writeLog(file,
+        "2026-07-21 14:32:05 [main] INFO  app - a\n"
+        "2026-07-21 14:32:09 [main] INFO  app - b\n"
+        "2026-07-21 14:32:07 [work] INFO  app - late\n"));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(), QString::fromLatin1(kNoMsPattern),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QVERIFY(!doc.format().impliedDateFormat.hasMillis);
+    doc.setTimeDisplay(TimeDisplay::SincePrevious);
+
+    LogModel model(&doc);
+    auto cell = [&](int r) { return model.data(model.index(r, 0)).toString(); };
+    QCOMPARE(cell(1), QStringLiteral("4"));
+    QCOMPARE(cell(2), QStringLiteral("-2"));
 }
 
 QTEST_GUILESS_MAIN(TestLogModel)

@@ -193,6 +193,7 @@ private slots:
     void aTimeBoundSetByHandSurvivesTheScan();
     void timeBoundsAreAskedForInTheColumnsOwnUnits();
     void switchingTheDisplayModeKeepsTheBoundsInstant();
+    void aGapColumnStillAsksForAWallClockBound();
     void runSecondsBoundsCountFromTheSelectedRun();
     void priorityComboFollowsItsCheckbox();
     void theLevelsOfferedStartAtDebugAndDefaultToInfo();
@@ -905,6 +906,37 @@ void TestFilterPane::timeBoundsAreAskedForInTheColumnsOwnUnits()
 
 // Switching how the column reads must not move a bound. The digits change; the instant
 // they name does not — in both directions, and through a bound the user typed.
+// "Seconds since the previous record" reads as seconds and is NOT one of the modes the
+// bound editors follow (SPEC.md §4, §6): those seconds are an interval between two
+// rows, and a bound is one instant, so there is no baseline that would turn a typed
+// number into one. The axis therefore keeps the wall clock — and keeps the bound.
+void TestFilterPane::aGapColumnStillAsksForAWallClockBound()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.refreshDiscoveredLists();
+    axis(pane, "timeGroup")->setChecked(true);
+
+    auto *date = pane.findChild<QDateTimeEdit *>(QStringLiteral("timeStart"));
+    auto *secs = pane.findChild<QDoubleSpinBox *>(QStringLiteral("timeStartSeconds"));
+    QVERIFY(date && secs);
+    date->setDateTime(QDateTime(QDate(2026, 7, 21), QTime(12, 0, 1)));
+    const qint64 chosen = doc.filters().startMs;
+
+    doc.setTimeDisplay(TimeDisplay::SincePrevious);
+    pane.refreshTimeBounds();
+
+    // isHidden(), not isVisible() — this pane is never shown.
+    QVERIFY(!date->isHidden());
+    QVERIFY(secs->isHidden());
+    QCOMPARE(doc.filters().startMs, chosen);
+    QCOMPARE(date->dateTime(), QDateTime(QDate(2026, 7, 21), QTime(12, 0, 1)));
+}
+
 void TestFilterPane::switchingTheDisplayModeKeepsTheBoundsInstant()
 {
     Document doc;

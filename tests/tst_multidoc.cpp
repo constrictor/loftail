@@ -152,6 +152,7 @@ private slots:
     void timestampModeIsPerFileNotPerView();
     void timestampModeSharedAcrossViewsOfOneFile();
     void timestampModeSurvivesRestart();
+    void theGapColumnRendersTheIntervalBetweenTheRowsAsShown();
 
     // M19 — the tab marker. A rule carrying HighlightAction::Tab marks its tab when a
     // match arrives while that log is not the one on screen (SPEC.md §7). Asserted on
@@ -235,7 +236,8 @@ QString checkedTimeDisplay(const MainWindow &w)
 {
     for (const char *name : {"timeDisplayAsWrittenAction", "timeDisplayLocalAction",
                              "timeDisplayUtcAction", "timeDisplaySecondsAction",
-                             "timeDisplayRunSecondsAction"}) {
+                             "timeDisplayRunSecondsAction",
+                             "timeDisplaySincePreviousAction"}) {
         QAction *a = w.findChild<QAction *>(QLatin1String(name));
         if (a && a->isChecked())
             return QLatin1String(name);
@@ -521,6 +523,33 @@ void TestMultiDoc::timestampModeIsPerFileNotPerView()
     QTRY_COMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplayUtcAction"));
     w.openFile(m_b);
     QTRY_COMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplayRunSecondsAction"));
+}
+
+// The gap mode end to end: the menu entry, applySettings and a repaint (SPEC.md §4).
+// A TimeDisplay change may never reach a rescan or a reparse, so the records the view
+// is holding must be exactly the ones it had — what moves is the digits in one column.
+void TestMultiDoc::theGapColumnRendersTheIntervalBetweenTheRowsAsShown()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    waitUntilIndexed(w);
+
+    LogModel *model = modelOf(w.findChildren<LogView *>(QStringLiteral("logView")).first());
+    QVERIFY(model);
+    const int rows = model->rowCount();
+    QCOMPARE(rows, 30); // the fixture, one record a second
+
+    trigger(w, "timeDisplaySincePreviousAction");
+    QCOMPARE(checkedTimeDisplay(w), QStringLiteral("timeDisplaySincePreviousAction"));
+    QCOMPARE(model->rowCount(), rows);
+
+    auto cell = [&](int r) { return model->data(model->index(r, 0)).toString(); };
+    QCOMPARE(cell(0), QString()); // nothing above the first row to measure from
+    QCOMPARE(cell(1), QStringLiteral("1.000"));
+    QCOMPARE(cell(rows - 1), QStringLiteral("1.000"));
 }
 
 void TestMultiDoc::timestampModeSharedAcrossViewsOfOneFile()

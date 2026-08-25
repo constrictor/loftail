@@ -40,6 +40,7 @@ private slots:
     void aProfileDiffersWhenAnyOneFieldOfItDoes();
     void aRestartScriptRoundTripsThroughJsonIncludingItsNewlines();
     void aProfileStoredBeforeRestartScriptsExistedReadsAsNotConfigured();
+    void everyTimestampDisplayModeRoundTripsUnderItsOwnSpelling();
 };
 
 namespace {
@@ -469,6 +470,30 @@ void TestLogSettings::aProfileDiffersWhenAnyOneFieldOfItDoes()
     // answering "different": two profiles built the same way are equal, which is what
     // reduce() relies on to delete an entry that says nothing of its own.
     QVERIFY(LogProfile::builtIn() == base);
+}
+
+// One spelling per mode, and no two alike: the string IS the stored value, so a mode
+// sharing another's spelling would silently be read back as that other mode, and a mode
+// whose spelling is missing from timeDisplayToString would fall through to "asWritten"
+// on the next launch of the very session that set it.
+void TestLogSettings::everyTimestampDisplayModeRoundTripsUnderItsOwnSpelling()
+{
+    QSet<QString> spellings;
+    for (TimeDisplay mode : {TimeDisplay::AsWritten, TimeDisplay::LocalTime,
+                             TimeDisplay::Utc, TimeDisplay::EpochSeconds,
+                             TimeDisplay::RunSeconds, TimeDisplay::SincePrevious}) {
+        LogProfile p = LogProfile::builtIn();
+        p.format.timeDisplay = mode;
+        QCOMPARE(logProfileFromJson(logProfileToJson(p)).format.timeDisplay, mode);
+        spellings.insert(timeDisplayToString(mode));
+    }
+    QCOMPARE(spellings.size(), 6);
+
+    // What an OLDER binary makes of a mode it has never heard of, which is the whole
+    // reason a new value needs no schema bump: the column reads as written — the
+    // default — rather than the file being refused.
+    QCOMPARE(timeDisplayFromString(QStringLiteral("modeFromTheFuture")),
+             TimeDisplay::AsWritten);
 }
 
 void TestLogSettings::aRestartScriptRoundTripsThroughJsonIncludingItsNewlines()

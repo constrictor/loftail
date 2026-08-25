@@ -21,13 +21,24 @@ value-per-unit-of-risk, and each notes what already-shipped code would carry it.
    `-B` looks like it needs to insert behind rows already emitted and — because of a suffix
    invariant — does not. See `FUTURE.md` and `ARCHITECTURE.md` §7.2.1.
 
-2. **Elapsed-time display mode.** A sixth `TimeDisplay`: seconds since the **previous visible**
-   record. Stalls, timeouts and retry storms become visible by scanning one column. Companion:
-   mark any gap over a threshold, so the pause is findable without reading.
+2. ~~**Elapsed-time display mode.**~~ **Shipped in M24**, minus the companion. A sixth
+   `TimeDisplay`: seconds since the **previous visible** record. Stalls, timeouts and retry
+   storms become visible by scanning one column.
    *Carried by:* the enum already round-trips through a string and the timestamp header menu
    already offers the modes. "Visible" composes with filters — filter to one subsystem and the
    column shows that subsystem's cadence — and stays well-defined per file, since filters are
    per-file too.
+   *And that held, including the part it did not spell out*: "visible" turned out to mean the
+   row above **in the table doing the asking**, which is one lookup through `LogModel::view()`
+   and therefore free in the digest strip as well, with no state to keep and nothing to
+   invalidate. What the note missed is a decision, not a cost — the two rows with no interval
+   to state (the first, and one after an unparsed line) are left blank rather than zero, and the
+   filter axis deliberately does NOT follow the column into this mode, a gap being an interval
+   where a bound is an instant. See `SPEC.md` §4 and `ARCHITECTURE.md` §5.1.
+   **The companion — mark any gap over a threshold — was split off and NOT built.** It needs a
+   threshold setting with a home at all three settings levels and a colour that does not collide
+   with a highlight rule's, which owns the record's background and wins per action (M19). Judge
+   it on its own.
 
 3. **An unread marker while detached.** Scrolling up off the tail drops a separator line where you
    left, labelled "1,240 new records". Removes the "did I miss something?" tax of tailing.
@@ -163,3 +174,8 @@ place. Then #4 as the milestone after, since it also unlocks #5 for free.
 **Update, 2026-08-06:** #1 shipped on its own as M15, not paired with #2. Splitting them was right —
 #1 turned out to have real depth in the live-append path, and #2 has none of that. #2 is still the
 obvious next small one.
+
+**Update, 2026-08-25:** #2 shipped as M24, and the 2026-08-06 note was right on both counts — it
+had none of #1's depth, and the whole of it is one branch in `LogModel::cellText` plus an enum
+value. Of the rest, #8 (jump to timestamp) is the next small one and #3 (the unread marker) the
+next one worth a milestone; #4 remains the one that unlocks #5 for free.

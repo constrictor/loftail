@@ -455,6 +455,23 @@ The other half of M22's errand. Having changed a log's configuration you have to
 
 ---
 
+## M24 — the gap between one record and the next
+
+Reading a log for a stall means subtracting one timestamp from the one above it, row after row. A sixth `TimeDisplay` does it: the timestamp column shows the interval to the record on the row above, so a timeout, a retry storm or a pause is one column to scan. Behaviour in `SPEC.md` §4; design in `ARCHITECTURE.md` §5.1. Promoted from `ideas.md` Tier 1 #2, whose claim — that the enum, the header menu and the settings tree already carry it — held; what it did not name is the one decision below.
+
+- [x] **`TimeDisplay::SincePrevious`** — a sixth value, its own spelling in the round-trip, and **no schema bump**: an older binary reads an unrecognised spelling as *As Written*, which is a column that reads differently rather than a settings file that will not load. `Document::recomputeDisplayZone()` derives it to the source zone with the other two numeric modes.
+- [x] **The gap is to the row ABOVE IN THIS TABLE**, not to the previous record in the file — `LogModel::rowTimestamp(row - 1)` through the same `view()` every other row mapping uses. That is the whole design: it composes with filters and run selection with no state to keep and nothing to invalidate, it costs one index lookup per painted Date cell, and the digest strip (a second model over a different subset, §7.5.1) needs no special case because its own rows are chronological.
+- [x] **A gap that cannot be stated is EMPTY, never zero** — the first visible row, and one whose predecessor's own date did not parse. And no walk back past that predecessor: a block of unparsed text is unbounded and this runs per painted cell.
+- [x] **The filter and highlighter time axes do NOT follow it.** `AxisEditor::rendersSeconds()` excludes it deliberately: a bound is one instant and a gap is an interval between two rows, so the wall-clock editors stay. Switching into or out of the mode moves no bound, because it moves neither the display zone nor the seconds baseline.
+- [x] **Menu and Preferences** — `timeDisplaySincePreviousAction` on the timestamp column's header menu, and the matching row in the profile editor's combo, which carries its enum value in item data as the others do.
+- [x] **Tests.** Four cases in `tst_logmodel` — one per thing that can stand above a row — plus the filtered case that pins "visible, not ordinal"; the wall-clock bound in `tst_filterpane`; the mode's spelling and the six-way round trip in `tst_logsettings`; the derived zone in `tst_documentzone`; and the menu entry end to end in `tst_multidoc` and `tst_panechrome`.
+
+**Done when:** a log's Time column reads `0.080`, `31.400`, `0.220` instead of wall clocks; filtering to one subsystem makes those figures that subsystem's cadence; the first row is blank rather than `0.000`; a log written without milliseconds shows whole seconds; and switching the mode on and off leaves every filter bound exactly where it was.
+
+**Risk.** Low, and confined to the paint path: nothing is stored, nothing is invalidated, and no other mode's rendering moved. The one thing to be careful of later is the no-walk rule — a future "skip unparsed predecessors" would put an unbounded scan inside `cellText`.
+
+---
+
 ---
 
 ## Deliberately deferred

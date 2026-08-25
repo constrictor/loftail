@@ -26,6 +26,8 @@ void addTimeDisplayItems(QComboBox *c)
     c->addItem(QObject::tr("UTC"), int(TimeDisplay::Utc));
     c->addItem(QObject::tr("Seconds since the epoch"), int(TimeDisplay::EpochSeconds));
     c->addItem(QObject::tr("Seconds from run start"), int(TimeDisplay::RunSeconds));
+    c->addItem(QObject::tr("Seconds since the previous record"),
+               int(TimeDisplay::SincePrevious));
 }
 
 void addWrapItems(QComboBox *c)

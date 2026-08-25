@@ -545,6 +545,7 @@ void TestPaneChrome::aRunClickOrATimestampModeChangeIsNotAnEditToTheRules()
     // re-express and nothing to write.
     for (const char *name : {"timeDisplaySecondsAction", "timeDisplayUtcAction",
                              "timeDisplayLocalAction", "timeDisplayRunSecondsAction",
+                             "timeDisplaySincePreviousAction",
                              "timeDisplayAsWrittenAction"}) {
         auto *action = w.findChild<QAction *>(QString::fromLatin1(name));
         QVERIFY2(action, name);

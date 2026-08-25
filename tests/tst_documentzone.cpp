@@ -144,7 +144,7 @@ void TestDocumentZone::timeDisplayDoesNotTouchTimestamps()
     const qint64 before = doc.index().records.at(0).timestamp;
     for (TimeDisplay mode : {TimeDisplay::Utc, TimeDisplay::LocalTime,
                              TimeDisplay::EpochSeconds, TimeDisplay::RunSeconds,
-                             TimeDisplay::AsWritten}) {
+                             TimeDisplay::SincePrevious, TimeDisplay::AsWritten}) {
         doc.setTimeDisplay(mode);
         QCOMPARE(doc.timeDisplay(), mode);
         QCOMPARE(doc.index().records.at(0).timestamp, before);
@@ -167,9 +167,11 @@ void TestDocumentZone::derivedDisplayZoneFollowsMode()
     doc.setTimeDisplay(TimeDisplay::LocalTime);
     QCOMPARE(doc.displayZone(), QTimeZone::systemTimeZone());
 
-    // "As written" and both seconds modes derive to the SOURCE zone — no conversion.
+    // "As written" and all three numeric modes derive to the SOURCE zone — no
+    // conversion. That is what makes switching to one of them write nothing back into a
+    // time-bounded highlight rule (ARCHITECTURE.md §5.1).
     for (TimeDisplay mode : {TimeDisplay::AsWritten, TimeDisplay::EpochSeconds,
-                             TimeDisplay::RunSeconds}) {
+                             TimeDisplay::RunSeconds, TimeDisplay::SincePrevious}) {
         doc.setTimeDisplay(mode);
         QCOMPARE(doc.displayZone(), QTimeZone(2 * 3600));
     }

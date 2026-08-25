@@ -138,6 +138,12 @@ private:
     // nowhere else.
     const FilteredIndex &view() const;
 
+    // The stored instant of a VIEW row, or Record::kNoTimestamp for a row that is not
+    // there and for a record whose own date did not parse. Only TimeDisplay::SincePrevious
+    // asks, and it asks about row - 1: the gap is to this table's own predecessor, which
+    // is what makes the mode compose with filters (ARCHITECTURE.md §5.1).
+    qint64 rowTimestamp(int row) const;
+
     const Document      *m_document;
     const FilteredIndex *m_view = nullptr;
     HighlightAction      m_action = HighlightAction::Color;

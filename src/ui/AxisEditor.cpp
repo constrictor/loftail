@@ -946,6 +946,11 @@ QDateTime AxisEditor::wallClockOf(qint64 utcMs) const
 }
 
 namespace {
+// Which spelling the bound editors take (SPEC.md §6). TimeDisplay::SincePrevious is
+// DELIBERATELY not one of them although its column reads as seconds: those seconds are
+// an interval between two rows, and a bound is one instant — there is no baseline that
+// would turn a typed "2.5" into one. So a gap column keeps the wall-clock editors, and
+// the axis goes on naming the instants the records are actually at.
 bool rendersSeconds(TimeDisplay mode)
 {
     return mode == TimeDisplay::EpochSeconds || mode == TimeDisplay::RunSeconds;

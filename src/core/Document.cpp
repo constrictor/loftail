@@ -94,12 +94,13 @@ void Document::recomputeDisplayZone()
         m_displayZone = QTimeZone::utc();
         return;
     // "As written" performs no conversion at all, i.e. it renders in the zone the
-    // text was parsed in. The two seconds modes are zone-free and land here too;
+    // text was parsed in. The three numeric modes are zone-free and land here too;
     // the Date column ignores the result, and the other consumers (run labels,
     // filter bounds) get the file's own wall clock, which is the sane fallback.
     case TimeDisplay::AsWritten:
     case TimeDisplay::EpochSeconds:
     case TimeDisplay::RunSeconds:
+    case TimeDisplay::SincePrevious:
         break;
     }
     m_displayZone = m_sourceZone;
