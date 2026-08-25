@@ -1,6 +1,9 @@
 #include <QtTest>
 
 #include <QByteArray>
+#include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
 
 #include "FakeFetcher.h"
 #include "LogSource.h"
@@ -44,6 +47,7 @@ private slots:
     void reusePolicyJoinsALiveSpool();
     void openFailureReportsTheTransportError();
     void unconfiguredRemoteReportsNotBuiltIn();
+    void aConnectingArchiveSaysWhatItIsOpeningRatherThanConnecting();
 };
 
 void TestSpooledSource::readsInitialContentThroughTheSpool()
@@ -306,6 +310,79 @@ void TestSpooledSource::unconfiguredRemoteReportsNotBuiltIn()
     QString badError;
     QVERIFY(!openLogSource(QStringLiteral("ssh://"), OpenPolicy::Interactive, &badError));
     QVERIFY(!badError.isEmpty());
+}
+
+void TestSpooledSource::aConnectingArchiveSaysWhatItIsOpeningRatherThanConnecting()
+{
+    // WHAT WENT WRONG. State::Connecting is shared by both fetchers — it means
+    // "establishing the session" to SshFetcher and "opening the container and seeking to
+    // the member" to ArchiveFetcher (§6.4) — and sourceStatusText() rendered it as the
+    // one word "connecting…" for both. So a log opened out of a zip on the user's own
+    // disk announced a connection, with no network anywhere in the picture, and for a
+    // remote container it said so for the whole of the download rather than for the
+    // handshake. The state below it, Priming, had made this exact split since M12
+    // ("expanding" against "fetching"); this one had not.
+    //
+    // The decision is PURE STRING WORK on the address — a spool does not know who fills
+    // it — so it is asked here directly, over one fetcher held in Connecting, rather
+    // than raced for behind a real libarchive expansion. Ungated for the same reason
+    // tst_archivelocation is: the path layer must answer alike in both configurations.
+    FakeRemoteFarm farm;
+    auto remote = farm.at(QString::fromLatin1(kUrl));
+    remote->setInitialContent(QByteArrayLiteral("hello remote"));
+    remote->setConnectDelayed();
+
+    auto src = openSource();
+    QVERIFY(src);
+    QCOMPARE(src->size(), 0);
+
+    // A plain remote log: unchanged, and it must stay unchanged — this is the state's
+    // original meaning and every M17 case reads that word.
+    QCOMPARE(sourceStatusText(*src, QString::fromLatin1(kUrl)),
+             QStringLiteral("connecting…"));
+
+    // A member inside a local container names the CONTAINER, and names it as spelled:
+    // logSourceDisplayName() strips a single-stream suffix, so it would report a wait on
+    // `app.log` while the file being opened is `app.log.gz`.
+    const QString local = QDir::rootPath() + QStringLiteral("srv/logs/bundle.tar.gz");
+    QCOMPARE(sourceStatusText(*src, local + QStringLiteral("/var/log/app.log")),
+             QStringLiteral("opening bundle.tar.gz…"));
+    QCOMPARE(sourceStatusText(*src, QDir::rootPath() + QStringLiteral("srv/app.log.gz")),
+             QStringLiteral("opening app.log.gz…"));
+
+    // A member inside a REMOTE container takes the archive wording too, because the
+    // archive fetcher stays in this state for the whole of the container's download —
+    // the connect is one step inside the opening rather than the thing being reported.
+    QCOMPARE(sourceStatusText(*src, QStringLiteral(
+                                        "ssh://web1/srv/bundle.tar.gz/var/log/app.log")),
+             QStringLiteral("opening bundle.tar.gz…"));
+
+    // AND NEVER A PASSWORD. The container half of an archive address is kept verbatim
+    // when it cannot be normalized, and the last component of a pathless remote address
+    // is the whole userinfo — which is exactly how one gets on screen (RemoteLocation.h).
+    const QString withPassword =
+        sourceStatusText(*src, QStringLiteral("ssh://deploy:hunter2@web1/b.tar.gz/a.log"));
+    QVERIFY2(!withPassword.contains(QStringLiteral("hunter2")), qPrintable(withPassword));
+
+    src.reset(); // drop the spool (and its still-connecting fetcher) before the next case
+
+    // AND A PLAIN LOCAL FILE SAYS NOTHING, whatever it is called. It is not a spool, so
+    // it never reaches the switch above at all — which is the reason the wording only
+    // ever had to be right for the two spooled transports, and the reason a local log
+    // named `app.log.gz.txt` cannot be talked into announcing an expansion. The healthy
+    // states are silent for the same reason: only trouble gets a line.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString plain = dir.path() + QStringLiteral("/app.log");
+    QFile f(plain);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(QByteArrayLiteral("2026-08-05 hello\n"));
+    f.close();
+
+    auto localSrc = openLogSource(plain, OpenPolicy::Interactive);
+    QVERIFY(localSrc);
+    QVERIFY(sourceStatusText(*localSrc, plain).isEmpty());
+    QVERIFY(sourceStatusText(*localSrc, local + QStringLiteral("/var/log/app.log")).isEmpty());
 }
 
 QTEST_GUILESS_MAIN(TestSpooledSource)

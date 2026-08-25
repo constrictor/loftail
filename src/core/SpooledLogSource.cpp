@@ -5,6 +5,7 @@
 #include "SourceSpool.h"
 
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QLocale>
 
 namespace loftail {
@@ -19,6 +20,24 @@ struct Tr
 {
     Q_DECLARE_TR_FUNCTIONS(loftail::SpooledLogSource)
 };
+
+// The container's own file name, for a sentence that says what is being opened.
+//
+// QFileInfo, NOT logSourceDisplayName(): a container path is itself an archive address,
+// so the display name strips a single-stream container's suffix and would say loftail
+// was opening `app.log` when the thing in its hands is `app.log.gz`
+// (ArchiveFetcher::waitingForContainer() records the same trap for the waiting reason).
+//
+// And it goes through withoutPassword() first, which that function does not need and
+// this one does: only a LOCAL container reaches there, while a member inside a remote
+// container reaches here — and the last component of a pathless remote address is the
+// whole userinfo, which is how a password gets on screen (RemoteLocation.h).
+QString containerName(const QString &container)
+{
+    const QString safe = RemoteLocation::withoutPassword(container);
+    const QString name = QFileInfo(safe).fileName();
+    return name.isEmpty() ? logSourceDisplayPath(container) : name;
+}
 } // namespace
 
 
@@ -198,8 +217,24 @@ QString sourceStatusText(const LogSource &source, const QString &path)
             ? Tr::tr("waiting for %1 to appear").arg(logSourceDisplayName(path))
             : status.error;
 
-    case FetchStatus::State::Connecting:
-        return Tr::tr("connecting…");
+    case FetchStatus::State::Connecting: {
+        // THE SAME SPLIT THE PRIMING CASE BELOW MAKES, and for the same reason: the
+        // source is a spool either way and a spool does not know who fills it, so only
+        // the path can say which of the two things this state is. Nothing connects to an
+        // archive — its Connecting is ArchiveFetcher opening the container and seeking
+        // to the member (§6.4) — so a log opened out of a zip on the user's own disk
+        // said "connecting…" with no network anywhere in the picture, which reads as a
+        // stall on a machine that has nothing to stall on.
+        //
+        // A REMOTE container takes the archive wording too, and deliberately: the
+        // fetcher stays in this state for the whole of the container's download, so
+        // "opening bundle.tar.gz…" is the honest sentence there as well — the connect is
+        // one step inside the opening rather than the thing being reported.
+        const auto loc = ArchiveLocation::split(path);
+        if (!loc)
+            return Tr::tr("connecting…");
+        return Tr::tr("opening %1…").arg(containerName(loc->container));
+    }
 
     case FetchStatus::State::Priming: {
         // Only the path can say which of the two this is: the source is a spool either
