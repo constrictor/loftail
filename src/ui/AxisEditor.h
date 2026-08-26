@@ -171,6 +171,16 @@ public:
     // flags it inline; without this a malformed regex silently matches nothing.
     bool textPatternValid() const;
 
+    // Whether the keyboard focus is in a control that produces a STREAM of edits as it
+    // is used — the message query box, either time editor, either seconds editor. The
+    // filter undo history merges consecutive changes from one of these into a single
+    // entry (FilterUndoStack::record), so a typed word is one Esc rather than one per
+    // letter. Everything else here — a tick, the priority combo, a group-box title, a
+    // record-menu edit — is a discrete gesture and earns an entry of its own, which is
+    // why this asks about the control and not merely about whether focus moved: two
+    // ticks in one list never move focus at all.
+    bool focusIsInAContinuousEditor() const;
+
     // Every axis back to the state a freshly-built editor is in — the Defaults it was
     // constructed with, every discovered value ticked again, and every text, manual
     // and restriction flag dropped. Emits changed() exactly once, so the owning pane
@@ -182,8 +192,9 @@ public:
     // Each of these is ONE edit to ONE axis, made through the same controls a hand
     // edit uses and followed by exactly one changed(): the widgets stay the
     // authoritative state (ARCHITECTURE.md §12.3), so the pane resolves and applies
-    // the result by its ordinary path and the user can see — and undo — what
-    // happened by looking at the axis.
+    // the result by its ordinary path, the user can see what happened by looking at the
+    // axis, and the edit goes on the log's filter history as one entry like any other
+    // (FilterUndoStack.h) — Escape takes it back.
     //
     // showOnlyValue() replaces the axis's selection with the single named value and
     // marks it RESTRICTIVE (MatchCriteria::loggerRestrictive): a value discovered

@@ -80,8 +80,11 @@ public:
     // widget state is not derivable from the resolved set (which is why the window
     // stashes it per file, DocumentContext::filterState), so a direct write would
     // leave the pane showing something else and the next hand edit would undo the
-    // menu's; and the ticks visibly moving IS the undo story, since there is no undo
-    // stack. Each emits filtersChanged() exactly once, like a click in the pane.
+    // menu's; and the ticks visibly moving is what SHOWS the edit, so a reader can see
+    // what happened and reverse it in the axis. Each emits filtersChanged() exactly
+    // once, like a click in the pane — which is also what puts each of them on the
+    // filter undo history as one entry (FilterUndoStack.h), Esc being the other way
+    // back since M-filterundo.
     void showOnlyValue(ValueAxis axis, const QString &name);
     void hideValue(ValueAxis axis, const QString &name);
     void setMinimumPriority(Priority p);
@@ -92,6 +95,14 @@ public:
     // discovered value ticked, context off. The pane's own Clear button and the
     // View menu's Clear Filters both land here.
     void clearAll();
+
+    // Whether the change that just landed came from a control the user is TYPING or
+    // HOLDING — the AxisEditor's query box and time editors, or this pane's own two
+    // context spinners. The filter undo history merges a run of those into one entry
+    // (FilterUndoStack::record), so Esc takes back a typed word rather than a letter.
+    // Asked of the pane rather than worked out by the window, because which widgets
+    // those are is the pane's business and nobody else's.
+    bool editIsContinuous() const;
 
     // Whether the bound document is currently having anything hidden from it — asked
     // of the RESOLVED FilterSet, so an axis that is switched on but excludes nothing

@@ -807,6 +807,21 @@ bool AxisEditor::textPatternValid() const
     return probe.isValid();
 }
 
+bool AxisEditor::focusIsInAContinuousEditor() const
+{
+    const QWidget *focus = QApplication::focusWidget();
+    if (!focus)
+        return false;
+    // "Is, or is inside": a QDateTimeEdit and a QDoubleSpinBox both give the focus to an
+    // internal QLineEdit, so comparing pointers alone answers false about the very
+    // widgets this exists for.
+    const auto holds = [focus](const QWidget *w) {
+        return w && (w == focus || w->isAncestorOf(focus));
+    };
+    return holds(m_textEdit) || holds(m_timeStart) || holds(m_timeEnd) || holds(m_secStart)
+        || holds(m_secEnd);
+}
+
 // ---------------------------------------------------------------------------
 // Document binding
 // ---------------------------------------------------------------------------

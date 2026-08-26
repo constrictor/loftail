@@ -50,6 +50,7 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QApplication>
 #include <QCloseEvent>
 #include <QDockWidget>
 #include <QDragEnterEvent>
@@ -353,6 +354,15 @@ MainWindow::MainWindow(QWidget *parent)
                                           tr("Filters"));
     connect(this, &MainWindow::activeDocumentChanged, m_filterPane, &FilterPane::setDocument);
     connect(m_filterPane, &FilterPane::filtersChanged, this, &MainWindow::applyActiveFilters);
+    // End a run of typed edits when the caret leaves the box producing them, so a word
+    // typed, abandoned and resumed is two entries on the filter history rather than one
+    // (FilterUndoStack::breakRun). The focus predicate cannot do it alone: leaving and
+    // returning moves focus twice without a filter change in between, so nothing else
+    // would ever see that the run had ended.
+    connect(qApp, &QApplication::focusChanged, this, [this] {
+        if (DocumentContext *ctx = activeContext())
+            ctx->filterUndo.breakRun();
+    });
     // Mark the dock while anything is being hidden. The four panes ship TABBED, so
     // three times out of four the Filters pane is behind another tab with every axis
     // still in force — and a tab label is the only part of it still on screen. The
@@ -792,8 +802,10 @@ void MainWindow::buildMenus()
     //
     // Which is also why its enablement is worth having. It is the one place the window
     // can say whether anything is being hidden without the Filters tab in view, so a
-    // live item means "there is something to undo here" and a grey one answers the
-    // question a reader of a short-looking log actually has. Off until a document with
+    // live item means "something is in force here" and a grey one answers the question a
+    // reader of a short-looking log actually has. It is not the undo item below it: this
+    // clears whatever is in force whether or not this window is what put it there, which
+    // a log reopened with its stored filters is exactly the case for. Off until a document with
     // filters in force is in front; updateClearFiltersState() is the only writer.
     viewMenu->addSeparator();
     m_clearFiltersAction = viewMenu->addAction(tr("&Clear Filters"));
@@ -803,6 +815,35 @@ void MainWindow::buildMenus()
         if (m_filterPane)
             m_filterPane->clearAll();
     });
+
+    // One step back through this log's filters, and one forward (SPEC.md §6). Beside
+    // Clear Filters because they answer the same want at two sizes — that one throws
+    // the lot away, these take back what was just done.
+    //
+    // NEITHER CARRIES A Qt SHORTCUT, and that is not an oversight. The keys are Esc and
+    // Shift+Esc, bound in MainWindow::keyPressEvent for the reason given there: a
+    // window-scoped action's shortcut is dispatched ahead of the focus widget, so it
+    // would take Escape away from the Find bar and from an open menu. The tab-separated
+    // suffix is how a menu renders a key hint as TEXT, in the shortcut column, without
+    // registering anything — a hint being the whole reason these items exist, since a
+    // key nothing on screen mentions is a key nobody finds.
+    //
+    // The hint is CONCATENATED and not inside the tr(), for the reason the Filters pane's
+    // arrow glyphs are not translated: a key name is not prose, and a catalogue that
+    // rendered it would put a word on the menu that no keyboard answers to.
+    //
+    // Mnemonics U and D: this menu already spends W, S, M, F, R, C, H and P.
+    const QString kEscHint = QStringLiteral("\tEsc");
+    const QString kShiftEscHint = QStringLiteral("\tShift+Esc");
+    m_undoFilterAction = viewMenu->addAction(tr("&Undo Filter Change") + kEscHint);
+    m_undoFilterAction->setObjectName(QStringLiteral("undoFilterAction")); // findChild, for tests
+    m_undoFilterAction->setEnabled(false);
+    connect(m_undoFilterAction, &QAction::triggered, this, [this] { undoFilterChange(); });
+
+    m_redoFilterAction = viewMenu->addAction(tr("Re&do Filter Change") + kShiftEscHint);
+    m_redoFilterAction->setObjectName(QStringLiteral("redoFilterAction")); // findChild, for tests
+    m_redoFilterAction->setEnabled(false);
+    connect(m_redoFilterAction, &QAction::triggered, this, [this] { redoFilterChange(); });
 
     // Take another open log's whole rule list (SPEC.md §7). The second of two entry
     // points into one slot — the Highlighters pane carries the other, as a button under
@@ -973,6 +1014,11 @@ void MainWindow::onCurrentTabChanged(int index)
         setActiveView(view);
     else if (index < 0)
         setActiveView(nullptr); // the last tab closed: nothing to be looking at
+
+    // The bound log does not move for an editor page, but which page is in front does,
+    // and both items are gated on that. Beside updateActionStates() below rather than
+    // inside it, for the reason updateFilterUndoState() itself records.
+    updateFilterUndoState();
 
     // UNCONDITIONALLY, and after the branch above rather than inside its else. What the
     // per-page actions may act on has moved whether or not the bound DOCUMENT did — and
@@ -1496,9 +1542,20 @@ void MainWindow::setActiveView(DocumentView *view)
     // shares its filters and highlighters, and a needless rebind would reset the
     // filter pane's discovered-value state (invariant #7, ARCHITECTURE.md §12.3).
     if (before != after) {
+        // The WHOLE block, not merely hydratePanes(). m_activeView has already moved, and
+        // the activeDocumentChanged in the middle reaches FilterPane::setDocument(), which
+        // lands any pending debounce — so an edit made on the outgoing log would otherwise
+        // be recorded against the incoming one's history. The cost is that such an edit
+        // leaves no undo entry; it is still applied and still persisted, as before.
+        ++m_filterRebind;
         stashPaneState(outgoing);
         emit activeDocumentChanged(after);
         hydratePanes(activeContext());
+        --m_filterRebind;
+        // What the incoming log's pane actually holds is its history's starting point.
+        // The first such call on a context is what establishes one at all.
+        if (DocumentContext *ctx = activeContext(); ctx && m_filterPane)
+            ctx->filterUndo.settle(m_filterPane->saveState());
     }
 
     // Arriving at a log is what "seen" means (M19, SPEC.md §7). Outside the
@@ -1506,6 +1563,11 @@ void MainWindow::setActiveView(DocumentView *view)
     // brings that file forward even though the panes do not rebind.
     clearUnseenMatch(activeContext());
 
+    // AFTER the rebind above, never from updateActionStates() at the top: this reads the
+    // context's own history, and up there the incoming tab would be answered against the
+    // outgoing tab's stack. (updateClearFiltersState() sits in updateActionStates() for
+    // the mirror-image reason — it asks the PANE, which up there is still the old one.)
+    updateFilterUndoState();
     updateStatus();
 }
 
@@ -1696,6 +1758,84 @@ void MainWindow::updateCopyHighlightersState()
         m_copyHighlightersAction->setEnabled(can);
     if (m_highlighterPane)
         m_highlighterPane->setCanCopyFromAnotherLog(can);
+}
+
+void MainWindow::updateFilterUndoState()
+{
+    // The bound log's history, and only while its own page is in front. The document
+    // stays bound across a config-editor tab (see onCurrentTabChanged), and undoing a
+    // filter on a log the reader cannot see is a change with nothing on screen to show
+    // for it — keyPressEvent gates Escape on the same question.
+    const DocumentContext *ctx = activePageIsLog() ? activeContext() : nullptr;
+    if (m_undoFilterAction)
+        m_undoFilterAction->setEnabled(ctx && ctx->filterUndo.canUndo());
+    if (m_redoFilterAction)
+        m_redoFilterAction->setEnabled(ctx && ctx->filterUndo.canRedo());
+}
+
+bool MainWindow::undoFilterChange()
+{
+    return applyFilterHistory(/*back=*/true);
+}
+
+bool MainWindow::redoFilterChange()
+{
+    return applyFilterHistory(/*back=*/false);
+}
+
+bool MainWindow::applyFilterHistory(bool back)
+{
+    DocumentContext *ctx = activePageIsLog() ? activeContext() : nullptr;
+    if (!ctx || !m_filterPane)
+        return false;
+    if (back ? !ctx->filterUndo.canUndo() : !ctx->filterUndo.canRedo())
+        return false;
+
+    const QJsonObject state = back ? ctx->filterUndo.undo() : ctx->filterUndo.redo();
+    // Through the pane's ordinary restore, which ends in one filtersChanged() and so
+    // reaches applyActiveFilters() -> applyFiltersFor(ctx, KeepPosition::Yes). That is
+    // what keeps the reader's place across an undo (SPEC.md §6) with nothing written
+    // here for it, and what persists the result like any other filter edit.
+    //
+    // Bracketed, or the restore's own notification would be recorded as a fresh edit —
+    // which would push the state we just came from straight back on and make Esc a
+    // no-op that alternates between two states for ever.
+    ++m_filterRebind;
+    m_filterPane->restoreState(state);
+    --m_filterRebind;
+    // What the pane ACTUALLY holds, which need not be `state`: AxisEditor::criteria() is
+    // not the inverse of setCriteria() (LogFileSettings.h). Nothing in the suite tells
+    // this apart from settle(state) today — every divergence reachable through the window
+    // is one the value lists then re-close, since a coversAll axis reloads as the
+    // statement it is rather than as its name list. It is written this way because the
+    // stack's baseline is meant to BE what is on screen, and asking is free next to
+    // assuming: the day a state does come back changed, assuming would make the next edit
+    // record a difference nobody made.
+    ctx->filterUndo.settle(m_filterPane->saveState());
+    // restoreState() went through applyToDocument(), so the stash and the log's record
+    // are stale until this runs. persistFileSettings() came from applyActiveFilters()
+    // above; the stash is this window's alone.
+    ctx->filterState = m_filterPane->saveState();
+    updateFilterUndoState();
+    return true;
+}
+
+void MainWindow::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Escape) {
+        // Shift picks the direction. Any other modifier belongs to somebody else's
+        // gesture, so it is left alone rather than folded in.
+        const Qt::KeyboardModifiers mods = event->modifiers() & ~Qt::KeypadModifier;
+        if (mods == Qt::NoModifier || mods == Qt::ShiftModifier) {
+            if (applyFilterHistory(/*back=*/mods != Qt::ShiftModifier)) {
+                event->accept();
+                return;
+            }
+        }
+    }
+    // NOT accepted when there was nothing to walk to, so Escape goes on meaning whatever
+    // it means to anything else — this key is not ours to swallow.
+    QMainWindow::keyPressEvent(event);
 }
 
 void MainWindow::chooseFileToOpen()
@@ -3395,6 +3535,13 @@ void MainWindow::applyActiveFilters()
     // onRunSelected(), followLastRunIfMoved() and the record menu — none of which is a
     // filter edit, and the third of which runs on every ingest tick of a restarting log.
     persistFileSettings(ctx);
+
+    // ...and the one place a filter edit can be put on this log's history (SPEC.md §6),
+    // for the same reason. m_filterRebind is what keeps a pane REBIND and an undo's own
+    // result off it — both of those land here too, through FilterPane::restoreState().
+    if (ctx && m_filterPane && m_filterRebind == 0)
+        ctx->filterUndo.record(m_filterPane->saveState(), m_filterPane->editIsContinuous());
+    updateFilterUndoState();
 }
 
 void MainWindow::applyActiveHighlighters()
@@ -4408,9 +4555,12 @@ void MainWindow::showRecordMenu(DocumentView *view, int viewRow, int column,
 // the reader keeps their place (SPEC.md §6) with nothing here knowing that they do.
 //
 // Deliberately NOT a toggle. A second double-click on the same cell re-applies the same
-// "show only", which is idempotent; undoing it would mean recognising the pane's current
-// state as "exactly what my last double-click set" — untrue as soon as the user has
-// touched the pane — and the pane is where the menu's edits are taken back.
+// "show only", which is idempotent; making it undo instead would mean recognising the
+// pane's current state as "exactly what my last double-click set" — untrue as soon as the
+// user has touched the pane. Taking the edit back is the pane's job, and since
+// M-filterundo it is also Escape's: the menu's edit lands through
+// FilterPane::filtersChanged like a hand edit, so it goes on this log's filter history as
+// one entry (FilterUndoStack.h) with nothing here to arrange it.
 void MainWindow::activateRecordColumn(DocumentView *view, int viewRow, int column)
 {
     if (!view || !view->context() || !view->context()->doc)

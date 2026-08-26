@@ -152,6 +152,17 @@ protected:
     // Re-resolve the highlight theme (light vs dark palette) when it changes so the
     // model resolves the right variant of each palette slot (SPEC.md §7).
     void changeEvent(QEvent *event) override;
+    // Esc and Shift+Esc walk the active log's filter history (SPEC.md §6).
+    //
+    // HERE AND NOT ON A QAction, however much a menu shortcut would be the idiom on this
+    // window. A window-scoped action's shortcut is dispatched BEFORE the focus widget's
+    // keyPressEvent — the precedence LogView::keyPressEvent already records for Ctrl+A —
+    // and the Find bar closes itself in FindBar::keyPressEvent, so registering Escape
+    // would take that away, and take Escape off an open QMenu with it. Reaching Escape
+    // only after everybody with a claim on it has declined is exactly what an override
+    // here gives, with nothing to coordinate. It also means an Esc pressed with the caret
+    // still in the Filters pane arrives, the docks being children of this window.
+    void keyPressEvent(QKeyEvent *event) override;
 
 private:
     // Which of the two filter chords (SPEC.md §5) a cell click was. A plain parameter
@@ -189,8 +200,9 @@ private slots:
     // Subsystem or Thread cell and the level floor on a Priority one; Alt+click is
     // *Hide* on the two value axes, and nothing on Priority, whose axis is a minimum
     // rather than a set. Same route as activateRecordColumn() above and for the same
-    // reasons — the record menu's own item, triggered by object name, so the gating,
-    // the persistence and the undo story are the menu's rather than a second copy.
+    // reasons — the record menu's own item, triggered by object name, so the gating, the
+    // persistence and the place on the log's filter history are the menu's rather than a
+    // second copy of each.
     void applyRecordFilter(DocumentView *view, int viewRow, int column,
                            RecordFilterCommand command);
     // Build the record menu for this cell and trigger the item with this object name,
@@ -612,6 +624,19 @@ private:
     // tell the pane the same answer, so the button and the menu item cannot drift.
     void updateCopyHighlightersState();
 
+    // Walk the active log's filter history one step. False when there was nothing to
+    // walk to, which is what leaves the Escape key alone for everybody else.
+    bool undoFilterChange();
+    bool redoFilterChange();
+    // Apply one state from that history and settle the stack against what the pane
+    // actually ended up holding. The one place either direction goes through.
+    bool applyFilterHistory(bool back);
+    // Enablement for the two View items. A SEPARATE writer from updateActionStates(),
+    // which setActiveView() runs BEFORE it rebinds the panes: this one reads the
+    // CONTEXT's history, so it has to be called after the rebind or it answers about the
+    // incoming tab using the outgoing tab's stack.
+    void updateFilterUndoState();
+
     // Move the global panes' per-file widget state to/from a context as the active
     // document changes. See DocumentContext::filterState for why this is needed.
     void stashPaneState(DocumentContext *ctx);
@@ -686,6 +711,13 @@ private:
     QDockWidget *m_highlightersDock = nullptr;              // marked while rules are present
     QAction     *m_clearFiltersAction = nullptr;
     QAction     *m_copyHighlightersAction = nullptr;        // dead without another open log
+    QAction     *m_undoFilterAction = nullptr;
+    QAction     *m_redoFilterAction = nullptr;
+    // Raised while the panes are being rebound to another log, and while an undo or redo
+    // is being applied. FilterPane::restoreState() ends in a filtersChanged(), so without
+    // this a tab switch would record an entry on the incoming log and an undo would
+    // record its own result as a fresh edit.
+    int          m_filterRebind = 0;
     // How those docks' title bars are painted (PaneTitleStyle.h). Shared by all four
     // and parented to the window, so it outlives every dock that points at it.
     PaneTitleStyle        *m_paneStyle = nullptr;

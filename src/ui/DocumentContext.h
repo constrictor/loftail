@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AlertPolicy.h"
+#include "FilterUndoStack.h"
 #include "FormatSettings.h"
 #include "LogFileSettings.h"
 
@@ -113,6 +114,12 @@ public:
     // Highlighters need no equivalent: HighlighterPane::setDocument already reloads
     // its rules from the Document it binds to.
     QJsonObject filterState;
+
+    // This log's filter history, walked by Esc and Shift+Esc (SPEC.md §6). Per FILE for
+    // the reason filterState above is: filters belong to the log, so two views of it
+    // share one history. Not persisted anywhere — closing the tab forgets it, which is
+    // the whole of what "per tab" means here.
+    FilterUndoStack filterUndo;
 
     // What this log is called on its tab, before the indexing/waiting/match markers and
     // the view number are folded in (TabLabels.h). Normally its own name alone; that name

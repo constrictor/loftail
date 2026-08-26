@@ -5,6 +5,7 @@
 #include "Filter.h"
 #include "MatchCriteria.h"
 
+#include <QApplication>
 #include <QElapsedTimer>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -221,6 +222,18 @@ void FilterPane::clearAll()
         m_contextAfter->setValue(0);
     }
     m_axes->clearAll(); // emits changed() -> scheduleApply()
+}
+
+bool FilterPane::editIsContinuous() const
+{
+    const QWidget *focus = QApplication::focusWidget();
+    const auto holds = [focus](const QWidget *w) {
+        return focus && w && (w == focus || w->isAncestorOf(focus));
+    };
+    // The editor's own stream-producing controls, plus this pane's two spinners —
+    // which are accelerated, so holding one arrow is a filter change per step.
+    return (m_axes && m_axes->focusIsInAContinuousEditor()) || holds(m_contextBefore)
+        || holds(m_contextAfter);
 }
 
 bool FilterPane::hasActiveFilters() const

@@ -664,6 +664,16 @@ set_tests_properties(tst_find PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 # can show: that each of two views of one file keeps its own place (invariant #7), and
 # that the one caller which opts out of the anchor still lands where it means to.
 # Offscreen, isolated config.
+# The filter undo history (SPEC.md §6). Half of it is the rule for what counts as one
+# entry, which is value logic and drives FilterUndoStack directly; the other half needs a
+# real window, because the history is per LOG, must survive a tab round trip, must not
+# record a pane REBIND as an edit, and must leave Escape to the Find bar — and a QAction
+# shortcut on Escape breaks that last one with nothing else able to see it.
+qt_add_executable(tst_filterundo tst_filterundo.cpp)
+target_link_libraries(tst_filterundo PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_filterundo COMMAND tst_filterundo)
+set_tests_properties(tst_filterundo PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 qt_add_executable(tst_filteranchor tst_filteranchor.cpp)
 target_link_libraries(tst_filteranchor PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_filteranchor COMMAND tst_filteranchor)
