@@ -1,6 +1,6 @@
 #include "LogView.h"
 
-#include "DensityStrip.h"
+#include "DensityScrollBar.h"
 
 #include "UiColors.h"
 
@@ -918,58 +918,51 @@ void LogView::updateScrollBars()
 
 void LogView::layoutChrome()
 {
-    // ONE setViewportMargins call for both. Two would each undo the other's margin,
-    // which is exactly the kind of thing that shows up as the density strip appearing
-    // and then vanishing on the next resize.
-    //
     // A hidden header reserves NOTHING. Asking unconditionally would leave a
     // header-tall blank band above the digest strip — which reads as a rendering fault
     // rather than a bug, in the one widget whose whole claim is that it is exactly as
     // tall as its rows.
+    //
+    // The density marks take no margin of their own: they are drawn INSIDE the vertical
+    // scrollbar, whose width QAbstractScrollArea already keeps out of the viewport. That
+    // is what makes them agree with the thumb — a strip in the right margin spans the
+    // viewport, which begins below this very top margin and ends where the groove does
+    // not, so its marks were offset by the header's height and by whatever the style
+    // spends on arrow buttons (ARCHITECTURE.md §7.1.7).
     const int top = m_header->isHidden() ? 0 : m_header->sizeHint().height();
-    // isHidden(), not isVisible(): the strip is a child of a view that is itself hidden
-    // while its tab is in the background, and a margin that came and went with the tab
-    // would re-measure every wrapped record on every tab switch.
-    const int right = (m_density && !m_density->isHidden()) ? m_density->stripWidth() : 0;
-    setViewportMargins(0, top, right, 0);
+    setViewportMargins(0, top, 0, 0);
     if (top > 0)
         m_header->setGeometry(viewport()->x(), viewport()->y() - top, viewport()->width(), top);
-    if (right > 0) {
-        // Between the viewport and the vertical scrollbar, spanning the viewport's own
-        // height. It cannot line up with the scrollbar GROOVE exactly — a style spends
-        // the ends of the bar on arrow buttons and loftail does not get to say how many
-        // — so the strip spans the scrollable range instead, which is the quantity its
-        // marks are fractions of.
-        m_density->setGeometry(viewport()->x() + viewport()->width(), viewport()->y(),
-                               right, viewport()->height());
-    }
 }
 
-// --- The density strip beside the scrollbar (ARCHITECTURE.md §7.1.7) ---------------
+// --- The density marks in the scrollbar (ARCHITECTURE.md §7.1.7) -------------------
 
 void LogView::setDensityStripVisible(bool visible)
 {
     // The digest strip does not scroll, so there is no range for a mark to be a fraction
-    // of and no scrollbar for one to sit beside.
+    // of and no scrollbar to carry one.
     if (m_role != Role::Main)
         return;
     if (visible == densityStripVisible())
         return;
 
     if (visible) {
-        m_density = new DensityStrip(this, m_document, m_model);
-        m_density->show();
+        m_density = new DensityScrollBar(this, m_document, m_model);
+        // setVerticalScrollBar carries the range, value, page step and policy over and
+        // re-establishes every connection QAbstractScrollArea makes to its own bar,
+        // deleting the outgoing one. Nothing else may hold a pointer to it.
+        setVerticalScrollBar(m_density);
         m_density->rebind();
     } else {
-        // Destroyed, not hidden. A hidden strip would keep its scan state and its timer
-        // alive for something nobody can see, and the whole point of switching it off is
-        // to stop paying for it.
-        delete m_density;
+        // Replaced, not told to draw nothing. A bar that kept its map and its timer for
+        // marks nobody can see is exactly what switching them off is meant to stop
+        // paying for — and Qt deletes the outgoing bar for us.
         m_density = nullptr;
+        setVerticalScrollBar(new QScrollBar(Qt::Vertical, this));
     }
-    // A viewport margin moved, so the message column's wrap width moved with it and
-    // every measured height is stale — this is a geometry change, not a repaint.
-    layoutChrome();
+    // The marked bar is wider than a plain one, so the viewport narrowed or widened and
+    // with it the message column's wrap width: every measured height is stale. This is a
+    // geometry change, not a repaint.
     recomputeGeometry();
 }
 
@@ -991,23 +984,6 @@ qreal LogView::scrollFractionOfRow(int r) const
         return 0.0;
     const int row = qBound(0, r, recordCount() - 1);
     return qBound(0.0, qreal(mapLineOfRecord(row)) / qreal(total), 1.0);
-}
-
-void LogView::scrollToFraction(qreal fraction)
-{
-    const qint64 total = mapTotalLines();
-    if (total <= 0)
-        return;
-    const qint64 line = qint64(qBound(0.0, fraction, 1.0) * qreal(total));
-    QScrollBar *bar = verticalScrollBar();
-    // CENTRED, not put at the top: the click names a place to READ, and a mark landed
-    // exactly on the first visible line is one the reader has to scroll back for.
-    const qint64 want = line - visibleLines() / 2;
-    // Through the scrollbar, which is what makes this the USER scrolling: follow
-    // detaches here exactly as it does on a bar drag (see updateFollowFromScrollPosition).
-    const qint64 lo = bar->minimum();
-    const qint64 hi = bar->maximum();
-    bar->setValue(int(qBound(lo, want, hi)));
 }
 
 qint64 LogView::digestContentLines(bool *capped) const

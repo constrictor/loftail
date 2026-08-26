@@ -492,12 +492,12 @@ add_test(NAME tst_livegui COMMAND tst_livegui)
 # M2b — the production LogView. Links the UI layer; the geometry mapping and
 # clipboard builders are pure, and the header-state round-trip needs QWidget, so
 # the test runs under an offscreen QApplication (forced in its own main()).
-# The density strip beside the scrollbar, through a real MainWindow. Almost every case
+# The density marks inside the scrollbar, through a real MainWindow. Almost every case
 # reads RENDERED PIXELS, because where a mark sits is the whole feature and every widget
 # holds the same values whether it is drawn in the right place or not.
-qt_add_executable(tst_densitystrip tst_densitystrip.cpp)
-target_link_libraries(tst_densitystrip PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
-add_test(NAME tst_densitystrip COMMAND tst_densitystrip)
+qt_add_executable(tst_densitybar tst_densitybar.cpp)
+target_link_libraries(tst_densitybar PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_densitybar COMMAND tst_densitybar)
 
 qt_add_executable(tst_logview tst_logview.cpp)
 target_link_libraries(tst_logview PRIVATE loftail_ui Qt6::Test Qt6::Widgets)

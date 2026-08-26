@@ -105,10 +105,15 @@ constexpr auto kRecentFilesKey = "recentFiles";
 // session group: the session describes one window's tabs, and two windows would
 // otherwise disagree about how big the text is. Absent means "the platform's own size".
 constexpr auto kLogFontSizeKey = "logFontPointSize";
-// Whether the density strip beside the scrollbar is shown (SPEC.md §5). An application
+// Whether the scrollbar carries the density marks (SPEC.md §5). An application
 // preference like the log text size directly above, and for the same reason: it answers
 // a question about how somebody reads rather than about a particular log, so it lives in
 // plain QSettings and applies to every view at once. Default ON — it is the feature.
+//
+// The KEY keeps the name it was written under when the marks were a separate strip. It
+// is stale prose and a stale name is worth less than somebody's setting: rename it and
+// every reader who had switched the marks off gets them back on, once, silently, on the
+// first launch after upgrade.
 constexpr auto kDensityStripKey = "densityStrip";
 
 // How long a rotation notice stays up (SPEC.md §3). Longer than announceLogFontSize()'s
@@ -733,10 +738,10 @@ void MainWindow::buildMenus()
         announceLogFontSize();
     });
 
-    // The density strip beside the scrollbar (SPEC.md §5). Enabled with no file open,
-    // like the zoom items above and for the same reason: it is a preference about how
-    // logs are read, and the next one opens with it.
-    m_densityAction = viewMenu->addAction(tr("&Density Strip"));
+    // The density marks in the scrollbar (SPEC.md §5). Enabled with no file open, like
+    // the zoom items above and for the same reason: it is a preference about how logs
+    // are read, and the next one opens with it.
+    m_densityAction = viewMenu->addAction(tr("&Marks in the Scrollbar"));
     m_densityAction->setObjectName(QStringLiteral("densityStripAction")); // findChild, for tests
     m_densityAction->setCheckable(true);
     m_densityAction->setChecked(m_densityStripOn);

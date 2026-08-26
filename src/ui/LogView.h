@@ -20,7 +20,7 @@ QT_END_NAMESPACE
 
 namespace loftail {
 
-class DensityStrip;
+class DensityScrollBar;
 class Document;
 class LogModel;
 class RecordIndex;
@@ -291,17 +291,19 @@ public:
     static constexpr int kMinWrapCols = 20;
     int messageWrapWidth() const;
 
-    // --- The density strip beside the scrollbar (SPEC.md §5, ARCHITECTURE.md §7.1.7) --
+    // --- The density marks IN the scrollbar (SPEC.md §5, ARCHITECTURE.md §7.1.7) ------
     //
     // Where the highlighted records and the current Find matches sit in the WHOLE view,
-    // as a narrow strip between the table and the vertical scrollbar. Role::Main only —
-    // the digest strip has no scrollbar to sit beside — and null when the reader has
-    // switched it off, which every caller must therefore expect.
-    DensityStrip *densityStrip() const { return m_density; }
-    // Show or hide it. One application-wide preference (MainWindow keeps it in
-    // QSettings, exactly as it keeps the log text size): it answers a question about how
-    // somebody reads, which does not differ between two tabs. It moves a VIEWPORT
-    // MARGIN, so every wrapped height is re-measured — this is not a repaint.
+    // drawn inside the view's own vertical scrollbar with the thumb translucent over
+    // them. Role::Main only — the digest strip has no vertical scrollbar — and null when
+    // the reader has switched the marks off, which every caller must therefore expect:
+    // the view still has a scrollbar then, just a plain one.
+    DensityScrollBar *densityBar() const { return m_density; }
+    // Swap the marked scrollbar in or out. One application-wide preference (MainWindow
+    // keeps it in QSettings, exactly as it keeps the log text size): it answers a
+    // question about how somebody reads, which does not differ between two tabs. The
+    // marked bar is WIDER than a plain one, so the viewport narrows and every wrapped
+    // height is re-measured — this is not a repaint.
     void setDensityStripVisible(bool visible);
     bool densityStripVisible() const;
     // The highlight rules moved, so the strip's rule lane has to be scanned again. The
@@ -310,14 +312,12 @@ public:
     void invalidateDensityRules();
 
     // Where view row `r` sits in the vertical scroll range, 0..1. In LINE units, which
-    // is what the scrollbar beside the strip is in — placing a mark by record index
-    // instead would put it somewhere the thumb never goes on any log carrying a
-    // multi-line record, which is most of them.
+    // is what the scrollbar is in — placing a mark by record index instead would put it
+    // somewhere the thumb never goes on any log carrying a multi-line record, which is
+    // most of them. The scroll range is 0..total-page with a page-sized thumb, so this
+    // fraction of the bar's height IS where the thumb showing that record starts, which
+    // is what DensityScrollBar places its marks by.
     qreal scrollFractionOfRow(int r) const;
-    // Put `fraction` of the scroll range in the MIDDLE of the viewport, as the user
-    // scrolling — so follow detaches exactly as it does on a scrollbar drag. What a
-    // click on the density strip does.
-    void scrollToFraction(qreal fraction);
 
     // --- Pure geometry mapping (public for unit tests; no widget state) ---------
     // These express the exact-mode line<->record mapping with the selected record's
@@ -610,10 +610,11 @@ private:
     // QAbstractScrollArea installs the view itself as an event filter on its own
     // scrollbars, so eventFilter() is called during construction — before this exists.
     QHeaderView    *m_header = nullptr;
-    // The density strip in the right viewport margin (Role::Main only, and null while
-    // the reader has it switched off). Hidden rather than destroyed when switched off
-    // would keep a scan alive for a strip nobody can see, so it is genuinely destroyed.
-    DensityStrip   *m_density = nullptr;
+    // The view's vertical scrollbar while it is carrying the density marks (Role::Main
+    // only, and null while the reader has them switched off — the view then has an
+    // ordinary QScrollBar instead). Switching them off genuinely REPLACES the bar rather
+    // than telling it to draw nothing, or a scan stays alive for marks nobody can see.
+    DensityScrollBar *m_density = nullptr;
     QItemSelectionModel *m_selection;
 
     // Which columns the user has spoken for — dragged, fitted, or brought back by a

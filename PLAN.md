@@ -491,6 +491,24 @@ A scrollbar says where you are and nothing about what is further down. The strip
 
 ---
 
+## M26 — the strip and the scrollbar become ONE control
+
+M25's strip could not line up with the thing it sat beside, and the reason is structural rather than a rounding error: a widget in the right viewport margin starts a header's height below where the scrollbar starts, ends where the groove does not (a style spends the ends of the bar on arrow buttons — Fusion 14 px each, Breeze none), and divides by a total the thumb's own height is not counted in. Three errors, all silent, all moving with the style and the font, and none of the three quantities is the strip's to know. So the marks move INSIDE the scrollbar, which is what Kate does with its minimap and for the same reason. Behaviour in `SPEC.md` §5; design in `ARCHITECTURE.md` §7.1.7.
+
+- [x] **`DensityScrollBar : QScrollBar`**, installed with `setVerticalScrollBar()`. `DensityStrip` is gone; the map, the slicing timer, the two lanes and the colour rules moved across unaltered, which is the evidence that only the placement was ever wrong.
+- [x] **The bar paints its own ground, marks and thumb** rather than the style's groove — an arrow button at either end would take pixels off the very range the marks are placed in — and the thumb is drawn LAST and TRANSLUCENT, or on a log where the query matches everywhere it would hide exactly the marks the reader is scrolling towards.
+- [x] **One denominator, `spanLines()`** = `maximum - minimum + pageStep`, which is the view's total line count: the mark's `line/total` and the thumb's top are then the same fraction of the same height, so alignment is structural rather than agreed.
+- [x] **A left click JUMPS rather than paging.** `QScrollBar`'s own left-button handling is bypassed entirely, not tuned through `SH_ScrollBar_LeftClickAbsolutePosition`, which is a style's answer to give; the scroll goes through `setSliderPosition()`, so follow detaches exactly as it does on a drag.
+- [x] **`layoutChrome()` spends the TOP margin only**, as it did before M25 — `QAbstractScrollArea` already keeps a scrollbar's width out of the viewport, so the wider bar narrows the message column with no margin of its own. `LogView::scrollToFraction()` is deleted with its one caller.
+- [x] **View ▸ Marks in the Scrollbar** replaces View ▸ Density Strip. The `QSettings` KEY keeps its old spelling deliberately: renaming it would silently switch the marks back on for everyone who had turned them off.
+- [x] **Tests.** `tst_densitystrip` becomes `tst_densitybar`, every case carried over, plus `theMarkForARecordIsCoveredByTheThumbThatShowsIt` — scroll until the marked record is the top of the viewport and assert the thumb covers its mark, which is the claim a separate strip could not make. `markBand()` now skips the rows under the thumb, since a translucent thumb is not the base colour either.
+
+**Done when:** the mark for a record and the thumb that shows that record are in the same place at any window height, under Fusion and under Breeze, and the log is one control narrower than it was.
+
+**Risk.** Low. The scan is untouched; what moved is the widget the marks are drawn in and the mouse handling on it.
+
+---
+
 ---
 
 ## Deliberately deferred

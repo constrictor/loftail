@@ -33,8 +33,8 @@ add_library(loftail_ui STATIC
     # The density strip in that view's right viewport margin: where the highlighted
     # records and the current find matches are in the whole log, drawn in the colours the
     # highlighter already resolves, and clickable to jump there.
-    DensityStrip.cpp
-    DensityStrip.h
+    DensityScrollBar.cpp
+    DensityScrollBar.h
     WrapMetrics.cpp
     WrapMetrics.h
     # M3 — the format editor. Its controls live in FormatEditor, shared with
