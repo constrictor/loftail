@@ -204,8 +204,25 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
     m_treeWidget->setHeaderHidden(true);
     m_treeWidget->setRootIsDecorated(true);
     m_treeWidget->setUniformRowHeights(true);
+    // MOVING TO ANOTHER ROW FOLDS THE ONE BEING LEFT BACK IN FIRST. Every gesture with a
+    // button behind it commits before it acts — Add, Move, Promote, Apply, OK — and a
+    // plain click on the tree was the one route that did not, so whatever had been typed
+    // into the settings panel was discarded by merely looking at another node: loadNode()
+    // overwrites the editors and then takes m_loaded with it, and nothing on screen says
+    // anything happened. The pattern's own match fields survived only because they ride
+    // editingFinished, which the same click fires by taking the focus away.
+    //
+    // Guarded on m_updating, which is what tells a user's click from rebuildTree()'s own
+    // clear(): during a rebuild the editors hold whatever the last load put there while
+    // m_loaded may name a node that has just been deleted or re-homed, and committing
+    // that would write one node's settings into another. Every gesture that rebuilds has
+    // already committed, or has set m_loadedValid false because the node is going.
     connect(m_treeWidget, &QTreeWidget::currentItemChanged, this,
-            [this](QTreeWidgetItem *, QTreeWidgetItem *) { loadNode(); });
+            [this](QTreeWidgetItem *, QTreeWidgetItem *) {
+                if (!m_updating)
+                    commitCurrent();
+                loadNode();
+            });
     leftLayout->addWidget(m_treeWidget, 1);
 
     auto *toolRow = new QHBoxLayout;

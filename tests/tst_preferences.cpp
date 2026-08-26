@@ -167,6 +167,7 @@ private slots:
     void promotingIsOfferedOnlyWithAParentPattern();
     void promotingAPatternMovesItsSettingsIntoTheDefaults();
     void promotingMovesTheSettingsUpAndRemovesTheLogEntry();
+    void whatWasTypedSurvivesMovingToAnotherRow();
     void aLogEntryGoesWhenItsPatternCatchesUpWithIt();
     void aScratchNodeSayingNothingNewIsNotKept();
     void applyToCurrentIsReportedNeverApplied();
@@ -660,6 +661,52 @@ void TestPreferences::promotingMovesTheSettingsUpAndRemovesTheLogEntry()
              "the promoted log kept a copy of what its pattern now says");
     QCOMPARE(dlg.tree().inherited(logPath(QStringLiteral("app.log"))).format.pattern,
              QStringLiteral("MINE"));
+}
+
+// Looking at another node is not a way of throwing away what was typed into this one.
+// Every gesture with a button behind it commits before it acts; a plain click on the tree
+// was the one route that did not, so an edit to the settings panel was discarded by the
+// next row selected — silently, since loadNode() then fills the editors with that row's
+// settings and there is nothing on screen to say anything was lost. The pattern's own
+// match fields survived, and only because they ride editingFinished, which the same click
+// fires by taking the focus away — which is what made the gap look like it was not there.
+void TestPreferences::whatWasTypedSurvivesMovingToAnotherRow()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
+    QTreeWidget *tree = treeOf(dlg);
+    auto *config = dlg.findChild<QLineEdit *>(QStringLiteral("profileConfigPath"));
+    QVERIFY(config);
+
+    // Typed on the DEFAULTS, which is the node with the most to lose: it is what every
+    // log with nothing more specific opens with.
+    tree->setCurrentItem(tree->topLevelItem(0));
+    config->setText(QStringLiteral("/etc/app/log4cplus.properties"));
+
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+    tree->setCurrentItem(tree->topLevelItem(0));
+    QCOMPARE(config->text(), QStringLiteral("/etc/app/log4cplus.properties"));
+
+    // And it is in the TREE, not merely back in the widget: read off what OK hands the
+    // caller, which is the only place it counts.
+    dlg.accept();
+    QCOMPARE(dlg.tree().defaults().configPath,
+             QStringLiteral("/etc/app/log4cplus.properties"));
+
+    // The other direction, over the row this dialog is most often opened for: what a log
+    // says of its own is not lost by glancing at the pattern above it either.
+    PreferencesDialog log(populated(), QStringLiteral("app.log"), sample());
+    openOn(log, logPath(QStringLiteral("app.log")));
+    QTreeWidget *logTree = treeOf(log);
+    logTree->setCurrentItem(currentFileRow(logTree));
+    log.findChild<QLineEdit *>(QStringLiteral("profileConfigPath"))
+        ->setText(QStringLiteral("mine.properties"));
+    logTree->setCurrentItem(rowNamed(logTree, QStringLiteral("*.log")));
+    log.accept();
+    QVERIFY(log.fileProfile().has_value());
+    QCOMPARE(log.fileProfile()->configPath, QStringLiteral("mine.properties"));
+    // And nothing of the log's leaked upward into the pattern it was left for.
+    QVERIFY(log.tree().patterns().at(0).profile.configPath.isEmpty());
 }
 
 // A per-log entry lasts only as long as it says something its parent does not, and the
