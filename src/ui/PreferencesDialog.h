@@ -13,6 +13,7 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QMenu;
 class QPushButton;
 class QScrollArea;
 class QSplitter;
@@ -69,6 +70,16 @@ class MessageLabel;
 // it, and OK is what performs it along with every other edit. Deferring costs nothing,
 // because the caller only reads applyRequested() after Accepted — a request left armed
 // when the user cancels is discarded with the working copy, exactly like the rest.
+//
+// AND COPYING GOES DOWN AS WELL AS UP. Promote hands the open log's settings to the
+// pattern above it; the tree's context menu hands a PATTERN's settings to the open log
+// ("Use These Settings for the Current File"). That is the gesture wanted by somebody who
+// has just opened a log no pattern claims and can see, one row up, an entry that already
+// says how logs like it are written: writing a pattern that would claim it is the tidier
+// answer and is still there, but a log opened once is not worth a pattern. It copies into
+// the row and nothing else — fileProfile() still decides at OK whether any of it is worth
+// storing, so copying the settings of the pattern that already claims this log leaves the
+// log with nothing of its own, which is exactly right.
 class PreferencesDialog : public QDialog
 {
     Q_OBJECT
@@ -114,6 +125,14 @@ public:
     // afterwards carries what the node finally says rather than a snapshot of it.
     bool applyRequested() const { return m_applyRequested; }
     LogProfile applyProfile() const { return m_applyProfile; }
+
+    // Fill `menu` with what can be done to the row `item` stands for — today one item,
+    // and only on a pattern row while a log is open. PUBLIC, and separate from the
+    // showing of it, for the reason MainWindow::buildRecordMenu() is: a QMenu exec()'d
+    // from a slot cannot be reached by a test, and an action created inside that function
+    // could not be triggered by one either. A test builds the menu itself and triggers by
+    // object name.
+    void buildTreeMenu(QMenu *menu, QTreeWidgetItem *item);
 
 public slots:
     // Overridden to fold the panel's last keystroke back into the node it belongs to, and
@@ -171,6 +190,14 @@ private:
     // deleted, its entry pruned, a bulk forget).
     bool profileOfNode(const NodeRef &ref, LogProfile *out) const;
     QString nodeDisplayName(const NodeRef &ref) const;
+
+    // Put `ref`'s settings on the open log's row. The inverse of promoteToParent(), and
+    // like it, it neither stores nor removes anything: fileProfile() re-tests the row
+    // against what the log inherits when OK is pressed.
+    void useSettingsFor(const NodeRef &ref);
+    // Select the row under `pos` — so the panel shows what is about to be copied — and
+    // put buildTreeMenu()'s answer up over it.
+    void showTreeMenu(const QPoint &pos);
 
     void addPattern();
     void deleteNode();

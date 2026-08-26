@@ -1,11 +1,13 @@
 #include <QtTest>
 
 #include <QAbstractButton>
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QPlainTextEdit>
 #include <QScrollArea>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFontDatabase>
@@ -13,10 +15,12 @@
 #include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPushButton>
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
 
@@ -151,6 +155,12 @@ private:
         dlg.selectLog(address, own, dlg.tree().inherited(address));
     }
 
+    // Written from inside the context menu's own event loop — see
+    // rightClickingARowSelectsItAndPutsUpItsMenu(). A member and not a captured local, so
+    // a timer that outlives the case (which is what a menu that never opened leaves
+    // behind) writes somewhere that is still there.
+    bool m_poppedUp = false;
+
 private slots:
     void theTreeShowsThreeLevels();
     void onlyTheLogThatIsOpenGetsARow();
@@ -167,6 +177,10 @@ private slots:
     void promotingIsOfferedOnlyWithAParentPattern();
     void promotingAPatternMovesItsSettingsIntoTheDefaults();
     void promotingMovesTheSettingsUpAndRemovesTheLogEntry();
+    void aPatternsSettingsCanBeTakenDownOntoTheOpenLog();
+    void takingWhatTheLogAlreadyInheritsLeavesItNothingOfItsOwn();
+    void onlyAPatternRowOffersItsSettingsAndOnlyWithALogOpen();
+    void rightClickingARowSelectsItAndPutsUpItsMenu();
     void whatWasTypedSurvivesMovingToAnotherRow();
     void aLogEntryGoesWhenItsPatternCatchesUpWithIt();
     void aScratchNodeSayingNothingNewIsNotKept();
@@ -661,6 +675,140 @@ void TestPreferences::promotingMovesTheSettingsUpAndRemovesTheLogEntry()
              "the promoted log kept a copy of what its pattern now says");
     QCOMPARE(dlg.tree().inherited(logPath(QStringLiteral("app.log"))).format.pattern,
              QStringLiteral("MINE"));
+}
+
+// COPYING GOES DOWN AS WELL AS UP (SPEC.md §4). Promote hands the open log's settings to
+// the pattern above it; the tree's context menu hands a pattern's settings to the open
+// log. The case it exists for is exactly this one: a log NO PATTERN CLAIMS, so what it
+// inherits is the defaults, beside a pattern that already says how logs like it are
+// written.
+//
+// The menu is built by buildTreeMenu() and shown by showTreeMenu(), split for the reason
+// MainWindow::buildRecordMenu() is: a QMenu exec()'d from a slot is a nested event loop
+// no test can get out of, and an action created inside it could not be triggered by one.
+void TestPreferences::aPatternsSettingsCanBeTakenDownOntoTheOpenLog()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("other.trace"), sample());
+    openOn(dlg, logPath(QStringLiteral("other.trace")));
+    QTreeWidget *tree = treeOf(dlg);
+    // Nothing of its own, and no pattern claims it: it reads the defaults.
+    QVERIFY(!dlg.fileProfile().has_value());
+    QCOMPARE(dlg.tree().matchingPattern(logPath(QStringLiteral("other.trace"))), -1);
+
+    QMenu menu;
+    dlg.buildTreeMenu(&menu, rowNamed(tree, QStringLiteral("*.log")));
+    auto *use = menu.findChild<QAction *>(QStringLiteral("useSettingsForCurrentFile"));
+    QVERIFY2(use, "a pattern row offered nothing to take");
+    use->trigger();
+
+    // The selection lands on the LOG, showing what it now opens with — and it is the row
+    // Apply, Promote and Delete then act on.
+    QCOMPARE(tree->currentItem(), currentFileRow(tree));
+
+    dlg.accept();
+    QVERIFY2(dlg.fileProfile().has_value(), "the log kept nothing of what it was given");
+    QCOMPARE(dlg.fileProfile()->format.pattern, QStringLiteral("PATTERN"));
+
+    // A copy, not a move: the pattern still says what it said, still claims what it
+    // claimed, and this log is still not one of them.
+    QCOMPARE(dlg.tree().patterns().size(), 1);
+    QCOMPARE(dlg.tree().patterns().at(0).profile.format.pattern, QStringLiteral("PATTERN"));
+    QCOMPARE(dlg.tree().matchingPattern(logPath(QStringLiteral("other.trace"))), -1);
+    // And the defaults, which this log used to take, are untouched.
+    QCOMPARE(dlg.tree().defaults().format.pattern, QStringLiteral("ROOT"));
+}
+
+// The redundancy rule answers this gesture too, with nothing added for it: a log given
+// exactly what it already inherits has nothing of its own to say, so its entry goes —
+// the same comparison that finishes Promote and Delete. Taking the settings of the
+// pattern that already claims you is a way of saying "put me back on the pattern".
+void TestPreferences::takingWhatTheLogAlreadyInheritsLeavesItNothingOfItsOwn()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOnStored(dlg, logPath(QStringLiteral("app.log")),
+                 profileWith(QStringLiteral("MINE")));
+    QTreeWidget *tree = treeOf(dlg);
+    QVERIFY(dlg.fileProfile().has_value()); // it has settings of its own to start with
+
+    QMenu menu;
+    dlg.buildTreeMenu(&menu, rowNamed(tree, QStringLiteral("*.log")));
+    menu.findChild<QAction *>(QStringLiteral("useSettingsForCurrentFile"))->trigger();
+
+    dlg.accept();
+    QVERIFY2(!dlg.fileProfile().has_value(),
+             "the log kept a copy of what its own pattern says");
+    QCOMPARE(dlg.tree().inherited(logPath(QStringLiteral("app.log"))).format.pattern,
+             QStringLiteral("PATTERN"));
+}
+
+// Which rows offer it, and the two that do not. The defaults are left out deliberately:
+// a log no pattern claims already takes them, so the only log the gesture could change
+// there is one a pattern DOES claim — an exception to "the deepest level wins" a
+// right-click away from the pattern rows this exists for. The file row is left out
+// because copying a row onto itself is nothing. And with no log open there is no row to
+// copy to at all, so a pattern offers nothing either.
+void TestPreferences::onlyAPatternRowOffersItsSettingsAndOnlyWithALogOpen()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
+    QTreeWidget *tree = treeOf(dlg);
+
+    const auto offers = [&dlg](QTreeWidgetItem *item) {
+        QMenu menu;
+        dlg.buildTreeMenu(&menu, item);
+        return menu.findChild<QAction *>(QStringLiteral("useSettingsForCurrentFile"))
+               != nullptr;
+    };
+    QVERIFY(offers(rowNamed(tree, QStringLiteral("*.log"))));
+    QVERIFY(!offers(tree->topLevelItem(0)));   // Default settings
+    QVERIFY(!offers(currentFileRow(tree)));    // the log itself
+
+    // No log open: the tree is patterns only, and a pattern has nowhere to copy to.
+    PreferencesDialog noLog(populated(), QString(), QByteArray());
+    QMenu menu;
+    noLog.buildTreeMenu(&menu, rowNamed(treeOf(noLog), QStringLiteral("*.log")));
+    QVERIFY(menu.isEmpty());
+}
+
+// The wiring between the two, which is the half neither of the cases above touches: the
+// policy, the connection, the row the position maps to, and the selection the click moves
+// before the menu opens. It is driven with a REAL right-click at the row's own rectangle,
+// because that is the whole of what is being claimed — every one of those four can be
+// wrong with buildTreeMenu() perfect.
+//
+// The menu exec()s a nested event loop, which is what the timer below is for: it fires
+// inside that loop, reads the popup and closes it. If no menu opens the timer simply
+// finds none and the case fails on m_poppedUp rather than hanging.
+void TestPreferences::rightClickingARowSelectsItAndPutsUpItsMenu()
+{
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
+    dlg.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&dlg));
+
+    QTreeWidget *tree = treeOf(dlg);
+    QCOMPARE(tree->contextMenuPolicy(), Qt::CustomContextMenu);
+    QTreeWidgetItem *pattern = rowNamed(tree, QStringLiteral("*.log"));
+    tree->setCurrentItem(currentFileRow(tree)); // anything but the row about to be clicked
+
+    m_poppedUp = false;
+    QTimer::singleShot(0, this, [this]() {
+        if (auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+            m_poppedUp = menu->findChild<QAction *>(
+                             QStringLiteral("useSettingsForCurrentFile")) != nullptr;
+            menu->close();
+        }
+    });
+    // A synthesised MOUSE click will not do: a QContextMenuEvent is made by the platform
+    // plugin and not by Qt's widget code, so QTest::mouseClick(RightButton) delivers a
+    // press and a release and no context menu event at all — the menu never opens and the
+    // case passes or fails on nothing. This is the event a right-click actually produces.
+    const QPoint at = tree->visualItemRect(pattern).center();
+    QContextMenuEvent ev(QContextMenuEvent::Mouse, at, tree->viewport()->mapToGlobal(at));
+    QApplication::sendEvent(tree->viewport(), &ev);
+
+    QVERIFY2(m_poppedUp, "a right-click on a pattern row put up no menu of its own");
+    QCOMPARE(tree->currentItem(), pattern);
 }
 
 // Looking at another node is not a way of throwing away what was typed into this one.

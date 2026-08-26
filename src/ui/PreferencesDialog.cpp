@@ -5,6 +5,7 @@
 #include "RemoteLocation.h"
 #include "UiColors.h"
 
+#include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -14,6 +15,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPainter>
 #include <QPushButton>
 #include <QScreen>
@@ -223,6 +225,15 @@ void PreferencesDialog::buildUi(const QString &sampleName, const QByteArray &sam
                     commitCurrent();
                 loadNode();
             });
+    // What can be done to a row that is NOT the one whose settings are on screen. The
+    // three buttons on the right all act on the selected node, which is the right shape
+    // for "do something with what I am looking at" and the wrong one for "take THAT
+    // entry's settings and put them here" — the row the settings come from and the row
+    // they go to are two different rows, and only one of them can be selected. A menu on
+    // the row supplies the other half.
+    m_treeWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_treeWidget, &QTreeWidget::customContextMenuRequested, this,
+            &PreferencesDialog::showTreeMenu);
     leftLayout->addWidget(m_treeWidget, 1);
 
     auto *toolRow = new QHBoxLayout;
@@ -1049,6 +1060,80 @@ void PreferencesDialog::movePattern(int delta)
         return;
     m_settings.movePattern(i, delta);
     rebuildTree(ref);
+}
+
+void PreferencesDialog::buildTreeMenu(QMenu *menu, QTreeWidgetItem *item)
+{
+    if (!menu || !item)
+        return;
+    const NodeRef ref = refFromString(item->data(0, kRefRole).toString());
+    // A PATTERN ONLY, and only while a log is open. The defaults are left out on purpose:
+    // a log no pattern claims already takes them, so copying them onto it is a gesture
+    // whose only effect on any log is on one a pattern DOES claim — an exception to
+    // "the deepest level that names a log wins" reached by a right-click, which is not a
+    // thing to put a step away from the pattern rows this exists for. The file row is
+    // left out because copying a row onto itself is nothing.
+    if (ref.kind != NodeKind::Pattern || m_currentAddress.isEmpty())
+        return;
+
+    // Named for its ROLE and not for the log, exactly as the Apply button's label is: a
+    // log's name is unbounded and putting one in a menu item makes the item's width, and
+    // its mnemonic, depend on what happens to be open. "Current file" is the word the row
+    // it acts on already wears.
+    QAction *use = menu->addAction(tr("&Use These Settings for the Current File"));
+    use->setObjectName(QStringLiteral("useSettingsForCurrentFile")); // findChild, for tests
+    connect(use, &QAction::triggered, this, [this, ref]() { useSettingsFor(ref); });
+}
+
+void PreferencesDialog::showTreeMenu(const QPoint &pos)
+{
+    // `pos` is in the TREE'S coordinates and itemAt() reads the VIEWPORT'S, which differ
+    // by the frame the style draws — one pixel under Fusion, none under Breeze, and the
+    // one row that would be missed is at the very top of the list.
+    QTreeWidgetItem *item =
+        m_treeWidget->itemAt(m_treeWidget->viewport()->mapFrom(m_treeWidget, pos));
+    if (!item)
+        return;
+    // The click SELECTS the row before the menu opens, which a right-click on a tree does
+    // not do by itself. Two reasons: what the one item offers is this row's settings, and
+    // the panel is where they can be read before they are taken; and the selection is
+    // then where the reader's eye already is when the gesture moves it to the log.
+    if (item != m_treeWidget->currentItem())
+        m_treeWidget->setCurrentItem(item);
+
+    QMenu menu(this);
+    buildTreeMenu(&menu, item);
+    // Nothing to offer on this row: no menu at all, rather than an empty frame or a menu
+    // of disabled items explaining what cannot be done to a row nobody asked about.
+    if (menu.isEmpty())
+        return;
+    menu.exec(m_treeWidget->mapToGlobal(pos));
+}
+
+void PreferencesDialog::useSettingsFor(const NodeRef &ref)
+{
+    if (m_currentAddress.isEmpty())
+        return;
+    // The source node's own last keystroke is part of what is copied — it is the selected
+    // one, so the editors hold it and nothing else has folded it back yet.
+    commitCurrent();
+
+    LogProfile p;
+    if (!profileOfNode(ref, &p))
+        return; // a pattern id that no longer resolves; nothing to copy
+    m_fileProfile = p;
+
+    // NOTHING IS STORED AND NOTHING IS APPLIED. fileProfile() re-tests the row against
+    // what the log inherits when OK is pressed, so taking the settings of the pattern
+    // that already claims this log leaves the log with nothing of its own — the same
+    // redundancy rule that answers Promote and Delete, answering this one too. Re-reading
+    // an already-open log with them is still "Apply to current file", which now acts on
+    // exactly this row.
+    //
+    // And the selection lands on the LOG rather than staying on the pattern it came from:
+    // what the gesture changed is what the log opens with, and that is the row now showing
+    // it — as well as the row Apply, Promote and Delete then act on.
+    rebuildTree(NodeRef{NodeKind::File, m_currentAddress});
 }
 
 void PreferencesDialog::promoteToParent()
