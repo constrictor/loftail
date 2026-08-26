@@ -804,6 +804,33 @@ void HighlighterPane::buildUi()
     btnRow->addWidget(m_upBtn);
     btnRow->addWidget(m_downBtn);
     top->addLayout(btnRow);
+
+    // A ROW OF ITS OWN, and the reason is width rather than grouping. A QHBoxLayout's
+    // minimum width is the SUM of its children's, so a sixth button in the row above
+    // raises the pane's own floor by that button's whole width — and this row sits in
+    // `top`, outside the QScrollArea that holds the axes, so the pane pays it directly:
+    // past the axis editor's floor it is a horizontal scrollbar under an ordinary dock,
+    // whose first casualty is the All/None/Invert column (the failure AxisEditor's
+    // Ignored-policy time editors exist to avoid). A row that leads with a stretch
+    // contributes one button's width and nothing else, and ~24 px of height is what the
+    // axis scroll area is there to absorb.
+    //
+    // It reads correctly too: the five above act on the selected rule or on the list,
+    // and this one replaces the list from somewhere else entirely.
+    auto *copyRow = new QHBoxLayout;
+    copyRow->addStretch(1);
+    m_copyBtn = new QPushButton(tr("Copy From…"), this);
+    m_copyBtn->setObjectName(QStringLiteral("ruleCopyFrom")); // never the visible text
+    m_copyBtn->setToolTip(tr("Replace these rules with an exact copy of another open "
+                             "log's."));
+    // Off until the window says there is another log open — setCanCopyFromAnotherLog()
+    // is the one writer, and updateRuleButtons() deliberately knows nothing about it.
+    m_copyBtn->setEnabled(false);
+    copyRow->addWidget(m_copyBtn);
+    top->addLayout(copyRow);
+    connect(m_copyBtn, &QAbstractButton::clicked, this,
+            &HighlighterPane::copyFromAnotherLogRequested);
+
     root->addLayout(top);
 
     // --- What the selected rule MATCHES -------------------------------------
@@ -1201,6 +1228,20 @@ void HighlighterPane::updateRuleButtons()
     m_clearBtn->setEnabled(!m_rules.isEmpty());
 }
 
+void HighlighterPane::setCanCopyFromAnotherLog(bool available)
+{
+    // Outside updateRuleButtons() on purpose, and not because it would be inconvenient
+    // there: that function's two inputs are the rule count and the selected row, and
+    // neither is what this button waits for. It waits for another open log, which the
+    // pane cannot see at all (invariant #7) — so the window supplies the answer, from
+    // the same place that enables the menu item, and the two cannot disagree.
+    //
+    // No stored flag, and none is wanted: with no document the pane greys itself entire
+    // (setDocument), which covers the button without this having to be re-asked.
+    if (m_copyBtn)
+        m_copyBtn->setEnabled(available);
+}
+
 int HighlighterPane::nextFreeBackground() const
 {
     // The first palette slot no existing rule paints with, so a second rule is
@@ -1394,6 +1435,51 @@ void HighlighterPane::restoreState(const QJsonObject &state)
     m_rules = HighlighterSet::fromJson(state.value(QStringLiteral("rules")).toArray()).rules;
     normaliseRules();
     syncToDocument();
+    reloadRuleTable();
+    emit highlightersChanged();
+}
+
+void HighlighterPane::adoptRules(const QVector<HighlightRule> &rules, const QTimeZone &writtenIn)
+{
+    if (!m_document)
+        return; // a copy onto nothing is not a state worth having
+
+    m_rules = rules;
+
+    // THE ONE THING THAT IS NOT A PLAIN COPY. A MatchCriteria time bound is stored as
+    // display-zone WALL CLOCK (§5.1), so the same digits name different instants in two
+    // documents — and SPEC.md §7 promises that re-spelling a bound moves nothing. Old
+    // zone → instant → new zone, exactly as refreshTimeBounds() does when the zone moves
+    // under one log, and under the same three rules: only start/end, only the ones that
+    // are already valid, and on the STORED value rather than anything read back out of
+    // an editor (criteria() is not the inverse of setCriteria()).
+    //
+    // The guard is what makes this inert in the ordinary case, and that matters: two
+    // logs on the same display zone must copy BYTE-IDENTICALLY, or an exact copy of the
+    // seeded rules would stop comparing equal to the seed and light the dock's marker
+    // with nothing on screen to explain it.
+    //
+    // m_boundZone is left alone — it already names this document's display zone, which
+    // is now the zone the adopted digits are written in, so the pane's own invariant
+    // holds on the way out.
+    if (writtenIn.isValid() && m_boundZone.isValid() && writtenIn != m_boundZone) {
+        for (HighlightRule &r : m_rules) {
+            // Both, never short-circuited: `||` would leave `end` in the old zone
+            // whenever `start` had already moved.
+            reexpressBound(r.match.start, writtenIn, m_boundZone);
+            reexpressBound(r.match.end, writtenIn, m_boundZone);
+        }
+    }
+
+    // The same ingest normalisation setDocument() and restoreState() apply: rules
+    // arriving from somewhere that never saw this pane may claim the Colour action
+    // while naming no colour, and re-deriving it is what stops such a rule silently
+    // shadowing the one below it (first-match-wins is per action).
+    normaliseRules();
+    syncToDocument();
+    // The one funnel: rebuilds the table, re-selects row 0, and ends in
+    // updateRuleButtons() / updatePlaceholder() / updateActivity(), so the buttons, the
+    // empty-list line and the dock's marker all follow with nothing else wired up.
     reloadRuleTable();
     emit highlightersChanged();
 }

@@ -131,6 +131,14 @@ public:
     // text without a modal dialog on screen, which is the only part worth pinning.
     static QString aboutText();
 
+    // The other open LOGS, in tab order, one entry per file however many tabs it has —
+    // what View ▸ Copy Highlighters from Another Log… offers (SPEC.md §7).
+    //
+    // Public and split from the picker for buildRecordMenu()'s reason: a test can read
+    // what is on offer with no modal on screen, which is the only way to state that a
+    // log open in two tabs is offered once.
+    QVector<DocumentContext *> otherLogContexts() const;
+
 signals:
     // Panes bind to the active document by signal, not by construction (invariant
     // #7, ARCHITECTURE.md §12.3). Emitted with the newly-active Document (or
@@ -596,6 +604,14 @@ private:
     // dot cannot drift apart.
     void updateClearFiltersState();
 
+    // Take the whole rule list from another open log (SPEC.md §7). Both entry points —
+    // the Highlighters pane's Copy From… button and the View-menu item — reach this.
+    void copyHighlightersFromAnotherLog();
+
+    // Enable both of those exactly while there is another open log to copy from, and
+    // tell the pane the same answer, so the button and the menu item cannot drift.
+    void updateCopyHighlightersState();
+
     // Move the global panes' per-file widget state to/from a context as the active
     // document changes. See DocumentContext::filterState for why this is needed.
     void stashPaneState(DocumentContext *ctx);
@@ -669,6 +685,7 @@ private:
     QDockWidget *m_filtersDock = nullptr;                   // marked while filters are in force
     QDockWidget *m_highlightersDock = nullptr;              // marked while rules are present
     QAction     *m_clearFiltersAction = nullptr;
+    QAction     *m_copyHighlightersAction = nullptr;        // dead without another open log
     // How those docks' title bars are painted (PaneTitleStyle.h). Shared by all four
     // and parented to the window, so it outlives every dock that points at it.
     PaneTitleStyle        *m_paneStyle = nullptr;

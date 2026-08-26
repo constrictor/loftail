@@ -15,6 +15,11 @@ add_library(loftail_ui STATIC
     # does that changes something on a machine, and abortable for the same reason.
     RestartDialog.cpp
     RestartDialog.h
+    # Which open log to take a highlight rule list from. Holds strings and ints only —
+    # the window renders the candidates and this answers with an index — so it links
+    # nothing of core's and is testable with no log anywhere.
+    CopyHighlightersDialog.cpp
+    CopyHighlightersDialog.h
     MainWindow.cpp
     MainWindow.h
     # Per-file machinery (model, controllers, format choice) and one view onto it

@@ -13,6 +13,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QHeaderView>
 #include <QListWidget>
@@ -315,6 +316,17 @@ private slots:
     void theRuleButtonsAreDeadWhileThereIsNothingToActOn();
     void upAndDownAreDeadAtTheEndsOfTheList();
     void theButtonsFollowTheSelectionAcrossAReorder();
+
+    // Taking another log's whole rule list (SPEC.md §7). Everything above the picker:
+    // the pane never sees a tab, so what it is given is a vector and the zone it was
+    // written in.
+    void copyingRulesInReplacesTheWholeListAndReachesTheDocument();
+    void copyingAnEmptyListInEmptiesTheTableAndSaysWhy();
+    void copiedRulesKeepTheInstantTheyName();
+    void copyingTheSeededRulesInClearsTheMarker();
+    void theCopyButtonIsDeadUntilThereIsSomewhereToCopyFrom();
+    void theRuleButtonsDoNotWriteTheCopyButton();
+    void theCopyButtonCostsThePaneNoDockWidth();
 };
 
 void TestHighlighterPane::everyAxisIsOfferedAndOptIn()
@@ -2056,6 +2068,231 @@ void TestHighlighterPane::theButtonsFollowTheSelectionAcrossAReorder()
     QCOMPARE(ruleTable(pane)->currentRow(), 2);
     QVERIFY(up->isEnabled());
     QVERIFY2(!down->isEnabled(), "Down stayed live after moving its rule to the bottom");
+}
+
+// --- Taking another log's rules (SPEC.md §7) ---------------------------------------
+//
+// The pane's half of the gesture. It never sees a tab: the window enumerates the other
+// open logs, asks which one, and hands the answer down as a vector plus the display
+// zone those rules' digits were written in.
+
+namespace {
+
+// A rule that is plainly not one of the seeded three, distinguishable by its needle.
+HighlightRule textRule(const char *needle, int background)
+{
+    HighlightRule r;
+    r.match.text.enabled = true;
+    r.match.text.matcher.set(QString::fromLatin1(needle), /*regex=*/false,
+                             Qt::CaseInsensitive);
+    r.background = background;
+    r.foreground = HighlightPalette::readableTextSlot(background);
+    r.actions = HighlightAction::Color;
+    return r;
+}
+
+} // namespace
+
+void TestHighlighterPane::copyingRulesInReplacesTheWholeListAndReachesTheDocument()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+    doc.highlighters().rules = {textRule("mine", 0)};
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    QCOMPARE(ruleTable(pane)->rowCount(), 1);
+
+    QSignalSpy changed(&pane, &HighlighterPane::highlightersChanged);
+
+    // REPLACE, never append: what arrives is what the log has afterwards, and the rule
+    // that was there is gone rather than pushed down the list.
+    const QVector<HighlightRule> source{textRule("a", 1), textRule("b", 2), textRule("c", 3)};
+    pane.adoptRules(source, doc.displayZone());
+
+    QCOMPARE(doc.highlighters().rules, source);
+    QCOMPARE(ruleTable(pane)->rowCount(), source.size());
+    QCOMPARE(ruleTable(pane)->currentRow(), 0);
+    QCOMPARE(changed.count(), 1);
+}
+
+void TestHighlighterPane::copyingAnEmptyListInEmptiesTheTableAndSaysWhy()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+    doc.highlighters().rules = HighlighterSet::defaults().rules;
+
+    HighlighterPane pane;
+    pane.resize(320, 600);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    pane.setDocument(&doc);
+
+    // Copying from a log somebody deliberately left uncoloured is a legitimate answer,
+    // not a refusal: SPEC.md §7 makes an empty list a first-class state.
+    pane.adoptRules({}, doc.displayZone());
+
+    QVERIFY(doc.highlighters().rules.isEmpty());
+    QCOMPARE(ruleTable(pane)->rowCount(), 0);
+    // The empty table is the one state the pane has nothing else to explain itself
+    // with, so it carries its own line — and it is the same line an emptied list has
+    // always shown, reached here by a route that did not exist before.
+    QVERIFY(placeholder(pane));
+    QVERIFY(placeholder(pane)->isVisible());
+    QVERIFY(!button(pane, QStringLiteral("ruleRemove"))->isEnabled());
+    QVERIFY(!button(pane, QStringLiteral("ruleClear"))->isEnabled());
+    QVERIFY(button(pane, QStringLiteral("ruleNew"))->isEnabled());
+}
+
+void TestHighlighterPane::copiedRulesKeepTheInstantTheyName()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+    doc.reparseTimestamps(QTimeZone(3 * 3600)); // this log displays in UTC+3
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+
+    // A bound is display-zone WALL CLOCK, so the same digits name different instants in
+    // two logs. 10:00 written against UTC is 13:00 here — the same moment, spelled in
+    // the terms this log's timestamp column reads in (SPEC.md §7).
+    HighlightRule bounded = textRule("boom", 4);
+    bounded.match.timeEnabled = true;
+    bounded.match.start = QDateTime(QDate(2026, 7, 21), QTime(10, 0, 0));
+    bounded.match.end = QDateTime(QDate(2026, 7, 21), QTime(10, 1, 0));
+
+    pane.adoptRules({bounded}, QTimeZone::utc());
+    QCOMPARE(doc.highlighters().rules.at(0).match.start,
+             QDateTime(QDate(2026, 7, 21), QTime(13, 0, 0)));
+    QCOMPARE(doc.highlighters().rules.at(0).match.end,
+             QDateTime(QDate(2026, 7, 21), QTime(13, 1, 0)));
+
+    // ...AND THE OTHER HALF, which is what keeps the case above honest. Two logs on the
+    // same display zone — the ordinary case, and every case where neither has been
+    // re-pointed — must copy byte for byte. A conversion that ran anyway would make an
+    // exact copy of the seeded rules stop comparing equal to the seed, and the dock's
+    // marker would light with nothing on screen to explain it.
+    const QVector<HighlightRule> plain{textRule("x", 5), bounded};
+    pane.adoptRules(plain, doc.displayZone());
+    QCOMPARE(doc.highlighters().rules, plain);
+}
+
+void TestHighlighterPane::copyingTheSeededRulesInClearsTheMarker()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+    doc.highlighters().rules = {textRule("mine", 0)};
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    QVERIFY(pane.hasCustomRules());
+
+    QSignalSpy activity(&pane, &HighlighterPane::activityChanged);
+    // Copying a log nobody has set rules on hands over the three a log arrives with,
+    // and the marker goes OUT. It reports what the list IS, not that it was once
+    // edited (SPEC.md §7) — nothing special-cases the seed here.
+    pane.adoptRules(HighlighterSet::defaults().rules, doc.displayZone());
+
+    QVERIFY(!pane.hasCustomRules());
+    QCOMPARE(activity.count(), 1);
+    QCOMPARE(activity.at(0).at(0).toBool(), false);
+}
+
+void TestHighlighterPane::theCopyButtonIsDeadUntilThereIsSomewhereToCopyFrom()
+{
+    HighlighterPane pane;
+    QPushButton *copy = button(pane, QStringLiteral("ruleCopyFrom"));
+    QVERIFY(copy);
+
+    // No document: the pane greys itself entire, which covers this button as it covers
+    // New — there is nothing for the window to have said yet either way.
+    QVERIFY(!pane.isEnabled());
+
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+    pane.setDocument(&doc);
+
+    // A document is NOT enough. What this button waits for is another open LOG, which
+    // the pane cannot see at all — so it stays dead until the window says otherwise.
+    QVERIFY(pane.isEnabled());
+    QVERIFY2(!copy->isEnabled(), "Copy From… is live with nowhere to copy from");
+
+    pane.setCanCopyFromAnotherLog(true);
+    QVERIFY(copy->isEnabled());
+
+    // And it ASKS and does nothing else — enumerating, choosing and applying are the
+    // window's (invariant #7), so the click must move no rule here.
+    QSignalSpy asked(&pane, &HighlighterPane::copyFromAnotherLogRequested);
+    QSignalSpy changed(&pane, &HighlighterPane::highlightersChanged);
+    const QVector<HighlightRule> before = doc.highlighters().rules;
+    copy->click();
+    QCOMPARE(asked.count(), 1);
+    QCOMPARE(changed.count(), 0);
+    QCOMPARE(doc.highlighters().rules, before);
+
+    pane.setCanCopyFromAnotherLog(false);
+    QVERIFY(!copy->isEnabled());
+}
+
+void TestHighlighterPane::theRuleButtonsDoNotWriteTheCopyButton()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    pane.setCanCopyFromAnotherLog(true);
+
+    QPushButton *copy = button(pane, QStringLiteral("ruleCopyFrom"));
+
+    // updateRuleButtons() is the one writer for the four beside it and must stay
+    // ignorant of this one: its inputs are the rule count and the selected row, and
+    // neither is what this button waits for. Every gesture that runs it, in turn.
+    for (int i = 0; i < 3; ++i)
+        button(pane, QStringLiteral("ruleNew"))->click();
+    QVERIFY(copy->isEnabled());
+    selectRule(pane, 1);
+    QVERIFY(copy->isEnabled());
+    button(pane, QStringLiteral("ruleUp"))->click();
+    QVERIFY(copy->isEnabled());
+    button(pane, QStringLiteral("ruleRemove"))->click();
+    QVERIFY(copy->isEnabled());
+    button(pane, QStringLiteral("ruleClear"))->click();
+    QVERIFY2(copy->isEnabled(), "clearing the rules took the copy button with it");
+
+    // ...and the other direction: a rule edit must not switch it back ON either.
+    pane.setCanCopyFromAnotherLog(false);
+    button(pane, QStringLiteral("ruleNew"))->click();
+    QVERIFY(!copy->isEnabled());
+}
+
+void TestHighlighterPane::theCopyButtonCostsThePaneNoDockWidth()
+{
+    HighlighterPane pane;
+    QPushButton *copy = button(pane, QStringLiteral("ruleCopyFrom"));
+    QVERIFY(copy);
+
+    // A QHBoxLayout's minimum width is the SUM of its children's, so a sixth button in
+    // the row above would raise the pane's own floor by that button's whole width — and
+    // that row is outside the axis scroll area, so the pane pays it directly: past the
+    // axis editor's floor it is a horizontal scrollbar under an ordinary dock. The
+    // button sits on a row of its own that leads with a stretch, so it contributes
+    // nothing to the floor.
+    //
+    // Stated as shown-versus-hidden and never as a number: PM_ScrollBarExtent and the
+    // group-box frames both differ between Fusion and Breeze, so a written-down width
+    // is a test that is green by luck (CLAUDE.md).
+    const int with = pane.minimumSizeHint().width();
+    copy->hide();
+    pane.layout()->activate();
+    const int without = pane.minimumSizeHint().width();
+    QCOMPARE(with, without);
 }
 
 QTEST_MAIN(TestHighlighterPane)

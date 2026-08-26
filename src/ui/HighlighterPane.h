@@ -134,6 +134,24 @@ public:
     // the same color.
     void addRule(const MatchCriteria &criteria);
 
+    // Replace this log's rules with an exact copy of another log's (SPEC.md §7). The
+    // third wholesale-replace entry point beside setDocument() and restoreState(), and
+    // the only one whose rules were written for a DIFFERENT display zone: a
+    // MatchCriteria bound is display-zone wall clock (§5.1), so `writtenIn` says which
+    // zone the incoming digits are in and they are re-expressed into this document's by
+    // exactly the conversion refreshTimeBounds() applies when the zone moves under one
+    // log — only start/end, only the valid ones, on the stored value. Same zone in and
+    // out is a no-op by construction, which is what keeps an exact copy of the seeded
+    // rules comparing equal to the seed and so leaving the dock's marker alone.
+    void adoptRules(const QVector<HighlightRule> &rules, const QTimeZone &writtenIn);
+
+    // Whether there is anywhere to copy FROM. The pane cannot answer this — it binds to
+    // one document and knows nothing about the others (invariant #7) — so the window
+    // tells it, from the one function that also enables the menu item, and the two
+    // cannot drift. Deliberately NOT part of updateRuleButtons(): what this button
+    // waits for is another open log, which is neither of that function's two inputs.
+    void setCanCopyFromAnotherLog(bool available);
+
 signals:
     // Emitted whenever the rules change. MainWindow re-resolves and repaints; no
     // model reset is needed since highlighting recolors rows without adding/removing.
@@ -145,6 +163,12 @@ signals:
     // Edge-triggered for the same reason the Filters pane's is: the title rides a
     // QTabBar entry, and re-setting it relays out the bar.
     void activityChanged(bool active);
+
+    // The Copy From… button, and a BARE signal by design (FindBar::highlightRequested
+    // is the precedent): enumerating the other open logs, asking which one and applying
+    // the answer are the window's, because no pane in src/ui may include MainWindow.h
+    // (invariant #7, ARCHITECTURE.md §12.3). The button emits and does nothing else.
+    void copyFromAnotherLogRequested();
 
 protected:
     // A theme switch changes every swatch and every action glyph in the table, all of
@@ -252,6 +276,9 @@ private:
     QPushButton *m_clearBtn = nullptr;
     QPushButton *m_upBtn = nullptr;
     QPushButton *m_downBtn = nullptr;
+    // On a row of its own under the other four, and that is a width decision rather
+    // than a grouping one — see buildUi().
+    QPushButton *m_copyBtn = nullptr;
 
     // The CONDITION editor for the selected rule, and the whole of what is left below
     // the table. A bare container, not a captioned group box: setEnabled() on it is what

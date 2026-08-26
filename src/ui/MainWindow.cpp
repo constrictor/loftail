@@ -10,6 +10,7 @@
 #include "RestartDialog.h"
 #include "RestartTarget.h"
 #include "ConfigView.h"
+#include "CopyHighlightersDialog.h"
 #include "DocumentView.h"
 #include "Fonts.h"
 #include "Filter.h"
@@ -375,6 +376,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(this, &MainWindow::activeDocumentChanged, m_highlighterPane, &HighlighterPane::setDocument);
     connect(m_highlighterPane, &HighlighterPane::highlightersChanged,
             this, &MainWindow::applyActiveHighlighters);
+    // The pane's Copy From… button asks and does nothing else: which logs are open and
+    // which one was picked are the window's to answer, because no pane may include
+    // MainWindow.h (invariant #7). Same slot as the View-menu item.
+    connect(m_highlighterPane, &HighlighterPane::copyFromAnotherLogRequested,
+            this, &MainWindow::copyHighlightersFromAnotherLog);
     // The same marker the Filters dock carries, for the same reason: with the panes
     // tabbed, rules colour the log while the pane that holds them is out of sight.
     // "Not the seeded rules", not "present": every log opens with the three default
@@ -797,6 +803,20 @@ void MainWindow::buildMenus()
         if (m_filterPane)
             m_filterPane->clearAll();
     });
+
+    // Take another open log's whole rule list (SPEC.md §7). The second of two entry
+    // points into one slot — the Highlighters pane carries the other, as a button under
+    // its rule table, where somebody looking at the rules will find it.
+    //
+    // "Log", not "Tab", and deliberately: one file can back several tabs and the offer
+    // is one entry per file, so a menu promising tabs would list fewer things than it
+    // named. Ellipsis because it opens a picker; no shortcut, because this is a rare
+    // gesture and nothing near it is free.
+    m_copyHighlightersAction = viewMenu->addAction(tr("Copy &Highlighters from Another Log…"));
+    m_copyHighlightersAction->setObjectName(QStringLiteral("copyHighlightersAction"));
+    m_copyHighlightersAction->setEnabled(false);
+    connect(m_copyHighlightersAction, &QAction::triggered,
+            this, &MainWindow::copyHighlightersFromAnotherLog);
 
     // Panes are closable docks, so without this a closed pane could not be brought
     // back (SPEC.md §8). Qt's own toggleViewAction does the work.
@@ -1610,6 +1630,9 @@ void MainWindow::updateActionStates()
     // Filters are per FILE too (invariant #7), so switching tabs can move this either
     // way even though nothing about the filters themselves changed.
     updateClearFiltersState();
+    // Whether there is another log to copy rules FROM moves with the active tab as well
+    // as with the set of open logs — hence the second call site, in relabelTabs().
+    updateCopyHighlightersState();
     if (m_progressBox) {
         m_progressBox->setVisible(hasFile && ctx->indexing);
         if (hasFile && ctx->indexing)
@@ -1649,6 +1672,30 @@ void MainWindow::updateClearFiltersState()
     // outgoing tab's filters. The rebind emits activityChanged() whenever the answer
     // actually moves, so the pane's own state is what settles it either way.
     m_clearFiltersAction->setEnabled(m_filterPane && m_filterPane->hasActiveFilters());
+}
+
+void MainWindow::updateCopyHighlightersState()
+{
+    // hasFile, NOT activePageIsLog(), for File ▸ Restart App's reason one screen up:
+    // this edits the BOUND log's rules through the pane, and the bound log deliberately
+    // does not move when a config-editor page comes forward (M22) — so the pane goes on
+    // showing that log's rules there, and an item greyed on that page would be greyed
+    // over a pane that is plainly offering the thing it does.
+    //
+    // Asked of the WINDOW and never of the pane, which is what makes it safe to call
+    // from updateActionStates(): that runs BEFORE setActiveView() rebinds the panes, so
+    // a pane-derived answer would report the outgoing log's state for the incoming tab
+    // (the trap updateClearFiltersState() answers the other way round, because its
+    // question is about the filters themselves). m_activeView has already moved by
+    // then, so activeContext() names the incoming log.
+    //
+    // ONE writer for both surfaces. The button and the menu item are the same command
+    // and must be live in exactly the same states, or one of them is a lie.
+    const bool can = activeContext() != nullptr && !otherLogContexts().isEmpty();
+    if (m_copyHighlightersAction)
+        m_copyHighlightersAction->setEnabled(can);
+    if (m_highlighterPane)
+        m_highlighterPane->setCanCopyFromAnotherLog(can);
 }
 
 void MainWindow::chooseFileToOpen()
@@ -2852,6 +2899,14 @@ void MainWindow::relabelTabs()
         m_contexts[i]->tabLabel = labels.at(i);
         updateTabTitles(m_contexts[i].get()); // a file with no view yet is a no-op
     }
+
+    // The set of open logs is what "somewhere to copy rules from" is asked about, and
+    // this function IS where that set changes — which is why the call is here and not
+    // only in updateActionStates(). Closing a BACKGROUND tab leaves the active view
+    // exactly where it was, so the reap runs relabelTabs() and reaches
+    // updateActionStates() only when the last view has gone: without this line the
+    // menu item and the pane's button would stay live with nothing left to offer.
+    updateCopyHighlightersState();
 }
 
 void MainWindow::onIndexProgress(DocumentContext *ctx, qint64 done, qint64 total)
@@ -3371,6 +3426,85 @@ void MainWindow::applyActiveHighlighters()
     // Bounds() runs there and already writes nothing unless a rule actually moved, and
     // that guard is now load-bearing for a file write as well as for the tab's marker.
     persistFileSettings(ctx);
+}
+
+// --- Copying another log's rules (SPEC.md §7, ARCHITECTURE.md §7.5) ---------------
+
+QVector<DocumentContext *> MainWindow::otherLogContexts() const
+{
+    QVector<DocumentContext *> out;
+    const DocumentContext *active = activeContext();
+    // viewsInTabOrder(), never m_views and never a blind cast of m_tabs->widget(i):
+    // m_views has carried no order since M22, and a page in the well may be a
+    // ConfigView rather than a log at all.
+    for (DocumentView *view : viewsInTabOrder()) {
+        DocumentContext *ctx = view->context();
+        // One entry per FILE: several views of one log are one offer, and the menu item
+        // says "Log" rather than "Tab" precisely because of this line.
+        if (!ctx || ctx == active || !ctx->doc || out.contains(ctx))
+            continue;
+        out.append(ctx);
+    }
+    return out;
+}
+
+void MainWindow::copyHighlightersFromAnotherLog()
+{
+    DocumentContext *target = activeContext();
+    const QVector<DocumentContext *> sources = otherLogContexts();
+    // Both surfaces are dead in these states; this is the race guard, not the gate.
+    if (!target || !m_highlighterPane || sources.isEmpty())
+        return;
+
+    // SNAPSHOT BEFORE THE MODAL. exec() runs the event loop, so live ticks go on and a
+    // context can in principle be reaped underneath it — nothing that survives exec()
+    // may be a pointer into m_contexts. A rule list is a handful of small structs, so
+    // copying every candidate's is cheaper than the alternative is safe.
+    //
+    // The rules are read off the source DOCUMENT and never off any pane state: the pane
+    // holds one file's rules at a time and these are, by construction, the files it is
+    // not bound to. That is persistFileSettings()' own rule, one seam over.
+    QVector<CopyHighlightersDialog::Source> offer;
+    QVector<QVector<HighlightRule>> rules;
+    QVector<QTimeZone> zones;
+    offer.reserve(sources.size());
+    rules.reserve(sources.size());
+    zones.reserve(sources.size());
+    const QVector<HighlightRule> seeded = HighlighterSet::defaults().rules;
+    for (DocumentContext *ctx : sources) {
+        const QVector<HighlightRule> &r = ctx->doc->highlighters().rules;
+        CopyHighlightersDialog::Source s;
+        // updateTabTitles()' own fallback: a context with no view yet has no label.
+        s.label = ctx->tabLabel.isEmpty() ? logSourceDisplayName(ctx->doc->path())
+                                          : ctx->tabLabel;
+        // logSourceDisplayPath(), NEVER doc->path(): a remote address can carry a
+        // password, and this string goes on a tooltip.
+        s.address = logSourceDisplayPath(ctx->doc->path());
+        s.ruleCount = int(r.size());
+        s.seeded = (r == seeded);
+        offer.append(s);
+        rules.append(r);
+        zones.append(ctx->doc->displayZone());
+    }
+
+    const QString targetLabel = target->tabLabel.isEmpty()
+        ? logSourceDisplayName(target->doc->path())
+        : target->tabLabel;
+    const int pick = CopyHighlightersDialog::chooseSource(
+        offer, targetLabel, int(target->doc->highlighters().rules.size()), this);
+    if (pick < 0 || pick >= rules.size())
+        return; // cancelled: change nothing and say nothing
+    // The world may have moved under the modal. Abandon silently rather than write one
+    // log's rules onto whichever log is in front now.
+    if (activeContext() != target)
+        return;
+
+    m_highlighterPane->adoptRules(rules.at(pick), zones.at(pick));
+    // ...and nothing else. adoptRules() emits highlightersChanged(), which is already
+    // wired to applyActiveHighlighters(): the digest's model-reset bracket, the
+    // re-resolve, the viewport repaint, invalidateDensityRules(), updateTrayPresence()
+    // and persistFileSettings() all follow, and no store's schema moves because nothing
+    // new is being written — these are ordinary rules in the ordinary place.
 }
 
 // --- Highlight actions beyond colour (M19, SPEC.md §7, ARCHITECTURE.md §7.5) ------

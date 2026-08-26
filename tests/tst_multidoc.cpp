@@ -18,9 +18,17 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QAbstractButton>
+#include <QDialog>
+#include <QPushButton>
+#include <QTimer>
+
+#include <functional>
+#include <utility>
 
 #include "ConfigReset.h"
 #include "AxisEditor.h"
+#include "CopyHighlightersDialog.h"
+#include "HighlighterPane.h"
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
@@ -221,6 +229,16 @@ private slots:
     // notice that fires.
     void aReplacedLogSaysSoInTheStatusBar();
     void aRotationInABackgroundTabSaysNothing();
+
+    // Taking another open log's whole rule list (SPEC.md §7). The window's half: which
+    // logs are on offer, what the two entry points are live in, and that the copy is
+    // remembered for the log like any other rule edit.
+    void copyingHighlightersFromAnotherTabReplacesThisLogsRules();
+    void cancellingTheCopyLeavesTheRulesAlone();
+    void bothEntryPointsRunTheSameGesture();
+    void theCopyCommandIsDeadWithOnlyOneLogOpen();
+    void aLogOpenInTwoTabsIsOfferedOnce();
+    void copiedRulesSurviveClosingAndReopeningTheLog();
 };
 
 namespace {
@@ -1684,6 +1702,290 @@ void TestMultiDoc::aRotationInABackgroundTabSaysNothing()
              qPrintable(w.statusBar()->currentMessage()));
 
     w.close();
+}
+
+// --- Taking another open log's rules (SPEC.md §7) -----------------------------------
+
+namespace {
+
+// The picker is modal, so it has to be driven from a timer once it is up — the
+// tst_archiveopen shape. Anything ELSE that goes modal is rejected on a repeating
+// timer, because without that a regression does not fail the case, it HANGS it.
+QTimer *rejectUnexpectedDialogs(bool *seen)
+{
+    auto *timer = new QTimer;
+    timer->setInterval(200);
+    QObject::connect(timer, &QTimer::timeout, [seen]() {
+        for (QWidget *w : QApplication::topLevelWidgets()) {
+            auto *dialog = qobject_cast<QDialog *>(w);
+            if (!dialog || !dialog->isVisible())
+                continue;
+            if (qobject_cast<CopyHighlightersDialog *>(dialog))
+                continue;
+            *seen = true;
+            dialog->reject();
+        }
+    });
+    timer->start();
+    return timer;
+}
+
+void whenPickerShown(std::function<void(CopyHighlightersDialog *)> act)
+{
+    QTimer::singleShot(0, [act = std::move(act)]() {
+        for (QWidget *w : QApplication::topLevelWidgets()) {
+            if (auto *dialog = qobject_cast<CopyHighlightersDialog *>(w)) {
+                act(dialog);
+                return;
+            }
+        }
+    });
+}
+
+Document *docOfTab(const MainWindow &w, int index)
+{
+    auto *view = qobject_cast<DocumentView *>(docTabs(w)->widget(index));
+    return view ? view->context()->doc.get() : nullptr;
+}
+
+// BY PATH, never by tab index, wherever a case relaunches: a MainWindow's constructor
+// restores whatever session the last one saved, so a window that opens one log can come
+// up holding two and the log this case means is not necessarily tab 0.
+Document *docOfLog(const MainWindow &w, const QString &path)
+{
+    const QString wanted = QFileInfo(path).absoluteFilePath();
+    for (int i = 0; i < docTabs(w)->count(); ++i) {
+        Document *d = docOfTab(w, i);
+        if (d && QFileInfo(d->path()).absoluteFilePath() == wanted)
+            return d;
+    }
+    return nullptr;
+}
+
+// addRule() above writes straight into the Document, which is right for the tab-marker
+// cases it was written for and one step short here: it leaves both swatches at
+// *default*, and a rule that names no colour does not carry the Colour action — so
+// adoptRules()' normalisation (the same one setDocument() and restoreState() apply)
+// legitimately drops the flag and the copy would differ from its source in a way that
+// says nothing about copying. A rule made in the application always names a colour;
+// this is what one looks like.
+void addColouredRule(MainWindow &w, int tabIndex, const char *needle, int background)
+{
+    addRule(w, tabIndex, HighlightActions(HighlightAction::Color), needle);
+    QVector<HighlightRule> &rules = docOfTab(w, tabIndex)->highlighters().rules;
+    rules.last().background = background;
+    rules.last().foreground = HighlightPalette::readableTextSlot(background);
+    docOfTab(w, tabIndex)->refreshHighlighting();
+}
+
+} // namespace
+
+void TestMultiDoc::copyingHighlightersFromAnotherTabReplacesThisLogsRules()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    w.openFile(m_b);
+    waitUntilIndexed(w);
+
+    // a.log gets a rule of its own; b.log is left with the three it arrived with.
+    addColouredRule(w, 0, "boom", 7);
+    const QVector<HighlightRule> wanted = docOfTab(w, 0)->highlighters().rules;
+    QCOMPARE(wanted.size(), HighlighterSet::defaults().rules.size() + 1);
+
+    docTabs(w)->setCurrentIndex(1);
+    QCOMPARE(docOfTab(w, 1)->highlighters().rules, HighlighterSet::defaults().rules);
+
+    bool strayDialog = false;
+    QTimer *guard = rejectUnexpectedDialogs(&strayDialog);
+    // a.log is the only other log open, so it is the only row — and it is the one the
+    // picker preselects, being the one whose rules are not the seed.
+    whenPickerShown([](CopyHighlightersDialog *d) { d->accept(); });
+    trigger(w, "copyHighlightersAction");
+    guard->stop();
+    delete guard;
+    QVERIFY(!strayDialog);
+
+    QCOMPARE(docOfTab(w, 1)->highlighters().rules, wanted);
+    // ...and the log it came FROM is untouched. This is a copy, not a move.
+    QCOMPARE(docOfTab(w, 0)->highlighters().rules, wanted);
+
+    w.close();
+}
+
+void TestMultiDoc::cancellingTheCopyLeavesTheRulesAlone()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    w.openFile(m_b);
+    waitUntilIndexed(w);
+
+    addRule(w, 0, HighlightActions(HighlightAction::Color), "boom");
+    docTabs(w)->setCurrentIndex(1);
+    const QVector<HighlightRule> before = docOfTab(w, 1)->highlighters().rules;
+
+    whenPickerShown([](CopyHighlightersDialog *d) { d->reject(); });
+    trigger(w, "copyHighlightersAction");
+
+    // Cancelling must change nothing, exactly as cancelling Preferences does — and
+    // there is no undo for this gesture, which is why it has a Cancel worth trusting.
+    QCOMPARE(docOfTab(w, 1)->highlighters().rules, before);
+
+    w.close();
+}
+
+void TestMultiDoc::bothEntryPointsRunTheSameGesture()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    w.openFile(m_b);
+    waitUntilIndexed(w);
+
+    addColouredRule(w, 0, "boom", 7);
+    const QVector<HighlightRule> wanted = docOfTab(w, 0)->highlighters().rules;
+    docTabs(w)->setCurrentIndex(1);
+
+    // The pane's button, not the menu item this time. They are one command and must be
+    // live in the same states and do the same thing; two ways in, one gesture.
+    auto *copy = w.findChild<QPushButton *>(QStringLiteral("ruleCopyFrom"));
+    QVERIFY(copy);
+    QVERIFY(copy->isEnabled());
+
+    whenPickerShown([](CopyHighlightersDialog *d) { d->accept(); });
+    copy->click();
+
+    QCOMPARE(docOfTab(w, 1)->highlighters().rules, wanted);
+
+    w.close();
+}
+
+void TestMultiDoc::theCopyCommandIsDeadWithOnlyOneLogOpen()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    QAction *item = w.findChild<QAction *>(QStringLiteral("copyHighlightersAction"));
+    auto *copy = w.findChild<QPushButton *>(QStringLiteral("ruleCopyFrom"));
+    QVERIFY(item && copy);
+
+    // No log at all.
+    QVERIFY(!item->isEnabled());
+    QVERIFY(!copy->isEnabled());
+
+    // One log: there is nowhere to copy FROM, which is not the same state as no log.
+    w.openFile(m_a);
+    waitUntilIndexed(w);
+    QVERIFY2(!item->isEnabled(), "the item is live with nowhere to copy from");
+    QVERIFY2(!copy->isEnabled(), "the button is live with nowhere to copy from");
+
+    w.openFile(m_b);
+    waitUntilIndexed(w);
+    QVERIFY(item->isEnabled());
+    QVERIFY(copy->isEnabled());
+
+    // AND BACK AGAIN, closing the BACKGROUND tab — the case the relabelTabs() hook
+    // exists for. The active view does not move, so the reap does not reach
+    // updateActionStates(), and without that hook both surfaces stay live with nothing
+    // left to offer.
+    docTabs(w)->setCurrentIndex(1);
+    QVERIFY(docTabs(w)->count() == 2);
+    docTabs(w)->tabCloseRequested(0);
+    QTRY_COMPARE(docTabs(w)->count(), 1);
+    QVERIFY2(!item->isEnabled(), "the item stayed live after the other log closed");
+    QVERIFY2(!copy->isEnabled(), "the button stayed live after the other log closed");
+
+    w.close();
+}
+
+void TestMultiDoc::aLogOpenInTwoTabsIsOfferedOnce()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    waitUntilIndexed(w);
+    trigger(w, "newViewAction"); // a second view of a.log
+    w.openFile(m_b);
+    waitUntilIndexed(w);
+    QCOMPARE(docTabs(w)->count(), 3);
+
+    // b.log is in front, and what is on offer is one entry per FILE and not per tab —
+    // which is why the menu item says "Log". Asked of the accessor directly, with no
+    // modal anywhere: that it is public is exactly so this can be stated.
+    const QVector<DocumentContext *> offer = w.otherLogContexts();
+    QCOMPARE(offer.size(), 1);
+    QCOMPARE(offer.at(0)->doc->path(), docOfTab(w, 0)->path());
+
+    w.close();
+}
+
+void TestMultiDoc::copiedRulesSurviveClosingAndReopeningTheLog()
+{
+    const QVector<HighlightRule> seeded = HighlighterSet::defaults().rules;
+    QVector<HighlightRule> wanted;
+    {
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        w.openFile(m_a);
+        w.openFile(m_b);
+        waitUntilIndexed(w);
+
+        addColouredRule(w, 0, "boom", 7);
+        wanted = docOfTab(w, 0)->highlighters().rules;
+        docTabs(w)->setCurrentIndex(1);
+
+        whenPickerShown([](CopyHighlightersDialog *d) { d->accept(); });
+        trigger(w, "copyHighlightersAction");
+        QCOMPARE(docOfTab(w, 1)->highlighters().rules, wanted);
+        w.close();
+    }
+
+    // A copy is an ordinary rule edit, so it rides highlightersChanged into
+    // persistFileSettings and is remembered for the LOG (SPEC.md §10) — nothing was
+    // written for this feature, and this is what proves the free ride is real.
+    {
+        MainWindow w2;
+        w2.resize(900, 600);
+        w2.show();
+        w2.openFile(m_b);
+        waitUntilIndexed(w2);
+        QCOMPARE(docOfLog(w2, m_b)->highlighters().rules, wanted);
+        w2.close();
+    }
+
+    // ...and the same for an EMPTY list, which is the case a store reading emptiness as
+    // silence gets wrong: a log deliberately left uncoloured must not come back wearing
+    // the three level colours (presence, never emptiness).
+    {
+        MainWindow w3;
+        w3.resize(900, 600);
+        w3.show();
+        w3.openFile(m_b);
+        waitUntilIndexed(w3);
+        auto *pane = w3.findChild<HighlighterPane *>();
+        QVERIFY(pane);
+        pane->adoptRules({}, docOfLog(w3, m_b)->displayZone());
+        QVERIFY(docOfLog(w3, m_b)->highlighters().rules.isEmpty());
+        w3.close();
+    }
+    {
+        MainWindow w4;
+        w4.resize(900, 600);
+        w4.show();
+        w4.openFile(m_b);
+        waitUntilIndexed(w4);
+        QVERIFY2(docOfLog(w4, m_b)->highlighters().rules.isEmpty(),
+                 "an emptied rule list came back seeded");
+        QVERIFY(docOfLog(w4, m_b)->highlighters().rules != seeded);
+        w4.close();
+    }
 }
 
 #include "tst_multidoc.moc"
