@@ -48,8 +48,13 @@ DocumentView::DocumentView(DocumentContext *context, QWidget *parent)
     m_layout->addWidget(m_digestView, 0);
 
     m_findBar = new FindBar(this);
+    // A log has somewhere to put a highlight rule, so this bar offers the button; the
+    // config editor's bar, built from the same class, does not (FindBar::
+    // setHighlightVisible).
+    m_findBar->setHighlightVisible(true);
     m_layout->addWidget(m_findBar);
     connect(m_findBar, &FindBar::findRequested, this, &DocumentView::findRequested);
+    connect(m_findBar, &FindBar::highlightRequested, this, &DocumentView::highlightRequested);
     // Closing the bar takes the marks with it (SPEC.md §5): the query is gone from the
     // screen, so what is still marked in the table would be a claim about a search the
     // reader can no longer see. Here rather than in MainWindow because the bar and the

@@ -70,6 +70,10 @@ public:
 signals:
     // Forwarded from the Find bar so the window can run the search over this view.
     void findRequested(bool forward, bool fromStart);
+    // Forwarded likewise: "make a highlight rule of what is in the Find box" (SPEC.md
+    // §5). The window handles it because the rules belong to the DOCUMENT and are edited
+    // in a pane the window owns (invariant #7) — this view knows only that its bar asked.
+    void highlightRequested();
 
 protected:
     void resizeEvent(QResizeEvent *event) override;

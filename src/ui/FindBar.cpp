@@ -53,6 +53,26 @@ FindBar::FindBar(QWidget *parent) : QWidget(parent)
     row->addWidget(prev);
     row->addWidget(next);
 
+    // "Highlight": take what is in the box and make a highlight rule of it, on the
+    // message-text axis, with this bar's own Regex and Case options (SPEC.md §5, §7).
+    // Find and highlighting already share the query language — the two read the same
+    // TextMatcher — so the gesture a reader makes after finding the thing they were
+    // looking for a third time is one press rather than a trip to another pane to retype
+    // it. Hidden unless somebody asks for it (setHighlightVisible): the config editor
+    // shares this bar and has nothing to put a rule on.
+    //
+    // It sits with the two arrow buttons rather than after the checkboxes: those are
+    // the row's ACTIONS and this is a third, while Regex and Case are options that all
+    // three of them read. Not auto-raised, for the reason the Filters pane records — a
+    // frameless button carrying only a word reads as a caption, and the frame is what
+    // says "press this".
+    m_highlight = new QToolButton(this);
+    m_highlight->setObjectName(QStringLiteral("findHighlight"));
+    m_highlight->setText(tr("Highlight"));
+    m_highlight->setToolTip(tr("Add a highlight rule matching this search"));
+    m_highlight->hide();
+    row->addWidget(m_highlight);
+
     m_regex = new QCheckBox(tr("Regex"), this);
     m_regex->setObjectName(QStringLiteral("findRegex"));
     m_case = new QCheckBox(tr("Case"), this);
@@ -97,6 +117,7 @@ FindBar::FindBar(QWidget *parent) : QWidget(parent)
     connect(next, &QToolButton::clicked, this, [this] { emit findRequested(true, false); });
     connect(prev, &QToolButton::clicked, this, [this] { emit findRequested(false, false); });
     connect(close, &QToolButton::clicked, this, [this] { hide(); emit closed(); });
+    connect(m_highlight, &QToolButton::clicked, this, [this] { emit highlightRequested(); });
 
     hide();
 }
@@ -107,6 +128,11 @@ QString FindBar::pattern() const { return m_edit->text(); }
 void FindBar::setPlaceholderText(const QString &text)
 {
     m_edit->setPlaceholderText(text);
+}
+
+void FindBar::setHighlightVisible(bool visible)
+{
+    m_highlight->setVisible(visible);
 }
 
 QString FindBar::describeMatch(int index, int total, bool complete, bool wrapped,

@@ -2124,6 +2124,7 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
     auto *view = new DocumentView(ctx);
     ctx->views.append(view);
     connect(view, &DocumentView::findRequested, this, &MainWindow::runFind);
+    connect(view, &DocumentView::highlightRequested, this, &MainWindow::highlightFind);
 
     LogView *logView = view->logView();
     // The mode a new view starts in comes from this log's settings node (M20, SPEC.md
@@ -3775,6 +3776,55 @@ void MainWindow::runFind(bool forward, bool fromStart)
     // cannot come to describe one gesture in two vocabularies.
     const QString status = FindBar::describeMatch(t.index, t.total, t.complete, wrapped, forward);
     findBar->setStatus(status); // the bar's own label: focus stays in it for the next F3
+}
+
+void MainWindow::highlightFind()
+{
+    // The button only exists on a log view's bar and pressing it made that view active,
+    // so the active view IS the requesting one — the same reasoning runFind() opens with.
+    FindBar *findBar = m_activeView ? m_activeView->findBar() : nullptr;
+    if (!findBar || !m_highlighterPane || !activeDocument())
+        return;
+
+    // Every branch below answers into the bar's own label, for the reason runFind()'s do:
+    // it is the surface this gesture was made on, and the window's status label is
+    // rewritten from the active document on every ingest tick. Nothing needs revealing —
+    // the button cannot be pressed on a bar that is not already on screen.
+    const QString pattern = findBar->pattern();
+    if (pattern.isEmpty()) {
+        // The same sentence an F3 with an empty box gets, deliberately: this is a
+        // deliberate gesture that asked a question, which is exactly runFind()'s rule for
+        // when the empty query is worth mentioning rather than a nag.
+        findBar->setStatus(tr("no search text"));
+        return;
+    }
+
+    // The message-text axis and nothing else — the one-axis shape the record menu's
+    // rules take (SPEC.md §7). The matcher is configured from the SAME three things the
+    // search reads off this bar (the query, Regex, Case), so the rule colours exactly
+    // the records the search was walking; build it from anything else and a rule can
+    // come to disagree with the search that produced it.
+    MatchCriteria criteria;
+    criteria.text.enabled = true;
+    criteria.text.matcher.set(pattern, findBar->regex(),
+                              findBar->caseSensitive() ? Qt::CaseSensitive
+                                                       : Qt::CaseInsensitive);
+    if (!criteria.text.matcher.isValid()) {
+        findBar->setStatus(tr("bad regex"));
+        return;
+    }
+
+    // Appended and selected, in the first palette slot no rule is using — addRule's own
+    // contract, shared with the record menu, so two rules made this way are told apart at
+    // a glance and neither takes precedence from a rule the user placed deliberately.
+    //
+    // The Highlighters dock is deliberately NOT raised, exactly as the record menu does
+    // not raise it: the log recolours under the reader on the spot, which is the answer
+    // to the gesture, and the dock's own marker says the rules are now theirs. Stealing
+    // the pane tab the reader had chosen to leave in front would be a second, unasked-for
+    // thing to undo.
+    m_highlighterPane->addRule(criteria);
+    findBar->setStatus(tr("highlight rule added"));
 }
 
 void MainWindow::updateStatus()

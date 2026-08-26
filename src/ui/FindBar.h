@@ -6,6 +6,7 @@ QT_BEGIN_NAMESPACE
 class QCheckBox;
 class QLineEdit;
 class QLabel;
+class QToolButton;
 QT_END_NAMESPACE
 
 namespace loftail {
@@ -54,6 +55,16 @@ public:
     // existing caller and every existing test is untouched.
     void setPlaceholderText(const QString &text);
 
+    // Whether the bar offers "Highlight" — turning the standing query into a highlight
+    // rule on the message-text axis (SPEC.md §5, §7).
+    //
+    // OFF by default, and the default is the load-bearing half: this bar is shared with
+    // the config-file editor, which has no highlight rules and nothing to add one to, so
+    // a button that shipped visible would be a dead control there — and so would it be
+    // for whatever third thing grows a Find bar next. The one place with somewhere to
+    // put a rule (DocumentView) asks for it by name.
+    void setHighlightVisible(bool visible);
+
     // The four sentences a search can end in, in one place.
     //
     // SHARED so the two things that use a Find bar cannot come to word the same outcome
@@ -69,6 +80,10 @@ signals:
     // search from the top/bottom rather than the current cursor (used when the query
     // text itself changes).
     void findRequested(bool forward, bool fromStart);
+    // The Highlight button. Carries nothing: the query, the regex flag and the case
+    // option are all read back off this bar by whoever handles it, exactly as a search
+    // reads them, so a rule can never come to disagree with the search that produced it.
+    void highlightRequested();
     void closed();
 
 protected:
@@ -85,7 +100,8 @@ private:
     void updateStatusText();
 
     QString    m_statusText;
-    QLineEdit *m_edit = nullptr;
+    QLineEdit  *m_edit = nullptr;
+    QToolButton *m_highlight = nullptr;
     QCheckBox *m_regex = nullptr;
     QCheckBox *m_case = nullptr;
     QLabel    *m_status = nullptr;

@@ -197,6 +197,16 @@ private slots:
     // Walk the visible rows for the Find bar's query and move the selection
     // (SPEC.md §5); changes no filter state.
     void runFind(bool forward, bool fromStart);
+    // Turn the Find bar's standing query into a highlight rule on the message-text axis
+    // and append it (SPEC.md §5, §7). The window's job rather than the view's because a
+    // rule belongs to the DOCUMENT and is edited in the Highlighters pane (invariant #7).
+    //
+    // It reads the query, the regex flag and the case option off the same bar runFind()
+    // does, so the rule and the search that prompted it cannot disagree about what they
+    // match; and it reports into that bar's own label, which is the only surface a
+    // gesture made there has (the window's status label is rewritten on every ingest
+    // tick — ARCHITECTURE.md §7.1.3).
+    void highlightFind();
     // Re-resolve the active document's highlight rules and repaint (M5). Highlighting
     // recolors rows in place, so no model reset — just a viewport update.
     void applyActiveHighlighters();

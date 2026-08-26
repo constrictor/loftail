@@ -13,8 +13,12 @@
 #include <QTemporaryDir>
 #include <QToolButton>
 
+#include "ConfigReset.h"
+#include "Document.h"
+#include "DocumentContext.h"
 #include "DocumentView.h"
 #include "Filter.h"
+#include "Highlight.h"
 #include "FindBar.h"
 #include "LogView.h"
 #include "MainWindow.h"
@@ -154,6 +158,20 @@ private:
         QTest::keyClick(&w, Qt::Key_F3, mods);
     }
 
+    // The Highlight button, by object name. It is a control of the bar and not of the
+    // window, so there is no action to trigger() and the press has to be a real one.
+    static QToolButton *highlightButton(const MainWindow &w)
+    {
+        DocumentView *view = activeView(w);
+        return view ? view->findBar()->findChild<QToolButton *>(QStringLiteral("findHighlight"))
+                    : nullptr;
+    }
+
+    static const HighlighterSet &rules(const MainWindow &w)
+    {
+        return activeView(w)->context()->doc->highlighters();
+    }
+
     // The focus widget WITHIN the window. QWidget::focusWidget() and not
     // QApplication::focusWidget(), because the latter answers null unless the window is
     // active, which an offscreen window need not be.
@@ -195,6 +213,11 @@ private slots:
     void aQueryThatMatchesNothingLeavesTheFocusWhereItWas();
     void theReopenedBarClaimsNothingItIsNotShowing();
     void theControlsDoNotMoveWhenTheStatusTextChanges();
+    void theHighlightButtonMakesARuleOutOfTheStandingQuery();
+    void theHighlightedRuleCarriesTheBarsRegexAndCaseOptions();
+    void highlightingWithNothingTypedAddsNoRuleAndSaysSo();
+    void aBadRegexIsRefusedRatherThanHighlighted();
+    void theConfigEditorsBarOffersNoHighlightButton();
 };
 
 void TestFind::initTestCase()
@@ -211,6 +234,10 @@ void TestFind::init()
     QSettings settings;
     settings.remove(QStringLiteral("session"));
     settings.sync();
+    // And a log's highlight rules outlive its tab (M21), so a case that adds one would
+    // hand it to every case after it and the suite would pass or fail on the order QtTest
+    // happened to run them in.
+    clearLogSettings();
 }
 
 void TestFind::theBarSaysWhichMatchOfHowMany()
@@ -433,6 +460,173 @@ void TestFind::reopeningTheBarDoesNotLeaveTheLastResultBehind()
     QCOMPARE(reported(w), QString());
 
     w.close();
+}
+
+// The Find bar makes highlight rules (SPEC.md §5, §7). Find and highlighting have always
+// shared a query language — the same TextMatcher, the same Regex and Case options — and
+// what was missing was the one press between them: a reader who has found the thing they
+// were looking for a third time had to open another pane and retype it to colour it.
+//
+// The rule is built from what the BAR holds, not from what the search found, which is
+// what keeps it matching the same records the search was walking.
+void TestFind::theHighlightButtonMakesARuleOutOfTheStandingQuery()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    // A log opens with the level colours already in the list (SPEC.md §7), so the new
+    // rule is counted from the end of the seed — and "the others are kept" is half of
+    // the claim, first-match-wins being per action.
+    const int seeded = rules(w).rules.size();
+    QVERIFY(seeded > 0);
+
+    QLineEdit *query = queryField(w);
+    QVERIFY(query);
+    query->setText(QStringLiteral("alpha"));
+    QCOMPARE(reported(w), QStringLiteral("1 of 3")); // the search ran, as it always does
+
+    QToolButton *button = highlightButton(w);
+    QVERIFY(button);
+    QVERIFY(button->isVisible());
+    QTest::mouseClick(button, Qt::LeftButton);
+
+    QCOMPARE(rules(w).rules.size(), seeded + 1);
+    const HighlightRule &added = rules(w).rules.at(seeded);
+    QVERIFY(added.enabled);
+    // The message-text axis and ONLY it: a rule that also carried the subsystem or the
+    // level of whatever record the cursor happened to be on would colour a different set
+    // of records from the one the reader was stepping through.
+    QVERIFY(added.match.text.enabled);
+    QCOMPARE(added.match.text.matcher.pattern(), QStringLiteral("alpha"));
+    QVERIFY(!added.match.text.negate);
+    QVERIFY(!added.match.priorityEnabled);
+    QVERIFY(!added.match.loggerEnabled);
+    QVERIFY(!added.match.threadEnabled);
+    QVERIFY(!added.match.timeEnabled);
+    // It colours, in a slot of its own, with text that reads on it (addRule's contract).
+    QVERIFY(added.actions.testFlag(HighlightAction::Color));
+    QVERIFY(added.background != HighlightPalette::kDefault);
+    QVERIFY(added.foreground != HighlightPalette::kDefault);
+
+    // And the gesture is answered where it was made. The Highlighters pane ships tabbed
+    // behind two others and the window's status label is rewritten on every ingest tick,
+    // so the bar's own label is the only surface this press has.
+    QCOMPARE(reported(w), QStringLiteral("highlight rule added"));
+
+    // A second press is a second rule in a second colour, so two are told apart at a
+    // glance — the same promise the record menu's one-click rules make.
+    query->setText(QStringLiteral("bravo"));
+    QTest::mouseClick(button, Qt::LeftButton);
+    QCOMPARE(rules(w).rules.size(), seeded + 2);
+    QVERIFY(rules(w).rules.at(seeded).background != rules(w).rules.at(seeded + 1).background);
+}
+
+// The rule reads the SAME three things off the bar the search does. Build it from
+// anything else — a default case option, a substring where the reader asked for a regex —
+// and a rule can quietly colour a different set of records from the one it was made out
+// of, with the query still on screen saying otherwise.
+void TestFind::theHighlightedRuleCarriesTheBarsRegexAndCaseOptions()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+    const int seeded = rules(w).rules.size();
+
+    auto *regex = activeView(w)->findBar()->findChild<QCheckBox *>(QStringLiteral("findRegex"));
+    auto *sensitive = activeView(w)->findBar()->findChild<QCheckBox *>(QStringLiteral("findCase"));
+    QVERIFY(regex && sensitive);
+    regex->setChecked(true);
+    sensitive->setChecked(true);
+    queryField(w)->setText(QStringLiteral("alpha t.o"));
+
+    QTest::mouseClick(highlightButton(w), Qt::LeftButton);
+    QCOMPARE(rules(w).rules.size(), seeded + 1);
+    const TextMatcher &m = rules(w).rules.at(seeded).match.text.matcher;
+    QCOMPARE(m.pattern(), QStringLiteral("alpha t.o"));
+    QVERIFY(m.isRegex());
+    QCOMPARE(m.caseSensitivity(), Qt::CaseSensitive);
+
+    // Unticked, the next rule is a plain case-insensitive substring — the two options
+    // are read at the press, never latched from an earlier one.
+    regex->setChecked(false);
+    sensitive->setChecked(false);
+    queryField(w)->setText(QStringLiteral("ALPHA"));
+    QTest::mouseClick(highlightButton(w), Qt::LeftButton);
+    QCOMPARE(rules(w).rules.size(), seeded + 2);
+    const TextMatcher &plain = rules(w).rules.at(seeded + 1).match.text.matcher;
+    QVERIFY(!plain.isRegex());
+    QCOMPARE(plain.caseSensitivity(), Qt::CaseInsensitive);
+}
+
+// An empty query means every record, so a rule made of one would colour the whole log —
+// and it is one press away from being made by accident. Refused, and SAID: this is a
+// deliberate gesture that asked a question, which is exactly runFind()'s own rule for
+// when the empty box is worth mentioning rather than a nag, and it borrows that sentence
+// so the two cannot come to word one state two ways.
+void TestFind::highlightingWithNothingTypedAddsNoRuleAndSaysSo()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+    const int seeded = rules(w).rules.size();
+
+    activeView(w)->activateFind(); // the bar on screen with an empty box
+    QTest::mouseClick(highlightButton(w), Qt::LeftButton);
+
+    QCOMPARE(rules(w).rules.size(), seeded);
+    QCOMPARE(reported(w), QStringLiteral("no search text"));
+}
+
+// A regex that does not compile matches nothing, so a rule carrying one is a rule that
+// can never fire — parked in the list, in a colour of its own, looking like it works.
+// Refused at the same seam the search refuses it, and in the same words.
+void TestFind::aBadRegexIsRefusedRatherThanHighlighted()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+    const int seeded = rules(w).rules.size();
+
+    activeView(w)->findBar()->findChild<QCheckBox *>(QStringLiteral("findRegex"))->setChecked(true);
+    queryField(w)->setText(QStringLiteral("alpha["));
+    QCOMPARE(reported(w), QStringLiteral("bad regex")); // the search already said so
+
+    QTest::mouseClick(highlightButton(w), Qt::LeftButton);
+    QCOMPARE(rules(w).rules.size(), seeded);
+    QCOMPARE(reported(w), QStringLiteral("bad regex"));
+}
+
+// The button is OFF by default and the default is the load-bearing half: this bar is
+// shared with the config-file editor, which has no highlight rules and nothing to put one
+// on, so a button that shipped visible would be a dead control there — and in whatever
+// third thing grows a Find bar next. The one place with somewhere to put a rule asks for
+// it by name.
+void TestFind::theConfigEditorsBarOffersNoHighlightButton()
+{
+    FindBar bare;
+    bare.show();
+    auto *button = bare.findChild<QToolButton *>(QStringLiteral("findHighlight"));
+    QVERIFY(button);
+    QVERIFY(button->isHidden());
+
+    bare.setHighlightVisible(true);
+    QVERIFY(!button->isHidden());
+
+    // And a log's view is what asks. isHidden() rather than isVisible(), which is
+    // additionally false for a widget whose window has not been shown.
+    MainWindow w;
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+    QVERIFY(!highlightButton(w)->isHidden());
 }
 
 int main(int argc, char *argv[])
