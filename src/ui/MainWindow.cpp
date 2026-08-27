@@ -1,3 +1,21 @@
+// loftail — a desktop viewer for log4cplus logs.
+// Copyright (C) 2026 Valentyn Pavliuchenko
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "MainWindow.h"
 
 #include "Decoder.h"
@@ -935,6 +953,16 @@ void MainWindow::buildMenus()
     aboutAction->setObjectName(QStringLiteral("aboutAction")); // findChild, for tests
     aboutAction->setMenuRole(QAction::AboutRole);
     connect(aboutAction, &QAction::triggered, this, &MainWindow::showAbout);
+
+    // Qt is LGPL-3.0-or-later and loftail redistributes it in the AppImage, the .app
+    // and the Windows zip — so which Qt this is, and under what terms, is a question
+    // the shipped binary has to be able to answer. Qt's own dialog is the whole answer
+    // and needs no maintenance. AboutQtRole puts it in the application menu on macOS,
+    // beside About, exactly as AboutRole does above.
+    QAction *aboutQtAction = helpMenu->addAction(tr("About &Qt"));
+    aboutQtAction->setObjectName(QStringLiteral("aboutQtAction")); // findChild, for tests
+    aboutQtAction->setMenuRole(QAction::AboutQtRole);
+    connect(aboutQtAction, &QAction::triggered, qApp, &QApplication::aboutQt);
 }
 
 void MainWindow::refreshWindowMenu()
@@ -2728,8 +2756,20 @@ QString MainWindow::aboutText()
         ? tr("Build: local build")
         : tr("Build: %1").arg(build);
 
+    // The licence, on a line of its own and NOT through tr(): "GPL-3.0-or-later" is the
+    // SPDX identifier, which is a name rather than prose — translating it would make the
+    // one string a lawyer or a packager greps for depend on the user's locale. The
+    // sentence after it is prose and is translated. The full text ships beside the
+    // binary (share/doc/loftail/LICENSE on Linux, Contents/Resources in the .app,
+    // LICENSE.txt in the Windows zip), which is what GPLv3 §4 asks for; this line is
+    // only what a running loftail says when asked what it is.
+    const QString licenceLine = QStringLiteral("License: GPL-3.0-or-later")
+        + QLatin1Char('\n')
+        + tr("Free software with NO WARRANTY. See the LICENSE file shipped with it.");
+
     return QStringLiteral("loftail ") + applicationVersion() + QLatin1Char('\n')
-        + buildLine + QLatin1Char('\n') + tr("A viewer for log4cplus logs.");
+        + buildLine + QLatin1Char('\n') + tr("A viewer for log4cplus logs.")
+        + QLatin1Char('\n') + QLatin1Char('\n') + licenceLine;
 }
 
 void MainWindow::showAbout()

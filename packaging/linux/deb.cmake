@@ -1,3 +1,21 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Debian/Ubuntu package (.deb) via CPack.
 #
 # This is the one Linux artifact that does NOT bundle Qt — the exact opposite of
@@ -97,5 +115,12 @@ log that never grows. It filters and highlights by subsystem, thread, priority,
 time range and message text, splits a log into runs, and restores its session.
 Logs on other machines open over SSH, and compressed and archived logs
 (.gz .bz2 .xz .zst, zip and tar) open directly.")
+
+# The DEB generator ignores this — a Debian package states its terms in
+# /usr/share/doc/<pkg>/copyright, which the install() rules in src/CMakeLists.txt put
+# there. It is set anyway because every other generator (NSIS, DragNDrop, WIX) shows it
+# as the licence the user agrees to, and the day one of those is added is not the day to
+# remember this line exists.
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 
 include(CPack)

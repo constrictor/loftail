@@ -1,3 +1,21 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # src/core holds all UI-free logic (unit-testable without a QApplication);
 # src/ui holds the Qt Widgets layer.
 add_subdirectory(core)
@@ -52,6 +70,9 @@ if(APPLE)
         MACOSX_BUNDLE_GUI_IDENTIFIER "org.loftail.loftail"
         MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        # Substituted into NSHumanReadableCopyright by the template below, which is
+        # the only place a macOS bundle states its licence terms before it is opened.
+        MACOSX_BUNDLE_COPYRIGHT "Copyright (C) 2026 Valentyn Pavliuchenko. GPL-3.0-or-later."
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/packaging/macos/Info.plist.in"
     )
     install(TARGETS loftail BUNDLE DESTINATION .)
@@ -67,4 +88,17 @@ else()
         DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
     install(FILES "${LOFTAIL_ICON_FILE}"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
+    # The licence, in the two spellings the two consumers of this layout look for.
+    # GPLv3 §4 requires the terms to travel with the binary, and there is exactly
+    # one install layout: deb.cmake says these rules are what CPack packs, and
+    # build-appimage.sh stages the AppDir through `cmake --install`, so both
+    # artifacts are covered here and neither needs a copy step of its own.
+    #
+    # `copyright` and not just LICENSE, because that exact path is what lintian's
+    # copyright-file-missing checks for and what a Debian user reads; it is DEP-5,
+    # so it also names the licences of the libraries the package links.
+    install(FILES "${CMAKE_SOURCE_DIR}/LICENSE"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/loftail")
+    install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/copyright"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/loftail")
 endif()

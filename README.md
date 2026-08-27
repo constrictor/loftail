@@ -6,6 +6,7 @@
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
 ![Qt 6.4+](https://img.shields.io/badge/Qt-6.4%2B-41cd52)
 ![Windows | macOS | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+[![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 
 ---
 
@@ -88,7 +89,16 @@ Feature-complete against the first-release spec, including the post-1.0 autodete
 | [`FUTURE.md`](FUTURE.md) | Features planned for later releases, and the accommodations that keep them cheap. |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Internal technical decisions and their rationale. |
 | [`PLAN.md`](PLAN.md) | Milestone-by-milestone implementation plan. |
+| [`LICENSE`](LICENSE) | The GNU General Public License, version 3. |
 
 ## Non-goals
 
 loftail is strictly a reader: it never edits, writes, or deletes log files. It does not support other logging frameworks, does not merge several files into one time-ordered view, does not do charts or alerting, and does not claim the system default handler for `.log` (it only advertises that it *can* open them).
+
+## License
+
+loftail is free software: you can redistribute it and/or modify it under the terms of the **[GNU General Public License](LICENSE), version 3 or (at your option) any later version** (`GPL-3.0-or-later`). It comes with **no warranty**; see the license for the details.
+
+Every download carries the full text — `/usr/share/doc/loftail/LICENSE` in the `.deb` and the AppImage, `Contents/Resources/LICENSE` in the macOS bundle, `LICENSE.txt` in the Windows zip — and **Help ▸ About** in a running copy says which terms it is under.
+
+loftail does not link log4cplus, whose logs it reads. It does link **Qt 6** (LGPL-3.0-or-later — see **Help ▸ About Qt**), and optionally **libssh2**, **libarchive** and **QtKeychain** (BSD). All four permit distributing the combined work under the GPL.

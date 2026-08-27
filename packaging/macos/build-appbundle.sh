@@ -1,5 +1,22 @@
 #!/usr/bin/env bash
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
 #
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Build a self-contained loftail.app on macOS and wrap it in a .dmg.
 #
 # Configures + builds loftail (Release) as a MACOSX_BUNDLE (see
@@ -68,6 +85,12 @@ if [[ -z "$APP" ]]; then
     exit 1
 fi
 echo ">> Bundle: $APP"
+
+# The licence travels with the binary (GPLv3 §4). BEFORE macdeployqt, not after: it
+# takes -dmg, so the disk image is produced in the same run and a file added afterwards
+# would be in the .app on this machine and in nothing that ships. The bundle's own
+# NSHumanReadableCopyright names the terms; this is the copy of them.
+cp "$REPO_ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 
 echo ">> Running macdeployqt"
 DEPLOY_ARGS=("$APP" -dmg)

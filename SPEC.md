@@ -20,11 +20,15 @@ It runs on Windows, macOS, and Linux.
 
 ### Which build this is
 
-**Help ▸ About** names the release and the build behind it:
+**Help ▸ About** names the release, the build behind it, and the terms it is under:
 
 ```
 loftail 0.1.0
 Build: 100.g443daf4
+A viewer for log4cplus logs.
+
+License: GPL-3.0-or-later
+Free software with NO WARRANTY. See the LICENSE file shipped with it.
 ```
 
 The **release** is the version the download was published under — the same number the `.deb`, the AppImage and the Windows zip carry in their file names. The **build** is the one below it: which continuous-integration run produced these exact bytes, and the commit it was made from. Two downloads of one release can differ, and this is what tells them apart, so it is what a bug report should quote.
@@ -32,6 +36,12 @@ The **release** is the version the download was published under — the same num
 A copy built from source on your own machine says `Build: local build`, because there is no run behind it to name.
 
 The same string is what `loftail --version` prints, in one line — `loftail 0.1.0+100.g443daf4`. The dialog exists because an installed application launched from a desktop menu has no command line to ask on.
+
+### The licence
+
+loftail is free software under the **GNU General Public License, version 3 or later**. The full text travels with every copy: `/usr/share/doc/loftail/LICENSE` from the `.deb` and inside the AppImage, `Contents/Resources/LICENSE` in the macOS bundle, `LICENSE.txt` beside the executable in the Windows zip. The `.deb` additionally carries the Debian-format `/usr/share/doc/loftail/copyright`.
+
+**Help ▸ About Qt** names the Qt version this copy links and states Qt's own terms. Three of the four artifacts bundle Qt, so which one is inside is a question the downloaded binary has to be able to answer for itself.
 
 ## 2. Core concepts
 

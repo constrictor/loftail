@@ -1,3 +1,21 @@
+// loftail — a desktop viewer for log4cplus logs.
+// Copyright (C) 2026 Valentyn Pavliuchenko
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include <QtTest>
 
 #include <QAction>
@@ -23,7 +41,9 @@ class TestAbout : public QObject
 
 private slots:
     void theMenuOffersAbout();
+    void theMenuOffersAboutQt();
     void theTextNamesTheReleaseAndTheBuild();
+    void theTextNamesTheLicence();
 };
 
 void TestAbout::theMenuOffersAbout()
@@ -37,6 +57,20 @@ void TestAbout::theMenuOffersAbout()
     // AboutRole is what puts it in the application menu on macOS instead of leaving a
     // Help menu that duplicates the platform's own.
     QCOMPARE(about->menuRole(), QAction::AboutRole);
+}
+
+// Qt is LGPL and loftail redistributes it in three of its four artifacts, so the
+// shipped binary has to be able to name it. Qt's dialog is the answer; what is
+// loftail's to get right is that the item exists and is reachable.
+void TestAbout::theMenuOffersAboutQt()
+{
+    MainWindow w;
+    auto *aboutQt = w.findChild<QAction *>(QStringLiteral("aboutQtAction"));
+    QVERIFY(aboutQt);
+    QVERIFY(aboutQt->isEnabled());
+    // AboutQtRole, not AboutRole: on macOS the two land in the application menu
+    // separately, and giving both the same role hides one of them.
+    QCOMPARE(aboutQt->menuRole(), QAction::AboutQtRole);
 }
 
 // Both configurations at once, as tst_scaffold does for the version string itself:
@@ -60,6 +94,23 @@ void TestAbout::theTextNamesTheReleaseAndTheBuild()
         // and what release.yml checks the promoted artifacts against.
         QVERIFY(text.contains(build));
     }
+}
+
+// loftail is GPL-3.0-or-later and this dialog is the only place a running copy says so.
+// The identifier is asserted VERBATIM and deliberately: it is the SPDX spelling, which
+// is what makes it greppable by a packager and by licence-scanning tooling, and it is
+// the reason that string is not wrapped in tr() where the sentence beside it is.
+void TestAbout::theTextNamesTheLicence()
+{
+    const QString text = MainWindow::aboutText();
+
+    QVERIFY(text.contains(QStringLiteral("GPL-3.0-or-later")));
+    // The disclaimer of warranty is half of what the licence obliges the program to
+    // state; a version number on its own does not discharge it.
+    QVERIFY(text.contains(QStringLiteral("NO WARRANTY")));
+    // And it points at the copy that ships beside the binary, which is where the terms
+    // actually are — the dialog quotes none of them.
+    QVERIFY(text.contains(QStringLiteral("LICENSE")));
 }
 
 QTEST_MAIN(TestAbout)

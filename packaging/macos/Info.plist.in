@@ -37,7 +37,7 @@
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
     <key>NSHumanReadableCopyright</key>
-    <string>loftail</string>
+    <string>${MACOSX_BUNDLE_COPYRIGHT}</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

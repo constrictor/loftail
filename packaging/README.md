@@ -23,6 +23,29 @@ On Windows they must be passed explicitly (`build-portable.ps1 -CMakeArgs …`),
 asserts the *packaged* configure reported both `ENABLED` — because the failure mode is
 a zip that ships without a feature every test in the same run just proved works.
 
+## The licence travels with the binary
+
+loftail is GPL-3.0-or-later, so **every artifact must carry the full licence text** —
+GPLv3 §4 asks for it and a Linux distribution will reject a package without it. Where it
+lands, and who puts it there:
+
+| Artifact | Path inside it | Placed by |
+| --- | --- | --- |
+| `.deb` | `/usr/share/doc/loftail/LICENSE` and `.../copyright` | the `install()` rules in `src/CMakeLists.txt`, which CPack packs |
+| AppImage | the same two, under `usr/share/doc/loftail/` | the same rules — `build-appimage.sh` stages the AppDir with `cmake --install` |
+| Windows zip | `LICENSE.txt` beside `loftail.exe` | an explicit `Copy-Item` in `build-portable.ps1`, before `Compress-Archive` |
+| macOS `.app`/`.dmg` | `Contents/Resources/LICENSE` | an explicit `cp` in `build-appbundle.sh`, **before** `macdeployqt -dmg` |
+
+Only the two Linux artifacts get it for free, because they are the only ones with an
+install layout to hang it off; the Windows and macOS rules install the bare binary. So a
+new artifact type needs a line of its own — and the failure is silent, since a zip with
+no licence in it builds, runs and passes every test.
+
+`/usr/share/doc/loftail/copyright` is `packaging/linux/copyright`, in Debian's
+machine-readable DEP-5 format. That exact path is what `lintian`'s
+`copyright-file-missing` looks for, which is why the file is not merely a second copy of
+`LICENSE`: it also names the licences of the libraries the package links.
+
 ## Command line
 
 All platforms share the same CLI (finalized in M7, `src/main.cpp`):
