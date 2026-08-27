@@ -108,6 +108,7 @@ private slots:
     void savedDefaultOpensWithoutADialog();
     void aDefaultThatDoesNotParseStillAsks();
     void aPatternMatchOpensWithoutADialog();
+    void aSystemLogOpensSplitBecauseOfTheSeededPattern();
     void aPatternThatDoesNotParseStillAsks();
     // --pattern (SPEC.md §3): it wins over every level of the tree, and is then judged
     // against the log exactly as a resolved node is. One case per branch of that rule.
@@ -462,6 +463,50 @@ void TestOpenFlow::savedDefaultOpensWithoutADialog()
     // Parsed, not opened as a wall of unparsed plain text — the default carried its
     // pattern through, rather than merely suppressing the prompt.
     QCOMPARE(view->recordCount(), 2);
+    w.close();
+}
+
+// THE ONE-TIME PATTERN SEED, end to end (SPEC.md §4). tst_logsettings pins the seeding
+// rule and the pattern's own regex; what only a real MainWindow can show is that the
+// seed is actually reached from the constructor, so a system log opens SPLIT and with no
+// dialog on a machine where nobody has configured anything.
+void TestOpenFlow::aSystemLogOpensSplitBecauseOfTheSeededPattern()
+{
+    const QString messages = m_dir.filePath(QStringLiteral("messages"));
+    QVERIFY(write(messages,
+        "Aug 27 10:15:01 web1 sshd[1234]: Accepted publickey for root\n"
+        "Aug 27 10:15:02 web1 kernel: eth0: link up\n"
+        "Aug  5 09:00:00 web1 systemd: Started Daily Cleanup.\n"));
+
+    // init()'s clearLogSettings() takes logsettings.json and the per-log pool; the seed
+    // FLAG is deliberately not one of a log's settings and survives it, which is what
+    // makes a deleted seed stay deleted. An earlier case in this process has already
+    // spent it, so this case puts it back. Spelled out rather than reached through a
+    // helper: if the key is ever renamed this case stops seeding and FAILS, which is the
+    // right way round for a test to notice.
+    {
+        QSettings s;
+        s.remove(QStringLiteral("builtInPatternSeed"));
+        s.sync();
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape); // fires only if a dialog appears, which it must not
+    w.openFile(messages);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTest::qWait(200);
+    QVERIFY2(!d.seen, "Preferences was shown for a system log the seeded pattern parses");
+
+    LogView *view = w.findChild<LogView *>(QStringLiteral("logView"));
+    QVERIFY(view);
+    // Three records and not one: the kernel's untagged-by-pid line has to START a record
+    // rather than fold into the one above it, which is the whole reason the seed carries
+    // the `%c:` variant of the syslog layout.
+    QCOMPARE(view->recordCount(), 3);
     w.close();
 }
 

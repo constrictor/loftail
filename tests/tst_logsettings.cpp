@@ -10,6 +10,7 @@
 
 #include "LogSettings.h"
 #include "LogSettingsStore.h"
+#include "PatternCompiler.h"
 #include "RemoteLocation.h"
 
 using namespace loftail;
@@ -36,6 +37,9 @@ private slots:
     void aLegacyFileLevelIsDrainedOnceAndThenNoLongerWritten();
     void anEmptyPatternIsStillAnAnswer();
     void legacyStoresMigrateOnceAndAreRemoved();
+    void theMessagesPatternIsSeededOnceAndADeletionSticks();
+    void aSeedYieldsToAPatternTheUserAlreadyHas();
+    void theSeededPatternSplitsARealSyslogLine();
     void aNewerSchemaLoadsEmptyAndRefusesToSave();
     void aProfileDiffersWhenAnyOneFieldOfItDoes();
     void aRestartScriptRoundTripsThroughJsonIncludingItsNewlines();
@@ -405,6 +409,114 @@ void TestLogSettings::legacyStoresMigrateOnceAndAreRemoved()
 
     // And it does not run a second time over a file that is already there.
     QVERIFY(!store.migrateLegacy(check));
+}
+
+// THE ONE-TIME SEED (SPEC.md §4). What has to be true is not that the pattern is there
+// — it is that it is there ONCE. A seed re-added because it is missing is a pattern
+// nobody can delete, which is the shape the seeded highlight rules record.
+void TestLogSettings::theMessagesPatternIsSeededOnceAndADeletionSticks()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString ini = QDir(dir.path()).filePath(QStringLiteral("app.ini"));
+
+    LogSettingsStore store(dir.path());
+    QSettings s(ini, QSettings::IniFormat);
+
+    LogSettingsTree tree = store.load();
+    QCOMPARE(tree.patterns().size(), 0);
+    QVERIFY(store.seedBuiltInPatterns(tree, s));
+
+    QCOMPARE(tree.patterns().size(), 1);
+    const int i = tree.matchingPattern(QStringLiteral("/var/log/messages"));
+    QVERIFY(i >= 0);
+    // A rotated log is what a reader reaches for as often as the live file.
+    QVERIFY(tree.matchingPattern(QStringLiteral("/var/log/messages-20260827")) >= 0);
+    QVERIFY(tree.matchingPattern(QStringLiteral("/var/log/app.log")) < 0);
+    QVERIFY(tree.patterns().at(i).profile.format.pattern.contains(QStringLiteral("%b %e")));
+
+    // It saved itself, so the pattern survives the process it was seeded in.
+    LogSettingsStore reread(dir.path());
+    QCOMPARE(reread.load().patterns().size(), 1);
+
+    // And now the point: the user throws it away.
+    tree.removePattern(i);
+    QVERIFY(store.save(tree));
+
+    LogSettingsTree next = store.load();
+    QCOMPARE(next.patterns().size(), 0);
+    QVERIFY(!store.seedBuiltInPatterns(next, s));
+    QCOMPARE(next.patterns().size(), 0);
+    QCOMPARE(store.load().patterns().size(), 0);
+}
+
+// The user got there first. Ours would sit behind theirs unreachable (first match wins),
+// so it is not added at all — and the flag still goes down, so this is asked once.
+void TestLogSettings::aSeedYieldsToAPatternTheUserAlreadyHas()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString ini = QDir(dir.path()).filePath(QStringLiteral("app.ini"));
+
+    LogSettingsStore store(dir.path());
+    QSettings s(ini, QSettings::IniFormat);
+
+    LogSettingsTree tree;
+    LogPatternNode mine;
+    mine.match = QStringLiteral("*messages*");
+    mine.profile.format.pattern = QStringLiteral("MINE");
+    tree.addPattern(mine);
+
+    QVERIFY(!store.seedBuiltInPatterns(tree, s));
+    QCOMPARE(tree.patterns().size(), 1);
+    QCOMPARE(tree.inherited(QStringLiteral("/var/log/messages")).format.pattern,
+             QStringLiteral("MINE"));
+
+    // Asked once either way: deleting theirs later does not summon ours.
+    tree.removePattern(0);
+    QVERIFY(!store.seedBuiltInPatterns(tree, s));
+    QCOMPARE(tree.patterns().size(), 0);
+}
+
+// The seed is only worth shipping if it actually splits the file it is for. Both tag
+// shapes must START A RECORD: a line that does not match starts none (invariant #2), so
+// a pattern that misses the kernel's lines folds every one of them into the record above
+// it — worse than no pattern at all.
+void TestLogSettings::theSeededPatternSplitsARealSyslogLine()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    LogSettingsStore store(dir.path());
+    QSettings s(QDir(dir.path()).filePath(QStringLiteral("app.ini")), QSettings::IniFormat);
+
+    LogSettingsTree tree;
+    QVERIFY(store.seedBuiltInPatterns(tree, s));
+    const QString pattern =
+        tree.inherited(QStringLiteral("/var/log/messages")).format.pattern;
+
+    const auto compiled = PatternCompiler::compile(pattern);
+    // error() is a std::get on the variant, so it may only be reached once hasValue()
+    // has answered false — QVERIFY2 evaluates its message argument either way.
+    if (!compiled.hasValue())
+        QFAIL(qPrintable(compiled.error().message));
+    const LogFormat &f = compiled.value();
+
+    // A tag with a pid, a tag without one, and a single-digit day — "%b %e" writes two
+    // spaces there, which is half the month.
+    const QStringList lines = {
+        QStringLiteral("Aug 27 10:15:01 web1 sshd[1234]: Accepted publickey for root"),
+        QStringLiteral("Aug 27 10:15:02 web1 kernel: eth0: link up"),
+        QStringLiteral("Aug  5 09:00:00 web1 systemd: Started Daily Cleanup."),
+    };
+    for (const QString &line : lines)
+        QVERIFY2(f.recordStartRe.match(line).hasMatch(), qPrintable(line));
+
+    // And the columns are the ones that make it worth doing: the pid stays with the tag
+    // rather than costing the kernel's lines their own record.
+    const auto m = f.recordRe.match(lines.at(0));
+    QVERIFY(m.hasMatch());
+    QCOMPARE(m.captured(f.loggerGroup), QStringLiteral("sshd[1234]"));
+    QCOMPARE(m.captured(f.msgGroup), QStringLiteral("Accepted publickey for root"));
 }
 
 void TestLogSettings::aNewerSchemaLoadsEmptyAndRefusesToSave()

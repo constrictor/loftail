@@ -38,6 +38,31 @@ constexpr auto kPathKey          = "path";
 constexpr auto kKindWildcard = "wildcard";
 constexpr auto kKindRegex    = "regex";
 
+// --- The patterns loftail ships with, seeded once. --------------------------------
+//
+// One entry today. `example` is a representative address the seed is FOR, and it is
+// there so an existing pattern that already claims such a log wins by being asked
+// rather than by string-comparing match texts: `messages*`, `*messages*` and
+// `/var/log/messages` are three spellings of an answer the user has already given.
+//
+// The conversion pattern is NEVER translated (ARCHITECTURE.md §9.1) — it has to match
+// log text — and it is deliberately the tag-WITHOUT-pid variant of the three the
+// detector offers. `%c[%i]:` splits `sshd[1234]` into two columns and then fails to
+// match `kernel: ...`, which carries no pid at all; a line that does not match starts
+// no record (invariant #2), so on an ordinary mixed /var/log/messages every kernel line
+// would be folded into the record above it. `%c:` takes `sshd[1234]` whole and matches
+// both shapes, which is the trade this makes: one column fewer, no swallowed lines.
+constexpr auto kSyslogPattern = "%D{%b %e %H:%M:%S} %h %c: %m%n";
+
+// `messages*` and not `messages`, because logrotate's output is what a reader reaches
+// for as often as the live file: `messages.1`, `messages-20260827`, and the `.gz` of
+// either, whose name a bare compressed stream strips back to the same thing
+// (logMatchTarget()).
+constexpr auto kSyslogMatch   = "messages*";
+constexpr auto kSyslogExample = "/var/log/messages";
+
+constexpr auto kSeedVersionKey = "builtInPatternSeed";
+
 // --- The two QSettings stores this replaced, read one last time. -----------------
 //
 // Kept here rather than in classes of their own: nothing else reads them ever again,
@@ -165,6 +190,43 @@ bool LogSettingsStore::save(const LogSettingsTree &tree, QString *error) const
     // been rewritten without it, legacyFiles() is empty on every later launch and the
     // migration is over with nothing to remember that it happened.
     return AtomicJson::write(filePath(), QJsonDocument(root), error);
+}
+
+bool LogSettingsStore::seedBuiltInPatterns(LogSettingsTree &tree, QSettings &settings)
+{
+    // Asked ONCE per generation. A seed the user has since deleted must stay deleted —
+    // see the header; this test, and not the tree's contents, is what makes that true.
+    if (settings.value(QLatin1String(kSeedVersionKey), 0).toInt() >= kSeedVersion)
+        return false;
+
+    bool added = false;
+    // The user got there first: whatever claims /var/log/messages today keeps it, and
+    // ours would be unreachable behind it anyway (first match wins).
+    if (tree.matchingPattern(QString::fromLatin1(kSyslogExample)) < 0) {
+        LogPatternNode n;
+        n.kind  = LogPatternNode::Kind::Wildcard;
+        n.match = QString::fromLatin1(kSyslogMatch);
+        // Name-only and case-insensitive, which is the default a pattern added by hand
+        // gets: what this names is what the log is CALLED, not where it lives.
+        n.matchFullPath = false;
+        n.caseSensitive = false;
+        n.profile.format.pattern = QString::fromLatin1(kSyslogPattern);
+        // Everything else stays at the struct default — auto-detected encoding, the zone
+        // inferred from the pattern (%D is local time, which is what syslog stamps),
+        // timestamps as written, no run splitting, no wrapping.
+        tree.addPattern(n);
+        added = true;
+    }
+
+    // The flag goes down only once the tree it describes is actually on disk. A store
+    // that refused the write — a newer schema, an unwritable config directory — is asked
+    // again next launch rather than remembering a seed that never happened.
+    if (added && !save(tree))
+        return false;
+
+    settings.setValue(QLatin1String(kSeedVersionKey), kSeedVersion);
+    settings.sync();
+    return added;
 }
 
 bool LogSettingsStore::migrateLegacy(QSettings &settings)

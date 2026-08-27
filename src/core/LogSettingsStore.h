@@ -66,6 +66,37 @@ public:
     // for one session must not discard a newer one's configuration. The dialog says so.
     bool readOnly() const { return m_readOnly; }
 
+    // The generation of the built-in pattern seed this build ships. Bumped when a
+    // pattern is ADDED to the list below it; see seedBuiltInPatterns().
+    static constexpr int kSeedVersion = 1;
+
+    // THE ONE-TIME SEED of the file patterns loftail ships with (SPEC.md §4). Today
+    // that is one: `messages*`, carrying the traditional syslog layout every
+    // /var/log/messages line on a Red Hat-family box is written in, so the file opens
+    // split into columns instead of raising the format dialog.
+    //
+    // A SEED IS NOT A DEFAULT. It is written into the user's pattern list once and is
+    // theirs from then on: editing it sticks, and DELETING IT STICKS — which is the
+    // whole reason there is a flag rather than a "is it missing?" test. A pattern that
+    // came back on the next launch would be one nobody could get rid of, the shape
+    // HighlighterSet::defaults() records for the seeded highlight rules.
+    //
+    // The flag is a VERSION and not a bool so a later build can add a second pattern
+    // without re-adding the first. It lives in QSettings beside the other application-
+    // level flags rather than in logsettings.json, because it describes what this
+    // installation has already done and not what any log gets — and because a tree
+    // written by a newer build is read-only here, so a flag inside it could never be
+    // written at the one moment it is most needed.
+    //
+    // A seed whose example address is ALREADY CLAIMED by a pattern is skipped: the user
+    // got there first, and first-match-wins would make ours dead weight anyway. The flag
+    // is still recorded in that case, so this asks the question once either way.
+    //
+    // Returns whether the tree changed. It SAVES on its own when it did — and records
+    // the flag only once that write succeeded, so a read-only or unwritable store is
+    // retried on the next launch rather than silently skipped for ever.
+    bool seedBuiltInPatterns(LogSettingsTree &tree, QSettings &settings);
+
     // The one-time move off the two QSettings stores this replaced — `defaultFormat`
     // (three scalar keys) and `formatCache` (a path-keyed array). Does nothing when
     // logsettings.json already exists. On success the two QSettings groups are REMOVED:

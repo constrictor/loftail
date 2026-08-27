@@ -190,6 +190,17 @@ MainWindow::MainWindow(QWidget *parent)
             m_settingsStore.save(m_logSettings);
         }
 
+        // THE ONE-TIME PATTERN SEED (SPEC.md §4). loftail ships knowing what
+        // /var/log/messages looks like, so a system log opens split into columns
+        // instead of raising the format dialog — but it says so by writing a pattern
+        // into the user's own list ONCE, which they may then edit or delete for good.
+        // A flag in QSettings is what makes the deletion stick; see the header.
+        //
+        // AFTER the drain above rather than before it, so the migration resolves every
+        // adopted record against exactly the tree it would have seen without this
+        // feature. It saves itself when it changed anything.
+        m_settingsStore.seedBuiltInPatterns(m_logSettings, store);
+
         // The remembered log text size (SPEC.md §5). Read HERE, with the settings tree
         // and before restoreSession(), because every LogView is constructed with
         // logTextFont() — so a restored tab has to find the size already set rather than
