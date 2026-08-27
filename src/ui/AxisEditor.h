@@ -321,8 +321,14 @@ private:
         Unstated,
     };
 
-    // Repopulate one checkable list under `rule`.
-    void populateList(QListWidget *list, const QStringList &names,
+    // Repopulate one checkable list under `rule`. Answers whether the rows on screen
+    // actually moved: this runs on every ingest tick of a growing log, where the names
+    // and their ticks are usually identical to what is already listed, and a rebuild
+    // that changes nothing still empties and refills the widget in front of the user.
+    // A false answer means every row, tick, hidden flag and the scroll position were
+    // left alone, so a caller may skip whatever it would have done to follow the
+    // rebuild.
+    bool populateList(QListWidget *list, const QStringList &names,
                       const QSet<QString> &checked, const QSet<QString> &manual,
                       QSet<QString> &seen, ListRule rule, bool restrictive);
     static bool   allChecked(const QListWidget *list);

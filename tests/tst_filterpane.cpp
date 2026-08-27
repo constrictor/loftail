@@ -182,6 +182,7 @@ private slots:
     void allInclusiveAxesStayInactive();
     void narrowingActivatesTheAxis();
     void subsystemDiscoveredLaterArrivesChecked();
+    void anAppendThatDiscoversNothingLeavesTheListAlone();
     void rebindingForgetsSeenNames();
 
     // The record menu's edits (SPEC.md §5) land here, on the same controls a hand
@@ -340,6 +341,54 @@ void TestFilterPane::subsystemDiscoveredLaterArrivesChecked()
     // And the record from the newly-discovered subsystem is visible.
     doc.applyFilters();
     QCOMPARE(doc.filtered().recordCount(), 2); // net.socket + ui.window, db.pool hidden
+}
+
+// The other half of the discovery rule, and the one nothing asserted: an append that
+// discovers NOTHING must leave the list exactly as it is. refreshDiscoveredLists() runs
+// on every ingest tick of a growing log, and it used to empty the widget and refill it
+// with fresh items whatever it found — so a busy log emptied and refilled its subsystem
+// list about once a second, which on a loaded machine is a visible flash and a lost
+// scroll position in a pane nothing about the append changed.
+//
+// The claim is about widget CHURN, which no value on the pane can express: every name,
+// tick and count was right throughout. So it is asserted on the item POINTERS, which
+// survive only if the rows were never rebuilt — and the second half of the case appends
+// a genuinely new subsystem to show that the comparison can tell the difference.
+void TestFilterPane::anAppendThatDiscoversNothingLeavesTheListAlone()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
+    QVERIFY(list);
+    QCOMPARE(valueCount(list), 2);
+
+    QList<QListWidgetItem *> before;
+    for (int i = 0; i < list->count(); ++i)
+        before.append(list->item(i));
+
+    // Records arrive, all of them from subsystems already listed.
+    QVERIFY2(appendAndReindex(doc, file,
+                              "2026-07-21 12:00:02,000 [main] INFO  db.pool - c\n"
+                              "2026-07-21 12:00:03,000 [main] INFO  net.socket - d\n"),
+             qPrintable(doc.lastError()));
+    pane.refreshDiscoveredLists();
+
+    QCOMPARE(list->count(), before.size());
+    for (int i = 0; i < list->count(); ++i)
+        QVERIFY2(list->item(i) == before.at(i), qPrintable(list->item(i)->text()));
+
+    // A name nobody has seen still rebuilds, or the guard above would be a way of
+    // never noticing a new subsystem at all.
+    QVERIFY2(appendAndReindex(doc, file,
+                              "2026-07-21 12:00:04,000 [main] INFO  ui.window - e\n"),
+             qPrintable(doc.lastError()));
+    pane.refreshDiscoveredLists();
+    QCOMPARE(valueCount(list), 3);
+    QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Checked);
 }
 
 void TestFilterPane::rebindingForgetsSeenNames()

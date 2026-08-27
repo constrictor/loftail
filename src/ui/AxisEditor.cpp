@@ -1176,16 +1176,21 @@ void AxisEditor::repopulate(const QSet<QString> &loggerChecked,
     loggers.append(m_loggerManualNames.values());
     threads.append(m_threadManualNames.values());
 
-    populateList(m_loggerList, loggers, loggerChecked, m_loggerManualNames, m_loggerSeen,
-                 loggerRule, restrictiveFor(ValueAxis::Subsystem));
-    populateList(m_threadList, threads, threadChecked, m_threadManualNames, m_threadSeen,
-                 threadRule, restrictiveFor(ValueAxis::Thread));
-    narrowList(m_loggerList, m_loggerNarrow ? m_loggerNarrow->text() : QString());
-    narrowList(m_threadList, m_threadNarrow ? m_threadNarrow->text() : QString());
-    // The list just changed under the narrowing, so the hidden count the buttons
-    // report has too.
-    updateListButtonHints(ValueAxis::Subsystem);
-    updateListButtonHints(ValueAxis::Thread);
+    // Each half re-narrows and re-counts only if its own rows actually moved: the
+    // narrowing writes a hidden flag per row and the hints write button text, and both
+    // are repaints of state that did not change on an append that discovered nothing.
+    if (populateList(m_loggerList, loggers, loggerChecked, m_loggerManualNames,
+                     m_loggerSeen, loggerRule, restrictiveFor(ValueAxis::Subsystem))) {
+        narrowList(m_loggerList, m_loggerNarrow ? m_loggerNarrow->text() : QString());
+        // The list just changed under the narrowing, so the hidden count the buttons
+        // report has too.
+        updateListButtonHints(ValueAxis::Subsystem);
+    }
+    if (populateList(m_threadList, threads, threadChecked, m_threadManualNames,
+                     m_threadSeen, threadRule, restrictiveFor(ValueAxis::Thread))) {
+        narrowList(m_threadList, m_threadNarrow ? m_threadNarrow->text() : QString());
+        updateListButtonHints(ValueAxis::Thread);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1579,17 +1584,13 @@ void AxisEditor::setTimeRange(qint64 fromUtcMs, qint64 toUtcMs)
 // List helpers
 // ---------------------------------------------------------------------------
 
-void AxisEditor::populateList(QListWidget *list, const QStringList &names,
+bool AxisEditor::populateList(QListWidget *list, const QStringList &names,
                               const QSet<QString> &checked, const QSet<QString> &manual,
                               QSet<QString> &seen, ListRule rule, bool restrictive)
 {
     if (!list)
-        return;
+        return false;
     m_populating = true;
-    // NOT clear(): row 0 is the "Others" row and carries the discovery rule this
-    // function is being handed as `restrictive`. Clearing it would delete the state
-    // and leave restrictiveFor() reading a dangling row.
-    clearValueRows(list);
     // De-duplicate and drop the empty-string id (id 0, the "field absent" sentinel).
     QStringList sorted;
     QSet<QString> dedup;
@@ -1632,9 +1633,18 @@ void AxisEditor::populateList(QListWidget *list, const QStringList &names,
     // A name already listed keeps its own state under Discover, which is what makes an
     // unticked value stay unticked across the repopulations indexing drives —
     // including one the user typed in and then unticked.
+    //
+    // The answer is worked out in full BEFORE the widget is touched, because this
+    // function runs on every ingest tick of a growing log and the answer is almost
+    // always the one already on screen. Rebuilding it anyway — clearValueRows() and a
+    // fresh QListWidgetItem per name — emptied and refilled the list ~1.3 times a
+    // second, which on a loaded machine is a visible flash and a lost scroll position
+    // in a pane nothing about the append changed. `seen` is still updated for every
+    // name whatever the comparison decides, since that bookkeeping is what the
+    // discovery rule reads and it must not depend on whether the rows moved.
+    QList<QPair<QString, bool>> wanted;
+    wanted.reserve(sorted.size());
     for (const QString &n : sorted) {
-        auto *item = new QListWidgetItem(n, list);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         const bool fresh = !seen.contains(n);
         bool       on = false;
         switch (rule) {
@@ -1660,9 +1670,35 @@ void AxisEditor::populateList(QListWidget *list, const QStringList &names,
             seen.insert(n);
         else
             seen.remove(n);
-        item->setCheckState(on ? Qt::Checked : Qt::Unchecked);
+        wanted.append({n, on});
+    }
+
+    // Nothing about the rows differs: leave every item, its check state, its hidden
+    // flag and the view's scroll position exactly where they are.
+    if (list->count() - kFirstValueRow == wanted.size()) {
+        bool same = true;
+        for (int i = 0; i < wanted.size() && same; ++i) {
+            const QListWidgetItem *item = list->item(kFirstValueRow + i);
+            same = item->text() == wanted.at(i).first
+                   && (item->checkState() == Qt::Checked) == wanted.at(i).second;
+        }
+        if (same) {
+            m_populating = false;
+            return false;
+        }
+    }
+
+    // NOT clear(): row 0 is the "Others" row and carries the discovery rule this
+    // function is being handed as `restrictive`. Clearing it would delete the state
+    // and leave restrictiveFor() reading a dangling row.
+    clearValueRows(list);
+    for (const auto &w : std::as_const(wanted)) {
+        auto *item = new QListWidgetItem(w.first, list);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(w.second ? Qt::Checked : Qt::Unchecked);
     }
     m_populating = false;
+    return true;
 }
 
 void AxisEditor::clearValueRows(QListWidget *list)
