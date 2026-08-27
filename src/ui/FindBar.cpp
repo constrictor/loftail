@@ -22,6 +22,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QElapsedTimer>
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -29,6 +30,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QTimer>
 #include <QToolButton>
 
 namespace loftail {
@@ -42,6 +44,29 @@ namespace {
 // outrun.
 constexpr int kQueryStretch  = 3;
 constexpr int kStatusStretch = 2;
+
+// Typing is a BURST, and a search is not free. MainWindow::runFind() walks the visible
+// rows for the hit and then counts the rest of them for the "3 of 47" report, and that
+// count decodes every visible record's text over every visible column (invariant #1) —
+// which is why it is bounded and reports a floor ("530+") on any log big enough to reach
+// the bound (ARCHITECTURE.md §7.1.3). Run once per keystroke, the whole of it is latency
+// the reader feels in the very box they are typing into, so the bound had to be small
+// enough to hide inside a keypress and the total was a floor far sooner than it needed
+// to be.
+//
+// So the query box coalesces, on FilterPane's rule and for FilterPane's reason: the
+// debounce engages only once a search has MEASURED ITSELF slow, so a log small enough to
+// search on the keystroke still does, and pays no added latency for a bound it was never
+// going to hit. Nothing else in the bar is debounced — Enter, the two arrow buttons and
+// the option checkboxes are each one deliberate gesture rather than a stream, and a
+// gesture that answered 150 ms later would read as a dropped keypress.
+//
+// The threshold has to sit BELOW what a search on such a log costs or the coalescing
+// never engages at all, which is the one way these two constants are coupled to
+// MainWindow's kFindTallyMs: raise that bound without raising this one and every search
+// measures fast by construction.
+constexpr qint64 kSearchDebounceThresholdMs = 40;
+constexpr int    kSearchDebounceMs = 150;
 
 } // namespace
 
@@ -127,18 +152,72 @@ FindBar::FindBar(QWidget *parent) : QWidget(parent)
     close->setToolTip(tr("Close (Esc)"));
     row->addWidget(close);
 
+    m_searchTimer = new QTimer(this);
+    m_searchTimer->setSingleShot(true);
+    m_searchTimer->setInterval(kSearchDebounceMs);
+    // fromStart, exactly as the immediate path is: what is owed here is a query EDIT, and
+    // an edited query has to be searched for from the top or the first match above the
+    // cursor is skipped.
+    connect(m_searchTimer, &QTimer::timeout, this, [this] { emitSearch(true, true); });
+
     // Typing (or toggling an option) restarts the search from the top so the first
-    // match is found without needing to press Enter twice.
-    connect(m_edit, &QLineEdit::textChanged, this, [this](const QString &) { emit findRequested(true, true); });
-    connect(m_edit, &QLineEdit::returnPressed, this, [this] { emit findRequested(true, false); });
-    connect(m_regex, &QCheckBox::toggled, this, [this](bool) { emit findRequested(true, true); });
-    connect(m_case, &QCheckBox::toggled, this, [this](bool) { emit findRequested(true, true); });
-    connect(next, &QToolButton::clicked, this, [this] { emit findRequested(true, false); });
-    connect(prev, &QToolButton::clicked, this, [this] { emit findRequested(false, false); });
+    // match is found without needing to press Enter twice. Typing goes through the
+    // debounce and the rest do not — see the constants above.
+    connect(m_edit, &QLineEdit::textChanged, this, [this](const QString &) { scheduleSearch(); });
+    connect(m_edit, &QLineEdit::returnPressed, this, [this] { emitSearch(true, false); });
+    connect(m_regex, &QCheckBox::toggled, this, [this](bool) { emitSearch(true, true); });
+    connect(m_case, &QCheckBox::toggled, this, [this](bool) { emitSearch(true, true); });
+    connect(next, &QToolButton::clicked, this, [this] { emitSearch(true, false); });
+    connect(prev, &QToolButton::clicked, this, [this] { emitSearch(false, false); });
     connect(close, &QToolButton::clicked, this, [this] { hide(); emit closed(); });
     connect(m_highlight, &QToolButton::clicked, this, [this] { emit highlightRequested(); });
 
     hide();
+}
+
+void FindBar::scheduleSearch()
+{
+    if (m_lastSearchMs < kSearchDebounceThresholdMs) {
+        emitSearch(true, true);
+        return;
+    }
+    m_searchTimer->start(); // restarts the wait: the burst is not over yet
+}
+
+void FindBar::emitSearch(bool forward, bool fromStart)
+{
+    // This search supersedes whatever a pending edit was going to ask for: the query it
+    // would search is the one in the box, which is the one being searched right now, and
+    // letting it fire afterwards would restart a Find Next from the top. Every route out
+    // of this bar goes through here, so no caller has to remember it.
+    cancelPendingSearch();
+
+    // Time the search itself, not the emit's own overhead: findRequested is a direct
+    // connection in both owners (DocumentView forwards it to MainWindow::runFind,
+    // ConfigView handles it), so this returns once the search has actually run.
+    QElapsedTimer clock;
+    clock.start();
+    emit findRequested(forward, fromStart);
+    m_lastSearchMs = clock.elapsed();
+}
+
+void FindBar::cancelPendingSearch()
+{
+    if (m_searchTimer)
+        m_searchTimer->stop();
+}
+
+bool FindBar::searchPending() const
+{
+    return m_searchTimer && m_searchTimer->isActive();
+}
+
+void FindBar::hideEvent(QHideEvent *event)
+{
+    // A search owed to text in a box that is no longer on screen has nowhere to report
+    // into and nothing to mark — see the header.
+    cancelPendingSearch();
+    QWidget::hideEvent(event);
 }
 
 QString FindBar::pattern() const { return m_edit->text(); }
@@ -192,6 +271,10 @@ void FindBar::activate()
     // Whatever the last search reported is about a query that is about to be replaced,
     // and a stale "3 of 47" over a fresh empty box is a lie.
     setStatus(QString());
+    // And any search still owed to the standing query, which is about to be selected for
+    // replacement: a report arriving 150 ms into the reader's first keystroke would land
+    // on top of the blank box this gesture just gave them.
+    cancelPendingSearch();
     // And the red with it: the report and the cue are two halves of one answer about a
     // query that is now selected for replacement, so leaving one behind is a field that
     // says "this found nothing" over a bar that says nothing at all.
@@ -297,7 +380,7 @@ bool FindBar::eventFilter(QObject *watched, QEvent *event)
             // nothing about intent; any other modifier belongs to somebody else's
             // gesture and is not this one.
             if ((key->modifiers() & ~Qt::KeypadModifier) == Qt::ShiftModifier) {
-                emit findRequested(false, false);
+                emitSearch(false, false);
                 return true; // consumed, so no returnPressed() and no forward search
             }
         }

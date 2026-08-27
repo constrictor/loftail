@@ -152,8 +152,24 @@ constexpr int kReloadNoticeMs = 5000;
 // is a hundred wrapped lines or the query is an expensive regex. Whichever bound bites
 // first, the total is reported as a floor rather than as a fact (ARCHITECTURE.md
 // §7.1.3).
+//
+// The wall-clock bound is what the reader meets, and it used to be 30 ms — a whole
+// keystroke's worth of latency was all there was to spend, because the query box
+// searched on every one of them. It does not any more: the box COALESCES once a search
+// has measured itself slow (FindBar.cpp), so the budget is no longer "how much may one
+// keypress cost" but "how long may the bar take to answer once the typing stops", and a
+// floor of `530+` where `2119` was affordable is a worse answer than a wait nobody is
+// waiting through. The two constants are coupled in the other direction as well and that
+// is the easy thing to undo: this bound CAPS what a search costs, so leaving it at 30 ms
+// would hold every search below FindBar's 40 ms debounce threshold by construction and
+// the coalescing this raise depends on would never engage at all.
+//
+// It is deliberately not raised further. The debounce covers typing and nothing else —
+// Enter, F3 and the two arrow buttons are each one deliberate gesture and pay this in
+// full, so a held-down F3 repeats at whatever rate this allows, and past a few hundred
+// milliseconds that stops reading as a search and starts reading as a stall.
 constexpr int kFindTallyRows = 200000;
-constexpr int kFindTallyMs = 30;
+constexpr int kFindTallyMs = 120;
 
 // May a pane be torn off into a window of its own?
 //
@@ -4050,6 +4066,14 @@ void MainWindow::runFind(bool forward, bool fromStart)
     // keystroke to delete the text they are stepping through. reveal() is a no-op on an
     // open bar, so the focus a `no match` or a successful find leaves inside the bar
     // stays exactly where it was.
+    // Land the debt a coalesced query edit leaves (FindBar.cpp): while the debounce is
+    // engaged there may be a search owed to text already in the box, and it is a
+    // `fromStart` one. F3 is the route that cannot cancel it for itself — the shortcut is
+    // a window action that arrives here directly rather than through the bar — so an
+    // uncancelled edit would fire 150 ms later and throw the reader back to the first
+    // match. A search made THROUGH the bar has already cancelled its own, so this is a
+    // no-op on every other path.
+    findBar->cancelPendingSearch();
     findBar->reveal();
     // Every branch below either fails the standing query or does not, and the field's
     // red is the only place a failure is now said (SPEC.md §5) — so it is cleared once,

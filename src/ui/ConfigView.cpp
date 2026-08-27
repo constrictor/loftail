@@ -384,6 +384,9 @@ void ConfigView::runFind(bool forward, bool fromStart)
     // FIRST, above every branch. Every report below goes into this bar's own label, so a
     // search asked for from the text (F3) has to open the bar before it writes or the
     // answer lands where nobody can read it — MainWindow::runFind()'s rule.
+    // Land the debt a coalesced query edit leaves — MainWindow::runFind()'s rule, and
+    // F3 reaches this function by the same direct route that makes it necessary there.
+    m_findBar->cancelPendingSearch();
     m_findBar->reveal();
     // Cleared once at the top and set by the branches that fail — MainWindow::runFind()'s
     // rule, and the same reason: the branches that succeed are the ones that would forget.

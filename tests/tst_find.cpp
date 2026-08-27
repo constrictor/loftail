@@ -238,6 +238,8 @@ private slots:
     void theConfigEditorsBarOffersNoHighlightButton();
     void aFailedSearchTurnsTheQueryRedAndStillCounts();
     void aCountWithNoPositionStillSaysHowMany();
+    void typingCoalescesOnceASearchHasMeasuredItselfSlow();
+    void findNextLandsAPendingQueryEditRatherThanBeingUndoneByIt();
 };
 
 void TestFind::initTestCase()
@@ -1200,4 +1202,97 @@ void TestFind::aCountWithNoPositionStillSaysHowMany()
     // And the positioned wordings are untouched.
     QCOMPARE(FindBar::describeMatch(3, 47, true, false, true), QStringLiteral("3 of 47"));
     QCOMPARE(FindBar::describeNoMatch(), QStringLiteral("0 of 0"));
+}
+
+
+// Typing COALESCES, and only once a search has measured itself slow (FindBar.cpp). The
+// adaptive half is what keeps every other case in this file — and every log small enough
+// to search on the keystroke — searching on the keystroke exactly as it always did: the
+// first search on a bar is always immediate, so nothing here had to be rewritten around
+// a wait.
+//
+// Driven against a bare FindBar with a deliberately slow handler rather than through a
+// window over a huge log, for tst_filter's reason one level down: the threshold is what
+// has to be crossed, and making the work slow is cheaper and steadier than making the
+// log big. It is not a cheat about WHERE the cost is measured — the bar times its own
+// emit, so a slow handler is a slow search as far as this mechanism can tell, which is
+// the whole of why the measurement was put there.
+void TestFind::typingCoalescesOnceASearchHasMeasuredItselfSlow()
+{
+    FindBar bar;
+    bar.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&bar));
+
+    int searches = 0;
+    connect(&bar, &FindBar::findRequested, &bar, [&searches](bool, bool) {
+        ++searches;
+        QTest::qSleep(60); // over kSearchDebounceThresholdMs, and blocking: a search is
+                           // synchronous work inside the emit, not something awaited
+    });
+
+    QLineEdit *query = bar.findChild<QLineEdit *>(QStringLiteral("findEdit"));
+    QVERIFY(query);
+
+    // The first keystroke searches at once — nothing has measured anything yet, which is
+    // the state every small log stays in for ever.
+    query->setText(QStringLiteral("a"));
+    QCOMPARE(searches, 1);
+    QVERIFY(!bar.searchPending());
+
+    // That one measured slow, so the rest of the burst coalesces into one wait rather
+    // than into three more searches.
+    query->setText(QStringLiteral("al"));
+    query->setText(QStringLiteral("alp"));
+    query->setText(QStringLiteral("alph"));
+    QCOMPARE(searches, 1);
+    QVERIFY(bar.searchPending());
+
+    // And it does arrive: coalesced, not dropped. The whole burst cost two searches
+    // where it used to cost four, and the query searched is the one the reader stopped
+    // typing.
+    QTRY_COMPARE(searches, 2);
+    QVERIFY(!bar.searchPending());
+}
+
+// The trap the debounce introduces, and the one route that cannot spring itself: while a
+// query edit is waiting, F3 is a MainWindow action that calls runFind() directly rather
+// than going through the bar, so the pending edit — a `fromStart` search — would fire
+// 150 ms after the reader had stepped forward and throw them back to the first match.
+//
+// The slow handler is connected BEFORE the first search, so that search is immediate (it
+// is the first) and measures slow, which is exactly the state a large log is in.
+void TestFind::findNextLandsAPendingQueryEditRatherThanBeingUndoneByIt()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    FindBar *bar = activeView(w)->findBar();
+    QVERIFY(bar);
+    connect(bar, &FindBar::findRequested, bar, [](bool, bool) { QTest::qSleep(60); });
+
+    QLineEdit *query = queryField(w);
+    QVERIFY(query);
+    query->setText(QStringLiteral("alpha")); // immediate: the first search on this bar
+    QCOMPARE(cursorRow(w), int(kAlphaOne));
+
+    // Two more edits landing back on the same query. Both coalesce, so a search is now
+    // owed to text the reader has stopped typing.
+    query->setText(QStringLiteral("alphaZ"));
+    query->setText(QStringLiteral("alpha"));
+    QVERIFY(bar->searchPending());
+
+    // F3 steps forward, and must land that debt on the way rather than leave it armed.
+    pressFindNext(w);
+    QVERIFY(!bar->searchPending());
+    QCOMPARE(cursorRow(w), int(kAlphaTwo));
+
+    // Long enough that a surviving edit would have fired. The reader stays where they
+    // stepped to.
+    QTest::qWait(300);
+    QCOMPARE(cursorRow(w), int(kAlphaTwo));
+
+    w.close();
 }

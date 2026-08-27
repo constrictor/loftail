@@ -24,6 +24,7 @@ QT_BEGIN_NAMESPACE
 class QCheckBox;
 class QLineEdit;
 class QLabel;
+class QTimer;
 class QToolButton;
 QT_END_NAMESPACE
 
@@ -73,6 +74,20 @@ public:
     // test reading a QPalette colour back is asserting on the theme rather than on this;
     // this is the state itself.
     bool queryFailed() const;
+
+    // Drop a query edit that has not been searched for yet. Typing COALESCES once a
+    // search has measured itself slow (see scheduleSearch()), so at any moment there may
+    // be a search owed to text already in the box — and it is a `fromStart` search, which
+    // restarts from the top. Anything that searches by some other route has to land that
+    // debt first or it arrives afterwards and throws the reader back to the first match:
+    // F3 is the case that cannot do it for itself, being a MainWindow action that calls
+    // runFind() directly rather than going through this bar. A search made THROUGH the
+    // bar cancels its own pending edit, so the two owners call this unconditionally at
+    // the top of runFind() and it is a no-op on the ordinary path.
+    void cancelPendingSearch();
+    // Whether such an edit is waiting. The debounce is the only thing that can defer a
+    // search, so this is also how a test tells a coalesced burst from a dropped one.
+    bool searchPending() const;
 
     // Report the outcome of the last search in the bar's own status label (SPEC.md §5):
     // which match of how many, whether the search wrapped, or why there was nothing to
@@ -125,12 +140,27 @@ signals:
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
+    // Drops a pending query edit. The bar goes off screen by four routes — Escape, the
+    // ✕ button, the tab being switched away from, the view being destroyed — and a
+    // search landing after any of them writes a report into a label nobody can read and
+    // re-arms the marks the close was meant to take away. One override covers all four.
+    void hideEvent(QHideEvent *event) override;
     // Re-elides the status into the cell the bar's width gives it — see setStatus().
     void resizeEvent(QResizeEvent *event) override;
     // Watches the query field so Shift+Enter can mean "search backwards" (SPEC.md §5).
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    // Ask for the search a query edit owes, now or once the typing stops — see the
+    // constants in the .cpp. The one caller is the query field's textChanged.
+    void scheduleSearch();
+    // Emit findRequested() and time how long the search it asks for took. The timing is
+    // what makes the debounce adaptive, and it is done HERE because the signal is a
+    // direct connection in both of the things that own a Find bar: the emit returns only
+    // once the search has run, so neither owner has to report its own cost back and the
+    // two cannot come to measure it differently.
+    void emitSearch(bool forward, bool fromStart);
+
     // Cuts m_statusText into the label's own width, and puts the full text on the
     // tooltip only when it did not fit. The label's width never depends on the text:
     // it is a stretch share of the bar, so the controls beside it cannot move.
@@ -138,6 +168,10 @@ private:
 
     QString    m_statusText;
     bool       m_queryFailed = false;
+    // How long the previous search took, and the timer that coalesces the next one when
+    // that was slow. Zero to begin with, so the first search on any bar is immediate.
+    qint64     m_lastSearchMs = 0;
+    QTimer     *m_searchTimer = nullptr;
     QLineEdit  *m_edit = nullptr;
     QToolButton *m_highlight = nullptr;
     QCheckBox *m_regex = nullptr;
