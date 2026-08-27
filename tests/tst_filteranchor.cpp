@@ -122,6 +122,26 @@ private:
 
     // Tick the priority axis at WARN through the pane's own controls, which is the
     // route a user takes and the one that ends in MainWindow::applyActiveFilters().
+    // Set (or lift) the WARN floor and WAIT FOR IT TO LAND, which is not the same thing
+    // and is the whole reason this helper does the waiting rather than each caller.
+    //
+    // FilterPane::scheduleApply() applies SYNCHRONOUSLY only while the last re-filter
+    // measured under 40 ms, and falls back to a 150 ms debounce otherwise — an adaptive
+    // cadence that is right for typing and invisible from here. So on an unloaded
+    // machine the edit lands before the next line runs, and on a loaded one a single
+    // slow apply flips the pane into debounced mode and every immediate read afterwards
+    // sees the PREVIOUS filter set. That is tst_recordmenu's rule, arrived at there the
+    // same way: green for as long as the runners happened to be quick, then red on code
+    // that did not touch filtering.
+    //
+    // It matters MORE here than there, because what this file asserts on is the anchor —
+    // the scroll offset and the current record — which the re-apply is what moves. Read
+    // before the apply has run and those two still hold their pre-filter values, so the
+    // assertions pass for the wrong reason and the anchor is never tested at all. The
+    // wait therefore belongs with the EDIT rather than on each read: everything after it
+    // is then reading a landed filter set, and no assertion below needs to know any of
+    // this. Waiting weakens nothing — a filter that never lands still fails, on the
+    // QTRY timeout.
     static void applyWarnFloor(MainWindow &w, bool on)
     {
         FilterPane *pane = filterPane(w);
@@ -136,6 +156,17 @@ private:
             combo->setCurrentIndex(row);
         }
         group->setChecked(on);
+
+        DocumentView *view = activeView(w);
+        QVERIFY(view);
+        // Each direction waits on the strongest thing it can say. Lifting the floor is
+        // asserted as the axis going quiet rather than as a particular minPriority,
+        // because what an unticked priority axis collapses to is MatchCriteria::resolve()'s
+        // business and not something this file should pin.
+        if (on)
+            QTRY_COMPARE(view->context()->doc->filters().minPriority, Priority::Warn);
+        else
+            QTRY_VERIFY(!view->context()->doc->filters().anyActive());
     }
 
     static int sourceOfViewRow(const DocumentView *v, int viewRow)
@@ -282,7 +313,10 @@ void TestFilterAnchor::clearFiltersFromTheViewMenuKeepsThePlaceToo()
     QVERIFY(clear);
     clear->trigger();
 
-    QVERIFY(!v->context()->doc->filters().anyActive());
+    // Cleared through the same pane and therefore through the same debounce — see
+    // applyWarnFloor(). The two assertions below are about where the view ended up,
+    // which the re-apply is what decides, so neither means anything until it has run.
+    QTRY_VERIFY(!v->context()->doc->filters().anyActive());
     QCOMPARE(log->currentRecord(), 104); // identity view: the row IS the ordinal
     QCOMPARE(log->currentRecord() - sb->value(), offsetBefore);
 }
