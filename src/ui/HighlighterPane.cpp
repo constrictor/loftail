@@ -43,6 +43,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
+#include <QStyle>
 #include <QStyleOptionButton>
 #include <QStyleOptionComboBox>
 #include <QStyleOptionViewItem>
@@ -802,41 +803,65 @@ void HighlighterPane::buildUi()
     m_newBtn = new QPushButton(tr("New"), this);
     m_removeBtn = new QPushButton(tr("Remove"), this);
     m_clearBtn = new QPushButton(tr("Clear"), this);
-    m_upBtn = new QPushButton(tr("Up"), this);
-    m_downBtn = new QPushButton(tr("Down"), this);
+    // ARROWS, not the words "Up" and "Down", and squared off to the row's own height.
+    // A QHBoxLayout's minimum width is the SUM of its children's and this row sits in
+    // `top`, outside the QScrollArea that holds the axes, so the pane pays every button
+    // in it directly: past the axis editor's floor it is a horizontal scrollbar under an
+    // ordinary dock, whose first casualty is the All/None/Invert column (the failure
+    // AxisEditor's Ignored-policy time editors exist to avoid). Fusion floors a TEXT
+    // button at 80 px whatever it says, so two words here cost 160 px of floor to name
+    // a direction that a table scrolled top to bottom already draws — which is the same
+    // argument the Filters pane's context spinners settled the same way, and the width
+    // those two give back is what pays for Copy From… joining the row below.
+    //
+    // The glyphs are NOT translated (ARCHITECTURE.md §9.1) — an arrow is not prose — and
+    // the words live on setToolTip and setAccessibleName, exactly as they do there.
+    m_upBtn = new QPushButton(QString::fromUtf8("\xe2\x86\x91"), this);
+    m_downBtn = new QPushButton(QString::fromUtf8("\xe2\x86\x93"), this);
+    m_upBtn->setToolTip(tr("Move the selected rule up, so it is matched sooner."));
+    m_downBtn->setToolTip(tr("Move the selected rule down, so it is matched later."));
+    m_upBtn->setAccessibleName(tr("Move rule up"));
+    m_downBtn->setAccessibleName(tr("Move rule down"));
     m_newBtn->setToolTip(tr("Add a copy of the selected rule, or an empty rule when "
                             "nothing is selected."));
     m_clearBtn->setToolTip(tr("Remove every rule, leaving the log uncoloured."));
     // Object names, never translated: the test contract (ARCHITECTURE.md §9.1). Not
     // decoration — the pane embeds an AxisEditor, so "the button that says Add" was
     // ambiguous the moment that editor also had one, and which of them a by-text
-    // lookup returned was decided by construction order.
+    // lookup returned was decided by construction order. It matters twice over for the
+    // two arrows, whose visible text is now a glyph nothing could look up by.
     m_newBtn->setObjectName(QStringLiteral("ruleNew"));
     m_removeBtn->setObjectName(QStringLiteral("ruleRemove"));
     m_clearBtn->setObjectName(QStringLiteral("ruleClear"));
     m_upBtn->setObjectName(QStringLiteral("ruleUp"));
     m_downBtn->setObjectName(QStringLiteral("ruleDown"));
-    btnRow->addWidget(m_newBtn);
-    btnRow->addWidget(m_removeBtn);
-    btnRow->addWidget(m_clearBtn);
-    btnRow->addWidget(m_upBtn);
-    btnRow->addWidget(m_downBtn);
-    top->addLayout(btnRow);
 
-    // A ROW OF ITS OWN, and the reason is width rather than grouping. A QHBoxLayout's
-    // minimum width is the SUM of its children's, so a sixth button in the row above
-    // raises the pane's own floor by that button's whole width — and this row sits in
-    // `top`, outside the QScrollArea that holds the axes, so the pane pays it directly:
-    // past the axis editor's floor it is a horizontal scrollbar under an ordinary dock,
-    // whose first casualty is the All/None/Invert column (the failure AxisEditor's
-    // Ignored-policy time editors exist to avoid). A row that leads with a stretch
-    // contributes one button's width and nothing else, and ~24 px of height is what the
-    // axis scroll area is there to absorb.
+    // A setMaximumWidth and NOTHING ELSE, which is both sufficient and the whole
+    // mechanism: qSmartMinSize() bounds a widget's minimum by its maximum, so the cap
+    // takes Fusion's 80 px text floor off the layout's sum as well as off the hint. The
+    // QSizePolicy::Ignored trick the AxisEditor time editors carry must NOT be added to
+    // it — the two pull opposite ways, and the pair is what laid the Filters pane's
+    // context row out on top of itself (CLAUDE.md).
     //
-    // It reads correctly too: the five above act on the selected rule or on the list,
-    // and this one replaces the list from somewhere else entirely.
-    auto *copyRow = new QHBoxLayout;
-    copyRow->addStretch(1);
+    // Square, measured from the button BESIDE it rather than written down, because the
+    // row's height comes from the font: the height is capped too, and to a worded
+    // button's own hint, because an arrow resolves through a fallback face whose taller
+    // line spacing gives it a 26 px hint next to New's 25 — which a QHBoxLayout honours,
+    // leaving one button in the row a pixel out of line with the other five.
+    const int rowHeight = m_newBtn->sizeHint().height();
+    for (QPushButton *arrow : {m_upBtn, m_downBtn}) {
+        const int glyph =
+            arrow->fontMetrics().horizontalAdvance(arrow->text())
+            + 2 * style()->pixelMetric(QStyle::PM_ButtonMargin, nullptr, arrow)
+            + 2 * style()->pixelMetric(QStyle::PM_DefaultFrameWidth, nullptr, arrow);
+        arrow->setMaximumSize(qMax(rowHeight, glyph), rowHeight);
+    }
+
+    // ONE ROW, and what makes room for the sixth button is the two arrows above rather
+    // than the stretch this button used to lead a row of its own with. It reads as a
+    // row too: the five before it act on the selected rule or on the list, and this one
+    // replaces the list from somewhere else entirely — which is what the separator
+    // before it says, at no width.
     m_copyBtn = new QPushButton(tr("Copy From…"), this);
     m_copyBtn->setObjectName(QStringLiteral("ruleCopyFrom")); // never the visible text
     m_copyBtn->setToolTip(tr("Replace these rules with an exact copy of another open "
@@ -844,8 +869,16 @@ void HighlighterPane::buildUi()
     // Off until the window says there is another log open — setCanCopyFromAnotherLog()
     // is the one writer, and updateRuleButtons() deliberately knows nothing about it.
     m_copyBtn->setEnabled(false);
-    copyRow->addWidget(m_copyBtn);
-    top->addLayout(copyRow);
+
+    btnRow->addWidget(m_newBtn);
+    btnRow->addWidget(m_removeBtn);
+    btnRow->addWidget(m_clearBtn);
+    btnRow->addWidget(m_upBtn);
+    btnRow->addWidget(m_downBtn);
+    btnRow->addStretch(1);
+    btnRow->addWidget(m_copyBtn);
+    top->addLayout(btnRow);
+
     connect(m_copyBtn, &QAbstractButton::clicked, this,
             &HighlighterPane::copyFromAnotherLogRequested);
 

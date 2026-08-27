@@ -344,7 +344,7 @@ private slots:
     void copyingTheSeededRulesInClearsTheMarker();
     void theCopyButtonIsDeadUntilThereIsSomewhereToCopyFrom();
     void theRuleButtonsDoNotWriteTheCopyButton();
-    void theCopyButtonCostsThePaneNoDockWidth();
+    void theCopyButtonRidesTheRowTheArrowsPaidFor();
 };
 
 void TestHighlighterPane::everyAxisIsOfferedAndOptIn()
@@ -2290,27 +2290,48 @@ void TestHighlighterPane::theRuleButtonsDoNotWriteTheCopyButton()
     QVERIFY(!copy->isEnabled());
 }
 
-void TestHighlighterPane::theCopyButtonCostsThePaneNoDockWidth()
+void TestHighlighterPane::theCopyButtonRidesTheRowTheArrowsPaidFor()
 {
     HighlighterPane pane;
+    pane.resize(600, 800);
     QPushButton *copy = button(pane, QStringLiteral("ruleCopyFrom"));
-    QVERIFY(copy);
-
-    // A QHBoxLayout's minimum width is the SUM of its children's, so a sixth button in
-    // the row above would raise the pane's own floor by that button's whole width — and
-    // that row is outside the axis scroll area, so the pane pays it directly: past the
-    // axis editor's floor it is a horizontal scrollbar under an ordinary dock. The
-    // button sits on a row of its own that leads with a stretch, so it contributes
-    // nothing to the floor.
-    //
-    // Stated as shown-versus-hidden and never as a number: PM_ScrollBarExtent and the
-    // group-box frames both differ between Fusion and Breeze, so a written-down width
-    // is a test that is green by luck (CLAUDE.md).
-    const int with = pane.minimumSizeHint().width();
-    copy->hide();
+    QPushButton *newBtn = button(pane, QStringLiteral("ruleNew"));
+    QPushButton *up = button(pane, QStringLiteral("ruleUp"));
+    QPushButton *down = button(pane, QStringLiteral("ruleDown"));
+    QVERIFY(copy && newBtn && up && down);
     pane.layout()->activate();
-    const int without = pane.minimumSizeHint().width();
-    QCOMPARE(with, without);
+
+    // ONE ROW. Stated as the band the buttons occupy rather than as a parent layout,
+    // because what the reader sees is where the button is drawn.
+    for (QPushButton *b : {up, down, copy}) {
+        QCOMPARE(b->geometry().top(), newBtn->geometry().top());
+        // The height too, and not only the top: an arrow resolves through a fallback
+        // face whose taller line spacing would otherwise leave it a pixel out of line
+        // with the five words beside it, which a QHBoxLayout honours faithfully.
+        QCOMPARE(b->geometry().height(), newBtn->geometry().height());
+    }
+    QVERIFY2(copy->geometry().left() > down->geometry().right(),
+             "Copy From... is meant to sit after the five that act on the list");
+
+    // ...and it is the ARROWS that make room for it. A QHBoxLayout's minimum width is
+    // the SUM of its children's and this row sits outside the axis scroll area, so the
+    // pane pays every button in it directly; Fusion floors a TEXT button at 80 px
+    // whatever it says, which is what two words cost and a capped glyph does not.
+    //
+    // Stated as a relation against the old wording and never as a number: Fusion and
+    // Breeze disagree about button margins, group-box frames and PM_ScrollBarExtent
+    // alike, so a written-down width is a test that is green by luck (CLAUDE.md).
+    const int arrows = pane.minimumSizeHint().width();
+    for (QPushButton *b : {up, down}) {
+        b->setMaximumWidth(QWIDGETSIZE_MAX);
+        b->setText(QStringLiteral("Down")); // the wider of the two words it replaced
+    }
+    pane.layout()->activate();
+    const int words = pane.minimumSizeHint().width();
+    QVERIFY2(arrows <= words,
+             qPrintable(QStringLiteral("arrows %1 px, words %2 px")
+                            .arg(arrows)
+                            .arg(words)));
 }
 
 QTEST_MAIN(TestHighlighterPane)
