@@ -2,6 +2,7 @@
 
 #include "DensityMap.h"
 
+#include <QList>
 #include <QScrollBar>
 
 QT_BEGIN_NAMESPACE
@@ -31,7 +32,12 @@ class LogView;
 // range is in LINE units and spans 0..total-page with a page-sized thumb, so a record
 // whose first line is L has thumb-top fraction L/total — which is precisely
 // LogView::scrollFractionOfRow(), the one mapping, shared with the mark placement and
-// with the click that jumps there.
+// with the click that jumps there. That fraction is taken of the TRACK (trackRect), not
+// of the widget: the widget spans the frame contents, which includes the header row the
+// viewport begins below, so a fraction of the widget's height puts every mark and the
+// thumb with it a header's height above the row it is pointing at — the same class of
+// error being the bar removed two of, arriving from the one direction being the bar
+// does not answer by itself.
 //
 // A navigation aid, not a chart (SPEC.md §11 rules out charts and statistics, and this
 // counts nothing and reports no quantity): it says "there is an ERROR two thirds of the
@@ -50,8 +56,8 @@ public:
     DensityScrollBar(LogView *view, const Document *document, LogModel *model);
     ~DensityScrollBar() override;
 
-    // Wider than a plain scrollbar, because it carries two lanes of marks — measured in
-    // the log font's own characters, the unit everything else in the view is measured
+    // Wider than a plain scrollbar, because it carries several lanes of marks — measured
+    // in the log font's own characters, the unit everything else in the view is measured
     // in (ARCHITECTURE.md §7.1), so it tracks a zoom instead of staying a pixel constant
     // that is fat at 7 pt and a hairline at 30. Never NARROWER than the style's own
     // scrollbar extent: the thumb is still a thumb and has to be draggable.
@@ -83,10 +89,22 @@ public:
     // and for nothing else: it is exactly the unbounded pass the slicing exists to
     // avoid.
     void scanNowForTests();
+
+    // The band the marks and the thumb are placed in: the rows of the bar that stand
+    // level with the VIEWPORT, which begins below the header row and ends at the bar's
+    // own bottom. Public for the same reason thumbRect() is — the claim is about where
+    // something is drawn, and there is nowhere else to check it.
+    QRect trackRect() const;
     // Where the thumb is drawn, in this widget's coordinates. Public because the one
     // claim the design turns on — a mark sits where the thumb that shows that record
     // goes — is only checkable against it.
     QRect thumbRect() const;
+    // Where the marks of one highlight rule are drawn, and where a find match is. Null
+    // when that rule has nothing in this log (a colour with no records gets no width) or
+    // when Find is not armed. Public because the columns are the answer to "a lone mark
+    // must not be covered by a commoner one", and a rendered pixel is where that shows.
+    QRect ruleColumnRect(int ruleIndex) const;
+    QRect findColumnRect() const;
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -101,15 +119,48 @@ protected:
     void hideEvent(QHideEvent *event) override;
 
 private:
+    // One column of marks: which classes it draws, and where it sits across the bar.
+    //
+    // A column per colour is what keeps a single ERROR line among ten thousand WARNs
+    // visible. With one shared column the two fight for the same pixels twice over —
+    // once in the map, where a bucket of a big log covers thousands of rows, and once in
+    // the paint, where a mark is never thinner than kMinMarkPx and so spills over its
+    // neighbours — and the loser disappears from the bar entirely. Given a column each
+    // neither can cover the other, and the horizontal position says which rule it was.
+    struct MarkColumn {
+        DensityMap::Marks classes = DensityMap::kNone;
+        int x = 0;
+        int width = 0;
+        // Which lane this column draws. A flag rather than "the last column is the find
+        // one": the find column is not appended at all when there is no room for it, and
+        // a positional rule would then read the quietest rules' column as the find lane.
+        bool find = false;
+    };
+
     void syncRows();
     void startScanning();
     void scanSlice();
+    bool findArmed() const;
+    // The columns across the bar: one per highlight rule that has anything in this log,
+    // plus the find lane's when Find is armed, laid out with equal margins either side so
+    // the marks sit CENTRED in the bar rather than packed against one edge. Where there
+    // is not room for a column per rule the tail of them share the last column, resolved
+    // per pixel by severity.
+    QList<MarkColumn> layoutColumns() const;
+    // Paint one column's marks, resolving per PIXEL rather than per bucket: several
+    // buckets land on one pixel row on any large log, and each one's kMinMarkPx floor
+    // spills onto its neighbours, so painting them in bucket order lets whichever comes
+    // last win. The lowest class wins instead, which is the loudest rule.
+    void paintColumn(QPainter &painter, const MarkColumn &column, DensityMap::Lane lane,
+                     const QColor *fixed) const;
     // The colour a rule's marks are drawn in: its background where it sets one, its
     // foreground where it sets only that, and the theme's text where it sets neither —
     // a rule that colours nothing can still be the reason a record matters.
     QColor markColour(int ruleIndex) const;
-    // Where bucket `bucket` starts and ends down the bar, in widget pixels.
-    void bandOf(int bucket, int &top, int &bottom) const;
+    // Where bucket `bucket` starts and ends down the bar, in widget pixels. `track` is
+    // passed in rather than asked for: it costs a walk up the parent chain and this runs
+    // once per bucket per column, which is thousands of times per repaint.
+    void bandOf(int bucket, const QRect &track, int &top, int &bottom) const;
     // The scroll range as the thumb geometry sees it: total lines, which is
     // (maximum - minimum) + pageStep, never less than 1.
     qint64 spanLines() const;

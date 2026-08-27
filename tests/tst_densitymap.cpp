@@ -20,19 +20,19 @@ private:
     // about so a "nothing is rescanned" claim can be measured rather than asserted.
     struct Probe {
         int markedRow = -1;
-        qint16 answer = 0;
+        int answerClass = 0;
         int calls = 0;
-        std::function<qint16(int)> fn()
+        std::function<DensityMap::Marks(int)> fn()
         {
-            return [this](int row) -> qint16 {
+            return [this](int row) -> DensityMap::Marks {
                 ++calls;
-                return row == markedRow ? answer : DensityMap::kNothing;
+                return row == markedRow ? DensityMap::classBit(answerClass) : DensityMap::kNone;
             };
         }
     };
 
     static void scanAll(DensityMap &m, DensityMap::Lane lane,
-                        const std::function<qint16(int)> &probe)
+                        const std::function<DensityMap::Marks(int)> &probe)
     {
         while (m.scan(lane, 4096, probe) > 0) { }
     }
@@ -65,7 +65,7 @@ private slots:
         // Every row asked about exactly once, budget or no budget: a slice that re-asked
         // about rows it had already seen would never finish on a log being tailed.
         QCOMPARE(p.calls, 1000);
-        QCOMPARE(m.at(DensityMap::Lane::Rules, m.bucketOf(900)), qint16(0));
+        QCOMPARE(m.at(DensityMap::Lane::Rules, m.bucketOf(900)), DensityMap::classBit(0));
     }
 
     // The claim that makes the strip affordable on a live log: appending records adds
@@ -93,34 +93,53 @@ private slots:
         QVERIFY(m.bucketCount() <= DensityMap::kMaxBuckets);
         // And the mark placed before any of that coarsening is still in the bucket that
         // now holds row 50 — merging pairwise is what keeps that true.
-        QCOMPARE(m.at(DensityMap::Lane::Rules, m.bucketOf(50)), qint16(0));
+        QCOMPARE(m.at(DensityMap::Lane::Rules, m.bucketOf(50)), DensityMap::classBit(0));
     }
 
-    // Merging keeps the LOWER rule index, because first-match-wins order is severity
-    // order by convention: a bucket holding a FATAL and a WARN must read as the FATAL.
-    void mergingTwoBucketsKeepsTheLouderRule()
+    // Merging a bucket keeps BOTH rules, which is what stops a lone record of one
+    // colour disappearing beside a common record of another. A bucket of a big log
+    // covers thousands of rows, and while it held a single winning rule index the
+    // quieter colour was simply not on the bar anywhere.
+    void mergingTwoBucketsKeepsBothRules()
     {
         DensityMap m;
         m.rebind(4 * DensityMap::kMaxBuckets);
         // Row 0 is rule 3, row 1 is rule 1 — adjacent, so they share a bucket at once.
-        scanAll(m, DensityMap::Lane::Rules, [](int row) -> qint16 {
+        scanAll(m, DensityMap::Lane::Rules, [](int row) -> DensityMap::Marks {
             if (row == 0)
-                return 3;
+                return DensityMap::classBit(3);
             if (row == 1)
-                return 1;
-            return DensityMap::kNothing;
+                return DensityMap::classBit(1);
+            return DensityMap::kNone;
         });
-        QCOMPARE(m.at(DensityMap::Lane::Rules, m.bucketOf(0)), qint16(1));
+        const DensityMap::Marks both = m.at(DensityMap::Lane::Rules, m.bucketOf(0));
+        QVERIFY(both & DensityMap::classBit(1));
+        QVERIFY(both & DensityMap::classBit(3));
+        // And a renderer with room for one colour is told which of them is the loudest.
+        QCOMPARE(DensityMap::lowestClass(both), 1);
+        QCOMPARE(DensityMap::lowestClass(DensityMap::kNone), -1);
+    }
+
+    // A rule index past what a bucket can tell apart folds into the last class rather
+    // than being dropped: a mark in the wrong colour still says a record is there, and
+    // no mark at all says nothing.
+    void aRuleIndexPastTheLastClassStillMarks()
+    {
+        QCOMPARE(DensityMap::classBit(DensityMap::kClassCount),
+                 DensityMap::classBit(DensityMap::kClassCount - 1));
+        QCOMPARE(DensityMap::classBit(-1), DensityMap::classBit(0));
     }
 
     void theTwoLanesAreInvalidatedIndependently()
     {
         DensityMap m;
         m.rebind(200);
-        scanAll(m, DensityMap::Lane::Rules,
-                [](int row) -> qint16 { return row == 10 ? 0 : DensityMap::kNothing; });
-        scanAll(m, DensityMap::Lane::Find,
-                [](int row) -> qint16 { return row == 20 ? 0 : DensityMap::kNothing; });
+        scanAll(m, DensityMap::Lane::Rules, [](int row) -> DensityMap::Marks {
+            return row == 10 ? DensityMap::classBit(0) : DensityMap::kNone;
+        });
+        scanAll(m, DensityMap::Lane::Find, [](int row) -> DensityMap::Marks {
+            return row == 20 ? DensityMap::classBit(0) : DensityMap::kNone;
+        });
         QVERIFY(m.anyMark(DensityMap::Lane::Rules));
         QVERIFY(m.anyMark(DensityMap::Lane::Find));
 
@@ -162,8 +181,9 @@ private slots:
     {
         DensityMap m;
         m.rebind(500);
-        scanAll(m, DensityMap::Lane::Rules,
-                [](int row) -> qint16 { return row == 5 ? 0 : DensityMap::kNothing; });
+        scanAll(m, DensityMap::Lane::Rules, [](int row) -> DensityMap::Marks {
+            return row == 5 ? DensityMap::classBit(0) : DensityMap::kNone;
+        });
         QVERIFY(m.anyMark(DensityMap::Lane::Rules));
         m.rebind(500);
         QVERIFY(!m.anyMark(DensityMap::Lane::Rules));

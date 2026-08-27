@@ -6,13 +6,14 @@
 
 namespace loftail {
 
-qint16 DensityMap::merge(qint16 a, qint16 b)
+int DensityMap::lowestClass(Marks marks)
 {
-    if (a == kNothing)
-        return b;
-    if (b == kNothing)
-        return a;
-    return qMin(a, b);
+    if (marks == kNone)
+        return -1;
+    for (int cls = 0; cls < kClassCount; ++cls)
+        if (marks & classBit(cls))
+            return cls;
+    return -1;
 }
 
 int DensityMap::bucketOf(int row) const
@@ -58,7 +59,7 @@ void DensityMap::setRows(int rows)
         if (last >= 0) {
             const int from = firstRowOf(last);
             for (LaneState &lane : m_lane) {
-                lane.bucket[last] = kNothing;
+                lane.bucket[last] = kNone;
                 lane.scanned = qMin(lane.scanned, from);
             }
         } else {
@@ -90,9 +91,9 @@ void DensityMap::reshape()
         for (LaneState &lane : m_lane) {
             const int oldCount = int(lane.bucket.size());
             const int newCount = (oldCount + 1) / 2;
-            QVector<qint16> merged(newCount, kNothing);
+            QVector<Marks> merged(newCount, kNone);
             for (int i = 0; i < oldCount; ++i)
-                merged[i / 2] = merge(merged.at(i / 2), lane.bucket.at(i));
+                merged[i / 2] |= lane.bucket.at(i);
             lane.bucket = std::move(merged);
         }
         m_rowsPerBucket *= 2;
@@ -104,7 +105,7 @@ void DensityMap::reshape()
             lane.bucket.resize(want);
         else
             while (lane.bucket.size() < want)
-                lane.bucket.append(kNothing);
+                lane.bucket.append(kNone);
         lane.scanned = qMin(lane.scanned, m_rows);
     }
 }
@@ -112,11 +113,11 @@ void DensityMap::reshape()
 void DensityMap::clear(Lane lane)
 {
     LaneState &s = state(lane);
-    s.bucket.fill(kNothing); // fill(), not assign(): QList::assign is Qt 6.6, the floor is 6.4
+    s.bucket.fill(kNone); // fill(), not assign(): QList::assign is Qt 6.6, the floor is 6.4
     s.scanned = 0;
 }
 
-int DensityMap::scan(Lane lane, int budgetRows, const std::function<qint16(int)> &probe)
+int DensityMap::scan(Lane lane, int budgetRows, const std::function<Marks(int)> &probe)
 {
     LaneState &s = state(lane);
     if (budgetRows <= 0 || s.scanned >= m_rows || s.bucket.isEmpty())
@@ -124,29 +125,30 @@ int DensityMap::scan(Lane lane, int budgetRows, const std::function<qint16(int)>
 
     const int end = qMin(m_rows, s.scanned + budgetRows);
     for (int row = s.scanned; row < end; ++row) {
-        const qint16 answer = probe(row);
-        if (answer == kNothing)
+        const Marks answer = probe(row);
+        if (answer == kNone)
             continue;
-        const int b = bucketOf(row);
-        s.bucket[b] = merge(s.bucket.at(b), answer);
+        s.bucket[bucketOf(row)] |= answer;
     }
     const int done = end - s.scanned;
     s.scanned = end;
     return done;
 }
 
-qint16 DensityMap::at(Lane lane, int bucket) const
+DensityMap::Marks DensityMap::at(Lane lane, int bucket) const
 {
     const LaneState &s = state(lane);
     if (bucket < 0 || bucket >= s.bucket.size())
-        return kNothing;
+        return kNone;
     return s.bucket.at(bucket);
 }
 
-bool DensityMap::anyMark(Lane lane) const
+DensityMap::Marks DensityMap::unionMask(Lane lane) const
 {
-    return std::ranges::any_of(state(lane).bucket,
-                               [](qint16 v) { return v != kNothing; });
+    Marks all = kNone;
+    for (const Marks m : state(lane).bucket)
+        all |= m;
+    return all;
 }
 
 } // namespace loftail

@@ -23,6 +23,8 @@
 #include "LogModel.h"
 #include "LogView.h"
 #include "MainWindow.h"
+#include "Palette.h"
+#include "UiColors.h"
 
 using namespace loftail;
 
@@ -119,13 +121,31 @@ private:
         return {top, bottom};
     }
 
-    // The rules lane occupies the left of the bar and the find lane the right; the
-    // exact split is DensityScrollBar's business, so the bands are sampled well inside
-    // each.
-    static QPair<int, int> rulesBand(DensityScrollBar *s) { return markBand(s, 2, s->width() / 2); }
+    // Where the marks of the rules and of Find are drawn. Asked of the bar rather than
+    // written down as a fraction of its width: the columns are allocated per rule that
+    // fires and per armed query, so a lane's x range moves with the log — and a test
+    // sampling a hard-coded strip reads the rule lane's marks as the find lane's the
+    // moment the split changes.
+    static QRect rulesArea(DensityScrollBar *s)
+    {
+        QRect area;
+        for (int rule = 0; rule < 8; ++rule)
+            area = area.united(s->ruleColumnRect(rule));
+        return area;
+    }
+    static QPair<int, int> rulesBand(DensityScrollBar *s)
+    {
+        const QRect area = rulesArea(s);
+        if (area.isNull())
+            return {-1, -1};
+        return markBand(s, area.left(), area.right() + 1);
+    }
     static QPair<int, int> findBand(DensityScrollBar *s)
     {
-        return markBand(s, s->width() - 3, s->width());
+        const QRect area = s->findColumnRect();
+        if (area.isNull())
+            return {-1, -1};
+        return markBand(s, area.left(), area.right() + 1);
     }
 
     // Park the thumb at the top of the range, so a mark anywhere else in the log is not
@@ -136,7 +156,52 @@ private:
         QCoreApplication::processEvents();
     }
 
+
+    // The thumb's ink either side of its own row, measured from the divider on the left
+    // and from the bar's edge on the right.
+    static QPair<int, int> thumbMargins(DensityScrollBar *s)
+    {
+        const QImage img = s->grab().toImage();
+        const QColor base = s->palette().base().color();
+        const int y = s->thumbRect().center().y();
+        int firstX = -1;
+        int lastX = -1;
+        for (int x = 1; x < img.width(); ++x) { // x 0 is the divider, not the bar's ground
+            if (QColor(img.pixel(x, y)) == base)
+                continue;
+            if (firstX < 0)
+                firstX = x;
+            lastX = x;
+        }
+        if (firstX < 0)
+            return {-1, -1};
+        return {firstX - 1, img.width() - 1 - lastX};
+    }
+
+    // Whether `colour` is drawn anywhere in the bar outside the thumb.
+    static bool barShows(DensityScrollBar *s, const QColor &colour)
+    {
+        const QImage img = s->grab().toImage();
+        const QRect thumb = s->thumbRect();
+        for (int y = 0; y < img.height(); ++y) {
+            if (y >= thumb.top() && y <= thumb.bottom())
+                continue;
+            for (int x = 0; x < img.width(); ++x)
+                if (QColor(img.pixel(x, y)) == colour)
+                    return true;
+        }
+        return false;
+    }
+
+    // The colour the bar draws one of the seeded rules' records in.
+    static QColor ruleColour(DensityScrollBar *s, int rule)
+    {
+        return HighlightPalette::color(HighlighterSet::defaults().rules.at(rule).background,
+                                       isDarkPalette(s->palette()));
+    }
+
 private slots:
+
     void init()
     {
         clearLogSettings();
@@ -347,6 +412,102 @@ private slots:
         // the hidden one has not started, because its timer never runs.
         QTest::qWait(200);
         QCOMPARE(background->densityBar()->map().scanned(DensityMap::Lane::Rules), 0);
+    }
+
+    // The marks and the thumb stand level with the ROWS, not with the frame. The bar is
+    // laid out over the whole frame contents while the viewport starts below the header,
+    // so a mark placed at a fraction of the widget sits a header's height above the
+    // record it points at — 18 px at the reference face, at the top of the log, tapering
+    // to nothing at the bottom, which is exactly what "not quite aligned" looks like.
+    void theMarksSitLevelWithTheRowsAndNotWithTheHeader()
+    {
+        const QString path = m_dir.filePath(QStringLiteral("track.log"));
+        writeLog(path, 400, 0); // the FATAL is the FIRST record
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        openAndSettle(w, path);
+
+        LogView *v = logView(w);
+        DensityScrollBar *s = bar(w);
+        const int header = v->viewport()->mapTo(v, QPoint(0, 0)).y() - s->mapTo(v, QPoint(0, 0)).y();
+        QVERIFY2(header > 0, "the view has no header, so this case tests nothing");
+        QCOMPARE(s->trackRect().top(), header);
+        QCOMPARE(s->trackRect().height(), v->viewport()->height());
+
+        // Park the thumb at the far end so the mark for record 0 is not under it.
+        v->verticalScrollBar()->setValue(v->verticalScrollBar()->maximum());
+        QCoreApplication::processEvents();
+        const auto band = rulesBand(s);
+        QVERIFY2(band.first >= 0, "the seeded FATAL rule marked nothing at all");
+        // Level with the first row of text, not with the header above it.
+        QVERIFY(qAbs(band.first - s->trackRect().top()) <= 1);
+    }
+
+    // A lone ERROR among ten thousand WARNs is precisely what the bar exists to point
+    // at, and it used to be invisible: the two shared one lane, so the ERROR lost the
+    // pixels twice over — in the map, where a bucket of a big log covers dozens of rows
+    // and kept one winning rule, and in the paint, where every mark is floored at two
+    // pixels and the bucket drawn last won. A column per rule settles both.
+    void aLoneMarkIsNotCoveredByACommonerOne()
+    {
+        const QString path = m_dir.filePath(QStringLiteral("crowd.log"));
+        {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            for (int i = 0; i < 20000; ++i)
+                f.write(QStringLiteral("2026-08-25 10:00:%1,000 [main] %2 app.svc - line %3\n")
+                            .arg(i % 60, 2, 10, QLatin1Char('0'))
+                            .arg(i == 10000 ? QStringLiteral("ERROR") : QStringLiteral("WARN "))
+                            .arg(i)
+                            .toUtf8());
+        }
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        openAndSettle(w, path);
+        scrollToTop(w);
+
+        DensityScrollBar *s = bar(w);
+        const QColor error = ruleColour(s, 1); // the seeded rules are FATAL, ERROR, WARN
+        const QColor warn = ruleColour(s, 2);
+        QVERIFY(error.isValid() && warn.isValid() && error != warn);
+        QVERIFY2(barShows(s, warn), "the WARNs are not on the bar at all");
+        QVERIFY2(barShows(s, error), "the one ERROR was covered by the WARNs around it");
+        // And it is somewhere else across the bar, which is what makes that true however
+        // the two happen to round into pixels.
+        const QRect errorColumn = s->ruleColumnRect(1);
+        const QRect warnColumn = s->ruleColumnRect(2);
+        QVERIFY(!errorColumn.isNull() && !warnColumn.isNull());
+        QVERIFY(!errorColumn.intersects(warnColumn));
+    }
+
+    // The marks and the thumb sit CENTRED across the bar. Both used to lean left: the
+    // columns were laid out from the divider with nothing kept back on the right, and
+    // the thumb was inset 1.5 px on the left against 0.5 on the right.
+    void theMarksAndTheThumbAreCentredAcrossTheBar()
+    {
+        const QString path = m_dir.filePath(QStringLiteral("centre.log"));
+        writeLog(path, 4000, 2000);
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        openAndSettle(w, path);
+        scrollToTop(w);
+
+        DensityScrollBar *s = bar(w);
+        const QRect area = rulesArea(s).united(s->findColumnRect());
+        QVERIFY(!area.isNull());
+        // The divider at x = 0 is the seam with the table, not the bar's own margin, so
+        // the left margin is measured from it.
+        QCOMPARE(area.left() - 1, s->width() - 1 - area.right());
+
+        const auto margins = thumbMargins(s);
+        QVERIFY2(margins.first >= 0, "the thumb was not drawn at all");
+        QCOMPARE(margins.first, margins.second);
     }
 };
 
