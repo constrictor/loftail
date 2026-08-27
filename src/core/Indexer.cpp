@@ -28,7 +28,7 @@ bool Indexer::forwardScan(LogSource &source, qint64 startPos, QVector<Record> &r
                             && m_format.recordStartRe.isValid();
 
     const QRegularExpression &startRe = m_format.recordStartRe;
-    const TimestampParser tsParser(m_format.impliedDateFormat.qtFormat, m_sourceZone);
+    const TimestampParser tsParser(m_format.impliedDateFormat, m_sourceZone);
 
     // Index of the record currently open for continuations, or -1 for none, and
     // whether it is a parsed (matched) record. Continuations attach only to a

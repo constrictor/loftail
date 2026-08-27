@@ -1184,7 +1184,7 @@ void Document::reparseTimestamps(const QTimeZone &sourceZone)
     if (m_format.dateGroup <= 0 || !m_source)
         return;
 
-    const TimestampParser parser(m_format.impliedDateFormat.qtFormat, m_sourceZone);
+    const TimestampParser parser(m_format.impliedDateFormat, m_sourceZone);
     const QRegularExpression &re = m_format.recordRe;
     const int unit = m_decoder.unitSize();
 

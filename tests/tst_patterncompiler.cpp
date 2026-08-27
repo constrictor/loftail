@@ -204,6 +204,15 @@ void TestPatternCompiler::dateTranslation_data()
     QTest::newRow("12h am/pm") << "%y/%m/%d %I:%M %p" << "26/07/21 02:32 PM" << "yy/MM/dd hh:mm AP" << false;
     QTest::newRow("literal %") << "%H%%%M" << "14%32" << "HH%mm" << false;
     QTest::newRow("ms only")   << "%q" << "123" << "zzz" << true;
+
+    // The rest of the strftime vocabulary log4cplus hands to the platform. The
+    // syslog row is the one worth naming: /var/log/messages is "%b %e %H:%M:%S",
+    // a space-padded day and no year at all.
+    QTest::newRow("syslog")    << "%b %e %H:%M:%S" << "Aug  5 10:15:01" << "MMM d HH:mm:ss" << false;
+    QTest::newRow("full names") << "%A %B %d" << "Thursday August 27" << "dddd MMMM dd" << false;
+    QTest::newRow("composites") << "%F %T" << "2026-08-27 10:15:01" << "yyyy-MM-dd HH:mm:ss" << false;
+    QTest::newRow("offset")    << "%Y-%m-%dT%H:%M:%S%z" << "2026-08-27T10:15:01+0200" << "yyyy-MM-dd'T'HH:mm:sst" << false;
+    QTest::newRow("frac ms")   << "%H:%M:%S.%Q" << "10:15:01.123.456" << "HH:mm:ss.zzz" << true;
 }
 
 void TestPatternCompiler::dateTranslation()
@@ -288,10 +297,15 @@ void TestPatternCompiler::errors_data()
         << "%-5z" << int(CompileError::Code::UnknownSpecifier) << 3;
     QTest::newRow("unterminated date brace")
         << "%d{%Y-%m-%d" << int(CompileError::Code::UnterminatedDateBrace) << 2;
-    QTest::newRow("unsupported date code %j")
-        << "%d{%Y-%j} %m" << int(CompileError::Code::UnsupportedDateCode) << 6;
-    QTest::newRow("unsupported date code %a")
-        << "%d{%a %H:%M} %m" << int(CompileError::Code::UnsupportedDateCode) << 3;
+    // %j and %a used to be refused and are now matched (see PatternCompiler.h);
+    // what is left outside the strftime vocabulary still is.
+    QTest::newRow("unsupported date code %v")
+        << "%d{%Y-%v} %m" << int(CompileError::Code::UnsupportedDateCode) << 6;
+    QTest::newRow("unsupported date code %f")
+        << "%d{%f %H:%M} %m" << int(CompileError::Code::UnsupportedDateCode) << 3;
+    // strftime's %n is a newline, and a record's start line is one line.
+    QTest::newRow("a newline inside a date")
+        << "%d{%H:%M%n} %m" << int(CompileError::Code::UnsupportedDateCode) << 8;
     QTest::newRow("dangling percent in date")
         << "%d{%H:%M:%} %m" << int(CompileError::Code::DanglingPercentInDate) << 9;
 }

@@ -32,6 +32,21 @@ namespace loftail {
 //   minWidth  pad with spaces to at least this width
 //   .maxWidth truncate to at most this many characters
 //
+// Inside %d{...} / %D{...}: log4cplus renders %q (milliseconds), %Q (milliseconds
+// with a microsecond remainder, "123.456") and %s (seconds since the epoch) itself
+// and hands everything else to the platform's strftime — so the whole C/POSIX
+// strftime vocabulary is accepted, not the shorter list the doxygen page prints:
+//
+//   %a %A %b %B %h    weekday and month names          %C %g %G  century, ISO year
+//   %c %D %F %r %R    composites, expanded to what     %j %u %U %V %w %W  ordinals
+//   %T %x %X          they stand for                   %z %Z     zone
+//   %d %e %H %I %k %l %m %M %p %P %S %y %Y             %t %%     literals
+//
+// Only %n is refused: a record's start line is one line (invariant #2), so a
+// timestamp carrying a newline could never match. Codes that name nothing this
+// reader can use — a week number, a day of the year, a zone abbreviation — are
+// matched and dropped rather than rejected, so the format still compiles.
+//
 // Unknown specifiers, and strftime codes outside the supported subset, produce a
 // CompileError with an offset into the pattern rather than a silent mismatch.
 class PatternCompiler

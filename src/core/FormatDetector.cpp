@@ -408,6 +408,26 @@ QStringList FormatDetector::candidateLibrary()
         QStringLiteral("%d{%H:%M:%S} %-5p %c - %m%n"),
         QStringLiteral("%d [%t] %-5p %c - %m%n"),
         QStringLiteral("%d %-5p %c - %m%n"),
+        // Traditional syslog — /var/log/messages, /var/log/syslog, and anything
+        // else rsyslog writes in RSYSLOG_TraditionalFileFormat. Not a log4cplus
+        // layout, but it IS a PatternLayout one can express, which is the only
+        // thing loftail cares about: "%b %e" is the space-padded month-and-day
+        // strftime writes in the C locale, and the timestamp carries no year (see
+        // TimestampParser, which infers it). %D because syslog stamps local time.
+        // Three variants because the tag is written three ways — with a PID, with
+        // none, and (for the kernel) with no tag shape worth splitting at all —
+        // and scoring is what picks between them per file.
+        QStringLiteral("%D{%b %e %H:%M:%S} %h %c[%i]: %m%n"),
+        QStringLiteral("%D{%b %e %H:%M:%S} %h %c: %m%n"),
+        QStringLiteral("%D{%b %e %H:%M:%S} %h %m%n"),
+        // The same three in rsyslog's RSYSLOG_FileFormat, which is the DEFAULT on
+        // Debian 12 and Ubuntu 24.04 and later: an RFC3339 stamp with microsecond
+        // precision and an explicit offset. %Q takes the "341116" spelling as well
+        // as log4cplus's own "341.116" (see PatternCompiler), and the offset in the
+        // text is what settles the instant, so the %D here decides nothing.
+        QStringLiteral("%D{%Y-%m-%dT%H:%M:%S.%Q%z} %h %c[%i]: %m%n"),
+        QStringLiteral("%D{%Y-%m-%dT%H:%M:%S.%Q%z} %h %c: %m%n"),
+        QStringLiteral("%D{%Y-%m-%dT%H:%M:%S.%Q%z} %h %m%n"),
     };
 }
 

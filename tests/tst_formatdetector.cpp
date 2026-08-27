@@ -32,6 +32,9 @@ private slots:
     void providerReturnsFormatForKnownPattern();
     void providerCleanNoDetectionForGarbage();
     void emptySampleIsNoDetection();
+    void varLogMessagesIsDetected();
+    void varLogMessagesWithoutPidsIsDetected();
+    void rsyslogRfc3339IsDetected();
 
 private:
     // Join lines with '\n' into a UTF-8 sample the Decoder resolves as UTF-8.
@@ -49,6 +52,70 @@ private:
         return pv.totalCount > 0 ? double(pv.matchedCount) / pv.totalCount : 0.0;
     }
 };
+
+// /var/log/messages. Not a log4cplus log, but its layout IS a ConversionPattern,
+// and it is the one every Linux box has — so it must come up parsed rather than as
+// a wall of unrecognized text. The shape is rsyslog's traditional file format: a
+// space-padded "%b %e" with NO year, the host, then "tag[pid]:".
+void TestFormatDetector::varLogMessagesIsDetected()
+{
+    QStringList lines;
+    for (int i = 0; i < 30; ++i) {
+        lines << QStringLiteral("Aug  5 10:22:%1 web1 sshd[%2]: Accepted publickey for deploy")
+                     .arg(i % 60, 2, 10, QLatin1Char('0'))
+                     .arg(1000 + i);
+    }
+    const QByteArray sample = makeSample(lines);
+    const Decoder dec = Decoder::detect(view(sample), Encoding::Auto);
+
+    const DetectionResult r = FormatDetector::detect(view(sample), dec);
+    QVERIFY2(r.detected, "traditional syslog must be detected");
+    QCOMPARE(matchRate(r.format, sample, dec), 1.0);
+    QVERIFY(r.format.dateGroup > 0);
+    // The pid variant is the richest one that fits, so it is the one that wins.
+    QCOMPARE(r.pattern, QStringLiteral("%D{%b %e %H:%M:%S} %h %c[%i]: %m%n"));
+    QCOMPARE(int(r.format.impliedZone), int(Qt::LocalTime)); // syslog stamps local time
+}
+
+// The kernel and a good many daemons write no pid, so the tag-only variant has to
+// win there rather than the file falling back to plain text.
+void TestFormatDetector::varLogMessagesWithoutPidsIsDetected()
+{
+    QStringList lines;
+    for (int i = 0; i < 30; ++i) {
+        lines << QStringLiteral("Dec 31 23:5%1:07 web1 kernel: eth0: link up")
+                     .arg(i % 10);
+    }
+    const QByteArray sample = makeSample(lines);
+    const Decoder dec = Decoder::detect(view(sample), Encoding::Auto);
+
+    const DetectionResult r = FormatDetector::detect(view(sample), dec);
+    QVERIFY(r.detected);
+    QCOMPARE(matchRate(r.format, sample, dec), 1.0);
+    QCOMPARE(r.pattern, QStringLiteral("%D{%b %e %H:%M:%S} %h %c: %m%n"));
+}
+
+// What /var/log/syslog actually holds on Debian 12 and Ubuntu 24.04 and later:
+// RSYSLOG_FileFormat, an RFC3339 stamp with SIX fractional digits and no separator
+// before them, then a colon offset. The microseconds are read and dropped; the
+// offset in the text is what fixes the instant.
+void TestFormatDetector::rsyslogRfc3339IsDetected()
+{
+    QStringList lines;
+    for (int i = 0; i < 30; ++i) {
+        lines << QStringLiteral("2026-08-24T22:04:%1.341116+03:00 web1 systemd[1]: unit %2 started")
+                     .arg(i % 60, 2, 10, QLatin1Char('0'))
+                     .arg(i);
+    }
+    const QByteArray sample = makeSample(lines);
+    const Decoder dec = Decoder::detect(view(sample), Encoding::Auto);
+
+    const DetectionResult r = FormatDetector::detect(view(sample), dec);
+    QVERIFY2(r.detected, "rsyslog's default file format must be detected");
+    QCOMPARE(matchRate(r.format, sample, dec), 1.0);
+    QCOMPARE(r.pattern, QStringLiteral("%D{%Y-%m-%dT%H:%M:%S.%Q%z} %h %c[%i]: %m%n"));
+    QVERIFY(r.format.impliedDateFormat.hasMillis);
+}
 
 void TestFormatDetector::libraryPicksExactCandidate_millisThread()
 {

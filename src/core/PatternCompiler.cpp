@@ -23,6 +23,12 @@ namespace {
 // The format log4cplus uses for %d / %D when no braces are supplied.
 constexpr QLatin1String kDefaultDateFormat("%Y-%m-%d %H:%M:%S");
 
+// A month or weekday name. strftime renders these in the process's locale, so the
+// run is any letters rather than three ASCII ones — \p{L} and not \w, which
+// depends on how PCRE2 was built. A trailing '.' is allowed for the locales whose
+// abbreviations carry one.
+constexpr QLatin1String kNameRun("\\p{L}+\\.?");
+
 CompileError makeError(CompileError::Code code, QString message, int offset)
 {
     return CompileError{code, std::move(message), offset};
@@ -62,15 +68,45 @@ QString compileLiteral(QStringView text)
     return out;
 }
 
-// Translate a log4cplus strftime-style date format into a matching sub-regex and
-// a Qt date format. Handles the common numeric subset and rejects the rest with
-// a clear error (PLAN.md M1 risk note). `baseOffset` is the position in the
-// original pattern of the first character of `fmt`, so error offsets are exact.
+// Translate a log4cplus strftime-style date format into a matching sub-regex, a
+// Qt date format for display and a token list for parsing. `baseOffset` is the
+// position in the original pattern of the first character of `fmt`, so error
+// offsets are exact.
 struct DateTranslation
 {
     QString regex;   // matches the produced date text; no capturing groups
     DateFormat format;
 };
+
+// The strftime set log4cplus can produce. It handles %q, %Q and %s itself
+// (src/timehelper.cxx) and hands EVERYTHING else to the platform's strftime — so
+// the supported vocabulary is C/POSIX strftime plus those three, not the shorter
+// list the doxygen page prints. Each code contributes a regex fragment (no
+// capturing groups: the whole %d field is one group), a Qt fragment for display,
+// and zero or more parse tokens.
+//
+// Names (%a %A %b %B %h) are matched as \p{L}+ rather than a fixed three letters
+// because strftime renders them in the process's locale; the parser reads English
+// and the system locale back, which is what a log written in the C locale — every
+// syslog line on the machine — needs.
+Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int baseOffset);
+
+// A code that strftime defines as a shorthand for other codes. Expanding rather
+// than hand-writing each one is what keeps %T and %H:%M:%S provably identical.
+QStringView expansionOf(QChar code)
+{
+    switch (code.unicode()) {
+    case u'c': return u"%a %b %e %H:%M:%S %Y"; // C locale's date-and-time
+    case u'D': return u"%m/%d/%y";
+    case u'F': return u"%Y-%m-%d";
+    case u'r': return u"%I:%M:%S %p";
+    case u'R': return u"%H:%M";
+    case u'T': return u"%H:%M:%S";
+    case u'x': return u"%m/%d/%y";             // C locale's date
+    case u'X': return u"%H:%M:%S";             // C locale's time
+    default:   return {};
+    }
+}
 
 Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int baseOffset)
 {
@@ -79,6 +115,17 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
 
     QString &re = result.regex;
     QString &qt = result.format.qtFormat;
+    QVector<DateToken> &tokens = result.format.tokens;
+
+    // A numeric field: `digits` wide, optionally space-padded on the way in (%e,
+    // %k and %l pad with a space rather than a zero).
+    const auto numeric = [&](DateTokenKind kind, int digits, bool spacePadded,
+                             QLatin1String qtSpelling) {
+        re += spacePadded ? QStringLiteral("[ \\d]") + QStringLiteral("\\d{%1}").arg(digits - 1)
+                          : QStringLiteral("\\d{%1}").arg(digits);
+        qt += qtSpelling;
+        tokens.append(DateToken{kind, digits, QChar()});
+    };
 
     int i = 0;
     const int n = int(fmt.size());
@@ -91,6 +138,7 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
                 qt += QLatin1Char('\'') + QString(c) + QLatin1Char('\''); // quote so Qt treats it as literal
             else
                 qt += c;
+            tokens.append(DateToken{DateTokenKind::Literal, 0, c});
             ++i;
             continue;
         }
@@ -103,19 +151,113 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
         }
 
         const QChar code = fmt[i + 1];
+
+        // A composite code is translated by translating what it stands for. Its
+        // expansion contains no composites, so the recursion is one deep, and every
+        // sub-code is supported, so it cannot fail — but the error is still
+        // propagated rather than asserted away.
+        if (const QStringView sub = expansionOf(code); !sub.isEmpty()) {
+            auto expanded = translateDateFormat(sub, baseOffset + i);
+            if (!expanded)
+                return Expected<DateTranslation, CompileError>::makeError(expanded.error());
+            re += expanded.value().regex;
+            qt += expanded.value().format.qtFormat;
+            tokens += expanded.value().format.tokens;
+            if (expanded.value().format.hasMillis)
+                result.format.hasMillis = true;
+            i += 2;
+            continue;
+        }
+
         switch (code.unicode()) {
-        case u'Y': re += QStringLiteral("\\d{4}"); qt += QStringLiteral("yyyy"); break;
-        case u'y': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("yy"); break;
-        case u'm': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("MM"); break;
-        case u'd': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("dd"); break;
-        case u'H': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("HH"); break;
-        case u'I': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("hh"); break;
-        case u'M': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("mm"); break;
-        case u'S': re += QStringLiteral("\\d{2}"); qt += QStringLiteral("ss"); break;
-        case u'p': re += QStringLiteral("[AP]M"); qt += QStringLiteral("AP"); break;
+        // --- the date ------------------------------------------------------
+        case u'Y': numeric(DateTokenKind::Year4, 4, false, QLatin1String("yyyy")); break;
+        case u'y': numeric(DateTokenKind::Year2, 2, false, QLatin1String("yy")); break;
+        case u'm': numeric(DateTokenKind::MonthNumber, 2, false, QLatin1String("MM")); break;
+        case u'd': numeric(DateTokenKind::Day, 2, false, QLatin1String("dd")); break;
+        case u'e': numeric(DateTokenKind::Day, 2, true, QLatin1String("d")); break;
+        case u'b':
+        case u'h': re += kNameRun; qt += QStringLiteral("MMM");
+                   tokens.append(DateToken{DateTokenKind::MonthName, 0, QChar()}); break;
+        case u'B': re += kNameRun; qt += QStringLiteral("MMMM");
+                   tokens.append(DateToken{DateTokenKind::MonthName, 0, QChar()}); break;
+        case u'a': re += kNameRun; qt += QStringLiteral("ddd");
+                   tokens.append(DateToken{DateTokenKind::SkipWord, 0, QChar()}); break;
+        case u'A': re += kNameRun; qt += QStringLiteral("dddd");
+                   tokens.append(DateToken{DateTokenKind::SkipWord, 0, QChar()}); break;
+
+        // --- the time ------------------------------------------------------
+        case u'H': numeric(DateTokenKind::Hour24, 2, false, QLatin1String("HH")); break;
+        case u'k': numeric(DateTokenKind::Hour24, 2, true,  QLatin1String("H")); break;
+        case u'I': numeric(DateTokenKind::Hour12, 2, false, QLatin1String("hh")); break;
+        case u'l': numeric(DateTokenKind::Hour12, 2, true,  QLatin1String("h")); break;
+        case u'M': numeric(DateTokenKind::Minute, 2, false, QLatin1String("mm")); break;
+        case u'S': numeric(DateTokenKind::Second, 2, false, QLatin1String("ss")); break;
+        case u'p': re += QStringLiteral("[AP]M"); qt += QStringLiteral("AP");
+                   tokens.append(DateToken{DateTokenKind::AmPm, 0, QChar()}); break;
+        case u'P': re += QStringLiteral("[ap]m"); qt += QStringLiteral("ap");
+                   tokens.append(DateToken{DateTokenKind::AmPm, 0, QChar()}); break;
+
+        // --- log4cplus's own three (src/timehelper.cxx) ---------------------
         case u'q': re += QStringLiteral("\\d{3}"); qt += QStringLiteral("zzz");
-                   result.format.hasMillis = true; break; // log4cplus milliseconds
-        case u'%': re += QRegularExpression::escape(QStringLiteral("%")); qt += QLatin1Char('%'); break;
+                   tokens.append(DateToken{DateTokenKind::Millis, 3, QChar()});
+                   result.format.hasMillis = true; break;
+        case u'Q': // Milliseconds and a sub-millisecond remainder. log4cplus writes
+                   // "123.456"; rsyslog's RFC3339 stamp — the shape /var/log/syslog
+                   // has carried since Debian 12 and Ubuntu 24.04 — writes the same
+                   // information as "123456", with no separator and any width. Both
+                   // are accepted, and the remainder is dropped either way: Record
+                   // has no room below a millisecond (invariant #1).
+                   re += QStringLiteral("\\d{3}(?:\\.\\d{1,6}|\\d{1,6})?");
+                   qt += QStringLiteral("zzz");
+                   tokens.append(DateToken{DateTokenKind::MillisFrac, 3, QChar()});
+                   result.format.hasMillis = true; break;
+        case u's': // Seconds since the epoch: an instant, so no Qt spelling and no
+                   // zone. qtFormat is filled in below when this was the whole format.
+                   re += QStringLiteral("\\d{1,12}");
+                   tokens.append(DateToken{DateTokenKind::EpochSeconds, 12, QChar()}); break;
+
+        // --- the zone ------------------------------------------------------
+        case u'z': // +hhmm, and the +hh:mm and Z spellings a log may carry instead.
+                   re += QStringLiteral("(?:[+-]\\d{2}:?\\d{2}|Z)"); qt += QLatin1Char('t');
+                   tokens.append(DateToken{DateTokenKind::UtcOffset, 0, QChar()}); break;
+        case u'Z': re += QStringLiteral("[A-Za-z][A-Za-z0-9_/+-]*"); qt += QLatin1Char('t');
+                   tokens.append(DateToken{DateTokenKind::SkipWord, 0, QChar()}); break;
+
+        // --- matched, but carrying nothing this parser can use ---------------
+        case u'j': re += QStringLiteral("\\d{3}");
+                   tokens.append(DateToken{DateTokenKind::SkipDigits, 3, QChar()}); break;
+        case u'C':
+        case u'g':
+        case u'U':
+        case u'V':
+        case u'W': re += QStringLiteral("\\d{2}");
+                   tokens.append(DateToken{DateTokenKind::SkipDigits, 2, QChar()}); break;
+        // An ISO week-numbering year is not the calendar year — it differs across a
+        // year boundary — so it is matched and dropped rather than read as %Y.
+        case u'G': re += QStringLiteral("\\d{4}");
+                   tokens.append(DateToken{DateTokenKind::SkipDigits, 4, QChar()}); break;
+        case u'u':
+        case u'w': re += QStringLiteral("\\d");
+                   tokens.append(DateToken{DateTokenKind::SkipDigits, 1, QChar()}); break;
+
+        // --- literals -------------------------------------------------------
+        case u't': re += QStringLiteral("\\t"); qt += QStringLiteral("'\t'");
+                   tokens.append(DateToken{DateTokenKind::Literal, 0, QLatin1Char('\t')}); break;
+        case u'%': re += QRegularExpression::escape(QStringLiteral("%")); qt += QLatin1Char('%');
+                   tokens.append(DateToken{DateTokenKind::Literal, 0, QLatin1Char('%')}); break;
+
+        case u'n':
+            // strftime's newline. A record's start line is one line by definition
+            // (invariant #2), so a timestamp containing one can never be matched —
+            // say so rather than compiling a regex that silently matches nothing.
+            return Expected<DateTranslation, CompileError>::makeError(
+                makeError(CompileError::Code::UnsupportedDateCode,
+                          // Through specText() rather than written in: a literal "%n"
+                          // in a tr() source string is Qt's plural-count placeholder.
+                          Tr::tr("A newline ('%1') inside a timestamp cannot appear "
+                                 "within one log line").arg(specText(code)),
+                          baseOffset + i));
         default:
             return Expected<DateTranslation, CompileError>::makeError(
                 makeError(CompileError::Code::UnsupportedDateCode,
@@ -124,6 +266,11 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
         }
         i += 2;
     }
+
+    // A format made only of codes Qt cannot spell (%s on its own is the realistic
+    // one) would leave the As Written column blank. Give it something readable.
+    if (qt.isEmpty())
+        qt = QString(kDefaultDateFormat);
 
     result.format.isValid = true;
     return result;

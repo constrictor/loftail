@@ -178,6 +178,10 @@ Because a log file does not describe its own layout, loftail needs to be told th
   | `%E{VAR}` — environment variable | `%n` — line separator | `%%` — literal percent | |
 
   Padding and truncation modifiers (`%-5p`, `%.30c`, `%20.30m`) are understood on any of them. A specifier outside this set is rejected with the position of the offending character, rather than being ignored — a pattern written for a different logging library should fail visibly, not produce a table with a column silently missing.
+
+- **Inside `%d{…}` / `%D{…}`, the whole strftime vocabulary is accepted.** log4cplus renders `%q` (milliseconds), `%Q` (milliseconds with a sub-millisecond remainder) and `%s` (seconds since the epoch) itself and hands everything else to the C library, so loftail reads the same: month and weekday names (`%b %B %a %A`), space-padded fields (`%e %k %l`), the composites (`%c %D %F %r %R %T %x %X`), 12-hour time with `%p`, a UTC offset with `%z`, and the ordinals — a week number, a day of the year, a zone abbreviation — which are matched and then dropped, since they name nothing the reader can use. The one refusal is `%n`: a record begins at a line, so a timestamp containing a newline could never match.
+
+- **A timestamp with no year in it is dated from the clock.** `%b %e %H:%M:%S` — the shape syslog writes — names a month, a day and a time and no year at all, so loftail reads it as this year's, and as *last* year's where that would put the record in the future. A log written across a New Year therefore reads correctly on both sides of it, except for records stamped ahead of this machine's own clock by more than a day.
 - If a pattern matches poorly, the file still opens: unparsed lines are shown as plain text rather than being hidden or dropped. The user is never left staring at an empty window because of a format mistake.
 - **Cancelling cancels the open.** When Preferences opens by itself because loftail could not parse a file it was asked to open, dismissing it (Cancel or Esc) abandons that open entirely — no file is opened, whatever was already on screen stays there, and the entry it had just created for that log is discarded along with every other edit. Cancelling means "not like that", so loftail does not fall back to opening the file as a wall of unparsed plain text.
 
@@ -301,6 +305,8 @@ Because a log file records no zone information, **how timestamps are read** and 
 Time-range filter bounds (§6) are asked for in the terms the column is showing, but only where those terms name an instant: the three wall-clock modes ask for a date and time, the two *seconds* modes ask for a number of seconds, and **"since the previous record" keeps the wall-clock editors** — a gap is an interval between two rows, and a bound is a single instant, so there is no figure on screen that a typed gap could be measured from.
 
 **Format autodetection.** Opening a file whose settings do not parse it guesses the `ConversionPattern` from the file itself and **pre-fills the dialog with the guess for confirmation** — never applying it silently, since a wrong pattern quietly mis-splits every record. A **Detect** button re-runs the guess into the pattern field at any time. Detection failure leaves the dialog on the fallback default, so manual entry is always the authority and always available.
+
+**System logs are among the shapes it knows.** `/var/log/messages`, `/var/log/syslog` and `/var/log/auth.log` are not log4cplus logs, but their layout *is* expressible as a `ConversionPattern` — so both shapes rsyslog writes are detected and split into columns: the traditional `Aug  5 10:22:01 web1 sshd[1001]: …`, and the RFC 3339 form with microseconds and an offset that is the default on current Debian and Ubuntu. The timestamp, the host, the tag and the pid each get a column; there is no priority field in a syslog line, so filtering by level is unavailable on one, exactly as the format editor says.
 
 ## 5. Main view
 

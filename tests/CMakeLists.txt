@@ -23,6 +23,19 @@ target_link_libraries(tst_patterncompiler PRIVATE
 
 add_test(NAME tst_patterncompiler COMMAND tst_patterncompiler)
 
+# The other half of a compiled %d{...}: the token list PatternCompiler emits and
+# TimestampParser reads back. Core-only, no QApplication.
+qt_add_executable(tst_timestampparser
+    tst_timestampparser.cpp
+)
+
+target_link_libraries(tst_timestampparser PRIVATE
+    loftail_core
+    Qt6::Test
+)
+
+add_test(NAME tst_timestampparser COMMAND tst_timestampparser)
+
 # M2a — the spine. All link loftail_core only; none needs a QApplication.
 foreach(unit decoder indexer logmodel)
     qt_add_executable(tst_${unit} tst_${unit}.cpp)

@@ -42,6 +42,44 @@ struct Field
     int group = -1; // 1-based capture-group index into LogFormat::recordRe
 };
 
+// One field of a translated %d{...} format, in the order the text presents them.
+// PatternCompiler emits these beside the regex it generated; TimestampParser is
+// the only consumer.
+//
+// The token list exists because DateFormat::qtFormat CANNOT express what
+// log4cplus can produce. A space-padded day (%e), epoch seconds (%s), a UTC
+// offset (%z), %Q's fractional milliseconds and every "matched but meaningless"
+// code (%j, %U, %Z, …) have no Qt spelling at all — so a parser that re-derived
+// its own tokens from qtFormat, as TimestampParser did until the strftime set
+// was completed, could not read back the very text the compiler had just agreed
+// to match. qtFormat is now for DISPLAY only (LogModel's As Written mode).
+enum class DateTokenKind {
+    Literal,      // one literal character, matched verbatim
+    Year4,        // %Y %G
+    Year2,        // %y %g
+    MonthNumber,  // %m
+    MonthName,    // %b %B %h
+    Day,          // %d %e   (a space pad is tolerated on the way in)
+    Hour24,       // %H %k
+    Hour12,       // %I %l   (needs an AmPm token to be unambiguous)
+    Minute,       // %M
+    Second,       // %S
+    Millis,       // %q
+    MillisFrac,   // %Q      "123.456" — the microsecond remainder is read and dropped
+    AmPm,         // %p %P
+    EpochSeconds, // %s      an absolute instant; the source zone does not apply
+    UtcOffset,    // %z      overrides the source zone for this record
+    SkipDigits,   // %j %u %w %U %V %W %C  — matched, contributes nothing
+    SkipWord,     // %a %A %Z              — likewise
+};
+
+struct DateToken
+{
+    DateTokenKind kind = DateTokenKind::Literal;
+    int   width = 0;   // maximum digits a numeric token consumes
+    QChar literal;     // Literal only
+};
+
 // How to read the text a %d / %D specifier produces. PatternCompiler translates
 // the log4cplus strftime-style inner format into both a sub-regex (already baked
 // into recordRe) and a Qt date format the indexer will hand to QDateTime when it
@@ -59,6 +97,10 @@ struct DateFormat
     // Consumed by the seconds display modes, which render s.mmm only when it is set
     // — ".000" on every row of a file whose format has no ms invents precision.
     bool hasMillis = false;
+
+    // The parse program: see DateTokenKind. Empty only for a format that produced
+    // no fields at all, where parse() falls back to QDateTime::fromString().
+    QVector<DateToken> tokens;
 };
 
 // The compiled form of a ConversionPattern. String in (the pattern),
