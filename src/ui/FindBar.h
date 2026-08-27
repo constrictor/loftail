@@ -44,6 +44,18 @@ public:
     // SIBLING of the table under DocumentView, not an ancestor, so a bar revealed with
     // the caret left in the table could be closed only with the ✕ button.
     void reveal();
+    // Say, in the query field itself, that the standing text found nothing — the text
+    // goes red (SPEC.md §5). It is the field and not the label because that is where the
+    // reader is looking when they type: a failing search is a property of what is in the
+    // box, so the box is what wears it, which leaves the label free to do nothing but
+    // count. Cleared by every search that does not fail, so a query edited into one that
+    // matches loses the red on the same keystroke.
+    void setQueryFailed(bool failed);
+    // Whether the last search failed, as set above. The palette is where it SHOWS, and a
+    // test reading a QPalette colour back is asserting on the theme rather than on this;
+    // this is the state itself.
+    bool queryFailed() const;
+
     // Report the outcome of the last search in the bar's own status label (SPEC.md §5):
     // which match of how many, whether the search wrapped, or why there was nothing to
     // go to. The bar's label rather than the window's status bar, because that one is
@@ -75,6 +87,13 @@ public:
     static QString describeMatch(int index, int total, bool complete, bool wrapped,
                                  bool forward);
 
+    // What the label says when nothing matched: `0 of 0`, in the same vocabulary the
+    // successful report uses, rather than a sentence of its own. The failure is told by
+    // the query field going red, so the label's one job in every branch is the count —
+    // and a search that matched nothing found exactly none, which is a fact and not an
+    // estimate.
+    static QString describeNoMatch();
+
 signals:
     // forward=true for Find Next, false for Find Previous. `fromStart` restarts the
     // search from the top/bottom rather than the current cursor (used when the query
@@ -100,6 +119,7 @@ private:
     void updateStatusText();
 
     QString    m_statusText;
+    bool       m_queryFailed = false;
     QLineEdit  *m_edit = nullptr;
     QToolButton *m_highlight = nullptr;
     QCheckBox *m_regex = nullptr;

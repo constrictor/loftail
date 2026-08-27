@@ -4000,6 +4000,11 @@ void MainWindow::runFind(bool forward, bool fromStart)
     // open bar, so the focus a `no match` or a successful find leaves inside the bar
     // stays exactly where it was.
     findBar->reveal();
+    // Every branch below either fails the standing query or does not, and the field's
+    // red is the only place a failure is now said (SPEC.md §5) — so it is cleared once,
+    // here, and set by the two branches that fail. Cleared at the TOP rather than per
+    // branch, because the ones that succeed are the ones that would forget.
+    findBar->setQueryFailed(false);
 
     const QString pattern = findBar->pattern();
     if (pattern.isEmpty()) {
@@ -4021,6 +4026,7 @@ void MainWindow::runFind(bool forward, bool fromStart)
                 findBar->caseSensitive() ? Qt::CaseSensitive : Qt::CaseInsensitive);
     if (!matcher.isValid()) {
         findBar->setStatus(tr("bad regex"));
+        findBar->setQueryFailed(true); // the query is the thing that is wrong
         logView->clearFindMatcher();
         return;
     }
@@ -4044,7 +4050,12 @@ void MainWindow::runFind(bool forward, bool fromStart)
     const int from = fromStart ? -1 : logView->currentRecord();
     const int hit = Find::search(count, from, forward, /*wrap=*/true, rowMatches);
     if (hit < 0) {
-        findBar->setStatus(tr("no match"));
+        // The failure is told by the query field going red, and the label keeps the one
+        // job it now has in every branch: how many there are. Nothing matched anywhere,
+        // so that count is exactly 0 — `0 of 0` in the same wording a hit gets, rather
+        // than a sentence the reader has to read to learn a number.
+        findBar->setQueryFailed(true);
+        findBar->setStatus(FindBar::describeNoMatch());
         logView->clearFindMatcher(); // nothing matched, so there is nothing to point at
         return;
     }

@@ -218,6 +218,8 @@ private slots:
     void highlightingWithNothingTypedAddsNoRuleAndSaysSo();
     void aBadRegexIsRefusedRatherThanHighlighted();
     void theConfigEditorsBarOffersNoHighlightButton();
+    void aFailedSearchTurnsTheQueryRedAndStillCounts();
+    void aCountWithNoPositionStillSaysHowMany();
 };
 
 void TestFind::initTestCase()
@@ -321,12 +323,12 @@ void TestFind::aQueryThatMatchesNothingSaysSo()
     waitUntilIndexed(w);
 
     queryField(w)->setText(QStringLiteral("zulu"));
-    QCOMPARE(reported(w), QStringLiteral("no match"));
+    QCOMPARE(reported(w), QStringLiteral("0 of 0"));
 
     // Pressing F3 on a query that matches nothing keeps saying so rather than falling
     // back to silence.
     findNext(w);
-    QCOMPARE(reported(w), QStringLiteral("no match"));
+    QCOMPARE(reported(w), QStringLiteral("0 of 0"));
 
     w.close();
 }
@@ -723,7 +725,7 @@ void TestFind::aQueryThatMatchesNothingLeavesNothingMarked()
     // Typing on past the last match: nothing matches, so nothing is marked — the marks
     // from the query's shorter, matching prefix must not survive it.
     queryField(w)->setText(QStringLiteral("alphabet"));
-    QCOMPARE(reported(w), QStringLiteral("no match"));
+    QCOMPARE(reported(w), QStringLiteral("0 of 0"));
     QVERIFY(marked(w).isNull());
 
     w.close();
@@ -967,10 +969,10 @@ void TestFind::aQueryThatMatchesNothingLeavesTheFocusWhereItWas()
     QLineEdit *query = queryField(w);
     QVERIFY(query);
     QTest::keyClicks(query, QStringLiteral("zulu")); // matches nothing in this log
-    QCOMPARE(reported(w), QStringLiteral("no match"));
+    QCOMPARE(reported(w), QStringLiteral("0 of 0"));
 
     findNext(w);
-    QCOMPARE(reported(w), QStringLiteral("no match"));
+    QCOMPARE(reported(w), QStringLiteral("0 of 0"));
     QVERIFY(barVisible(w));
     QCOMPARE(focusIn(w), static_cast<QWidget *>(query));
     QCOMPARE(query->text(), QStringLiteral("zulu"));
@@ -1100,3 +1102,84 @@ void TestFind::theControlsDoNotMoveWhenTheStatusTextChanges()
     QCOMPARE(label->toolTip(), QString());
 }
 
+// A search that fails says so in the QUERY FIELD, in red, and the label goes on doing the
+// one job it now has in every branch: how many there are (SPEC.md §5). The wording "no
+// match" is gone — a reader watching what they type sees the box go red on the keystroke
+// that broke the query, which is a beat earlier than reading a sentence off the far end
+// of the row, and the label is then free to be a count and nothing else.
+//
+// The state is read off FindBar::queryFailed() and not off the field's palette: the
+// colour comes from errorColor(), which is a function of the theme, so a test comparing
+// QColors would be asserting on whatever palette the runner resolved.
+void TestFind::aFailedSearchTurnsTheQueryRedAndStillCounts()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_log);
+    waitUntilIndexed(w);
+
+    FindBar *bar = activeView(w)->findBar();
+    QVERIFY(bar);
+
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QVERIFY(!bar->queryFailed());
+    QCOMPARE(reported(w), QStringLiteral("1 of 3"));
+
+    // Typed on past the last match: the query now finds nothing.
+    queryField(w)->setText(QStringLiteral("alphabet"));
+    QVERIFY(bar->queryFailed());
+    QCOMPARE(reported(w), QStringLiteral("0 of 0")); // the count, not a sentence
+
+    // F3 on a query that matches nothing keeps saying both halves rather than falling
+    // back to silence in either.
+    findNext(w);
+    QVERIFY(bar->queryFailed());
+    QCOMPARE(reported(w), QStringLiteral("0 of 0"));
+
+    // A regex that does not compile is a failure of the query too, so it wears the same
+    // red — and keeps the words, because "bad regex" is not something red alone can say.
+    queryField(w)->setText(QString());
+    QVERIFY(!bar->queryFailed());
+    bar->findChild<QCheckBox *>(QStringLiteral("findRegex"))->setChecked(true);
+    queryField(w)->setText(QStringLiteral("alpha("));
+    QVERIFY(bar->queryFailed());
+    QCOMPARE(reported(w), QStringLiteral("bad regex"));
+
+    // And it comes back off on the keystroke that makes the query match again — the half
+    // a per-branch clear is what forgets.
+    bar->findChild<QCheckBox *>(QStringLiteral("findRegex"))->setChecked(false);
+    queryField(w)->setText(QStringLiteral("alpha"));
+    QVERIFY(!bar->queryFailed());
+    QCOMPARE(reported(w), QStringLiteral("1 of 3"));
+
+    // Ctrl+F clears the report, and the red is the other half of that same answer about a
+    // query now selected for replacement.
+    queryField(w)->setText(QStringLiteral("zulu"));
+    QVERIFY(bar->queryFailed());
+    activeView(w)->activateFind();
+    QVERIFY(!bar->queryFailed());
+    QCOMPARE(reported(w), QString());
+
+    w.close();
+}
+
+// The bounded count's position-less answer used to be the bare word "match", which threw
+// the total away on exactly the logs big enough for the bound to bite — the reader asked
+// how much of this there is and was told that there is some. It reports the count it did
+// reach instead, as a floor when the walk stopped short. Driven through the wording
+// function itself, because making the bound bite needs a log too large to build here (its
+// own contract is pinned in tst_filter).
+void TestFind::aCountWithNoPositionStillSaysHowMany()
+{
+    // Counted to the end but never reached the hit: an exact total, no position.
+    QCOMPARE(FindBar::describeMatch(0, 47, true, false, true), QStringLiteral("47 matches"));
+    // Gave up early: the total is a floor and must render as one.
+    QCOMPARE(FindBar::describeMatch(0, 47, false, false, true), QStringLiteral("47+ matches"));
+    // A wrap still says so on top of it.
+    QCOMPARE(FindBar::describeMatch(0, 47, false, true, true),
+             QStringLiteral("47+ matches, wrapped to the top"));
+    // And the positioned wordings are untouched.
+    QCOMPARE(FindBar::describeMatch(3, 47, true, false, true), QStringLiteral("3 of 47"));
+    QCOMPARE(FindBar::describeNoMatch(), QStringLiteral("0 of 0"));
+}

@@ -2,6 +2,7 @@
 
 #include "UiColors.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QFontMetrics>
 #include <QHBoxLayout>
@@ -139,17 +140,29 @@ QString FindBar::describeMatch(int index, int total, bool complete, bool wrapped
                                bool forward)
 {
     QString status;
-    if (index <= 0)
-        status = tr("match"); // counting stopped short of this one: no position to give
-    else if (complete)
+    if (index <= 0) {
+        // Counting stopped short of this hit, so there is no position to give — but the
+        // total that WAS reached still answers the question the reader asked the bar,
+        // which is how much there is of what they searched for. Saying only "match"
+        // threw that away on exactly the logs big enough to need it.
+        status = complete ? tr("%1 matches").arg(total) : tr("%1+ matches").arg(total);
+    } else if (complete) {
         status = tr("%1 of %2").arg(index).arg(total);
-    else
+    } else {
         status = tr("%1 of %2+").arg(index).arg(total); // at least that many
+    }
     if (wrapped) {
         status = forward ? tr("%1, wrapped to the top").arg(status)
                          : tr("%1, wrapped to the bottom").arg(status);
     }
     return status;
+}
+
+QString FindBar::describeNoMatch()
+{
+    // The same "x of y" the successful report speaks, with both numbers zero. Nothing
+    // matched anywhere, so the total is not a bound and not an estimate — it is 0.
+    return tr("%1 of %2").arg(0).arg(0);
 }
 
 QString FindBar::status() const { return m_statusText; }
@@ -161,6 +174,10 @@ void FindBar::activate()
     // Whatever the last search reported is about a query that is about to be replaced,
     // and a stale "3 of 47" over a fresh empty box is a lie.
     setStatus(QString());
+    // And the red with it: the report and the cue are two halves of one answer about a
+    // query that is now selected for replacement, so leaving one behind is a field that
+    // says "this found nothing" over a bar that says nothing at all.
+    setQueryFailed(false);
     reveal();
     // Again, unconditionally: reveal() is a no-op on a bar that is already open, and
     // Ctrl+F on an open bar still means "give me the box to type in".
@@ -180,6 +197,23 @@ void FindBar::reveal()
     show();
     m_edit->setFocus(); // so Escape closes it — see the header
 }
+
+void FindBar::setQueryFailed(bool failed)
+{
+    if (m_queryFailed == failed)
+        return; // this runs on every keystroke; a palette write relays the field out
+    m_queryFailed = failed;
+    // Start from the field's OWN palette rather than a default-constructed one, for the
+    // reason AxisEditor's invalid-regex cue does: ensureReadablePlaceholder() has already
+    // repaired the placeholder colour in it, and a fresh QPalette would silently drop
+    // that repair every time a search failed.
+    QPalette pal = m_edit->palette();
+    pal.setColor(QPalette::Text, failed ? errorColor(pal)
+                                        : qApp->palette(m_edit).color(QPalette::Text));
+    m_edit->setPalette(pal);
+}
+
+bool FindBar::queryFailed() const { return m_queryFailed; }
 
 void FindBar::setStatus(const QString &text)
 {

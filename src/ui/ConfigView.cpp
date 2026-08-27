@@ -367,6 +367,9 @@ void ConfigView::runFind(bool forward, bool fromStart)
     // search asked for from the text (F3) has to open the bar before it writes or the
     // answer lands where nobody can read it — MainWindow::runFind()'s rule.
     m_findBar->reveal();
+    // Cleared once at the top and set by the branches that fail — MainWindow::runFind()'s
+    // rule, and the same reason: the branches that succeed are the ones that would forget.
+    m_findBar->setQueryFailed(false);
 
     const QString pattern = m_findBar->pattern();
     if (pattern.isEmpty()) {
@@ -393,6 +396,7 @@ void ConfigView::runFind(bool forward, bool fromStart)
         re = QRegularExpression(pattern, options);
         if (!re.isValid()) {
             m_findBar->setStatus(tr("bad regex"));
+            m_findBar->setQueryFailed(true);
             return;
         }
     }
@@ -412,7 +416,10 @@ void ConfigView::runFind(bool forward, bool fromStart)
         wrapped = !hit.isNull();
     }
     if (hit.isNull()) {
-        m_findBar->setStatus(tr("no match"));
+        // Red in the field, `0 of 0` in the label — the log's bar's wording, shared so
+        // the two cannot come to describe one gesture differently.
+        m_findBar->setQueryFailed(true);
+        m_findBar->setStatus(FindBar::describeNoMatch());
         return;
     }
     m_edit->setTextCursor(hit);
