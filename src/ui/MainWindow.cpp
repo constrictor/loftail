@@ -441,6 +441,16 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    // qApp outlives this window, and passing `this` as the context object only
+    // disconnects in ~QObject() — which runs LAST. ~QWidget() runs before it and
+    // closes the window, and closing re-emits QApplication::focusChanged onto a
+    // MainWindow whose own subobject is already gone, so the lambda at the focus
+    // connection above calls activeContext() through a vptr that now says QWidget.
+    // This body runs ahead of every base destructor, which is what makes it the
+    // one place the connection can be taken down in time. Latent in every teardown
+    // and invisible without UBSan, which is where it surfaced (six GUI tests, all
+    // reporting the same site).
+    disconnect(qApp, nullptr, this, nullptr);
     closeAllDocuments();
     // Every config transfer this window started has just been abandoned along with the
     // tab that owned it; this is what WAITS for their threads to notice. Abandoning is
