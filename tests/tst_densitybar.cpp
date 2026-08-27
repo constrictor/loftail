@@ -97,14 +97,24 @@ private:
         return v ? v->densityBar() : nullptr;
     }
 
-    static void openAndSettle(MainWindow &w, const QString &path)
+    // `records` is how many the log holds, and waiting for ALL of them is the point of
+    // the argument. The highlight rules are resolved when the INDEX FINISHES, not when
+    // the first records arrive — so a rule lane scanned after "recordCount() > 0" can be
+    // complete and empty, and nothing rescans a complete lane until the rules move. That
+    // is a race the log's size and the machine's speed decide, which is what it looks
+    // like from CI: green twice and red once on the same commit, on three builds of the
+    // same source. So: wait for every record, let the finish land, and only then take
+    // the lane — dropped first, since it may have been taken too early already.
+    static void openAndSettle(MainWindow &w, const QString &path, int records)
     {
         w.openFile(path);
         QTRY_VERIFY(logView(w) != nullptr);
-        QTRY_VERIFY(logView(w)->recordCount() > 0);
+        QTRY_COMPARE(logView(w)->recordCount(), records);
+        QTRY_VERIFY(bar(w) != nullptr);
+        QCoreApplication::processEvents();
         // The scan is sliced over the next few frames by design; a test wants the
         // finished answer, so it asks for it directly.
-        QTRY_VERIFY(bar(w) != nullptr);
+        bar(w)->invalidateRules();
         bar(w)->scanNowForTests();
         QCoreApplication::processEvents();
     }
@@ -241,7 +251,7 @@ private slots:
         w.resize(900, 600);
         w.show();
         QVERIFY(QTest::qWaitForWindowExposed(&w));
-        openAndSettle(w, path);
+        openAndSettle(w, path, 400);
 
         LogView *v = logView(w);
         QVERIFY(v->densityStripVisible());
@@ -281,7 +291,7 @@ private slots:
         w.resize(900, 700);
         w.show();
         QVERIFY(QTest::qWaitForWindowExposed(&w));
-        openAndSettle(w, path);
+        openAndSettle(w, path, 800);
         scrollToTop(w);
 
         LogView *v = logView(w);
@@ -319,7 +329,7 @@ private slots:
         w.resize(900, 700);
         w.show();
         QVERIFY(QTest::qWaitForWindowExposed(&w));
-        openAndSettle(w, path);
+        openAndSettle(w, path, 800);
 
         LogView *v = logView(w);
         DensityScrollBar *s = bar(w);
@@ -351,7 +361,7 @@ private slots:
         w.resize(900, 600);
         w.show();
         QVERIFY(QTest::qWaitForWindowExposed(&w));
-        openAndSettle(w, path);
+        openAndSettle(w, path, 400);
         scrollToTop(w);
 
         DensityScrollBar *s = bar(w);
@@ -390,7 +400,7 @@ private slots:
         w.resize(900, 600);
         w.show();
         QVERIFY(QTest::qWaitForWindowExposed(&w));
-        openAndSettle(w, path);
+        openAndSettle(w, path, 4000);
 
         LogView *v = logView(w);
         DensityScrollBar *s = bar(w);
@@ -445,7 +455,7 @@ private slots:
         w.resize(900, 600);
         w.show();
         QVERIFY(QTest::qWaitForWindowExposed(&w));
-        openAndSettle(w, path);
+        openAndSettle(w, path, 400);
 
         LogView *v = logView(w);
         DensityScrollBar *s = bar(w);
@@ -485,7 +495,7 @@ private slots:
         w.resize(900, 600);
         w.show();
         QVERIFY(QTest::qWaitForWindowExposed(&w));
-        openAndSettle(w, path);
+        openAndSettle(w, path, 20000);
         scrollToTop(w);
 
         DensityScrollBar *s = bar(w);
@@ -513,7 +523,7 @@ private slots:
         w.resize(900, 600);
         w.show();
         QVERIFY(QTest::qWaitForWindowExposed(&w));
-        openAndSettle(w, path);
+        openAndSettle(w, path, 4000);
         scrollToTop(w);
 
         DensityScrollBar *s = bar(w);
