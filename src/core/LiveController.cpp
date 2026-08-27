@@ -228,6 +228,27 @@ void LiveController::checkNow()
     // nothing, and re-stats its path; a spooled remote source compares generations.
     const bool replaced = src->wasReplaced();
 
+    // A RECONNECT THAT HAS NOT DELIVERED A BYTE YET IS NOT A ROTATION TO ACT ON. A
+    // spooled fetcher answers a re-established link by opening a fresh generation and
+    // re-fetching from the top, so the generation moves the moment it connects — before
+    // the prime has committed anything. Acting on that would rescan against an empty
+    // spool: the cached records the outage was spent showing would blank for a tick and
+    // then come back, which is precisely the flicker this whole state exists to avoid.
+    //
+    // BEFORE refreshSize(), and that order is the whole of it — refreshSize() is what
+    // ADOPTS the new generation, and once it has, the index's offsets name bytes in a
+    // file that no longer holds them, so every painted record would decode to nothing.
+    // There is no way back from that; the only fix is not to take the step.
+    //
+    // notReadyYet() is the question ("committed nothing, and still on its way"), and it
+    // is asked only of a document that is already stale, so an ordinary rotation on a
+    // healthy link is untouched.
+    if (replaced && m_document->isStale() && src->notReadyYet()) {
+        publishSourceStatus();
+        beginStale(sourceStatusText(*src, m_document->path()));
+        return;
+    }
+
     // Refresh the source size (re-maps so reads cannot run past the live EOF). This
     // also latches truncation when the file shrank below what we indexed.
     const qint64 newSize = src->refreshSize();
@@ -235,6 +256,10 @@ void LiveController::checkNow()
 
     if (replaced || truncated) {
         m_vanishedSince.invalidate(); // something IS at the origin: a rotation, not a deletion
+        // Whatever the cached records were showing, this rescan replaces them with what
+        // is there now — so the strip and the tab mark that said they were cached come
+        // off here, before the reader is handed the fresh copy.
+        endStale();
         // Which of the two the reader is told, and it is classified HERE from the finer
         // facts rather than from `truncated`, which is a catch-all (ReloadCause).
         // `replaced` first, and that order is load-bearing: a rename-and-recreate
@@ -265,13 +290,27 @@ void LiveController::checkNow()
         // the far end), because "is no longer there" is a guess this end cannot make
         // about a machine it can no longer reach.
         const QString reported = sourceStatusText(*src, m_document->path());
-        beginWaiting(reported.isEmpty()
-                         ? waitingForText(m_document->path(),
-                                          waitCauseFor(m_document->path(), WaitCause::Gone))
-                         : reported);
+        const QString reason = reported.isEmpty()
+            ? waitingForText(m_document->path(),
+                             waitCauseFor(m_document->path(), WaitCause::Gone))
+            : reported;
+
+        // TWO ANSWERS, and which one this is depends on whether there is anything left
+        // to read. A remote log that has already been fetched is still readable out of
+        // its local spool after the link drops, and emptying the tab there throws away
+        // the only copy the reader has of a machine they can no longer reach — at the
+        // moment they most want to read it. So it stays on screen and says so beside
+        // itself instead of in place of itself (SPEC.md §3).
+        if (canShowCachedWhileGone()) {
+            beginStale(reason);
+            publishSourceStatus();
+            return;
+        }
+        beginWaiting(reason);
         return;
     }
     m_vanishedSince.invalidate();
+    endStale();
 
     // A log that opened with NO BYTES has had nothing judged about it — not its format
     // and not its encoding (§6.5) — and this is where that is put right, before a single
@@ -435,6 +474,12 @@ bool LiveController::settleFirstBytes()
 
 void LiveController::beginWaiting(const QString &reason)
 {
+    // A stale document that ends up here has lost the records it was showing them for —
+    // a reconnect that came back to an empty log, a rescan that failed. Take the strip
+    // and the tab mark off explicitly: Document::enterWaiting() clears the flag below,
+    // but the surfaces showing it only ever learn from the signal.
+    endStale();
+
     // A transition, so it is never throttled — this is the line that says WHEN a log the
     // user was reading stopped being there, which is the question the retries below it
     // are only context for.
@@ -452,6 +497,62 @@ void LiveController::beginWaiting(const QString &reason)
     // only thing making progress — stopping it here is how the log would never come
     // back (contrast completed(), where there is genuinely nothing left to look at).
     emit waitingChanged(true, reason);
+}
+
+bool LiveController::canShowCachedWhileGone() const
+{
+    // SPOOLED ONLY. A local log's bytes are in the file that has just been deleted, and
+    // a Document that waits for a local log deliberately RELEASES its source: holding an
+    // unlinked inode open pins bytes nobody will read and keeps the writer's disk space
+    // from coming back, which is what invariant #5 is about. A spool is loftail's own
+    // file in loftail's own cache directory — nobody else's to be disturbed by — and the
+    // source is kept across a wait anyway, because it owns the fetcher that is retrying.
+    // So this costs nothing that is not already being paid.
+    if (!logPathIsSpooled(m_document->path()))
+        return false;
+
+    // And only when there IS something cached. A remote log whose host was down from the
+    // start has an empty index and nothing to show, so it waits in the ordinary way and
+    // the placeholder carries the explanation — which is also what keeps the mark on a
+    // tab meaning "this one has no records" and the strip meaning "these records are old".
+    return !m_document->index().records.isEmpty();
+}
+
+void LiveController::beginStale(const QString &reason)
+{
+    // Reached on EVERY tick of an outage, which may run for hours, so the transition and
+    // the restatement are told apart here rather than by the receiver: nothing is emitted
+    // unless the sentence on screen would actually change.
+    if (m_document->isStale() && m_document->staleReason() == reason)
+        return;
+
+    const bool wasStale = m_document->isStale();
+    m_document->enterStale(reason);
+    if (!m_document->isStale())
+        return; // refused: the document is waiting, and that state owns the screen
+
+    if (!wasStale) {
+        // A transition, so never throttled: this is the line that says when the log the
+        // user was reading stopped arriving, with the record count they are left looking
+        // at — the two facts a bug report about "it just stopped" needs.
+        diagLog("wait", QStringLiteral("%1 went out of reach — %2 (showing %3 cached "
+                                       "records)")
+                            .arg(m_document->path(), reason)
+                            .arg(m_document->index().records.size()));
+    }
+    // NO model reset and no index work anywhere on this path. Nothing about the visible
+    // set has moved, so the reader keeps their scroll position, their selection and
+    // their filters over records that are exactly as true as they were a second ago.
+    emit staleChanged(true, reason);
+}
+
+void LiveController::endStale()
+{
+    if (!m_document->isStale())
+        return;
+    diagLog("wait", QStringLiteral("%1 is reachable again").arg(m_document->path()));
+    m_document->leaveStale();
+    emit staleChanged(false, QString());
 }
 
 // The reason a document is waiting for is not settled at the transition. Since M17 a

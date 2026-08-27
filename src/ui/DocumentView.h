@@ -19,12 +19,14 @@
 #pragma once
 
 #include "LogView.h"
+#include "MessageLabel.h"
 #include "SectionBox.h"
 
 #include <QString>
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
+class QFrame;
 class QVBoxLayout;
 QT_END_NAMESPACE
 
@@ -80,6 +82,21 @@ public:
     // Show the Find bar and focus its text field (Ctrl+F).
     void activateFind();
 
+    // The disconnected strip: a row across the TOP of the view saying that the records
+    // below it are what was fetched before the far end went, with a Reconnect button
+    // (SPEC.md §3). Hidden when `reason` is empty.
+    //
+    // At the top and not the bottom, and not a placeholder. A placeholder is what a view
+    // with NO records shows, and this state's whole point is that there are records — so
+    // the sentence has to sit BESIDE them rather than in place of them, and above them
+    // rather than below, because the reader of a followed log is looking at the bottom
+    // and a strip that appears there would push the newest record out from under their
+    // eye at the exact moment it stopped being the newest.
+    void setStaleNotice(const QString &reason);
+
+    // Never null; hidden unless the log is disconnected. Named `staleBar`, for tests.
+    QFrame *staleBar() const { return m_staleBar; }
+
     // Re-read the digest model's row count and show or hide the strip accordingly.
     // One rule covers both "no rule asked for a digest" and "rules asked but nothing
     // has matched yet", so neither needs a case of its own.
@@ -93,11 +110,18 @@ signals:
     // in a pane the window owns (invariant #7) — this view knows only that its bar asked.
     void highlightRequested();
 
+    // The Reconnect button in the disconnected strip was pressed. Forwarded rather than
+    // acted on for the same reason: the fetcher is reached through the window's own
+    // File ▸ Reconnect path, and there is exactly one of those.
+    void reconnectRequested();
+
 protected:
     void resizeEvent(QResizeEvent *event) override;
 
 private:
     DocumentContext *m_context = nullptr;
+    QFrame          *m_staleBar = nullptr;
+    MessageLabel    *m_staleText = nullptr;
     LogView         *m_logView = nullptr;
     SectionBox      *m_digestTitle = nullptr;
     LogView         *m_digestView = nullptr;

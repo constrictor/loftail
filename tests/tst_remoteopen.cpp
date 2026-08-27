@@ -27,6 +27,7 @@
 #include <QUrl>
 
 #include <QAbstractButton>
+#include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -154,6 +155,7 @@ private slots:
     void anInteractiveRemoteOpenStillGetsTheFormatDialog();
     void aBackgroundResumeRaisesNoFormatDialog();
     void aChangedReasonReachesTheViewTheTabAndTheStatusBar();
+    void aDisconnectKeepsTheRecordsAndSaysSoBesideThem();
 };
 
 void TestRemoteOpen::opensARemoteUrlAsATab()
@@ -623,6 +625,67 @@ void TestRemoteOpen::aChangedReasonReachesTheViewTheTabAndTheStatusBar()
     // Still a waiting tab, not a failed one: the ◦ is there and the record count is 0.
     QVERIFY(tabs(window)->tabText(0).startsWith(QString::fromUtf8("◦ ")));
     QCOMPARE(view->recordCount(), 0);
+}
+
+// THE SAME THREE SURFACES ONE STATE OVER, and the point is that the middle one is not
+// available here. A log that has already been fetched keeps its records when the link
+// drops (SPEC.md §3), so there is no empty table for a placeholder to explain anything
+// in — the sentence has to sit beside the records instead, and the tab has to carry a
+// mark of its own or a background tab says nothing at all.
+void TestRemoteOpen::aDisconnectKeepsTheRecordsAndSaysSoBesideThem()
+{
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(sampleLog());
+
+    MainWindow window;
+    window.openFile(url(), QString::fromLatin1(kPattern));
+    settle();
+
+    auto *view = window.findChild<LogView *>(QStringLiteral("logView"));
+    QVERIFY(view);
+    const int before = view->recordCount();
+    QVERIFY(before > 0);
+
+    auto *page = window.findChild<DocumentView *>();
+    QVERIFY(page);
+    QVERIFY(page->staleBar());
+    QVERIFY(page->staleBar()->isHidden());
+
+    const QString gone = QStringLiteral("Lost the connection to web1 — reconnecting…");
+    remote->becomeUnavailable(gone);
+
+    // The 750 ms poll tick is what notices; nothing else is driving this.
+    QTRY_VERIFY_WITH_TIMEOUT(!page->staleBar()->isHidden(), 5000);
+
+    // Nothing was emptied, and nothing took the reader's place in the log.
+    QCOMPARE(view->recordCount(), before);
+    QVERIFY(view->placeholderText().isEmpty());
+
+    // The strip says what happened and how much of the log it is showing, and offers
+    // the one gesture worth having here.
+    auto *text = window.findChild<QLabel *>(QStringLiteral("staleBarText"));
+    QVERIFY(text);
+    QVERIFY(text->text().contains(gone));
+    QVERIFY(text->text().contains(QString::number(before)));
+    QVERIFY(window.findChild<QPushButton *>(QStringLiteral("staleBarReconnect")));
+
+    // The tab wears a mark of its own — not the waiting ◦, which means "no records" —
+    // and the reason is on its tooltip, the mark having room for no words.
+    QVERIFY(tabs(window)->tabText(0).startsWith(QString::fromUtf8("⊘ ")));
+    QVERIFY(tabs(window)->tabToolTip(0).contains(gone));
+
+    // And the status bar keeps the record count it always shows, with the reason
+    // appended rather than replacing it: the log is still readable.
+    QVERIFY(statusText(window).contains(gone));
+    QVERIFY(statusText(window).contains(QStringLiteral("records")));
+
+    // Back again: every surface clears, with nothing left behind.
+    remote->becomeAvailable();
+    QTRY_VERIFY_WITH_TIMEOUT(page->staleBar()->isHidden(), 5000);
+    QVERIFY(!tabs(window)->tabText(0).startsWith(QString::fromUtf8("⊘ ")));
+    QVERIFY(!statusText(window).contains(gone));
+    QCOMPARE(view->recordCount(), before);
 }
 
 int main(int argc, char *argv[])

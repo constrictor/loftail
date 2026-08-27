@@ -88,6 +88,11 @@ private slots:
     void aRemoteLogRemovedMidTailWaitsAndKeepsItsSpool();
     void aRefusalStillFailsTheOpen();
 
+    // A link that drops over a log ALREADY FETCHED keeps it on screen (SPEC.md §3).
+    void aDisconnectedRemoteLogKeepsTheRecordsItFetched();
+    void aDisconnectWithNothingFetchedStillWaits();
+    void aReconnectHoldsTheCachedRecordsUntilItsFirstBytes();
+
     // M17 — a spool with nothing in it yet waits, and the three states that means.
     void aConnectingSpoolWaitsUntilItsFirstBytes();
     void aRefusedConnectWaitsAndSaysWhy();
@@ -170,18 +175,9 @@ void TestWaitingRemote::aRemoteLogRemovedMidTailWaitsAndKeepsItsSpool()
     wireResume(live, doc, model, &resumes);
     live.start();
 
-    int waits = 0;
-    connect(&live, &LiveController::waitingChanged, &live, [&](bool w, const QString &) {
-        if (w)
-            ++waits;
-    });
-
     remote->becomeUnavailable(QStringLiteral("/var/log/app.log is not readable on web1 right now."));
     live.checkNow();
 
-    QCOMPARE(waits, 1);
-    QVERIFY(doc.isWaiting());
-    QCOMPARE(model.rowCount(), 0);
     // THE ASYMMETRY: the source stays. Releasing it would drop the last handle on the
     // spool, tear down the fetcher, and leave nothing retrying — the log would never
     // come back, and nothing would say so.
@@ -191,12 +187,159 @@ void TestWaitingRemote::aRemoteLogRemovedMidTailWaitsAndKeepsItsSpool()
     remote->becomeAvailable();
     live.checkNow();
 
-    QCOMPARE(resumes, 1);
     QVERIFY(!doc.isWaiting());
+    QVERIFY(!doc.isStale());
     QCOMPARE(model.rowCount(), 2);
     // One connection throughout: the wait was ridden out on the spool that was already
     // there, and a rescan mid-tail must never reconnect (§6.3).
     QCOMPARE(remote->startCount(), 1);
+}
+
+// A remote log that has ALREADY BEEN FETCHED does not empty when the link drops. The
+// bytes are in loftail's own spool and they are still true — they are what the log said
+// up to the moment it went — so blanking the tab throws away the only copy the reader
+// has of a machine they can no longer reach, at the moment they most want to read it.
+//
+// This is the case the old behaviour got wrong, and the reason waiting and stale are two
+// states rather than one: what changes is which surface carries the sentence, not
+// whether there is one.
+void TestWaitingRemote::aDisconnectedRemoteLogKeepsTheRecordsItFetched()
+{
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(rec(0, "INFO ", "app", "one") + rec(1, "INFO ", "app", "two"));
+
+    Document doc;
+    QVERIFY(doc.open(url(), QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    int resumes = 0;
+    wireResume(live, doc, model, &resumes);
+    live.start();
+
+    int waits = 0;
+    connect(&live, &LiveController::waitingChanged, &live, [&](bool w, const QString &) {
+        if (w)
+            ++waits;
+    });
+    QStringList stale;
+    connect(&live, &LiveController::staleChanged, &live,
+            [&](bool s, const QString &reason) { stale.append(s ? reason : QString()); });
+
+    const QString gone = QStringLiteral("Lost the connection to web1 — reconnecting…");
+    remote->becomeUnavailable(gone);
+    live.checkNow();
+
+    // NOT waiting, and nothing was emptied: every record the reader had is still there,
+    // at the same ordinal, so their scroll position and selection mean what they meant.
+    QVERIFY(!doc.isWaiting());
+    QCOMPARE(waits, 0);
+    QCOMPARE(model.rowCount(), 2);
+    QVERIFY(doc.source());
+
+    // And it says so BESIDE the records rather than in place of them — in the
+    // transport's own words, since only it knows which of "the host went" and "the log
+    // went" this is.
+    QVERIFY(doc.isStale());
+    QCOMPARE(doc.staleReason(), gone);
+    QCOMPARE(stale, QStringList{gone});
+
+    // Restated, not merely announced: a real fetcher works down a ladder and says
+    // several different things over one outage, exactly as a wait does (§6.5).
+    const QString second = QStringLiteral("web1 is not answering.");
+    remote->becomeUnavailable(second);
+    live.checkNow();
+    QCOMPARE(doc.staleReason(), second);
+    QCOMPARE(stale.size(), 2);
+
+    // A tick that changes nothing announces nothing: this runs on the 750 ms watch and
+    // an outage lasts hours.
+    live.checkNow();
+    QCOMPARE(stale.size(), 2);
+
+    // Back again. The mark comes off, and tailing carries on where it left off.
+    remote->becomeAvailable();
+    live.checkNow();
+    QVERIFY(!doc.isStale());
+    QCOMPARE(stale.size(), 3);
+    QVERIFY(stale.last().isEmpty());
+
+    remote->append(rec(2, "WARN ", "net.io", "slow"));
+    live.checkNow();
+    QCOMPARE(model.rowCount(), 3);
+}
+
+// The other half of the same rule: with nothing fetched there is nothing to keep, so
+// the tab waits in the ordinary way and the placeholder carries the explanation. That
+// is what keeps the waiting mark meaning "this tab has no records" and the strip
+// meaning "these records are old".
+void TestWaitingRemote::aDisconnectWithNothingFetchedStillWaits()
+{
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(QByteArray());
+
+    Document doc;
+    QVERIFY(doc.open(url(), QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(!doc.isWaiting());
+    QCOMPARE(doc.index().records.size(), 0);
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    int resumes = 0;
+    wireResume(live, doc, model, &resumes);
+    live.start();
+
+    remote->becomeUnavailable(QStringLiteral("Cannot reach web1:22 — Connection refused"));
+    live.checkNow();
+
+    QVERIFY(doc.isWaiting());
+    QVERIFY(!doc.isStale());
+    QCOMPARE(doc.waitReason(), QStringLiteral("Cannot reach web1:22 — Connection refused"));
+}
+
+// A reconnect answers a re-established link by opening a FRESH generation and fetching
+// from the top, so the generation moves before a byte of it has been committed. Acting
+// on that would rescan against an empty spool and blank the very records the outage was
+// spent showing — a flicker at the one moment the reader is watching for the log to come
+// back. The cached view is held until the new copy has something in it.
+void TestWaitingRemote::aReconnectHoldsTheCachedRecordsUntilItsFirstBytes()
+{
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(rec(0, "INFO ", "app", "one") + rec(1, "INFO ", "app", "two"));
+
+    Document doc;
+    QVERIFY(doc.open(url(), QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    int resumes = 0;
+    wireResume(live, doc, model, &resumes);
+    live.start();
+
+    remote->becomeUnavailable(QStringLiteral("Lost the connection to web1 — reconnecting…"));
+    live.checkNow();
+    QVERIFY(doc.isStale());
+    QCOMPARE(model.rowCount(), 2);
+
+    // The link is back and the fetcher has opened its new generation. Nothing has been
+    // committed to it yet.
+    const QByteArray fresh = rec(0, "INFO ", "app", "one") + rec(1, "INFO ", "app", "two")
+        + rec(2, "ERROR", "db.pool", "boom");
+    remote->beginReplacing(fresh.size());
+    live.checkNow();
+    QVERIFY(doc.isStale());
+    QCOMPARE(model.rowCount(), 2); // still the cached copy, not an empty table
+
+    remote->finishReplacing(fresh);
+    live.checkNow();
+    QVERIFY(!doc.isStale());
+    QCOMPARE(model.rowCount(), 3);
 }
 
 void TestWaitingRemote::aRefusalStillFailsTheOpen()

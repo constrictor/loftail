@@ -348,6 +348,11 @@ private:
     // Retitle a file's tabs, folding in its indexing progress and its unseen-match
     // marker.
     void updateTabTitles(DocumentContext *ctx);
+    // Ask this log's fetcher to try again NOW rather than at its next backoff. The one
+    // implementation behind both File ▸ Reconnect and the Reconnect button in a
+    // disconnected view's strip, so the two cannot drift. A no-op for a local log,
+    // which is watched rather than connected.
+    void reconnectSpool(DocumentContext *ctx);
 
     // Decide what every open log is CALLED (TabLabels.h) and retitle whatever moved.
     // Called when the set of open logs changes — an open, a restore, a close — and

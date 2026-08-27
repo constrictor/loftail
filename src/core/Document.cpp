@@ -280,6 +280,12 @@ void Document::enterWaiting(const QString &reason)
 {
     m_waiting = true;
     m_waitReason = reason;
+    // The two are exclusive: stale means "there are records and the link went", waiting
+    // means "there are none". Clearing it here rather than asking every caller to is
+    // what keeps that true through the one path that can go from the first to the
+    // second — a spooled log whose reconnect came back to an empty file.
+    m_stale = false;
+    m_staleReason.clear();
     m_lastError.clear(); // waiting is a state, not a failure; nothing to report
     clearIndex();
 
@@ -293,6 +299,23 @@ void Document::enterWaiting(const QString &reason)
     // back (§6.5). The spool is also what the fetcher publishes its recovery through.
     if (!logPathIsSpooled(m_path))
         m_source.reset();
+}
+
+void Document::enterStale(const QString &reason)
+{
+    // A waiting document has no records to be stale about, and letting the two overlap
+    // would leave the view showing a placeholder and a "showing cached records" strip at
+    // the same time, each contradicting the other.
+    if (m_waiting)
+        return;
+    m_stale = true;
+    m_staleReason = reason;
+}
+
+void Document::leaveStale()
+{
+    m_stale = false;
+    m_staleReason.clear();
 }
 
 void Document::restateWaitReason(const QString &reason)

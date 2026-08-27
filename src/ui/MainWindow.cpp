@@ -608,15 +608,8 @@ void MainWindow::buildMenus()
     m_reconnectAction = fileMenu->addAction(tr("&Reconnect"));
     m_reconnectAction->setObjectName(QStringLiteral("reconnectAction")); // findChild, for tests
     m_reconnectAction->setEnabled(false);
-    connect(m_reconnectAction, &QAction::triggered, this, [this]() {
-        DocumentContext *ctx = activeContext();
-        if (!ctx || !ctx->doc)
-            return;
-        if (auto *spooled = dynamic_cast<SpooledLogSource *>(ctx->doc->source())) {
-            if (const auto &spool = spooled->spool())
-                spool->poke();
-        }
-    });
+    connect(m_reconnectAction, &QAction::triggered, this,
+            [this]() { reconnectSpool(activeContext()); });
 
 
     // M18 — application-wide settings. Deliberately NOT disabled when no log is open:
@@ -2382,6 +2375,11 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
     ctx->views.append(view);
     connect(view, &DocumentView::findRequested, this, &MainWindow::runFind);
     connect(view, &DocumentView::highlightRequested, this, &MainWindow::highlightFind);
+    // The Reconnect button in this view's disconnected strip. Bound to THIS view's
+    // context rather than to the active one: a background tab's strip is on screen the
+    // moment its tab is raised, and pressing it must poke that log's fetcher.
+    connect(view, &DocumentView::reconnectRequested, this,
+            [this, ctx]() { reconnectSpool(ctx); });
 
     LogView *logView = view->logView();
     // The mode a new view starts in comes from this log's settings node (M20, SPEC.md
@@ -2397,6 +2395,12 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
     // waitingChanged signal it would otherwise learn from has already fired.
     if (ctx->doc->isWaiting())
         logView->setPlaceholderText(ctx->doc->waitReason());
+    // And the same for a view made for a document that is already DISCONNECTED: the
+    // staleChanged signal that would otherwise raise the strip fired before this view
+    // existed. A second view onto a log whose host went an hour ago is the ordinary way
+    // to reach this.
+    if (ctx->doc->isStale())
+        view->setStaleNotice(ctx->doc->staleReason());
     // Reflect follow state in the View menu (M6): the checkbox tracks the ACTIVE
     // view, and the overlay button/scroll gestures keep them in sync.
     connect(logView, &LogView::followingChanged, this, [this, view](bool following) {
@@ -3030,6 +3034,16 @@ void MainWindow::persistFileSettings(DocumentContext *ctx)
     m_fileStore.save(next, m_logSettings.inherited(next.address));
 }
 
+void MainWindow::reconnectSpool(DocumentContext *ctx)
+{
+    if (!ctx || !ctx->doc)
+        return;
+    if (auto *spooled = dynamic_cast<SpooledLogSource *>(ctx->doc->source())) {
+        if (const auto &spool = spooled->spool())
+            spool->poke();
+    }
+}
+
 void MainWindow::updateTabTitles(DocumentContext *ctx)
 {
     // A background file's scan has no claim on the status bar, so its progress shows
@@ -3052,6 +3066,14 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
         // that is empty from one that is not there (SPEC.md §3). The tooltip carries
         // the sentence; the title only has room for the mark.
         base = QStringLiteral("◦ %1").arg(name);
+    else if (ctx->doc->isStale())
+        // Disconnected, with records still on screen. Above unseenMatch because it is
+        // the more urgent of the two — a log that has stopped arriving is why its
+        // newest record is old — and below the waiting mark because a document is never
+        // both. Slashed against the hollow "not there yet" and the filled "something
+        // arrived": the three read as a set with no legend, and none of them is a
+        // letter, which is a blank wherever the font database is empty.
+        base = QStringLiteral("⊘ %1").arg(name);
     else if (ctx->unseenMatch)
         // A highlight rule carrying the Tab action matched something while this log was
         // not on screen (M19, SPEC.md §7). Filled against the hollow mark above, so the
@@ -3085,9 +3107,14 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
             m_tabs->setTabText(indices.at(i), title);
         // Unchanged by the labelling above: the tooltip is the FULL address, which is
         // what makes shortening the label safe.
-        const QString tip = ctx->doc->isWaiting()
-            ? QStringLiteral("%1\n%2").arg(ctx->doc->path(), ctx->doc->waitReason())
-            : ctx->doc->path();
+        QString tip = ctx->doc->path();
+        // The mark has room for no words, so the sentence is here — for the disconnected
+        // tab exactly as for the waiting one, since a mark nobody can read the reason
+        // for is a mark that only says "something".
+        if (ctx->doc->isWaiting())
+            tip = QStringLiteral("%1\n%2").arg(tip, ctx->doc->waitReason());
+        else if (ctx->doc->isStale())
+            tip = QStringLiteral("%1\n%2").arg(tip, ctx->doc->staleReason());
         if (m_tabs->tabToolTip(indices.at(i)) != tip)
             m_tabs->setTabToolTip(indices.at(i), tip);
     }
@@ -3291,6 +3318,18 @@ void MainWindow::startWatching(DocumentContext *ctx)
                 [this, ctx](bool, const QString &reason) {
                     for (DocumentView *v : std::as_const(ctx->views))
                         v->logView()->setPlaceholderText(reason);
+                    updateTabTitles(ctx);
+                    updateStatus();
+                });
+        // Disconnected, but still showing what it fetched (SPEC.md §3). Three surfaces,
+        // because the one that carries a wait — the placeholder — is unavailable here by
+        // definition: there are records in the way. The strip says it in the view, the
+        // tab mark says it for a background tab, and the status bar says it through
+        // sourceStatus, which is already appended to the record count.
+        connect(ctx->live, &LiveController::staleChanged, this,
+                [this, ctx](bool, const QString &reason) {
+                    for (DocumentView *v : std::as_const(ctx->views))
+                        v->setStaleNotice(reason);
                     updateTabTitles(ctx);
                     updateStatus();
                 });

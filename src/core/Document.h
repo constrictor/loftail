@@ -170,6 +170,29 @@ public:
     // Empty when not waiting.
     const QString &waitReason() const { return m_waitReason; }
 
+    // DISCONNECTED, BUT STILL SHOWING WHAT IT FETCHED. The other half of "the log is
+    // not there": a SPOOLED log whose far end has gone while records of it are already
+    // indexed keeps them on screen instead of emptying the tab (SPEC.md §3). The bytes
+    // are in the local spool and they are still true — they are what the log said up to
+    // the moment the link dropped — so blanking the view destroys the only copy the
+    // reader has of a machine they can no longer reach, which is the one moment they
+    // most want to read it.
+    //
+    // Distinct from isWaiting() and never both at once: a waiting document has nothing
+    // to show and says so in place of the records, a stale one has records and says so
+    // beside them. Which of the two a vanished spooled log becomes is decided by
+    // LiveController, on whether there is anything cached to keep.
+    //
+    // Nothing else about the document changes: the index, the source, the format, the
+    // filters and the runs are all exactly as they were, and every read still comes out
+    // of the spool. This is a LABEL on an otherwise ordinary document — so no code that
+    // reads records needs to know about it, and none does.
+    bool isStale() const { return m_stale; }
+
+    // Why, in the transport's own words — "Lost the connection to prod-web —
+    // reconnecting…". Empty when not stale.
+    const QString &staleReason() const { return m_staleReason; }
+
     // False until the format and encoding have been resolved against REAL BYTES. A
     // document that opened into waiting has neither — there was nothing to sample — and
     // neither has one that opened on an EMPTY file, which is not waiting at all: the log
@@ -202,6 +225,18 @@ public:
     // No-op when the document is not waiting, so a late tick cannot leave a sentence
     // behind on a document that has since been resumed.
     void restateWaitReason(const QString &reason);
+
+    // Mark the document as disconnected-but-readable, or clear the mark. NO model reset
+    // and no index work: nothing about the visible set moves, which is the whole point —
+    // the reader keeps their scroll position, their selection and their filters over the
+    // records that are already there. Both are idempotent, so the watch tick may call
+    // them every time round without churning anything.
+    //
+    // enterStale() on a WAITING document is refused: the two states are exclusive and a
+    // waiting document has no records to be stale about. enterWaiting() clears the mark
+    // for the same reason.
+    void enterStale(const QString &reason);
+    void leaveStale();
 
     // Leave it: (re)open the source and index it. When the format has never been
     // settled, this is also where encoding detection and the provider run, over the
@@ -648,7 +683,9 @@ private:
     QString                    m_path;
     QString                    m_lastError;
     QString                    m_waitReason;
+    QString                    m_staleReason;
     bool                       m_waiting = false;
+    bool                       m_stale = false;
     bool                       m_formatSettled = false;
     // Whether the source zone was PINNED by the caller rather than inferred from the
     // format. A document that opened into waiting inferred it from an empty format,

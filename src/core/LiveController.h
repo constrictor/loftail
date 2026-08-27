@@ -204,6 +204,17 @@ signals:
     // the placeholder it was given at the transition.
     void waitingChanged(bool waiting, const QString &reason);
 
+    // The document went DISCONNECTED-BUT-READABLE, or came back (SPEC.md §3). A spooled
+    // log whose far end goes while records of it are already indexed keeps them on
+    // screen: there is no placeholder to carry the explanation any more, because there
+    // is no empty view to put one in, so the surfaces that say so are a mark on the tab
+    // and a strip across the top of the view — and this is what drives both.
+    //
+    // Emitted on the TRANSITION and again whenever the reason changes, exactly as
+    // waitingChanged is and for the same reason: the transport restates itself over the
+    // life of one outage. `reason` is empty when leaving.
+    void staleChanged(bool stale, const QString &reason);
+
     // The log a waiting document is waiting for is BACK, and the document is ready to
     // be resumed. The owner must respond by calling Document::resume() with a provider
     // built from the file's remembered pattern.
@@ -246,6 +257,15 @@ private:
     // the dialog settled on is a different one; the caller must then touch nothing.
     bool settleFirstBytes();
     void beginWaiting(const QString &reason);
+    // Enter or leave the stale state and announce it. beginStale() is idempotent and
+    // re-announces only when the sentence has actually changed, because it is reached
+    // from every tick of an outage that may last hours.
+    void beginStale(const QString &reason);
+    void endStale();
+    // Whether a vanished origin should keep what it has already fetched rather than
+    // emptying the tab. See the definition: the answer is yes only for a SPOOLED log
+    // with records already indexed.
+    bool canShowCachedWhileGone() const;
     // A document that is ALREADY waiting, whose reason has changed under it. Re-emits
     // waitingChanged(true, …) so the view placeholder and the tab tooltip follow the
     // status line rather than freezing on whatever was true at the transition (§6.5).

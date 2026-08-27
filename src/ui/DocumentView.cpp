@@ -19,10 +19,15 @@
 #include "DocumentView.h"
 
 #include "DocumentContext.h"
+#include "Document.h"
 #include "FindBar.h"
 #include "LogModel.h"
+#include "UiColors.h"
 
 #include <QEvent>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QPushButton>
 #include <QVBoxLayout>
 
 namespace loftail {
@@ -33,6 +38,36 @@ DocumentView::DocumentView(DocumentContext *context, QWidget *parent)
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(0, 0, 0, 0);
     m_layout->setSpacing(0);
+
+    // The disconnected strip, above the table. Built here rather than in the window
+    // because a log may have SEVERAL views and each needs its own — the same reason the
+    // Find bar is a view's and not the window's (invariant #7).
+    m_staleBar = new QFrame(this);
+    m_staleBar->setObjectName(QStringLiteral("staleBar")); // test contract, never translated
+    m_staleBar->setFrameShape(QFrame::StyledPanel);
+    auto *staleLayout = new QHBoxLayout(m_staleBar);
+    staleLayout->setContentsMargins(8, 4, 4, 4);
+    staleLayout->setSpacing(6);
+    // A MessageLabel: the sentence carries the transport's own words and a record count,
+    // and wraps at any ordinary window width — a plain wrapped QLabel is sized from a
+    // hint its own text does not fit in (MessageLabel.h).
+    m_staleText = new MessageLabel(m_staleBar);
+    m_staleText->setObjectName(QStringLiteral("staleBarText")); // test contract
+    // Selectable, exactly as the window's open-refusal strip is: the transport's wording
+    // is what a reader takes to a colleague or a search box.
+    m_staleText->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *reconnect = new QPushButton(tr("Reconnect"), m_staleBar);
+    reconnect->setObjectName(QStringLiteral("staleBarReconnect")); // test contract
+    // The one gesture worth putting here rather than leaving to the File menu: the strip
+    // is on screen precisely because the link went, and "try now" is what the reader
+    // looking at it wants. It is the SAME command — the window's, which is the only
+    // thing that can reach the fetcher (SPEC.md §3).
+    connect(reconnect, &QPushButton::clicked, this, &DocumentView::reconnectRequested);
+    staleLayout->addWidget(m_staleText, 1);
+    staleLayout->addWidget(reconnect, 0, Qt::AlignTop);
+    m_staleBar->setVisible(false);
+    // Stretch 0: it takes the one row it asks for and the table keeps the rest.
+    m_layout->addWidget(m_staleBar, 0);
 
     m_logView = new LogView(context->doc.get(), context->model, this);
     m_logView->setObjectName(QStringLiteral("logView")); // test contract, never translated
@@ -128,6 +163,34 @@ DocumentView::~DocumentView() = default;
 void DocumentView::activateFind()
 {
     m_findBar->activate();
+}
+
+void DocumentView::setStaleNotice(const QString &reason)
+{
+    if (reason.isEmpty()) {
+        m_staleText->clear();
+        m_staleBar->setVisible(false);
+        return;
+    }
+
+    // Two sentences, and the second is the one that is not obvious: a reader who sees
+    // "lost the connection" over a full table has no way of knowing whether those
+    // records are still arriving. Saying how many there are also dates them — the count
+    // stops moving, which is the thing a followed log otherwise shows by scrolling.
+    const int records = m_context && m_context->doc
+        ? int(m_context->doc->index().records.size())
+        : 0;
+    m_staleText->setText(
+        tr("%1 — showing the %n record(s) fetched before it went.", nullptr, records)
+            .arg(reason));
+    // Taken from the CURRENT palette every time rather than at construction, so the
+    // colour follows a theme changed under a running window (UiColors.h). A WARNING and
+    // not an error: nothing has failed and nothing is lost — what is on screen is true,
+    // it has simply stopped being added to.
+    QPalette notice = m_staleText->palette();
+    notice.setColor(QPalette::WindowText, warningColor(palette()));
+    m_staleText->setPalette(notice);
+    m_staleBar->setVisible(true);
 }
 
 void DocumentView::refreshDigestVisibility()
