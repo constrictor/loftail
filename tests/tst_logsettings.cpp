@@ -56,8 +56,10 @@ private slots:
     void anEmptyPatternIsStillAnAnswer();
     void legacyStoresMigrateOnceAndAreRemoved();
     void theMessagesPatternIsSeededOnceAndADeletionSticks();
+    void aBumpedSeedGenerationAddsOnlyWhatIsNewToIt();
     void aSeedYieldsToAPatternTheUserAlreadyHas();
     void theSeededPatternSplitsARealSyslogLine();
+    void theSeededDmesgPatternSplitsARealKernelLine();
     void aNewerSchemaLoadsEmptyAndRefusesToSave();
     void aProfileDiffersWhenAnyOneFieldOfItDoes();
     void aRestartScriptRoundTripsThroughJsonIncludingItsNewlines();
@@ -445,20 +447,26 @@ void TestLogSettings::theMessagesPatternIsSeededOnceAndADeletionSticks()
     QCOMPARE(tree.patterns().size(), 0);
     QVERIFY(store.seedBuiltInPatterns(tree, s));
 
-    QCOMPARE(tree.patterns().size(), 1);
+    QCOMPARE(tree.patterns().size(), 2);
     const int i = tree.matchingPattern(QStringLiteral("/var/log/messages"));
     QVERIFY(i >= 0);
-    // A rotated log is what a reader reaches for as often as the live file.
-    QVERIFY(tree.matchingPattern(QStringLiteral("/var/log/messages-20260827")) >= 0);
+    // The match text is the name and nothing else, so a rolled log is NOT claimed by it:
+    // logrotate's output goes through the format dialog or the detector like any other.
+    QVERIFY(tree.matchingPattern(QStringLiteral("/var/log/messages-20260827")) < 0);
     QVERIFY(tree.matchingPattern(QStringLiteral("/var/log/app.log")) < 0);
     QVERIFY(tree.patterns().at(i).profile.format.pattern.contains(QStringLiteral("%b %e")));
 
-    // It saved itself, so the pattern survives the process it was seeded in.
-    LogSettingsStore reread(dir.path());
-    QCOMPARE(reread.load().patterns().size(), 1);
+    const int k = tree.matchingPattern(QStringLiteral("/var/log/dmesg"));
+    QVERIFY(k >= 0);
+    QCOMPARE(tree.patterns().at(k).profile.format.pattern, QStringLiteral("[%x] %m%n"));
 
-    // And now the point: the user throws it away.
-    tree.removePattern(i);
+    // It saved itself, so the patterns survive the process they were seeded in.
+    LogSettingsStore reread(dir.path());
+    QCOMPARE(reread.load().patterns().size(), 2);
+
+    // And now the point: the user throws them away.
+    tree.removePattern(qMax(i, k));
+    tree.removePattern(qMin(i, k));
     QVERIFY(store.save(tree));
 
     LogSettingsTree next = store.load();
@@ -466,6 +474,34 @@ void TestLogSettings::theMessagesPatternIsSeededOnceAndADeletionSticks()
     QVERIFY(!store.seedBuiltInPatterns(next, s));
     QCOMPARE(next.patterns().size(), 0);
     QCOMPARE(store.load().patterns().size(), 0);
+}
+
+// The flag is a VERSION so that a build which ADDS a seed offers the new entry alone.
+// A bump that re-ran the whole list would resurrect a seed the user had deleted, which
+// is the one thing the flag exists to prevent — and it would do it silently, on the
+// first launch after an upgrade.
+void TestLogSettings::aBumpedSeedGenerationAddsOnlyWhatIsNewToIt()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString ini = QDir(dir.path()).filePath(QStringLiteral("app.ini"));
+
+    LogSettingsStore store(dir.path());
+    QSettings s(ini, QSettings::IniFormat);
+
+    // An installation that was offered generation 1 — the syslog pattern — and deleted
+    // it. The key is spelled out rather than taken from a constant on purpose: renaming
+    // it makes this case fail instead of quietly stopping the seed.
+    s.setValue(QStringLiteral("builtInPatternSeed"), 1);
+    s.sync();
+
+    LogSettingsTree tree;
+    QVERIFY(store.seedBuiltInPatterns(tree, s));
+
+    // Only what generation 2 brought.
+    QCOMPARE(tree.patterns().size(), 1);
+    QVERIFY(tree.matchingPattern(QStringLiteral("/var/log/dmesg")) >= 0);
+    QVERIFY(tree.matchingPattern(QStringLiteral("/var/log/messages")) < 0);
 }
 
 // The user got there first. Ours would sit behind theirs unreachable (first match wins),
@@ -480,17 +516,22 @@ void TestLogSettings::aSeedYieldsToAPatternTheUserAlreadyHas()
     QSettings s(ini, QSettings::IniFormat);
 
     LogSettingsTree tree;
-    LogPatternNode mine;
-    mine.match = QStringLiteral("*messages*");
-    mine.profile.format.pattern = QStringLiteral("MINE");
-    tree.addPattern(mine);
+    for (const QString &m : {QStringLiteral("*messages*"), QStringLiteral("*dmesg*")}) {
+        LogPatternNode mine;
+        mine.match = m;
+        mine.profile.format.pattern = QStringLiteral("MINE");
+        tree.addPattern(mine);
+    }
 
     QVERIFY(!store.seedBuiltInPatterns(tree, s));
-    QCOMPARE(tree.patterns().size(), 1);
+    QCOMPARE(tree.patterns().size(), 2);
     QCOMPARE(tree.inherited(QStringLiteral("/var/log/messages")).format.pattern,
+             QStringLiteral("MINE"));
+    QCOMPARE(tree.inherited(QStringLiteral("/var/log/dmesg")).format.pattern,
              QStringLiteral("MINE"));
 
     // Asked once either way: deleting theirs later does not summon ours.
+    tree.removePattern(1);
     tree.removePattern(0);
     QVERIFY(!store.seedBuiltInPatterns(tree, s));
     QCOMPARE(tree.patterns().size(), 0);
@@ -535,6 +576,39 @@ void TestLogSettings::theSeededPatternSplitsARealSyslogLine()
     QVERIFY(m.hasMatch());
     QCOMPARE(m.captured(f.loggerGroup), QStringLiteral("sshd[1234]"));
     QCOMPARE(m.captured(f.msgGroup), QStringLiteral("Accepted publickey for root"));
+}
+
+// The same for the kernel ring buffer, whose stamp is seconds since boot and is taken as
+// free text rather than as a date. Both spellings a dmesg dump comes in must start a
+// record, and the bracket must come off the message.
+void TestLogSettings::theSeededDmesgPatternSplitsARealKernelLine()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    LogSettingsStore store(dir.path());
+    QSettings s(QDir(dir.path()).filePath(QStringLiteral("app.ini")), QSettings::IniFormat);
+
+    LogSettingsTree tree;
+    QVERIFY(store.seedBuiltInPatterns(tree, s));
+    const QString pattern = tree.inherited(QStringLiteral("/var/log/dmesg")).format.pattern;
+
+    const auto compiled = PatternCompiler::compile(pattern);
+    if (!compiled.hasValue())
+        QFAIL(qPrintable(compiled.error().message));
+    const LogFormat &f = compiled.value();
+
+    // Seconds since boot, at both ends of the padding, and `dmesg -T`'s date.
+    const QStringList lines = {
+        QStringLiteral("[    0.000000] Linux version 6.8.0-generic"),
+        QStringLiteral("[1234567.890123] usb 1-2: new full-speed USB device"),
+        QStringLiteral("[Thu Aug 28 10:00:00 2026] eth0: link becomes ready"),
+    };
+    for (const QString &line : lines)
+        QVERIFY2(f.recordStartRe.match(line).hasMatch(), qPrintable(line));
+
+    const auto m = f.recordRe.match(lines.at(1));
+    QVERIFY(m.hasMatch());
+    QCOMPARE(m.captured(f.msgGroup), QStringLiteral("usb 1-2: new full-speed USB device"));
 }
 
 void TestLogSettings::aNewerSchemaLoadsEmptyAndRefusesToSave()

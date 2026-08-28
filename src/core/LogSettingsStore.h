@@ -85,13 +85,16 @@ public:
     bool readOnly() const { return m_readOnly; }
 
     // The generation of the built-in pattern seed this build ships. Bumped when a
-    // pattern is ADDED to the list below it; see seedBuiltInPatterns().
-    static constexpr int kSeedVersion = 1;
+    // pattern is ADDED to the list below it; see seedBuiltInPatterns(). Each entry in
+    // that list records the generation it first shipped in, so a bump offers the NEW
+    // entries only and never re-adds one an earlier generation already offered.
+    static constexpr int kSeedVersion = 2;
 
     // THE ONE-TIME SEED of the file patterns loftail ships with (SPEC.md §4). Today
-    // that is one: `messages*`, carrying the traditional syslog layout every
-    // /var/log/messages line on a Red Hat-family box is written in, so the file opens
-    // split into columns instead of raising the format dialog.
+    // that is two: `messages`, carrying the traditional syslog layout every
+    // /var/log/messages line on a Red Hat-family box is written in, and `dmesg`,
+    // carrying the kernel ring buffer's bracketed stamp — so either file opens split
+    // into columns instead of raising the format dialog.
     //
     // A SEED IS NOT A DEFAULT. It is written into the user's pattern list once and is
     // theirs from then on: editing it sticks, and DELETING IT STICKS — which is the
@@ -100,7 +103,9 @@ public:
     // HighlighterSet::defaults() records for the seeded highlight rules.
     //
     // The flag is a VERSION and not a bool so a later build can add a second pattern
-    // without re-adding the first. It lives in QSettings beside the other application-
+    // without re-adding the first: an entry is considered only when the generation it
+    // first shipped in is NEWER than the one this installation has already been offered,
+    // which is what makes a deletion stick across a bump as well as across a launch. It lives in QSettings beside the other application-
     // level flags rather than in logsettings.json, because it describes what this
     // installation has already done and not what any log gets — and because a tree
     // written by a newer build is read-only here, so a flag inside it could never be

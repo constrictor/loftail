@@ -58,26 +58,51 @@ constexpr auto kKindRegex    = "regex";
 
 // --- The patterns loftail ships with, seeded once. --------------------------------
 //
-// One entry today. `example` is a representative address the seed is FOR, and it is
-// there so an existing pattern that already claims such a log wins by being asked
-// rather than by string-comparing match texts: `messages*`, `*messages*` and
-// `/var/log/messages` are three spellings of an answer the user has already given.
+// `example` is a representative address the seed is FOR, and it is there so an existing
+// pattern that already claims such a log wins by being asked rather than by
+// string-comparing match texts: `messages`, `*messages*` and `/var/log/messages` are
+// three spellings of an answer the user has already given.
 //
-// The conversion pattern is NEVER translated (ARCHITECTURE.md §9.1) — it has to match
-// log text — and it is deliberately the tag-WITHOUT-pid variant of the three the
-// detector offers. `%c[%i]:` splits `sshd[1234]` into two columns and then fails to
+// `sinceVersion` is the kSeedVersion an entry first shipped in, and it is what makes the
+// flag a version rather than a bool mean something: a build that adds an entry bumps
+// kSeedVersion, and only the entries NEWER than what this installation has already been
+// offered are considered. Without it a bump would re-add every earlier seed, including
+// ones the user has since deleted — the one thing the flag exists to prevent.
+//
+// A conversion pattern is NEVER translated (ARCHITECTURE.md §9.1): it has to match log
+// text.
+struct BuiltInPattern
+{
+    int sinceVersion;
+    const char *match;
+    const char *example;
+    const char *pattern;
+};
+
+// The traditional syslog layout, deliberately the tag-WITHOUT-pid variant of the three
+// the detector offers. `%c[%i]:` splits `sshd[1234]` into two columns and then fails to
 // match `kernel: ...`, which carries no pid at all; a line that does not match starts
 // no record (invariant #2), so on an ordinary mixed /var/log/messages every kernel line
 // would be folded into the record above it. `%c:` takes `sshd[1234]` whole and matches
 // both shapes, which is the trade this makes: one column fewer, no swallowed lines.
 constexpr auto kSyslogPattern = "%D{%b %e %H:%M:%S} %h %c: %m%n";
-
-// `messages*` and not `messages`, because logrotate's output is what a reader reaches
-// for as often as the live file: `messages.1`, `messages-20260827`, and the `.gz` of
-// either, whose name a bare compressed stream strips back to the same thing
-// (logMatchTarget()).
-constexpr auto kSyslogMatch   = "messages*";
+constexpr auto kSyslogMatch   = "messages";
 constexpr auto kSyslogExample = "/var/log/messages";
+
+// The kernel ring buffer. Its stamp is seconds since boot — `[    0.000000]` — which no
+// date vocabulary can express as an instant, so it is taken as free text (`%x`, the NDC
+// column) rather than guessed at: the bracket gets a column of its own and the message
+// reads clean beside it. That spelling also takes `dmesg -T`'s `[Thu Aug 28 10:00:00
+// 2026]` with no second entry, which a date-shaped pattern could not have done in
+// reverse. Every dmesg line carries the bracket, so every one of them starts a record.
+constexpr auto kDmesgPattern = "[%x] %m%n";
+constexpr auto kDmesgMatch   = "dmesg";
+constexpr auto kDmesgExample = "/var/log/dmesg";
+
+constexpr BuiltInPattern kBuiltInPatterns[] = {
+    {1, kSyslogMatch, kSyslogExample, kSyslogPattern},
+    {2, kDmesgMatch,  kDmesgExample,  kDmesgPattern },
+};
 
 constexpr auto kSeedVersionKey = "builtInPatternSeed";
 
@@ -214,21 +239,28 @@ bool LogSettingsStore::seedBuiltInPatterns(LogSettingsTree &tree, QSettings &set
 {
     // Asked ONCE per generation. A seed the user has since deleted must stay deleted —
     // see the header; this test, and not the tree's contents, is what makes that true.
-    if (settings.value(QLatin1String(kSeedVersionKey), 0).toInt() >= kSeedVersion)
+    const int seen = settings.value(QLatin1String(kSeedVersionKey), 0).toInt();
+    if (seen >= kSeedVersion)
         return false;
 
     bool added = false;
-    // The user got there first: whatever claims /var/log/messages today keeps it, and
-    // ours would be unreachable behind it anyway (first match wins).
-    if (tree.matchingPattern(QString::fromLatin1(kSyslogExample)) < 0) {
+    for (const BuiltInPattern &b : kBuiltInPatterns) {
+        // Offered in an earlier generation, so it has had its one chance: a seed the
+        // user deleted must stay deleted across a version bump too.
+        if (b.sinceVersion <= seen)
+            continue;
+        // The user got there first: whatever claims the example address today keeps it,
+        // and ours would be unreachable behind it anyway (first match wins).
+        if (tree.matchingPattern(QString::fromLatin1(b.example)) >= 0)
+            continue;
         LogPatternNode n;
         n.kind  = LogPatternNode::Kind::Wildcard;
-        n.match = QString::fromLatin1(kSyslogMatch);
+        n.match = QString::fromLatin1(b.match);
         // Name-only and case-insensitive, which is the default a pattern added by hand
         // gets: what this names is what the log is CALLED, not where it lives.
         n.matchFullPath = false;
         n.caseSensitive = false;
-        n.profile.format.pattern = QString::fromLatin1(kSyslogPattern);
+        n.profile.format.pattern = QString::fromLatin1(b.pattern);
         // Everything else stays at the struct default — auto-detected encoding, the zone
         // inferred from the pattern (%D is local time, which is what syslog stamps),
         // timestamps as written, no run splitting, no wrapping.
