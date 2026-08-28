@@ -137,6 +137,8 @@ private slots:
     void aDismissedSuppliedPatternLeavesAStoredEntryAlone();
     void anEmptyPatternValueIsTheBareLaunch();
     void applyingToTheCurrentFileWaitsForOkAndThenRereadsTheLog();
+    void okAloneRereadsTheLogWhenItsOwnSettingsMoved();
+    void okLeavesTheLogAloneWhenNothingAboutItMoved();
 };
 
 void TestOpenFlow::init()
@@ -980,6 +982,106 @@ void TestOpenFlow::applyingToTheCurrentFileWaitsForOkAndThenRereadsTheLog()
     QVERIFY2(!documentOf(w)->index().loggers.names().contains(QStringLiteral("net.io")),
              "the pre-change intern table survived: the log was not re-read");
     QCOMPARE(documentOf(w), doc); // re-read in place, not reopened
+    w.close();
+}
+
+// OK ALONE APPLIES, and this is the case the button above did not cover.
+//
+// The ordinary errand is "this log is not parsing; fix its pattern": open Preferences on
+// the log in front of you, correct the format, press OK. Until now that stored the
+// setting and left the tab exactly as it was — the dialog's preview showed the columns
+// split correctly over a table still showing the whole file in the message column, with
+// nothing on screen to say the change had been saved and would arrive the next time the
+// log was opened. "Apply to current file" was the only route, and it reads as a button
+// for trying a setting out rather than as the way to make OK mean anything.
+void TestOpenFlow::okAloneRereadsTheLogWhenItsOwnSettingsMoved()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_good);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTRY_COMPARE(documentOf(w)->index().records.size(), 2);
+
+    Document *doc = documentOf(w);
+    QVERIFY(doc->index().loggers.names().contains(QStringLiteral("net.io")));
+
+    bool seen = false;
+    QTimer timer;
+    timer.setInterval(10);
+    connect(&timer, &QTimer::timeout, [&]() {
+        auto *dlg = qobject_cast<PreferencesDialog *>(QApplication::activeModalWidget());
+        if (!dlg)
+            return;
+        seen = true;
+        timer.stop();
+        auto *pattern = dlg->findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
+        auto *apply = dlg->findChild<QPushButton *>(QStringLiteral("applyToCurrentButton"));
+        QVERIFY(pattern);
+        QVERIFY(apply);
+        // Dropping the %c leaves these lines parsing with nothing in them a subsystem,
+        // which is a change only a re-read can show.
+        pattern->setText(QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %m%n"));
+        // DELIBERATELY NOT PRESSED: that button is the other test.
+        QVERIFY2(!apply->isChecked(), "the apply request was armed by something else");
+        dlg->accept();
+    });
+    timer.start();
+
+    auto *prefs = w.findChild<QAction *>(QStringLiteral("preferencesAction"));
+    QVERIFY(prefs);
+    prefs->trigger();
+    QVERIFY2(seen, "the Preferences dialog was never shown");
+
+    QTRY_VERIFY(documentOf(w)->format().loggerGroup <= 0); // absent is the -1 sentinel
+    QTRY_COMPARE(documentOf(w)->index().records.size(), 2);
+    // Re-read, not merely re-compiled: the intern tables come from the scan, so a stale
+    // one is proof the file was never read again.
+    QVERIFY2(!documentOf(w)->index().loggers.names().contains(QStringLiteral("net.io")),
+             "the pre-change intern table survived: the log was not re-read");
+    QCOMPARE(documentOf(w), doc); // re-read in place, not reopened
+    w.close();
+}
+
+// The other half of the same rule, and the reason it is a COMPARISON rather than an
+// unconditional apply: a visit to Preferences that does not move what this log resolves
+// to must not stop its workers, empty its index and scan it again. Editing the defaults
+// while the log has a node of its own is exactly that — first match wins, so the log
+// never sees it.
+void TestOpenFlow::okLeavesTheLogAloneWhenNothingAboutItMoved()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_good);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTRY_COMPARE(documentOf(w)->index().records.size(), 2);
+    const RecordIndex *before = &documentOf(w)->index();
+    QVERIFY(documentOf(w)->index().loggers.names().contains(QStringLiteral("net.io")));
+
+    bool seen = false;
+    QTimer timer;
+    timer.setInterval(10);
+    connect(&timer, &QTimer::timeout, [&]() {
+        auto *dlg = qobject_cast<PreferencesDialog *>(QApplication::activeModalWidget());
+        if (!dlg)
+            return;
+        seen = true;
+        timer.stop();
+        // Opened on the log's own row, so simply accepting changes nothing about it.
+        dlg->accept();
+    });
+    timer.start();
+
+    auto *prefs = w.findChild<QAction *>(QStringLiteral("preferencesAction"));
+    QVERIFY(prefs);
+    prefs->trigger();
+    QVERIFY2(seen, "the Preferences dialog was never shown");
+
+    QTest::qWait(200);
+    QCOMPARE(&documentOf(w)->index(), before);
+    QVERIFY2(documentOf(w)->index().loggers.names().contains(QStringLiteral("net.io")),
+             "the log was re-read although nothing about it had changed");
     w.close();
 }
 

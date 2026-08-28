@@ -2721,6 +2721,8 @@ void MainWindow::showPreferences()
     if (dlg.exec() != QDialog::Accepted)
         return;
 
+    const bool haveActive = !activePath.isEmpty();
+
     commitPreferences(dlg, activePath);
 
     // LAST, because applying re-reads the log: it stops this document's workers, empties
@@ -2728,8 +2730,32 @@ void MainWindow::showPreferences()
     // that — a format change rebuilds them in place rather than replacing them (§6.6) —
     // but everything this function has read about them is stale afterwards, so nothing
     // that depends on the old format may follow.
-    if (dlg.applyRequested())
+    //
+    // OK ALONE APPLIES, when and only when the edit moved what THIS log resolves to.
+    // "Apply to current file" used to be the only route, which made the ordinary errand
+    // — "this log is not parsing; fix its pattern" — end in a dialog whose preview showed
+    // the columns correctly over a tab that went on showing the whole file in the message
+    // column, with nothing on screen to say the setting had been saved and would arrive
+    // the next time the log was opened.
+    //
+    // The comparison is what keeps this from being a surprise: editing a pattern node for
+    // some other class of logs, or a default this log overrides, leaves `after == before`
+    // and re-reads nothing. The button survives because it says something this cannot:
+    // it names a node other than the active log's and applies THAT (dlg.applyProfile()),
+    // which is how a setting is tried against the file in front of you before it is
+    // committed to the node that will own it.
+    if (dlg.applyRequested()) {
         applyProfileToActive(dlg.applyProfile());
+    } else if (haveActive) {
+        // What the STORES now say this log should be read as, asked WITHOUT going through
+        // resolvedProfile() — that function answers an open log from its own tab, on
+        // purpose (a format just confirmed reaches ctx->settings before the pool), so
+        // asking it here would compare the tab against itself and never see a change.
+        const auto own = m_fileStore.read(activePath).profile;
+        const LogProfile stored = own ? *own : m_logSettings.inherited(activePath);
+        if (!(stored == resolvedProfile(activePath)))
+            applyProfileToActive(stored);
+    }
 }
 
 void MainWindow::applyProfileToActive(const LogProfile &p)
