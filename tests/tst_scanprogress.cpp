@@ -19,6 +19,7 @@
 #include <QtTest>
 
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QHeaderView>
 #include <QProgressBar>
@@ -161,9 +162,22 @@ void TestScanProgress::pressingStopEndsTheScanShort()
     QVERIFY(box);
 
     // The indicator appears on the first progress report, which is one 4 MB chunk into
-    // a file of several. Press stop in that same pass of the event loop: spinning it
-    // again here would be racing the scan we are about to cut short.
-    QTRY_VERIFY_WITH_TIMEOUT(box->isVisible(), 30000);
+    // a file of several. Press stop as nearly as possible in that same pass of the event
+    // loop, because every millisecond between the two is a millisecond of scan there is
+    // left to cut short.
+    //
+    // NOT QTRY_VERIFY, and that is the whole of why this used to fail on the Release CI
+    // leg while passing everywhere else. QTRY's step is 50 ms for any timeout over
+    // ~350 ms, so it waits blind for 50 ms at a time and only then re-tests: the box goes
+    // visible one chunk in and the click lands up to a full 50 ms later, by which time a
+    // Release build on a fast disk has finished the whole file and there is nothing for
+    // the stop to do. Polling with a 1 ms slice instead makes the delay the event loop's
+    // own latency rather than a fixed window the worker gets for free.
+    QElapsedTimer waited;
+    waited.start();
+    while (!box->isVisible() && waited.elapsed() < 30000)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+    QVERIFY2(box->isVisible(), "the scan indicator never appeared");
     QVERIFY(stopButton(w)->isVisible());
     QTest::mouseClick(stopButton(w), Qt::LeftButton);
 
