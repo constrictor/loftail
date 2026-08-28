@@ -79,7 +79,19 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    // How much of the saved session the window comes back with (SPEC.md §3, §10).
+    // A launch that NAMES files is asking for those files and no others, so the tabs
+    // are left behind while the shell — the window geometry and the pane layout — is
+    // still restored: those describe how the application is set up rather than what
+    // was being read, and starting a named-file launch with the panes in their
+    // factory arrangement would be a second, unasked-for change.
+    enum class SessionRestore {
+        Full,      // geometry, pane layout, and the tabs that were open
+        ShellOnly, // geometry and pane layout only; the caller names the tabs
+    };
+
+    explicit MainWindow(SessionRestore restore = SessionRestore::Full,
+                        QWidget *parent = nullptr);
     ~MainWindow() override;
 
     // Open `path`. Its settings come from the most specific level of the settings tree
@@ -410,7 +422,9 @@ private:
     // each of them through persistFileSettings() on the way past, which is what makes a
     // quit store what the panes were holding.
     void saveSession();
-    void restoreSession();
+    // `restore` is the constructor's, and reaching ShellOnly stops the restore after
+    // the geometry and the pane layout — see the enum.
+    void restoreSession(SessionRestore restore);
 
     // --- Log text size (SPEC.md §5, ARCHITECTURE.md §7.1.5) ------------------------
     // One size for the application, not per view and not per log: it answers a question

@@ -191,7 +191,7 @@ bool panesMayFloat()
 }
 } // namespace
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(SessionRestore restore, QWidget *parent)
     : QMainWindow(parent)
 {
     {
@@ -481,7 +481,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Restore the previous working state last, once every pane dock exists with its
     // object name (restoreState keys off those) — SPEC.md §10.
-    restoreSession();
+    restoreSession(restore);
 }
 
 MainWindow::~MainWindow()
@@ -5124,7 +5124,7 @@ void MainWindow::armBulkRestore()
     timer->start();
 }
 
-void MainWindow::restoreSession()
+void MainWindow::restoreSession(SessionRestore restore)
 {
     QSettings store;
     const Session session = SessionStore::load(store);
@@ -5147,6 +5147,24 @@ void MainWindow::restoreSession()
                     dock->setFloating(false);
             }
         }
+    }
+
+    // A launch that named files on the command line stops here: the shell it was set up
+    // with comes back, the tabs it was reading do not (SPEC.md §3, §10). The cut is at
+    // the DOCUMENTS and not at the whole restore, because geometry and pane layout are
+    // how the application is arranged rather than what was open in it — and it is here
+    // rather than in main() because the session is read in this constructor, before
+    // show(), so there is no moment outside it at which the tabs could be declined.
+    // Nothing below is skipped silently: the loop, the editors and the activation are
+    // all about documents this launch is not asking for, and the empty state is what
+    // main()'s openFiles() then fills in.
+    //
+    // The saved session is not rewritten here — it is overwritten at the next quit by
+    // saveSession(), which writes whatever is open then, exactly as any other launch
+    // that closed the old tabs would.
+    if (restore == SessionRestore::ShellOnly) {
+        updateEmptyState();
+        return;
     }
 
     // Rebuild the files and their views in the saved order, which is the saved TAB

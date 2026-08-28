@@ -101,14 +101,21 @@ int main(int argc, char *argv[])
     // is what resolves the file's location (DiagnosticLog.h).
     loftail::diagLogSessionStart();
 
-    loftail::MainWindow window;
+    // Files named on the command line REPLACE the session's tabs rather than joining
+    // them: someone who says `loftail app.log` is asking for that log, not for it plus
+    // whatever was open last time (SPEC.md §3). The window still comes back with its
+    // saved geometry and pane layout — see MainWindow::SessionRestore. A bare launch is
+    // unchanged and restores everything.
+    loftail::MainWindow window(cmdLine.files().isEmpty()
+                                   ? loftail::MainWindow::SessionRestore::Full
+                                   : loftail::MainWindow::SessionRestore::ShellOnly);
     window.show();
 
     // EVERY file named opens, each in its own tab, in the order given — the same thing
     // dropping several files on the window does (SPEC.md §3). No file argument -> an
-    // empty window (session restore may still reopen the last files inside MainWindow);
-    // the files named are ADDED to whatever the session brought back, never a
-    // replacement for it. --pattern overrides what is remembered for each of them and is
+    // empty window, into which session restore reopens the last files inside
+    // MainWindow; naming any file suppresses that restore, so the tabs are exactly the
+    // files named and in the order given. --pattern overrides what is remembered for each of them and is
     // then judged against it: a pattern that does not fit raises Preferences, and
     // dismissing that opens neither the file nor a settings node (SPEC.md §3). It used
     // to be taken as intent and open the file as plain text, which also saved it

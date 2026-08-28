@@ -21,6 +21,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QDockWidget>
 #include <QFile>
 #include <QHeaderView>
 #include <QSettings>
@@ -109,6 +110,7 @@ private slots:
     void init();
     void tabOrderAndPerViewStateRestore();
     void missingFileRestoresAsWaitingAndTheRestStillOpen();
+    void namedFilesReplaceTheSessionsTabsAndKeepItsShell();
 };
 
 void TestTabSession::init()
@@ -233,6 +235,70 @@ void TestTabSession::missingFileRestoresAsWaitingAndTheRestStillOpen()
     QTRY_VERIFY_WITH_TIMEOUT(waiting->recordCount() > 0, 5000);
     QCOMPARE(tabTitles(w),
              QStringList({QStringLiteral("a.log"), QStringLiteral("doomed.log")}));
+}
+
+void TestTabSession::namedFilesReplaceTheSessionsTabsAndKeepItsShell()
+{
+    // `loftail c.log` opens c.log AND NOTHING ELSE (SPEC.md §3). Naming a file is
+    // asking for that file, so the session's tabs are left behind rather than added
+    // to — which is main()'s choice of MainWindow::SessionRestore, and the only thing
+    // that can be driven from here is the constructor it passes it to.
+    //
+    // The shell is the other half of the claim and is what makes this two assertions
+    // rather than one: geometry and pane layout describe how the application is set
+    // up, not what was being read, so they still come back. A regression in either
+    // direction is silent — the tabs are simply wrong, or the panes are back in their
+    // factory arrangement — which is what the two halves catch separately.
+    const QString c = m_dir.filePath(QStringLiteral("c.log"));
+    writeLog(c, 12);
+
+    // --- Round 1: two files open, and a pane put away ---------------------------
+    {
+        MainWindow w;
+        w.resize(1000, 700);
+        w.show();
+        w.openFile(m_a);
+        w.openFile(m_b);
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
+        waitUntilIndexed(w);
+
+        // Pane state that restoreState() round-trips and that nothing else would set:
+        // a dock the user closed stays closed.
+        auto *runs = w.findChild<QDockWidget *>(QStringLiteral("runsDock"));
+        QVERIFY(runs);
+        runs->setVisible(false);
+
+        QCloseEvent ev; // drives saveSession()
+        QCoreApplication::sendEvent(&w, &ev);
+    }
+
+    // --- Round 2: relaunch naming one file --------------------------------------
+    MainWindow w(MainWindow::SessionRestore::ShellOnly);
+    w.show();
+    w.openFiles(QStringList{c});
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    waitUntilIndexed(w);
+
+    // The named file, and neither of the two that were open.
+    QCOMPARE(tabs(w)->count(), 1);
+    QCOMPARE(tabTitles(w), QStringList({QStringLiteral("c.log")}));
+
+    // ...while the pane the user put away is still away.
+    auto *runs = w.findChild<QDockWidget *>(QStringLiteral("runsDock"));
+    QVERIFY(runs);
+    QVERIFY(!runs->isVisible());
+
+    // And the session is not damaged in passing: it is rewritten at the next quit
+    // with what is actually open, exactly as any other launch would.
+    {
+        QCloseEvent ev;
+        QCoreApplication::sendEvent(&w, &ev);
+    }
+    MainWindow again;
+    again.show();
+    QTRY_COMPARE(again.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    waitUntilIndexed(again);
+    QCOMPARE(tabTitles(again), QStringList({QStringLiteral("c.log")}));
 }
 
 int main(int argc, char *argv[])
