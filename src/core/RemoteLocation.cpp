@@ -23,6 +23,7 @@
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QLatin1String>
+#include <QStandardPaths>
 #include <QStringList>
 #include <QUrl>
 
@@ -139,11 +140,25 @@ QString RemoteLocation::toString() const
     return url.toString(QUrl::FullyEncoded);
 }
 
+QString RemoteLocation::effectiveUser() const
+{
+    if (!user.isEmpty())
+        return user;
+    // What ssh does with no User directive, and what the connect fills in — reached from
+    // here so that both spell it the same way. HomeLocation rather than the environment's
+    // USER: it is what Qt already answers on every platform, and it is the same value
+    // tryDefaultKeys() derives ~/.ssh from a few lines later.
+    return QStandardPaths::writableLocation(QStandardPaths::HomeLocation).section(u'/', -1);
+}
+
 QString RemoteLocation::target() const
 {
-    if (user.isEmpty())
+    const QString account = effectiveUser();
+    // Still guarded, because effectiveUser() can come back empty on a machine with no
+    // home directory at all — and "@host:22" would be a key that reads as a bug.
+    if (account.isEmpty())
         return QStringLiteral("%1:%2").arg(host).arg(port);
-    return QStringLiteral("%1@%2:%3").arg(user, host).arg(port);
+    return QStringLiteral("%1@%2:%3").arg(account, host).arg(port);
 }
 
 // --- Path-shaped helpers shared by core and UI -----------------------------

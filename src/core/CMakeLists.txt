@@ -248,6 +248,13 @@ target_sources(loftail_core PRIVATE
     # transport itself is reachable in one build configuration on one kind of server.
     ExecSizeProbe.cpp
     ExecSizeProbe.h
+    # Whether an unattended reconnect that suddenly needs a person is worth repeating.
+    # Always compiled for the third time on the same argument: it is a DECISION, the
+    # transport that consumes it is reachable in one build configuration on one kind of
+    # server, and the case it exists for — a remote machine rebooting — cannot be staged
+    # in CI at all.
+    SshRetryPolicy.cpp
+    SshRetryPolicy.h
 )
 target_link_libraries(loftail_core PRIVATE Qt6::Network)
 

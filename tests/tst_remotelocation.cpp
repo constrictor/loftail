@@ -49,6 +49,7 @@ private slots:
     void rejectsMalformedUrls();
     void neverEmitsAPasswordFromTheUrl();
     void targetGroupsFilesOnOneHost();
+    void aUserlessAddressIsKeyedOnTheAccountItWillConnectAs();
     void displayHelpersFallBackToLocalBehavior();
     void everyAddressGetsANonEmptyNameAndNoNameIsAPath();
     void everyAddressGetsANonEmptyNameAndNoNameIsAPath_data();
@@ -199,6 +200,38 @@ void TestRemoteLocation::targetGroupsFilesOnOneHost()
     QVERIFY(c.has_value() && d.has_value());
     QVERIFY(c->target() != a->target());
     QVERIFY(d->target() != a->target());
+}
+
+// An address with no user is keyed on the account the connect will actually use, and it
+// is the SAME key before and after that connect has filled the account in.
+//
+// It was not. SshSession::authenticate() filled `user` from the local account and only
+// then asked for target(), so an `ssh://host/path` was `host:22` to everything holding
+// the parsed location and `me@host:22` to everything downstream of the connect. Both of
+// the things that carry a remembered password across a restart look it up from the first
+// side — MainWindow::primeRemoteCredentials() and, through indexOfTarget(), the password
+// dialog's "Remember this password" box — so a password remembered for such a host was
+// never used again, and the next launch asked for it.
+void TestRemoteLocation::aUserlessAddressIsKeyedOnTheAccountItWillConnectAs()
+{
+    const auto bare = RemoteLocation::parse(QStringLiteral("ssh://web1/var/log/a.log"));
+    QVERIFY(bare.has_value());
+
+    QVERIFY(!bare->effectiveUser().isEmpty());
+    QCOMPARE(bare->target(),
+             QStringLiteral("%1@web1:22").arg(bare->effectiveUser()));
+
+    // Spelling the same account out changes nothing, which is what makes the two sides
+    // of a connect agree.
+    const auto spelled =
+        RemoteLocation::parse(QStringLiteral("ssh://%1@web1/var/log/a.log").arg(bare->effectiveUser()));
+    QVERIFY(spelled.has_value());
+    QCOMPARE(bare->target(), spelled->target());
+
+    // The ADDRESS is untouched: the session file, the recent-files menu and the window
+    // title keep what the user typed, because a synthesized user would be wrong for
+    // anyone whose ~/.ssh/config names a different one.
+    QCOMPARE(bare->toString(), QStringLiteral("ssh://web1:22/var/log/a.log"));
 }
 
 void TestRemoteLocation::displayHelpersFallBackToLocalBehavior()

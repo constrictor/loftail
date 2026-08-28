@@ -393,8 +393,9 @@ void TestHostBookmarks::aPasswordNeverLeaksIntoAPathString()
 
 // passwordAccepted() is handed a target and nothing else, so the store must be reachable
 // by the same string the credential cache and the keychain are keyed on. Comparing
-// forwards is what makes the two spellings of target() — with and without a user — both
-// work, where parsing "user@host:port" apart would have to guess.
+// FORWARDS — locationFor({}).target() against the string — is what makes that true
+// whether or not the bookmark spells a user, where parsing "user@host:port" back apart
+// would have to guess where the account ends and an IPv6 host begins.
 void TestHostBookmarks::indexOfTargetMatchesTheCacheKey()
 {
     HostBookmark withUser = sample();
@@ -413,9 +414,16 @@ void TestHostBookmarks::indexOfTargetMatchesTheCacheKey()
     const QVector<HostBookmark> all{withUser, noUser, sixSix};
 
     QCOMPARE(HostBookmarkStore::indexOfTarget(all, QStringLiteral("deploy@web1.example.com:22")), 0);
-    // No '@' at all — the spelling target() uses when there is no user.
-    QCOMPARE(noUser.locationFor(QString()).target(), QStringLiteral("logs.internal:2222"));
-    QCOMPARE(HostBookmarkStore::indexOfTarget(all, QStringLiteral("logs.internal:2222")), 1);
+    // A bookmark with NO user still has a user in its target: RemoteLocation::target()
+    // fills the local account in, because that is who the connect will sign in as and
+    // therefore what the credential cache and the keychain are keyed on. It used to
+    // answer a bare "logs.internal:2222", which no lookup downstream of a connect could
+    // ever match — so the password dialog's "Remember" box was disabled for a host that
+    // WAS saved, and a primed password was filed where nothing looked for it.
+    const QString bare = noUser.locationFor(QString()).target();
+    QVERIFY(bare.endsWith(QStringLiteral("@logs.internal:2222")));
+    QCOMPARE(HostBookmarkStore::indexOfTarget(all, bare), 1);
+    QCOMPARE(HostBookmarkStore::indexOfTarget(all, QStringLiteral("logs.internal:2222")), -1);
     // Colons of the address's own, which is why nothing here splits on one.
     QCOMPARE(HostBookmarkStore::indexOfTarget(all, sixSix.locationFor(QString()).target()), 2);
 

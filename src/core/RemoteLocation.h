@@ -79,8 +79,30 @@ struct RemoteLocation
     // A non-remote string is returned unchanged: a local path has no userinfo.
     static QString withoutPassword(const QString &s);
 
+    // The account this address will actually sign in as: `user` where the address
+    // spells one, the local account name otherwise — which is what ssh does absent a
+    // User directive, and what SshSession::authenticate() has always filled in.
+    //
+    // It exists because that fill-in used to happen INSIDE the connect, after target()
+    // had already been asked, so an address with no user was keyed two different ways at
+    // once: `host:22` by everything holding the parsed location, `me@host:22` by
+    // everything downstream of the connect. Two consequences, both silent — a remembered
+    // password primed into SshCredentialCache by MainWindow::primeRemoteCredentials()
+    // was filed under a key the auth ladder never looked up, and
+    // HostBookmarkStore::indexOfTarget() could not find a saved host with no user, which
+    // is what DISABLED the password dialog's "Remember this password" box and made its
+    // note say there was no saved host for one that was saved.
+    //
+    // NOT used by toString(): the address the session file and the recent-files menu
+    // hold must stay the one the user typed, and synthesizing a user into it would be
+    // wrong for anyone whose ~/.ssh/config sets a different User for the host. This is
+    // about the key a connect is filed under, which is the connect's own answer.
+    QString effectiveUser() const;
+
     // "user@host:port" — the connection-pool key, so every file on one host shares a
-    // single SSH connection and, at restore, a single password prompt.
+    // single SSH connection and, at restore, a single password prompt. The user half is
+    // effectiveUser(), so the key is the same string before and after a connect has
+    // filled the account in.
     QString target() const;
 
     // The host as shown to a person: the bare host name, no user or port.

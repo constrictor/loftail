@@ -467,6 +467,14 @@ qt_add_executable(tst_execsizeprobe tst_execsizeprobe.cpp)
 target_link_libraries(tst_execsizeprobe PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_execsizeprobe COMMAND tst_execsizeprobe)
 
+# Whether an unattended reconnect keeps trying after the far end suddenly wants a person.
+# UNGATED, and the case it stands for is one nothing else in the tree can reach: a remote
+# machine rebooting, which needs a machine, a reboot and several minutes. The clock is a
+# parameter, so the whole window is exercised in microseconds without a server.
+qt_add_executable(tst_sshretry tst_sshretry.cpp)
+target_link_libraries(tst_sshretry PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_sshretry COMMAND tst_sshretry)
+
 # Why the SSH transport takes its socket away from Qt. UNGATED and network-free
 # (loopback only): the behaviour worked around is Qt's own, so it must be pinned in a
 # build with no SSH support too — and a Qt that stopped doing it would make the whole

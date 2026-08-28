@@ -726,12 +726,13 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
                                     SshSession::Failure *failure)
 {
     *failure = SshSession::Failure::Refused;
-    if (location.user.isEmpty()) {
-        // No user in the URL and no ~/.ssh/config parsing yet: fall back to the local
-        // account name, which is what ssh does absent a User directive.
-        location.user = QStandardPaths::writableLocation(QStandardPaths::HomeLocation)
-                            .section(u'/', -1);
-    }
+    // No user in the URL and no ~/.ssh/config parsing yet: fall back to the local
+    // account name, which is what ssh does absent a User directive. Through
+    // RemoteLocation::effectiveUser() rather than derived here, because target() below
+    // has to answer the same thing — it is the key this connect's password is filed
+    // under, and everything that primes or looks that password up asks the UNCONNECTED
+    // location for it (RemoteLocation.h).
+    location.user = location.effectiveUser();
     const QByteArray user = location.user.toUtf8();
     const QString target = location.target();
 

@@ -22,6 +22,7 @@
 
 #include "PromptRelay.h"
 #include "SshPrompter.h"
+#include "SshRetryPolicy.h"
 #include "SshSession.h"
 
 #include <QCoreApplication>
@@ -233,6 +234,13 @@ private:
     // user's own open) and by pokeNow() (File ▸ Reconnect), consumed by reconnect().
     bool           m_wantsPrompter = false;
 
+    // Fetcher-thread only, so no lock: whether an unattended attempt that suddenly needs
+    // a person is still worth repeating, and the clock it is measured on. A reboot is the
+    // case this exists for — see SshRetryPolicy.h, which is where the whole of the
+    // reasoning lives.
+    ReconnectGrace m_grace;
+    QElapsedTimer  m_sinceStart;
+
     // Fetcher-thread only: true while the prime is running, so fetchForward() records
     // what it has written without publishing it. m_heldCommit is the pending figure and
     // is written under m_mutex like the rest of the status it belongs to.
@@ -414,6 +422,9 @@ bool SshFetcher::start(const QString &spoolDir, QString *error)
         m_status.state = FetchStatus::State::Connecting;
     }
 
+    // Started before the worker, because the worker reads it on its very first pass and
+    // QElapsedTimer::elapsed() on an unstarted timer answers nothing meaningful.
+    m_sinceStart.start();
     m_worker = std::make_unique<Worker>(this);
     m_worker->start();
     return true;
@@ -800,12 +811,38 @@ void SshFetcher::reconnect()
 
     QString error;
     SshSession::Failure failure = SshSession::Failure::None;
-    if (establish(mayPrompt, &error, &failure))
+    if (establish(mayPrompt, &error, &failure)) {
+        // Evidence that this host's credentials work unattended, and the thing that
+        // buys the grace window below on the day it stops working.
+        m_grace.signedIn();
         return;
+    }
 
     if (failure == SshSession::Failure::Unreachable
         || failure == SshSession::Failure::NoSuchFile) {
         setWaiting(error);
+        return;
+    }
+
+    // A host loftail HAS signed in to that now wants a person is, for a bounded while,
+    // treated as a host that is still coming back rather than as one that has changed
+    // its mind — because a reboot passes through exactly this state on its way up, and
+    // latching here killed the tab for good on a condition that fixes itself in seconds
+    // (SshRetryPolicy.h). The retry is unattended by construction: m_wantsPrompter was
+    // consumed at the top of this function, so nothing inside the window can ask.
+    if (failure == SshSession::Failure::NeedsPerson
+        && m_grace.keepTrying(m_sinceStart.elapsed())) {
+        setWaiting(error);
+        // Throttled per target for the reason establish()'s attempt line is: a host that
+        // is halfway up is retried every five seconds, and this is the state, not the
+        // event.
+        // A throttle key OF ITS OWN, not the bare target: establish()'s attempt line
+        // already buckets on that, and sharing one would let either message suppress
+        // the other.
+        diagLogEvery(60000, "ssh", m_location.target() + QStringLiteral("/auth-grace"),
+                     QStringLiteral("%1 needs a person but signed in before — still "
+                                    "retrying unattended: %2")
+                         .arg(m_location.target(), error));
         return;
     }
 
