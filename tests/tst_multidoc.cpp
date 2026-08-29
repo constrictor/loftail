@@ -195,6 +195,9 @@ private slots:
     void theSubsystemColumnWidensOnceTheScanHasSeenEveryName();
     void theScanCompletionSeedLeavesTheMessageColumnOnScreen();
     void theHeaderMenuFitsAndResetsTheColumnWidths();
+    // And the seed nobody ran: a log that opened WAITING has no columns to seed until
+    // its format settles, which happens on a resume rather than on a scan (bugs.md 29).
+    void aLogThatOpensWaitingGetsItsHeaderAndItsWidthsWhenItArrives();
 
     // SEVERAL logs asked for in ONE gesture (SPEC.md §3). Dropping files on the window
     // had always opened all of them; the command line took the first and dropped the
@@ -1038,6 +1041,85 @@ void TestMultiDoc::theHeaderMenuFitsAndResetsTheColumnWidths()
     // Reset forgets the fit along with every dragged width and seeds the lot again.
     trigger(w, "resetColumnWidthsAction");
     QCOMPARE(view->header()->sectionSize(logger), seeded);
+}
+
+// The seed that had no caller (bugs.md 29). A document that opens WAITING has no compiled
+// format, so LogModel::columnCount() is 0 for the whole of the wait: layoutChrome()
+// reserves no band for a header with no sections and never gives it a geometry, and the
+// construction seed has nothing to measure. The count goes 0 → n on the RESUME — which
+// builds no IndexController, so the scan-completion seed never runs either — and until
+// applyFormatChange() said so, nothing was watching: the tab came back with no header at
+// all (no dividers, and a right-click where the captions belong offering no column menu)
+// and every section at Qt's default size, which saveColumnState() then wrote into the
+// session and restoreColumnState() marked as the reader's own layout.
+//
+// Stated as a RELATION against a second tab holding the same content opened the ordinary
+// way, never in pixels: what a column is seeded to depends on the font, and what a
+// document area is worth depends on the font the panes beside it are labelled in — the
+// two move independently under another style or face (the rule tst_highlighterpane's
+// inset case records). The waiting log is the BACKGROUND tab when it arrives, which is
+// also the ordinary shape of `loftail app.log other.log` before the service starts.
+void TestMultiDoc::aLogThatOpensWaitingGetsItsHeaderAndItsWidthsWhenItArrives()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    const QString later = m_dir.filePath(QStringLiteral("waiting-header.log"));
+    QFile::remove(later);
+    QVERIFY(!QFile::exists(later));
+    const QString present = m_dir.filePath(QStringLiteral("present-header.log"));
+    // Few enough records that neither view grows a vertical scrollbar: a bar appearing
+    // re-lays the viewport, which is exactly what used to hide this defect from anyone
+    // whose log was longer than a screen.
+    const char *subsystem = "com.example.waiting.subsystem";
+    writeLog(present, subsystem, 12);
+
+    MainWindow w;
+    w.resize(1200, 700);
+    w.show();
+
+    QVERIFY(w.openFile(later)); // waiting is a state, not a failure (SPEC.md §3)
+    QVERIFY(w.openFile(present));
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
+    waitUntilIndexed(w);
+
+    auto *waited = qobject_cast<DocumentView *>(docTabs(w)->widget(0));
+    auto *reference = qobject_cast<DocumentView *>(docTabs(w)->widget(1));
+    QVERIFY(waited && reference);
+    QVERIFY(waited->context()->doc->isWaiting());
+    // The state the defect was latched in, and the reason the construction seed and
+    // layoutChrome() were both no-ops for this view.
+    QCOMPARE(modelOf(waited->logView())->columnCount(), 0);
+
+    // The log turns up, with the same content. The real watcher and poll timer bring it
+    // in, exactly as they do for the user — no reopening.
+    writeLog(later, subsystem, 12);
+    QTRY_VERIFY_WITH_TIMEOUT(waited->logView()->recordCount() == 12, 5000);
+
+    LogView *arrived = waited->logView();
+    LogView *ordinary = reference->logView();
+    QCOMPARE(modelOf(arrived)->columnCount(), modelOf(ordinary)->columnCount());
+    QVERIFY(modelOf(ordinary)->columnCount() > 0);
+
+    // (a) The header band, which is a viewport top margin and a geometry — neither of
+    // which any value the view reports would have contradicted, since the geometry stays
+    // perfectly self-consistent with no header in it.
+    QVERIFY2(ordinary->viewport()->y() > ordinary->frameWidth(),
+             "the reference reserved no header band either; nothing is being tested");
+    QCOMPARE(arrived->viewport()->y(), ordinary->viewport()->y());
+    QCOMPARE(arrived->header()->geometry(), ordinary->header()->geometry());
+
+    // (b) The widths. Same content, same window and same font, so the seed has the same
+    // answer for both — and the reference has to differ from Qt's default section size
+    // somewhere, or a pair of unseeded views would satisfy this.
+    bool anythingSeeded = false;
+    for (int c = 0; c < modelOf(ordinary)->columnCount(); ++c) {
+        QCOMPARE(arrived->header()->sectionSize(c), ordinary->header()->sectionSize(c));
+        anythingSeeded = anythingSeeded
+            || ordinary->header()->sectionSize(c) != ordinary->header()->defaultSectionSize();
+    }
+    QVERIFY2(anythingSeeded,
+             "every reference column sits at the default section size; nothing is tested");
 }
 
 // --- Several logs in one gesture (SPEC.md §3) ------------------------------

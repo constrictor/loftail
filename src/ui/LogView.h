@@ -159,12 +159,29 @@ public:
     //
     // Called from the constructor, where the caption is all there is to measure; from
     // MainWindow::onIndexFinished, where the intern tables are complete and the
-    // Subsystem/Thread columns can take the widest name in the file (invariant #4); and
-    // on a FONT CHANGE, where every character it measured in has a different advance —
+    // Subsystem/Thread columns can take the widest name in the file (invariant #4); on
+    // a FONT CHANGE, where every character it measured in has a different advance —
     // which is how a zoom widens the columns nobody has spoken for while leaving a width
-    // somebody dragged exactly where they put it. Never on the paint path, never per
-    // ingest tick, and never anywhere a person did not just ask for something.
+    // somebody dragged exactly where they put it; and from applyFormatChange() below,
+    // where the columns did not exist at all until now. Never on the paint path, never
+    // per ingest tick, and never anywhere a person did not just ask for something.
     void seedColumnWidths();
+
+    // The compiled format changed, so THE SET OF COLUMNS changed — which is a thing no
+    // model reset says out loud. The one caller that needs it is a document that opened
+    // WAITING (SPEC.md §3): it has no format while it waits, so LogModel::columnCount()
+    // is 0, and everything this view did at construction was a no-op over an empty
+    // header — layoutChrome() reserved no top margin and gave the header no geometry,
+    // and seedColumnWidths() had nothing to measure. Nothing revisits either when the
+    // log turns up and the count goes 0 → n, so the tab renders with no header band at
+    // all (no dividers, no column menu) and every section at Qt's default 100 px.
+    //
+    // Its caller must gate on the format having JUST settled and not on the resume: a
+    // log that comes and goes resumes over and over, and a re-seed there would overwrite
+    // widths the reader had dragged since. What protects an already-laid-out view from a
+    // stray call is only seedColumnWidths()'s own m_userSizedColumns test, which speaks
+    // for a column somebody sized and for no other.
+    void applyFormatChange();
 
     // Forget every user width and seed the lot again — the header menu's "Reset Widths".
     void resetColumnWidths();

@@ -231,6 +231,17 @@ to notice the loss. The guard now sits in the function that changes the precisio
 than in the handler that hears it, because that emission is a false claim of a user edit
 wherever it is heard.
 
+Entry 29 has gone too: a log opened before it existed came back with no column header at
+all and every column at Qt's default 100 px, every value elided. A waiting document has
+no compiled format and so no columns, so the constructor's seed measured nothing and the
+header was given no band; when the log turned up the column count went 0 to 5 with
+nothing watching, there being no index controller built and no model reset to say the
+column set had moved. It did not stay confined to the session either — one quit wrote
+those widths out, and they come back marked as the user's own, past the reach of every
+other seed, with Reset Widths the only way back. This is the M13 headline case, `loftail
+/var/log/app.log` before the service has created it, and the unreadable-file case beside
+it.
+
 ---
 
 ### 23. The Highlighters pane imposes a ~456 px minimum width on the whole pane dock under Breeze

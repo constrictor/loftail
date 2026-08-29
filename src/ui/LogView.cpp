@@ -1069,9 +1069,10 @@ void LogView::resizeEvent(QResizeEvent *event)
     QAbstractScrollArea::resizeEvent(event);
     // A width worth consulting exists from here on, and this flag is the WHOLE of what
     // the resize path does for the seed: it does not re-seed. The seed is the
-    // three-callers pass it has always been (constructor, font change, scan completion,
-    // plus the explicit Reset), and calling it from here would take a dragged window
-    // width as licence to overwrite widths the reader had settled on.
+    // four-callers pass it is (constructor, font change, scan completion, and the format
+    // settling on a log that opened waiting — plus the explicit Reset), and calling it
+    // from here would take a dragged window width as licence to overwrite widths the
+    // reader had settled on.
     if (viewport()->width() > 0)
         m_viewportLaidOut = true;
     layoutChrome();
@@ -2656,6 +2657,25 @@ void LogView::seedColumnWidths()
             continue;
         applyColumnWidth(c, width.at(c));
     }
+}
+
+void LogView::applyFormatChange()
+{
+    // Widths first, chrome second, exactly as applyFontChange() orders them: the seed is
+    // what gives the header sections a size worth reserving a band for.
+    seedColumnWidths();
+    // THE HALF THAT IS EASY TO MISS. layoutChrome() latches the header's size hint, and
+    // a QHeaderView with no sections hints at nothing — so a view built while its
+    // document was waiting has a viewport margin of 0 and a header that was never given
+    // a geometry. Nothing else revisits it: a model reset does not, and a resize does
+    // only by accident, which is why the defect vanished the moment the window was
+    // dragged or a vertical scrollbar appeared.
+    layoutChrome();
+    positionFollowButton();
+    // The message column's origin has just moved (from wherever a header with no
+    // sections put it), and under AlwaysOn that is the wrap width every measured height
+    // is keyed on (§7.1.1).
+    recomputeGeometry();
 }
 
 void LogView::resetColumnWidths()

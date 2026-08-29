@@ -3563,6 +3563,26 @@ void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
     // it leaves the prompt still owed and the flag still false, so the first growth tick
     // comes back through here with real bytes (LiveController::settleFirstBytes).
     if (settleFormat && doc->formatSettled()) {
+        // The columns only exist from this line on. A waiting document has no compiled
+        // format, so LogModel::columnCount() was 0 for the whole of the wait, and the
+        // views built over it have a header with no sections: no viewport margin
+        // reserved for a band, no geometry ever given to the header, and a construction
+        // seed that had nothing to measure. This resume is where the count goes 0 → n
+        // and there is no other signal saying so — leave it out and the tab renders
+        // records with no header at all and every section at Qt's default 100 px, which
+        // saveColumnState() then writes into the session and restoreColumnState() marks
+        // as the user's own, out of reach of the scan-completion and font-change seeds
+        // for ever after (bugs.md 29). Every view of the file, as onIndexFinished's seed
+        // is, and the digest strip follows through columnLayoutChanged.
+        //
+        // Gated on `settleFormat && formatSettled()` — the format having JUST settled —
+        // and deliberately not on the resume, which a log that comes and goes performs
+        // over and over: a re-seed on every one of those would fight a width the reader
+        // had dragged in between. Above the format-prompt block below rather than after
+        // it, so a Preferences dialog is not raised over a headerless view.
+        for (DocumentView *v : std::as_const(ctx->views))
+            v->logView()->applyFormatChange();
+
         // CONSUMED UNCONDITIONALLY, before anything is decided with it. A document can
         // wait and resume any number of times — a host that comes and goes — and the
         // dialog is owed once, for the open the user actually performed.
