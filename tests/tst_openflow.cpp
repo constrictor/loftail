@@ -28,6 +28,7 @@
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QTreeWidget>
 
 #include "Document.h"
 #include "DocumentContext.h"
@@ -140,6 +141,7 @@ private slots:
     void applyingToTheCurrentFileWaitsForOkAndThenRereadsTheLog();
     void okAloneRereadsTheLogWhenItsOwnSettingsMoved();
     void okLeavesTheLogAloneWhenNothingAboutItMoved();
+    void editingTheParentReachesTheLogAndLeavesItNoPrivateCopy();
 };
 
 void TestOpenFlow::init()
@@ -1150,6 +1152,83 @@ void TestOpenFlow::okLeavesTheLogAloneWhenNothingAboutItMoved()
     QCOMPARE(&documentOf(w)->index(), before);
     QVERIFY2(documentOf(w)->index().loggers.names().contains(QStringLiteral("net.io")),
              "the log was re-read although nothing about it had changed");
+    w.close();
+}
+
+// bugs.md 28. THE OTHER HALF OF THE SAME ERRAND, driven through the real window: the log
+// in front of you is not parsing, so you correct the format on the level ABOVE it — the
+// defaults here, which is where a log no pattern claims takes its settings from.
+//
+// It used to end in the edit apparently being discarded. The dialog seeded its one per-log
+// row with what the log inherited, the seed stopped matching the moment the defaults moved,
+// and the redundancy rule then read the untouched row as an override worth storing — so the
+// log got a permanent private copy of the settings that had just been replaced, shadowing
+// the edit on every later open. The tab was left alone too, because what had been written
+// equalled what it was already reading, which is exactly the guard the OK-applies path
+// (okAloneRereadsTheLogWhenItsOwnSettingsMoved, above) is built on.
+//
+// So all three are asserted: the dialog reports nothing to store, the pool holds no record
+// for the log, and the tab was re-read.
+void TestOpenFlow::editingTheParentReachesTheLogAndLeavesItNoPrivateCopy()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_good);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTRY_COMPARE(documentOf(w)->index().records.size(), 2);
+
+    Document *doc = documentOf(w);
+    QVERIFY(doc->index().loggers.names().contains(QStringLiteral("net.io")));
+    // Nothing of its own to start with — which is the state the defect needs, and the
+    // ordinary state of a log somebody has merely opened.
+    QVERIFY(!LogFileStore(LogFileStore::defaultDir()).read(m_good).profile.has_value());
+
+    bool seen = false;
+    bool storedNothing = false;
+    QTimer timer;
+    timer.setInterval(10);
+    connect(&timer, &QTimer::timeout, [&]() {
+        auto *dlg = qobject_cast<PreferencesDialog *>(QApplication::activeModalWidget());
+        if (!dlg)
+            return;
+        seen = true;
+        timer.stop();
+        auto *tree = dlg->findChild<QTreeWidget *>(QStringLiteral("settingsTree"));
+        auto *pattern = dlg->findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
+        QVERIFY(tree);
+        QVERIFY(pattern);
+        // The DEFAULTS: the level this log takes its settings from, no pattern claiming
+        // good.log. Dropping the %c leaves these lines parsing with nothing in them a
+        // subsystem, which is a change only a re-read can show.
+        tree->setCurrentItem(tree->topLevelItem(0));
+        pattern->setText(QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %m%n"));
+        dlg->accept();
+        // Read where it counts, and while the dialog is still alive: this is the value
+        // commitPreferences() is about to write for the log.
+        storedNothing = !dlg->fileProfile().has_value();
+    });
+    timer.start();
+
+    auto *prefs = w.findChild<QAction *>(QStringLiteral("preferencesAction"));
+    QVERIFY(prefs);
+    prefs->trigger();
+    QVERIFY2(seen, "the Preferences dialog was never shown");
+    QVERIFY2(storedNothing,
+             "the untouched row was reported as an override of the level just edited");
+
+    // And it really is not on disk: an entry here shadows the edited defaults for ever,
+    // and nothing in the application says it exists.
+    QVERIFY2(!LogFileStore(LogFileStore::defaultDir()).read(m_good).profile.has_value(),
+             "the log was left a private copy of the settings the edit replaced");
+
+    // The tab moved with the level it inherits from — the stored-against-resolved guard
+    // fired, which it cannot do while the record just written is what the tab is reading.
+    QTRY_VERIFY(documentOf(w)->format().loggerGroup <= 0); // absent is the -1 sentinel
+    QTRY_COMPARE(documentOf(w)->index().records.size(), 2);
+    QVERIFY2(!documentOf(w)->index().loggers.names().contains(QStringLiteral("net.io")),
+             "the pre-change intern table survived: the log was not re-read");
+    QCOMPARE(documentOf(w), doc); // re-read in place, not reopened
     w.close();
 }
 

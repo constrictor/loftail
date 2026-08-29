@@ -259,6 +259,17 @@ target file's own current key, so moving the record would hand a configured file
 settings to a symlink of it, permanently and silently, for nothing more than the link
 being opened once.
 
+Entry 28 has gone as well: editing the defaults, or the pattern claiming the open log,
+gave that log a permanent private copy of the settings being replaced — so the edit
+looked discarded, and every later open of the log resolved to the old format. The
+dialog's one per-log row was a snapshot of what the log inherited, and the comparison
+deciding whether that row was worth storing ran against a parent the same OK had just
+moved under it. The row follows its parent now while it has said nothing of its own; the
+fix is in the snapshot and never in the comparison, which must go on storing a log that
+genuinely has an override. It took the OK-applies path with it, which could not correct
+the damage either — what had just been written was what the tab was already reading, so
+the guard deciding whether to re-read the log held.
+
 Entry 29 has gone too: a log opened before it existed came back with no column header at
 all and every column at Qt's default 100 px, every value elided. A waiting document has
 no compiled format and so no columns, so the constructor's seed measured nothing and the

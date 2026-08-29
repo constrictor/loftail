@@ -650,6 +650,12 @@ PreferencesDialog::NodeRef PreferencesDialog::currentRef() const
 
 void PreferencesDialog::loadNode()
 {
+    // BEFORE anything reads m_fileProfile, and here rather than in rebuildTree() because
+    // this is the narrower funnel: every rebuild ends in a load, and moving to another row
+    // loads without rebuilding — which is exactly the route by which a defaults edit
+    // reaches the panel that has to show it.
+    syncFileRowToParent();
+
     const NodeRef ref = currentRef();
     const bool wasUpdating = m_updating;
     m_updating = true;
@@ -871,9 +877,48 @@ void PreferencesDialog::commitCurrent()
         // Re-tested against its parent once, by fileProfile(), when OK is pressed. Not
         // here: a row vanishing from under the cursor mid-edit, because one field happens
         // to match the pattern above, would be a rebuild nobody asked for.
-        m_fileProfile = p;
+        //
+        // WHETHER IT STILL FOLLOWS ITS PARENT is decided here and not left to
+        // syncFileRowToParent(), which runs immediately afterwards on every route out of
+        // this node and would put a following row straight back to what it inherits —
+        // discarding the keystroke this call exists to keep. Edited into line with the
+        // parent, it starts following again, which is the same answer fileProfile()
+        // gives about it.
+        setFileRow(p);
         break;
     }
+}
+
+void PreferencesDialog::setFileRow(const LogProfile &p)
+{
+    m_fileProfile = p;
+    // THE MEMO IS TAKEN WHEREVER THE ROW IS WRITTEN, which is what makes it impossible to
+    // set the row and forget to say which of the two it now is. A row equal to what the
+    // log inherits is saying nothing of its own and follows its parent from here on; one
+    // that differs is the log's own answer and is never re-seeded away.
+    m_fileFollowsParent = !m_currentAddress.isEmpty()
+        && p == m_settings.inherited(m_currentAddress);
+}
+
+void PreferencesDialog::syncFileRowToParent()
+{
+    if (m_currentAddress.isEmpty())
+        return;
+    const LogProfile inherited = m_settings.inherited(m_currentAddress);
+    if (m_fileFollowsParent) {
+        // THE PARENT MOVED AND THE ROW MOVES WITH IT. This is the whole of the fix for a
+        // log that has said nothing of its own: it used to keep showing — and, at OK, to
+        // STORE — the value its parent held when the dialog opened, so editing the
+        // defaults or the pattern that claims the log left the log a private override
+        // holding exactly the settings the user had just replaced.
+        m_fileProfile = inherited;
+        return;
+    }
+    // And the other direction: a row that has caught up with its parent (Delete, Promote,
+    // or "Use These Settings" naming what the log already inherits) has nothing of its own
+    // left to say, so it starts following again. Without this it would keep a snapshot of
+    // the value it caught up WITH, which is the same defect one gesture later.
+    m_fileFollowsParent = m_fileProfile == inherited;
 }
 
 void PreferencesDialog::refreshPatternValidity()
@@ -970,20 +1015,23 @@ void PreferencesDialog::selectLog(const QString &address, const std::optional<Lo
 {
     commitCurrent();
     const QString key = logSettingsKey(address);
+    // Set whether or not the log had settings, and never cleared afterwards. This is what
+    // the tree lists its one file row for and what the sample's bytes are judged a fact
+    // about — two questions with one answer. FIRST, because setFileRow() below asks what
+    // this log inherits.
+    m_currentAddress = key;
     // What the row shows: the log's own stored settings where it has some, and the SEED
     // where it has none. The seed is not the same thing as what the log inherits and
     // cannot be replaced by it — offerFormat() seeds with the pattern autodetection has
     // just guessed, which is deliberately not what the log inherits, that guess being the
-    // whole of what the dialog is opened to have confirmed.
+    // whole of what the dialog is opened to have confirmed. That is also exactly the case
+    // setFileRow() records as a row NOT following its parent, so the guess survives an
+    // edit to the level below it.
     //
     // Whether any of it is STORED is a separate question, asked once by fileProfile() at
     // the end. So a seed equal to what the log inherits shows on screen, can be edited,
     // and leaves nothing behind if it is not.
-    m_fileProfile = own.value_or(seed);
-    // Set whether or not the log had settings, and never cleared afterwards. This is what
-    // the tree lists its one file row for and what the sample's bytes are judged a fact
-    // about — two questions with one answer.
-    m_currentAddress = key;
+    setFileRow(own.value_or(seed));
     rebuildTree(NodeRef{NodeKind::File, key});
 }
 
@@ -1059,7 +1107,7 @@ void PreferencesDialog::deleteNode()
         // row itself cannot go, because the log is still the one that is open and taking
         // the only route to its settings away mid-visit is not an answer to the press.
         // fileProfile() then reports nothing stored, so the entry really is removed.
-        m_fileProfile = m_settings.inherited(ref.key);
+        setFileRow(m_settings.inherited(ref.key));
         rebuildTree(ref);
         break;
     case NodeKind::Root:
@@ -1139,7 +1187,7 @@ void PreferencesDialog::useSettingsFor(const NodeRef &ref)
     LogProfile p;
     if (!profileOfNode(ref, &p))
         return; // a pattern id that no longer resolves; nothing to copy
-    m_fileProfile = p;
+    setFileRow(p);
 
     // NOTHING IS STORED AND NOTHING IS APPLIED. fileProfile() re-tests the row against
     // what the log inherits when OK is pressed, so taking the settings of the pattern
@@ -1337,6 +1385,11 @@ void PreferencesDialog::showEvent(QShowEvent *event)
 void PreferencesDialog::accept()
 {
     commitCurrent();
+    // AND AGAIN HERE, because OK is a route out that loads no node: the last edit to the
+    // defaults or to a pattern reaches m_settings on the line above and nothing else would
+    // then carry it down to a file row that is only mirroring it. Above the apply request
+    // too, so a request armed on that row applies what the row now says.
+    syncFileRowToParent();
 
     // The armed request names a NODE, so its settings are read again here rather than
     // taken from the copy made when the button went down: the press no longer ends the

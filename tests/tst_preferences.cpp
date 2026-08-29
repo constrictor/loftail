@@ -202,6 +202,7 @@ private slots:
     void whatWasTypedSurvivesMovingToAnotherRow();
     void aLogEntryGoesWhenItsPatternCatchesUpWithIt();
     void aScratchNodeSayingNothingNewIsNotKept();
+    void aRowThatSaysNothingOfItsOwnFollowsTheParentBeingEdited();
     void applyToCurrentIsReportedNeverApplied();
     void askingToApplyLeavesTheDialogOpenAndSaysWhatIsStillToHappen();
     void askingAgainOnTheSameEntryWithdrawsTheRequest();
@@ -959,6 +960,84 @@ void TestPreferences::aScratchNodeSayingNothingNewIsNotKept()
     edited.accept();
     QVERIFY(edited.fileProfile().has_value());
     QCOMPARE(edited.fileProfile()->format.pattern, QStringLiteral("SOMETHING ELSE"));
+}
+
+// bugs.md 28. THE ORDINARY ERRAND, and it used to end in the edit being thrown away and a
+// permanent override put in its place. The dialog is opened on a log that has said nothing
+// of its own, so its one row is seeded with what the log INHERITS; the user then goes up to
+// the pattern (or to the defaults) and corrects the format there, which is the whole reason
+// the middle level exists. The seed then stopped matching what the log inherits, so
+// fileProfile() — comparing a pre-edit snapshot against a post-edit parent — reported an
+// override worth storing, and the log acquired a private copy of exactly the settings that
+// had just been replaced. Nothing announced it; every later open of that log resolved to the
+// old format, and the OK-applies path could not correct it either, since what was written
+// equalled what the tab was already reading.
+//
+// The fix is in the SNAPSHOT and not in the comparison, which is what the last two blocks
+// below are for: a row that genuinely differs from its parent — including offerFormat()'s
+// autodetected guess — must go on being stored.
+void TestPreferences::aRowThatSaysNothingOfItsOwnFollowsTheParentBeingEdited()
+{
+    // Under a pattern that claims it, with nothing of its own.
+    PreferencesDialog dlg(populated(), QStringLiteral("app.log"), sample());
+    openOn(dlg, logPath(QStringLiteral("app.log")));
+    QTreeWidget *tree = treeOf(dlg);
+    auto *format = dlg.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"));
+    QVERIFY(format);
+
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("*.log")));
+    format->setText(QStringLiteral("TAUGHT"));
+
+    // Back on the log's own row: the panel shows what it now inherits, not the value the
+    // dialog opened on. This is the half a reader can see before pressing anything.
+    tree->setCurrentItem(currentFileRow(tree));
+    QCOMPARE(format->text(), QStringLiteral("TAUGHT"));
+
+    dlg.accept();
+    QVERIFY2(!dlg.fileProfile().has_value(),
+             "the log was given a private copy of the settings the edit replaced");
+    QCOMPARE(dlg.tree().inherited(logPath(QStringLiteral("app.log"))).format.pattern,
+             QStringLiteral("TAUGHT"));
+
+    // The same one level up, over a log NO pattern claims: its parent is the defaults, and
+    // OK is pressed straight from that node with no rebuild in between — so the last
+    // keystroke reaches the tree and the row follows it in the same breath.
+    PreferencesDialog root(populated(), QStringLiteral("other.trace"), sample());
+    openOn(root, logPath(QStringLiteral("other.trace")));
+    treeOf(root)->setCurrentItem(treeOf(root)->topLevelItem(0));
+    root.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"))
+        ->setText(QStringLiteral("NEW DEFAULT"));
+    root.accept();
+    QVERIFY2(!root.fileProfile().has_value(),
+             "a log with no pattern kept a copy of the defaults it was replacing");
+    QCOMPARE(root.tree().defaults().format.pattern, QStringLiteral("NEW DEFAULT"));
+
+    // AND THE CASE THAT MUST NOT MOVE: a log that genuinely has settings of its own keeps
+    // them while the level above it is edited. That is what the deepest level winning
+    // means, and it is why the comparison in fileProfile() was left exactly as it was.
+    PreferencesDialog own(populated(), QStringLiteral("app.log"), sample());
+    openOnStored(own, logPath(QStringLiteral("app.log")), profileWith(QStringLiteral("MINE")));
+    treeOf(own)->setCurrentItem(rowNamed(treeOf(own), QStringLiteral("*.log")));
+    own.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"))
+        ->setText(QStringLiteral("TAUGHT"));
+    own.accept();
+    QVERIFY2(own.fileProfile().has_value(), "an override was re-seeded away by its parent");
+    QCOMPARE(own.fileProfile()->format.pattern, QStringLiteral("MINE"));
+
+    // And neither may a SEED that is not what the log inherits, which is offerFormat()'s
+    // autodetected guess — the whole of what the dialog is opened to have confirmed. A row
+    // that followed its parent here would answer the confirmation by silently discarding
+    // the guess.
+    PreferencesDialog guessed(populated(), QStringLiteral("app.log"), sample());
+    guessed.selectLog(logPath(QStringLiteral("app.log")), std::nullopt,
+                      profileWith(QStringLiteral("GUESS")));
+    treeOf(guessed)->setCurrentItem(rowNamed(treeOf(guessed), QStringLiteral("*.log")));
+    guessed.findChild<QLineEdit *>(QStringLiteral("formatPatternEdit"))
+        ->setText(QStringLiteral("TAUGHT"));
+    guessed.accept();
+    QVERIFY2(guessed.fileProfile().has_value(),
+             "the detected pattern the dialog was opened to confirm was re-seeded away");
+    QCOMPARE(guessed.fileProfile()->format.pattern, QStringLiteral("GUESS"));
 }
 
 void TestPreferences::applyToCurrentIsReportedNeverApplied()

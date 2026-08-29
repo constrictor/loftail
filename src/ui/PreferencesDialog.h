@@ -188,6 +188,14 @@ private:
     // address a name that is only a name stands for (empty for the levels with none).
     void setIdentity(const QString &name, const QString &level, const QString &fullAddress);
     void commitCurrent(); // the editors' contents back into m_settings
+    // The ONE write funnel for the per-log row: what it shows, and — memoed in the same
+    // breath, so nothing can set one without the other — whether that is the log's own
+    // answer or a mirror of what it inherits.
+    void setFileRow(const LogProfile &p);
+    // THE FILE ROW FOLLOWS ITS PARENT WHILE IT HAS SAID NOTHING OF ITS OWN. See
+    // m_fileFollowsParent for what goes wrong without it, and why the memo cannot be
+    // replaced by re-testing the row: what it is tested against is exactly what moves.
+    void syncFileRowToParent();
     // The width the tree's own longest row asks for, indentation included — what the
     // initial split is derived from, so the pane opens wide enough to say what it has
     // to say rather than at a fraction somebody guessed.
@@ -243,6 +251,25 @@ private:
     // ask whether one exists. Whether any of it is STORED is fileProfile()'s question,
     // asked once, at the end.
     LogProfile      m_fileProfile;
+
+    // WHETHER THAT ROW IS THE LOG'S OWN ANSWER OR A MIRROR OF ITS PARENT'S — a memo of
+    // the last comparison against what the log inherits, taken BEFORE the parent could
+    // move. Without it, editing the defaults or the pattern that claims this log gave the
+    // log a private copy of its OLD settings: the row was seeded from what it inherited,
+    // the seed then stopped matching the moment the parent was edited, and fileProfile()
+    // — comparing a pre-edit snapshot against a post-edit parent — reported an override
+    // worth storing. The user's edit was apparently discarded (a permanent per-log entry
+    // holding the very settings they were replacing shadowed it on every later open), and
+    // the OK-applies path could not correct it either, because what was written equalled
+    // what the tab was already reading.
+    //
+    // It is a memo and not a re-test because the quantity to compare against is the one
+    // that moves; and the fix is here rather than in fileProfile()'s comparison, which
+    // must go on storing a row that genuinely differs. It is NOT set for a row seeded
+    // with something other than the inherited value — offerFormat() seeds with the
+    // pattern autodetection has just guessed, and re-seeding that away would silently
+    // defeat the confirmation the dialog was opened for.
+    bool            m_fileFollowsParent = false;
 
     QString    m_applyTarget;
     bool       m_applyRequested = false;
