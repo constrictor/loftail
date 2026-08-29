@@ -153,6 +153,47 @@ bool SpooledLogSource::notReadyYet() const
     return false;
 }
 
+bool SpooledLogSource::isDelivering() const
+{
+    if (!m_spool)
+        return true; // no fetcher to ask: the base class's "nothing has stopped" answer
+
+    // NOT the negation of originVanished(), and that is the whole reason this exists.
+    // That predicate is exactly `state == Waiting`, so a fetcher which stops trying —
+    // Waiting to Error, which for SshFetcher::reconnect() is one-way, m_reconnectRefused
+    // being latched on the same path — answers it false while nothing at all has become
+    // reachable. LiveController read that as "back again" and cleared the stale strip,
+    // the tab's ⊘ and the reason off a tab still showing records from hours ago
+    // (bugs.md 34). Both states have to hold the mark up, and only bytes may take it off.
+    switch (m_spool->status().state) {
+    case FetchStatus::State::Live:
+        return true; // following the input: this is what delivering means
+    case FetchStatus::State::Complete:
+        // Everything there will ever be has arrived (§6.4). Nothing further is coming
+        // and nothing is wrong, so a document showing it is not showing stale records.
+        return true;
+
+    // NOLINTNEXTLINE(bugprone-branch-clone)
+    case FetchStatus::State::Waiting:
+        return false; // the input is not there — originVanished()'s state
+    case FetchStatus::State::Error:
+        // It stopped, and says why. The user-visible difference from Waiting is a
+        // sentence, not a state to recover from: only File ▸ Reconnect restarts it.
+        return false;
+    case FetchStatus::State::Idle:
+    case FetchStatus::State::Connecting:
+    case FetchStatus::State::Priming:
+        // On its way and not there yet. A reconnect passes through both of these before
+        // it commits a byte, and holding the cached copy across them is the same ruling
+        // LiveController's notReadyYet() guard makes for the generation it opens: the
+        // records the outage was spent showing stay up until the new ones exist.
+        return false;
+    case FetchStatus::State::Disconnected:
+        return false; // stopped deliberately; nothing more will arrive
+    }
+    return false;
+}
+
 bool SpooledLogSource::isComplete() const
 {
     // The fetcher publishes Complete only after its final committedSize, so a caller

@@ -66,6 +66,7 @@ public:
     bool wasReplaced() const override;
     bool originVanished() const override;
     bool notReadyYet() const override;
+    bool isDelivering() const override;
     bool isComplete() const override;
 
     // The fetcher's view of the world, for the status bar: connecting, priming,

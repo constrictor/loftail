@@ -325,6 +325,17 @@ dropped, and never re-posted — the asking fetcher then slept until something e
 happened to make a gate call, with no dialog, no diagnostic line and a tab sitting on
 "connecting…".
 
+Entry 34 has gone as well: a stale remote tab lost its strip, its ⊘ and its reason the
+moment the transport gave up trying, because "the origin is no longer reported gone" was
+being read as "the source is delivering again" — and for a spool the first is exactly the
+Waiting state, which a fetcher that has stopped retrying leaves. What was left was a tab
+that looked like a healthy live log while showing records that had stopped arriving hours
+ago, permanently where the fetcher had latched its refusal, and with a background tab —
+the case the mark exists for — carrying nothing at all. The two questions are separate
+now, through a new `isDelivering()` on the source; going stale in the first place is
+still the vanish branch's decision, so a host that was down before anything arrived still
+waits in the ordinary way.
+
 Entry 37 has gone as well: a `%d{...}` made only of codes Qt cannot spell — `%s`, the
 skip-only ordinals, or empty braces — fell back to a default written in the **strftime**
 vocabulary rather than the display one, so the Time column rendered `%Y-%15-%27

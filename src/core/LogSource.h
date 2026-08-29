@@ -176,6 +176,32 @@ public:
     // Non-pure on purpose, the fourth arrival by the route wasReplaced() took.
     virtual bool notReadyYet() const { return false; }
 
+    // True when bytes are reaching this source, or have all reached it already — a
+    // healthy tail, a finished expansion, an ordinary local file. False means the
+    // supply has stopped: the fetcher is waiting for an input that is not there, or it
+    // has refused and is no longer trying, or it has not got through yet.
+    //
+    // THE QUESTION originVanished() DOES NOT ANSWER, and it is not its complement. That
+    // one is an observation about the ORIGIN — "there is nothing at the far end" — and
+    // for a spool it is exactly one fetcher state, Waiting. A fetcher that gives up
+    // moves OUT of Waiting into Error, so originVanished() goes false while nothing has
+    // become reachable at all; a live controller reading that as "back again" takes the
+    // stale strip, the ⊘ and the reason off a tab whose records stopped arriving hours
+    // ago, permanently, because SshFetcher latches m_reconnectRefused on the same path
+    // and never publishes Waiting again (bugs.md 34, §6.5).
+    //
+    // And it is NOT notReadyYet() either, however close the wording sounds: that one
+    // answers false the moment committedSize > 0, which is true of every document old
+    // enough to have cached records to be stale about. Both predicates are about a
+    // source that has never delivered; this one is about a source that has stopped.
+    //
+    // Non-pure on purpose, the fifth arrival by the route wasReplaced() took — and
+    // TRUE by default, not false: every source that is not a spool delivers whatever
+    // its origin holds for as long as the origin is there, and only originVanished()
+    // has anything to say about that. A default of false would put every local file
+    // permanently out of reach.
+    virtual bool isDelivering() const { return true; }
+
     // True when this source's byte stream is provably FINISHED — every byte has been
     // delivered and there will never be another.
     //

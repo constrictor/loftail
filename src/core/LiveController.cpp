@@ -310,7 +310,39 @@ void LiveController::checkNow()
         return;
     }
     m_vanishedSince.invalidate();
-    endStale();
+
+    // "THE ORIGIN IS NO LONGER REPORTED GONE" IS NOT "THE SOURCE IS DELIVERING AGAIN",
+    // and for a spool those are two different states rather than two names for one. A
+    // fetcher that gives up moves from Waiting — the state originVanished() reads, and
+    // the very state that put this document into stale — to Error, which answers it
+    // false. Reaching endStale() on that took the strip, the ⊘ and the reason off all
+    // at once, leaving a tab that looks like a healthy live log while showing records
+    // that stopped arriving hours ago; and it is permanent where it matters, because
+    // SshFetcher latches m_reconnectRefused on the same path that calls setError() and
+    // never publishes Waiting again (bugs.md 34). The diagnostic log said "is reachable
+    // again" about a source that had just refused.
+    //
+    // isDelivering() is the seam that separates the two, and it cannot be notReadyYet():
+    // that answers false as soon as committedSize > 0, which is true of every document
+    // old enough to be stale.
+    //
+    // Asked only of a document that is ALREADY stale, so nothing else moves. A healthy
+    // tab whose transport reports a transient Error is untouched — going stale is the
+    // vanish branch's decision, made through canShowCachedWhileGone(), which is what
+    // keeps the waiting mark meaning "this tab has no records" and the stale mark
+    // meaning "these records are old". This branch only declines to un-say it.
+    if (m_document->isStale() && !src->isDelivering()) {
+        // The transport may have changed its mind about WHY on the way — "lost the
+        // connection, reconnecting…" becomes "host key changed" when it stops trying —
+        // and that sentence is on screen in three places. Through beginStale(), whose
+        // own guard emits nothing unless it would actually move; an empty report (a
+        // fetcher with no words for its state) leaves the sentence exactly as it is
+        // rather than blanking the strip.
+        const QString reported = sourceStatusText(*src, m_document->path());
+        beginStale(reported.isEmpty() ? m_document->staleReason() : reported);
+    } else {
+        endStale();
+    }
 
     // A log that opened with NO BYTES has had nothing judged about it — not its format
     // and not its encoding (§6.5) — and this is where that is put right, before a single

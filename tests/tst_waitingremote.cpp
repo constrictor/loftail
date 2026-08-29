@@ -92,6 +92,8 @@ private slots:
     void aDisconnectedRemoteLogKeepsTheRecordsItFetched();
     void aDisconnectWithNothingFetchedStillWaits();
     void aReconnectHoldsTheCachedRecordsUntilItsFirstBytes();
+    void aTransportThatGivesUpKeepsTheStaleMarkAndSaysWhy();
+    void aTransportThatGivesUpWithNothingFetchedStillWaits();
 
     // M17 — a spool with nothing in it yet waits, and the three states that means.
     void aConnectingSpoolWaitsUntilItsFirstBytes();
@@ -356,6 +358,122 @@ void TestWaitingRemote::aRefusalStillFailsTheOpen()
     QVERIFY(!doc.prepare(url(), provider, Encoding::Utf8, QTimeZone::utc()));
     QVERIFY(!doc.isWaiting());
     QCOMPARE(doc.lastError(), QStringLiteral("Authentication to deploy@web1 failed."));
+}
+
+// A TRANSPORT THAT GIVES UP KEEPS THE MARK IT EARNED. `originVanished()` is, for a
+// spool, exactly `state == Waiting` — so a fetcher moving from Waiting, the state that
+// put this document into stale, to Error, which is loftail saying it has stopped
+// trying, made that predicate go false while nothing whatever had become reachable.
+// The live controller read it as "back again" and cleared all three surfaces at once:
+// the strip and its Reconnect button, the tab's mark and tooltip, and the reason. What
+// was left looked like a healthy live log showing records that stopped arriving hours
+// ago, and a BACKGROUND tab — the case the mark exists for — carried nothing at all.
+//
+// Permanent where it matters: SshFetcher::reconnect() latches m_reconnectRefused on the
+// same path that calls setError(), so Waiting is never published again and the document
+// can never re-enter stale (bugs.md 34).
+void TestWaitingRemote::aTransportThatGivesUpKeepsTheStaleMarkAndSaysWhy()
+{
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(rec(0, "INFO ", "app", "one") + rec(1, "INFO ", "app", "two"));
+
+    Document doc;
+    QVERIFY(doc.open(url(), QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    int resumes = 0;
+    wireResume(live, doc, model, &resumes);
+    live.start();
+
+    QStringList stale;
+    connect(&live, &LiveController::staleChanged, &live,
+            [&](bool s, const QString &reason) { stale.append(s ? reason : QString()); });
+    int waits = 0;
+    connect(&live, &LiveController::waitingChanged, &live, [&](bool w, const QString &) {
+        if (w)
+            ++waits;
+    });
+
+    const QString dropped = QStringLiteral("Lost the connection to web1 — reconnecting…");
+    remote->becomeUnavailable(dropped);
+    live.checkNow();
+    QVERIFY(doc.isStale());
+    QCOMPARE(stale, QStringList{dropped});
+
+    // THE DEFECT. The fetcher stops trying and says why: Waiting becomes Error, the one
+    // state that is neither "the origin is gone" nor anything arriving.
+    const QString refused = QStringLiteral("The host key for web1 has changed.");
+    remote->failWith(refused);
+    live.checkNow();
+
+    QVERIFY(doc.isStale());
+    QCOMPARE(model.rowCount(), 2); // and nothing about the visible set moved
+    // The sentence follows the transport, through beginStale()'s own change guard: the
+    // reason is on the strip, in the tab tooltip and in the status bar, and "reconnecting…"
+    // is not what a fetcher that has given up is doing.
+    QCOMPARE(doc.staleReason(), refused);
+    QCOMPARE(stale.size(), 2);
+    QCOMPARE(stale.last(), refused);
+    // The whole of the regression: never once announced as reachable again.
+    QVERIFY(!stale.contains(QString()));
+    QCOMPARE(waits, 0); // and it did not empty the tab either
+
+    // Nothing changes by itself from here — which is exactly why losing the mark was
+    // unrecoverable — and a tick that changes nothing says nothing.
+    live.checkNow();
+    live.checkNow();
+    QVERIFY(doc.isStale());
+    QCOMPARE(stale.size(), 2);
+
+    // Only bytes take it off. In the application File ▸ Reconnect is what gets here.
+    remote->becomeAvailable();
+    live.checkNow();
+    QVERIFY(!doc.isStale());
+    QCOMPARE(stale.size(), 3);
+    QVERIFY(stale.last().isEmpty());
+}
+
+// The other half, and the line the fix must not cross: a refusal on a tab that never
+// had a record is still a WAIT, never a stale. That is what keeps the waiting mark
+// meaning "this tab has no records" and the stale mark meaning "these records are old".
+void TestWaitingRemote::aTransportThatGivesUpWithNothingFetchedStillWaits()
+{
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(rec(0, "INFO ", "app", "one"));
+    remote->setInitiallyUnavailable(QStringLiteral("Cannot reach web1:22 — Connection refused"));
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.prepare(url(), provider, Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(doc.isWaiting());
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    int resumes = 0;
+    wireResume(live, doc, model, &resumes);
+    bool everStale = false;
+    connect(&live, &LiveController::staleChanged, &live, [&](bool s, const QString &) {
+        if (s)
+            everStale = true;
+    });
+    live.start();
+
+    const QString refused = QStringLiteral("web1 rejected the password.");
+    remote->refuseWhileWaiting(refused);
+    live.checkNow();
+    live.checkNow();
+
+    QVERIFY(doc.isWaiting());
+    QVERIFY(!doc.isStale());
+    QVERIFY(!everStale);
+    QCOMPARE(doc.waitReason(), refused); // republished, as any changing wait reason is
+    QCOMPARE(resumes, 0);
+    QCOMPARE(model.rowCount(), 0);
 }
 
 void TestWaitingRemote::aConnectingSpoolWaitsUntilItsFirstBytes()
