@@ -32,6 +32,13 @@ namespace loftail {
 // SshSession.cpp — the one translation unit that can see the real header — carries a
 // static_assert per constant, so a mirror that drifts is a compile error there rather
 // than a misclassification nobody notices.
+//
+// A VALUE MAY BE NEWER THAN THE OLDEST HEADER THE TREE BUILDS AGAINST, and kMacFailure is.
+// The list is append-only, so the number is settled the moment it is assigned; what a given
+// libssh2 decides is whether the NAME exists. Ubuntu 24.04's 1.11.0 stops at -51, so the
+// assert for anything below that is guarded over there while the value stays here — the
+// two releases share a soname, and a build made against the older one is told -52 by the
+// newer one at run time all the same.
 namespace SshError {
 
 constexpr int kNone                  = 0;

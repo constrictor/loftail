@@ -63,6 +63,18 @@ struct Tr
 // unit in the tree that can see the real header, so it is the only one that can check the
 // mirror — and it does, so that a drift is a compile error here rather than a
 // misclassification nobody notices on a machine nobody can reproduce.
+//
+// A CONSTANT THE FLOOR HAS NEVER HEARD OF IS GUARDED, AND ONLY THE ASSERT IS. libssh2's
+// error list is append-only — a number is assigned once and never reused — so the header
+// the build happens to see decides which names exist, not which numbers are right. The
+// reference toolchain (Ubuntu 24.04, libssh2 1.11.0) stops at -51 and this box's 1.11.1
+// carries -52 upward, so an unguarded assert on a newer name is a compile error on the
+// only platform that gates. The MIRROR keeps the value regardless, because the classifier
+// must go on answering it: the soname is libssh2.so.1 for both releases, so a binary built
+// against 1.11.0 can be handed 1.11.1 at run time and be told -52 by it. Dropping the
+// value to match the oldest header is what must not be done — it would read a MAC failure,
+// the one thing after which the packet stream provably cannot be resynchronised, as a
+// request that merely failed on a healthy link.
 static_assert(SshError::kNone == LIBSSH2_ERROR_NONE, "libssh2 error code mirror drifted");
 static_assert(SshError::kSocketNone == LIBSSH2_ERROR_SOCKET_NONE, "mirror drifted");
 static_assert(SshError::kBannerRecv == LIBSSH2_ERROR_BANNER_RECV, "mirror drifted");
@@ -95,7 +107,9 @@ static_assert(SshError::kCompress == LIBSSH2_ERROR_COMPRESS, "mirror drifted");
 static_assert(SshError::kSocketRecv == LIBSSH2_ERROR_SOCKET_RECV, "mirror drifted");
 static_assert(SshError::kEncrypt == LIBSSH2_ERROR_ENCRYPT, "mirror drifted");
 static_assert(SshError::kBadSocket == LIBSSH2_ERROR_BAD_SOCKET, "mirror drifted");
+#ifdef LIBSSH2_ERROR_MAC_FAILURE // 1.11.1 and up; see the note above.
 static_assert(SshError::kMacFailure == LIBSSH2_ERROR_MAC_FAILURE, "mirror drifted");
+#endif
 
 namespace {
 
