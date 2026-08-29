@@ -178,7 +178,7 @@ private:
     void reconnect();
     bool fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset);
     void publishHeldCommits();
-    void beginGeneration(qint64 remoteSize);
+    bool beginGeneration(qint64 remoteSize);
     bool remoteHeadDiffersFromSpool();
     bool stallProbeDue();
     void setError(const QString &message);
@@ -349,7 +349,19 @@ bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *
     m_lastSize = attrs.size;
 
     setState(FetchStatus::State::Priming);
-    beginGeneration(attrs.size);
+    if (!beginGeneration(attrs.size)) {
+        // A spool that cannot be created is not the server's fault, but it is still a
+        // failed open: carrying on would prime the new file's bytes into whatever spool
+        // the last generation left, and the setState(Live) at the end of this function
+        // would then erase the reason. Reported as retryable-unattended because that is
+        // what a cache directory which is briefly unwritable or full actually is — a
+        // refusal would latch this tab for the rest of the session (SshRetryPolicy.h).
+        if (error)
+            *error = status().error;
+        *failure = SshSession::Failure::Unreachable;
+        resetSession();
+        return false;
+    }
 
     // Enough for the format sample before anything upstream is told there are bytes, so
     // the Document does not settle its format and its encoding against a fraction of one.
@@ -518,7 +530,15 @@ void SshFetcher::setWaiting(const QString &message)
 
 // Open a fresh spool file and publish it as the new generation. Never rewrites the
 // current one: the index worker may be mmapping it, and record offsets index it.
-void SshFetcher::beginGeneration(qint64 remoteSize)
+//
+// ANSWERS WHETHER IT SUCCEEDED, and every caller must act on that. A failure leaves the
+// OLD generation published — its base offset, its committed size, its spool file — so a
+// caller that carries on regardless fetches the new remote file's bytes onto the end of
+// the previous file's spool, which the reader is still indexing by offset. It is also
+// why the callers set Priming BEFORE calling this and not after: setState() clears
+// m_status.error for every state that is not Error or Waiting, so a state published
+// afterwards erases the reason this just gave (bugs.md 40).
+bool SshFetcher::beginGeneration(qint64 remoteSize)
 {
     std::unique_lock<std::mutex> lock(m_mutex);
     const quint64 next = m_status.generation + 1;
@@ -535,7 +555,7 @@ void SshFetcher::beginGeneration(qint64 remoteSize)
     QFile spool(path);
     if (!spool.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         setError(Tr::tr("Cannot write the local cache file %1.").arg(path));
-        return;
+        return false;
     }
     spool.close();
 
@@ -545,6 +565,7 @@ void SshFetcher::beginGeneration(qint64 remoteSize)
     m_heldCommit = 0; // a new generation starts the hold's tally over too
     m_status.totalSize = remoteSize;
     m_status.generation = next; // published LAST, once its file exists and is empty
+    return true;
 }
 
 bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
@@ -761,11 +782,27 @@ void SshFetcher::pollOnce()
         // and spend a head compare answering a question nobody asked.
         if (fresh.valid)
             m_lastSize = fresh.size;
-        beginGeneration(fresh.valid ? fresh.size : 0);
+        // BOTH CALLS ARE GUARDED, and the order of the first two lines is the reason
+        // the guard has to be here rather than after them: setState() clears
+        // m_status.error for every state that is not Error or Waiting, so a Priming
+        // published after a failed beginGeneration() erases the message it just set —
+        // after which fetchForward() appends the new remote file's bytes onto the old
+        // generation's spool, which the reader is still indexing by offset.
+        if (!beginGeneration(fresh.valid ? fresh.size : 0))
+            return;
         setState(FetchStatus::State::Priming);
         const FetchStatus started = status();
-        if (fresh.valid && fresh.size > started.baseOffset)
-            fetchForward(started.baseOffset, fresh.size);
+        if (fresh.valid && fresh.size > started.baseOffset) {
+            // Live ONLY IF THE RE-FETCH WORKED, exactly as the append branch below has
+            // always done it. Publishing it regardless clears an error the fetch has
+            // just set — a spool write that failed, or readAt() reporting the link gone
+            // — and leaves a healthy status carrying no message: sourceStatusText() is
+            // empty for Live, so nothing reaches the status bar or the placeholder,
+            // notReadyYet() reads it as an ordinary empty remote log, and tailLoop()
+            // takes the fast poll instead of the 5 s error pacing (bugs.md 40).
+            if (!fetchForward(started.baseOffset, fresh.size))
+                return;
+        }
         setState(FetchStatus::State::Live);
         return;
     }

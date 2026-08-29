@@ -333,6 +333,16 @@ There are two default constants now, one per vocabulary, each saying which it sp
 what swapping them costs. Parsing was correct throughout, the parser being driven by
 tokens rather than by the display string.
 
+Entry 40 has gone too: the rotation branch of the SSH fetcher's poll published a healthy
+`Live` whether or not the re-fetch had worked, and publishing a state clears the error
+with it, so a spool write failure or a link that dropped during a rotation was erased and
+reported as an ordinary tail for a poll interval — the append branch immediately below it
+having always got this right. The fix took the line above it with it: opening the new
+generation's spool file can fail too, and carrying on wrote the new remote file's bytes
+onto the end of the previous generation's spool, which the reader is still indexing by
+offset.
+
+
 ---
 
 ### 23. The Highlighters pane imposes a ~456 px minimum width on the whole pane dock under Breeze

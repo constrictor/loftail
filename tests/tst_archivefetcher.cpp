@@ -59,6 +59,7 @@ private slots:
     void aCorruptArchiveFailsAndKeepsWhatItExpanded();
     void stopReturnsPromptlyMidExpansion();
     void anUnanswerableSpaceQuestionDoesNotRefuseTheOpen();
+    void aSpoolThatCannotBeOpenedIsNotReportedAsAFinishedExpansion();
     void aStoppedExpansionKeepsWhatItWrote();
 
 private:
@@ -512,6 +513,50 @@ void TestArchiveFetcher::aStoppedExpansionKeepsWhatItWrote()
     QVERIFY(after.committedSize >= committedBefore);
     QCOMPARE(spoolContents(*fetcher).size(), after.committedSize);
     QVERIFY(spoolContents(*fetcher).startsWith(body.left(1024)));
+}
+
+void TestArchiveFetcher::aSpoolThatCannotBeOpenedIsNotReportedAsAFinishedExpansion()
+{
+    // bugs.md 40. beginGeneration() can fail — the spool it opens is a file on somebody's
+    // disk — and its answer used to be discarded by every caller. The expansion then ran
+    // on into the PREVIOUS generation's spool, and publishComplete() cleared the error on
+    // its way past, so a fetcher that never opened the file it was told to write reported
+    // a healthy, finished member with nothing at all to say for itself.
+    //
+    // Staged with a DIRECTORY standing where the next generation's spool file goes, which
+    // nothing can open for writing whatever user it runs as — where a read-only file
+    // would simply be written by root. The generation the unguarded expansion falls back
+    // onto (gen-0.log) is still creatable, which is exactly what makes the two outcomes
+    // differ rather than both failing on the write.
+    const QByteArray body = logBody(200); // finishes inside the prime
+    const QString gz = path(QStringLiteral("blocked.log.gz"));
+    QVERIFY(writeGzip(gz, body));
+
+    const QString dir = spoolDir();
+    QVERIFY(QDir().mkpath(dir + QStringLiteral("/gen-1.log")));
+
+    QString error;
+    auto fetcher = makeArchiveFetcher(at(gz), &error);
+    QVERIFY2(fetcher, qPrintable(error));
+    // start() returns before the worker has attempted anything (M17), so the answer is
+    // in the published status and not here.
+    QVERIFY2(fetcher->start(dir, &error), qPrintable(error));
+
+    // The FINAL state, not the first one seen: the unguarded code passes through Error on
+    // its way to Complete, so anything that stops at the first Error would pass against
+    // the very defect this exists for. The worker finishing is the settled point.
+    QElapsedTimer clock;
+    clock.start();
+    while (!fetcher->isStopped() && clock.elapsed() < 30000)
+        QThread::msleep(5);
+    QVERIFY2(fetcher->isStopped(), "the expansion worker never finished");
+
+    const FetchStatus status = fetcher->status();
+    QCOMPARE(status.state, FetchStatus::State::Error);
+    QVERIFY2(!status.error.isEmpty(), "a spool that cannot be opened must explain itself");
+    // Nothing was published as a new generation either, which is the other half of the
+    // rule: a reader resolves its spool file from this number.
+    QCOMPARE(status.generation, quint64(0));
 }
 
 QTEST_GUILESS_MAIN(TestArchiveFetcher)

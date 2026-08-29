@@ -186,7 +186,7 @@ private:
     bool expand(qint64 limit, bool *finished);
     void publishHeldCommits();
     bool awaitInput();
-    void beginGeneration(qint64 expandedSize);
+    bool beginGeneration(qint64 expandedSize);
     void publishComplete();
     void setError(const QString &message);
     void setWaiting(const QString &reason);
@@ -419,7 +419,18 @@ bool ArchiveFetcher::beginExpansion(QString *error)
     }
 
     setState(FetchStatus::State::Priming);
-    beginGeneration(m_stream->currentSize());
+    if (!beginGeneration(m_stream->currentSize())) {
+        // Nothing to expand into. Abandoned exactly as the space check above abandons,
+        // and for the same reason: the error it published is the whole answer, and
+        // expanding anyway would write into the spool of the generation this one failed
+        // to replace — after which publishComplete() would clear the error and the
+        // fetcher would report a finished expansion (bugs.md 40).
+        if (error)
+            *error = status().error;
+        m_stream.reset();
+        m_input.reset();
+        return false;
+    }
 
     // Enough for the format sample before anything upstream is told there are bytes, so
     // the Document does not settle its format and its encoding against a fraction of one.
@@ -635,7 +646,12 @@ bool ArchiveFetcher::checkFreeSpace(qint64 expandedSize, QString *error) const
     return false;
 }
 
-void ArchiveFetcher::beginGeneration(qint64 expandedSize)
+// ANSWERS WHETHER IT SUCCEEDED, and the caller must act on that. A failure leaves the
+// OLD generation published, so an expansion that carries on writes the member's bytes
+// into the previous generation's spool and reports a size against a file nobody is
+// reading — and publishComplete() then clears the error, so the whole thing reads as a
+// healthy, finished expansion. The same shape as SshFetcher's (bugs.md 40).
+bool ArchiveFetcher::beginGeneration(qint64 expandedSize)
 {
     std::unique_lock<std::mutex> lock(m_mutex);
     const quint64 next = m_status.generation + 1;
@@ -645,7 +661,7 @@ void ArchiveFetcher::beginGeneration(qint64 expandedSize)
     QFile spool(path);
     if (!spool.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         setError(Tr::tr("Cannot write the local cache file %1.").arg(path));
-        return;
+        return false;
     }
     spool.close();
 
@@ -657,6 +673,7 @@ void ArchiveFetcher::beginGeneration(qint64 expandedSize)
     // then means unknown, and the status bar says "so far" rather than "of N".
     m_status.totalSize = expandedSize > 0 ? expandedSize : 0;
     m_status.generation = next; // published LAST, once its file exists and is empty
+    return true;
 }
 
 bool ArchiveFetcher::expand(qint64 limit, bool *finished)
