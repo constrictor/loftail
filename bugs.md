@@ -221,6 +221,11 @@ can still be referred to by one.
 Everything the 2026-08-18 pass raised has been fixed. The list below starts again at
 23, which is where that pass left the numbering.
 
+A second pass, on 2026-08-29, raised entries 24 to 41 — the same method, four agents
+over the working tree and the real application. All eighteen have been fixed, so what
+is left below is entry 23 alone: a standing product decision nobody has taken, which
+is not a defect and is not waiting on a patch.
+
 Entry 24 has gone: the indexer read its field captures out of `recordStartRe` using
 `recordRe`'s group numbers, and `recordStartRe` holds only the groups written before
 `%m`, so every field a pattern puts after the message was indexed from an out-of-range
@@ -397,7 +402,6 @@ generation's spool file can fail too, and carrying on wrote the new remote file'
 onto the end of the previous generation's spool, which the reader is still indexing by
 offset.
 
-
 ---
 
 ### 23. The Highlighters pane imposes a ~456 px minimum width on the whole pane dock under Breeze
@@ -453,3 +457,40 @@ rediscovering them.
   behaved normally. Whether a disabled Notify button is drawn distinguishably
   from an off one remains unknown, on what `CLAUDE.md` says is the common path on
   a stock GNOME/Wayland session.
+
+Six more, all noticed while fixing the 2026-08-29 entries and none of them driven
+against a running application. They are adjacent to what was fixed rather than part
+of it, which is why they were left rather than folded in.
+
+- **`Document::messageText()` searches text the Message column does not show.**
+  It returns the whole tail past `recordStartRe`'s match, so under a pattern that
+  writes a field after `%m` — `%m (%c)%n` — the text axis and Find search
+  `hello (a.b.c)` while the column shows `hello`, contradicting that function's own
+  comment. Named in entry 24 and deliberately not taken with it: entry 24's fix is
+  about which regex supplies a *field*, and this is about where the message ends.
+- **`Document::reparseTimestamps()` skips a multi-line record under the same kind of
+  pattern.** It matches `recordRe` against a record's first line, and `recordRe` is
+  anchored, so a record whose message runs to several lines does not match it and
+  keeps its old-zone timestamp when the source zone is changed. Same root as entry 24
+  and outside its fix for the same reason.
+- **A format that compiles to zero fields leaves the tab with no header until it is
+  resized.** Entry 29's repair is on the resume path. `onIndexFinished` re-seeds the
+  widths but never re-lays the chrome, so a log opened under an empty or uncompilable
+  pattern — which is supported, and renders as plain text — still has no header band
+  when the pattern is corrected in Preferences, the column count going 0 to n by a
+  route entry 29's funnel is not on.
+- **One poll of silence survives entry 30 on the exec transport.** `runCommand()`
+  latches the dead-session flag when its read is cut short even though it returns
+  true, because whether partial output is an *answer* is decidable only in the caller
+  that parses it. A blip therefore costs the rest of that poll, and only becomes
+  visible if the very next poll's stat also fails.
+- **A failed `beginGeneration()` in the rotation branch leaves the session's handle on
+  the new file and the published generation on the old.** Entry 40's fix stops the
+  fetch and keeps the error, which is the visible half; a later poll that does not
+  re-detect the rotation could still append new-file bytes at old offsets. The
+  exposure is unchanged from before the fix rather than introduced by it.
+- **A filtered live log's provisional record loses its selection highlight every
+  tick.** The per-tick pop and re-add is a removal as far as `QItemSelectionModel` is
+  concerned, so the row is dropped from the selection while remaining the current
+  record. Noticed while writing entry 33's filtered regression case, which works
+  around it; it predates that work.
