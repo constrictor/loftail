@@ -159,7 +159,7 @@ void TestIndexController::indexerCancelSeamIsDeterministic()
 
     const QByteArray log = makeLog(100000);
     MemoryLogSource src(log);
-    Decoder dec = Decoder::detect(src.bytes(0, 64 * 1024), Encoding::Utf8);
+    Decoder dec = Decoder::detect(src.bytesCopy(0, 64 * 1024), Encoding::Utf8);
     Indexer indexer(format, dec, QTimeZone::utc());
 
     bool cancelled = false;

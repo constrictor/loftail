@@ -22,8 +22,10 @@
 
 #if !defined(Q_OS_WIN)
 #include <QFile>
+#include <cerrno>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h> // pread()
 #endif
 
 #if defined(Q_OS_WIN)
@@ -93,31 +95,49 @@ qint64 SharedReadFile::size() const
     return static_cast<qint64>(size.QuadPart);
 }
 
-QByteArray SharedReadFile::read(qint64 offset, qint64 length)
+void SharedReadFile::read(qint64 offset, qint64 length, QByteArray &into)
 {
+    into.resize(0); // keeps the capacity: this is called per painted cell
     if (!m_handle || offset < 0 || length <= 0)
-        return QByteArray();
+        return;
 
-    LARGE_INTEGER pos{};
-    pos.QuadPart = offset;
-    if (!::SetFilePointerEx(static_cast<HANDLE>(m_handle), pos, nullptr, FILE_BEGIN))
-        return QByteArray();
-
-    QByteArray out(static_cast<qsizetype>(length), Qt::Uninitialized);
+    // Plain resize(), not Qt::Uninitialized: QByteArray has no uninitialized resize
+    // below Qt 6.8's resizeForOverwrite() and the floor is 6.4 (ARCHITECTURE.md §1).
+    // The zero-fill is a memset the read then overwrites; against the read itself it
+    // costs nothing, and resizing an already-large buffer keeps its capacity, which is
+    // what makes this callable per painted cell.
+    into.resize(static_cast<qsizetype>(length));
     qint64 got = 0;
     while (got < length) {
         // ReadFile counts in a DWORD and is free to return fewer bytes than asked for on
         // a file that is being written; only n == 0 means there are no more.
         const DWORD want = static_cast<DWORD>(qMin<qint64>(length - got, 1 << 20));
         DWORD n = 0;
-        if (!::ReadFile(static_cast<HANDLE>(m_handle), out.data() + got, want, &n, nullptr))
-            return QByteArray();
+        // The OVERLAPPED is what makes this positional. On a handle opened WITHOUT
+        // FILE_FLAG_OVERLAPPED the call is still synchronous, but the read starts at the
+        // offset named here rather than at the handle's own file pointer — so two
+        // threads reading different ranges cannot be served each other's, which
+        // SetFilePointerEx-then-ReadFile allowed (SharedReadFile.h). hEvent stays null;
+        // nothing waits on it, because nothing is asynchronous.
+        OVERLAPPED ov{};
+        const quint64 at = static_cast<quint64>(offset + got);
+        ov.Offset = static_cast<DWORD>(at & 0xFFFFFFFFULL);
+        ov.OffsetHigh = static_cast<DWORD>(at >> 32);
+        if (!::ReadFile(static_cast<HANDLE>(m_handle), into.data() + got, want, &n, &ov)) {
+            // Reading at or past the end reports ERROR_HANDLE_EOF through this path
+            // rather than a zero-byte success, and that is not an error to the caller:
+            // a short read off the end of a growing log is the ordinary case.
+            if (::GetLastError() != ERROR_HANDLE_EOF)
+                into.resize(0);
+            else
+                into.resize(static_cast<qsizetype>(got));
+            return;
+        }
         if (n == 0)
             break;
         got += n;
     }
-    out.resize(static_cast<qsizetype>(got));
-    return out;
+    into.resize(static_cast<qsizetype>(got));
 }
 
 #else // POSIX
@@ -128,11 +148,15 @@ bool SharedReadFile::open(const QString &path)
     m_file.setFileName(path);
     // No sharing decision to make: a reader here holds nothing the writer needs, and an
     // unlink or rename of an open file is ordinary.
-    return m_file.open(QIODevice::ReadOnly);
+    if (!m_file.open(QIODevice::ReadOnly))
+        return false;
+    m_fd = m_file.handle();
+    return true;
 }
 
 void SharedReadFile::close()
 {
+    m_fd = -1;
     m_file.close();
 }
 
@@ -146,14 +170,48 @@ qint64 SharedReadFile::size() const
     return m_file.size();
 }
 
-QByteArray SharedReadFile::read(qint64 offset, qint64 length)
+void SharedReadFile::read(qint64 offset, qint64 length, QByteArray &into)
 {
-    if (offset < 0 || length <= 0 || !m_file.isOpen() || !m_file.seek(offset))
-        return {};
-    return m_file.read(length);
+    into.resize(0); // keeps the capacity: this is called per painted cell
+    if (offset < 0 || length <= 0 || m_fd < 0)
+        return;
+
+    // Plain resize(), not Qt::Uninitialized: QByteArray has no uninitialized resize
+    // below Qt 6.8's resizeForOverwrite() and the floor is 6.4 (ARCHITECTURE.md §1).
+    // The zero-fill is a memset the read then overwrites; against the read itself it
+    // costs nothing, and resizing an already-large buffer keeps its capacity, which is
+    // what makes this callable per painted cell.
+    into.resize(static_cast<qsizetype>(length));
+    qint64 got = 0;
+    while (got < length) {
+        // pread(2), not seek-then-read: the offset is an argument, so the descriptor
+        // carries no position for a second thread to move (SharedReadFile.h). A short
+        // read is not end of file — a signal or a large request can cut one short — so
+        // this loops until it has what it asked for or the file says there is no more.
+        const ::ssize_t n = ::pread(m_fd, into.data() + got,
+                                    static_cast<size_t>(length - got),
+                                    static_cast<::off_t>(offset + got));
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            into.resize(0);
+            return;
+        }
+        if (n == 0)
+            break; // end of file
+        got += n;
+    }
+    into.resize(static_cast<qsizetype>(got));
 }
 
 #endif
+
+QByteArray SharedReadFile::read(qint64 offset, qint64 length)
+{
+    QByteArray out;
+    read(offset, length, out);
+    return out;
+}
 
 // --- the file's identity, which is the other thing a handle is for -----------
 //

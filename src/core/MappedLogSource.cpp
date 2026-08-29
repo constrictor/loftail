@@ -60,7 +60,8 @@ std::unique_ptr<MappedLogSource> MappedLogSource::open(const QString &path)
     // refresh, because a rewrite that lands between the open and the first watch tick is
     // exactly as invisible as any other (HeadWitness.h). An empty log takes nothing and
     // says so — its first bytes, whenever they arrive, are an append.
-    src->m_head.take(src->bytes(0, HeadWitness::kBytes));
+    QByteArray scratch; // unused by this source, which reads out of its own mapping
+    src->m_head.take(src->bytes(0, HeadWitness::kBytes, scratch));
     return src;
 }
 
@@ -122,7 +123,8 @@ qint64 MappedLogSource::refreshSize()
     // AFTER the remap, never before: on a file that grew, the mapping in hand still ends
     // at the old extent, and on one that shrank it would run past the live EOF.
     if (!m_truncated) {
-        const QByteArrayView head = bytes(0, HeadWitness::kBytes);
+        QByteArray scratch; // unused by this source, which reads out of its own mapping
+        const QByteArrayView head = bytes(0, HeadWitness::kBytes, scratch);
         if (m_head.contradicts(head))
             m_truncated = true;
         else if (m_head.wantsMore())
@@ -156,8 +158,14 @@ bool MappedLogSource::originVanished() const
     return pathIdentity(m_path) == 0;
 }
 
-QByteArrayView MappedLogSource::bytes(qint64 offset, qint64 length)
+QByteArrayView MappedLogSource::bytes(qint64 offset, qint64 length, QByteArray &into)
 {
+    // `into` is untouched, and that is this source's whole reason for existing: the
+    // mapping IS stable storage the caller can read from, so handing back a pointer
+    // into it copies nothing (LogSource::bytes). A source that filled the caller's
+    // buffer here would put a memcpy of every painted record on the paint path and
+    // give up the point of mmap.
+    Q_UNUSED(into);
     if (offset < 0 || length <= 0 || !m_map)
         return {};
     if (offset >= m_mappedSize)

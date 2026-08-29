@@ -52,8 +52,18 @@ struct IndexBatch
 
 // Runs the single-pass Indexer (invariant #9) on a background thread and streams
 // IndexBatches back to the GUI thread. Owned by IndexController and moved onto its
-// own QThread. Reads the LogSource concurrently with GUI paint reads; that is safe
-// for the mmap source (a read-only mapping, no remap during a fixed-size scan).
+// own QThread.
+//
+// IT READS THE LogSource CONCURRENTLY WITH GUI PAINT READS, and that is safe for EVERY
+// source rather than only for the mapped one — which is what this comment used to say,
+// and the gap it left is bugs.md 25. It is safe for the mapping because the mapping is
+// read-only and is not remapped during a fixed-size scan (the live watch does not start
+// until onIndexFinished). It is safe for the BUFFERED source, which has to read to
+// answer, because LogSource::bytes() fills storage the CALLER supplies: this worker's
+// chunk is a local of Indexer::index(), the paint path's is a local of
+// LogModel::data(), and the handle underneath them is read positionally, so neither the
+// buffer nor the file position is shared. Give the source a read buffer of its own again
+// and the two threads free each other's bytes mid-read, silently.
 class IndexWorker : public QObject
 {
     Q_OBJECT

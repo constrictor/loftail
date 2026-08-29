@@ -43,7 +43,7 @@ class BufferedLogSource final : public LogSource
 public:
     static std::unique_ptr<BufferedLogSource> open(const QString &path);
 
-    QByteArrayView bytes(qint64 offset, qint64 length) override;
+    QByteArrayView bytes(qint64 offset, qint64 length, QByteArray &into) override;
     qint64 size() const override { return m_size; }
     qint64 refreshSize() override;
     bool isRandomAccess() const override { return true; }
@@ -77,7 +77,12 @@ private:
     // pathIdentity() was stubbed on Windows and wasReplaced() was therefore always
     // false there; now that it is real, the two sources lean on this equally.
     HeadWitness m_head;
-    QByteArray m_buffer;      // backs the QByteArrayView returned by bytes()
+    // NO READ BUFFER LIVES HERE, and that absence is the fix for bugs.md 25. It used to
+    // hold one, which bytes() reassigned per call and returned a view over — so the
+    // index worker and the paint path, which share one source while a log is scanning,
+    // each held a view the other's next call freed. bytes() fills the CALLER's storage
+    // now (LogSource::bytes); giving this class a buffer of its own again, however
+    // convenient, puts that back.
 };
 
 } // namespace loftail

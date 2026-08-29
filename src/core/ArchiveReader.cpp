@@ -88,6 +88,11 @@ struct ArchiveStream::Impl
     AwaitInput      await;
     qint64          offset = 0;
     QByteArray      block;   // libarchive holds this until the next callback
+    // Storage this stream hands to LogSource::bytes(). Separate from `block` because
+    // libarchive is still reading `block` when the next call fills this one — and it
+    // belongs to the stream rather than to the source for the reason LogSource::bytes
+    // gives (bugs.md 25). A mapped input never touches it.
+    QByteArray      scratch;
     qint64          entrySize = -1;
     bool            atEntry = false;
 
@@ -115,7 +120,7 @@ la_ssize_t readBlock(struct archive *a, void *client, const void **buffer)
         }
         if (available > 0) {
             const qint64 want = qMin(available, kInputChunk);
-            const QByteArrayView view = d->input->bytes(d->offset, want);
+            const QByteArrayView view = d->input->bytes(d->offset, want, d->scratch);
             if (view.isEmpty())
                 return 0;
             // resize() keeps the capacity, so this is a memcpy per block and not an

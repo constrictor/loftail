@@ -51,7 +51,7 @@ private:
     {
         MemoryLogSource src(bytes);
         const LogFormat f = fmt();
-        Decoder dec = Decoder::detect(src.bytes(0, qMin<qint64>(src.size(), 64 * 1024)), Encoding::Utf8);
+        Decoder dec = Decoder::detect(src.bytesCopy(0, qMin<qint64>(src.size(), 64 * 1024)), Encoding::Utf8);
         Indexer indexer(f, dec, zone);
         return indexer.index(src);
     }
@@ -64,7 +64,7 @@ private:
         MemoryLogSource src(bytes);
         auto r = PatternCompiler::compile(QString::fromUtf8(pattern));
         Q_ASSERT(r);
-        Decoder dec = Decoder::detect(src.bytes(0, qMin<qint64>(src.size(), 64 * 1024)), Encoding::Utf8);
+        Decoder dec = Decoder::detect(src.bytesCopy(0, qMin<qint64>(src.size(), 64 * 1024)), Encoding::Utf8);
         Indexer indexer(r.value(), dec, zone);
         return indexer.index(src);
     }

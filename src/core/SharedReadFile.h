@@ -73,9 +73,22 @@ public:
     // that the file is growing behind it.
     qint64 size() const;
 
-    // Up to length bytes from offset. Short at end of file, empty on any error — and a
-    // short READ is not end of file, so the Windows path loops until it has what it
+    // Up to length bytes from offset, into storage the CALLER owns. `into` is resized
+    // to the number of bytes actually read — short at end of file, empty on any error,
+    // and a short READ is not end of file, so both paths loop until they have what they
     // asked for or the file says there is no more.
+    //
+    // POSITIONAL, never seek-then-read, and that is a threading claim rather than a
+    // tidiness one (bugs.md 25). One handle is shared by the index worker, the paint
+    // path and the watch tick's head witness; a seek is state on the handle, so two
+    // concurrent readers each moving it could each be served the other's offset — with
+    // no allocation freed anywhere and nothing for a sanitizer to see. pread(2) and
+    // ReadFile with an OVERLAPPED offset take the position as an argument instead, so
+    // there is no shared position to race over.
+    void read(qint64 offset, qint64 length, QByteArray &into);
+
+    // The same, allocating its own storage. For the callers that want the bytes to keep
+    // (the head witness) rather than to look at.
     QByteArray read(qint64 offset, qint64 length);
 
 private:
@@ -85,6 +98,11 @@ private:
     void *m_handle = nullptr;
 #else
     QFile m_file;
+    // The descriptor, latched at open. read() goes to pread(2) on it and touches
+    // m_file not at all: QFile's own read path carries a position and a buffer, which
+    // is exactly the shared state a positional read exists to avoid. m_file still owns
+    // the descriptor and closes it; this is a borrowed copy, valid while it is open.
+    int m_fd = -1;
 #endif
 };
 

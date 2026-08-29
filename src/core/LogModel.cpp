@@ -212,7 +212,13 @@ QString LogModel::cellText(int row, int column) const
         return {};
     const Decoder &dec = m_document->decoder();
 
-    QByteArrayView bytes = src->bytes(rec.offset, rec.length);
+    // Storage of this call's own, on the stack. A mapped source ignores it and hands
+    // back a pointer into the mapping, so the POSIX paint path allocates nothing; the
+    // buffered one fills it, which is what it used to do to a buffer belonging to the
+    // SOURCE — freed underneath the index worker's chunk on the very next painted cell
+    // (LogSource::bytes, bugs.md 25).
+    QByteArray raw;
+    QByteArrayView bytes = src->bytes(rec.offset, rec.length, raw);
     if (bytes.isEmpty())
         return {};
 

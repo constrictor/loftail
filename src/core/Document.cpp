@@ -234,7 +234,10 @@ bool Document::openAndSettleFormat(IFormatProvider &provider, OpenPolicy policy,
     // Resolve the encoding by sniffing the first ~64 KB (§6.1). The same sample is
     // handed to the provider — the manual provider ignores it, a detector uses it.
     const qint64 sampleLen = qMin<qint64>(64LL * 1024, m_source->size());
-    const QByteArrayView sample = sampleLen > 0 ? m_source->bytes(0, sampleLen) : QByteArrayView();
+    // bytesCopy(), not a view: the sample outlives several calls here and this runs
+    // once per open, so owning it outright is cheaper to reason about than tracking
+    // whose storage it is (LogSource::bytes).
+    const QByteArray sample = sampleLen > 0 ? m_source->bytesCopy(0, sampleLen) : QByteArray();
     m_decoder = Decoder::detect(sample, m_requestedEncoding);
 
     m_formatError = CompileError{};
@@ -521,7 +524,8 @@ QString Document::messageText(const Record &rec) const
 {
     if (!m_source)
         return {};
-    const QByteArrayView bytes = m_source->bytes(rec.offset, rec.length);
+    QByteArray raw; // storage of this call's own — LogSource::bytes, bugs.md 25
+    const QByteArrayView bytes = m_source->bytes(rec.offset, rec.length, raw);
     if (bytes.isEmpty())
         return {};
 
@@ -898,7 +902,8 @@ QString Document::recordFirstLine(const Record &rec) const
 {
     if (!m_source)
         return {};
-    const QByteArrayView bytes = m_source->bytes(rec.offset, rec.length);
+    QByteArray raw; // storage of this call's own — LogSource::bytes, bugs.md 25
+    const QByteArrayView bytes = m_source->bytes(rec.offset, rec.length, raw);
     if (bytes.isEmpty())
         return {};
 
@@ -1232,11 +1237,15 @@ void Document::reparseTimestamps(const QTimeZone &sourceZone)
     // A pass over the existing index (invariant #10): byte offsets and record
     // boundaries are untouched, so no rescan — only the %d field is re-read and
     // re-parsed. Unparsed records carry no timestamp and are left as-is.
+    // Hoisted out of the loop so its capacity is reused across the pass; a mapped
+    // source never fills it (LogSource::bytes).
+    QByteArray raw;
+
     for (Record &rec : m_index.records) {
         if (rec.timestamp == Record::kNoTimestamp)
             continue; // never matched a date; a zone change cannot give it one
 
-        const QByteArrayView bytes = m_source->bytes(rec.offset, rec.length);
+        const QByteArrayView bytes = m_source->bytes(rec.offset, rec.length, raw);
         if (bytes.isEmpty())
             continue;
 

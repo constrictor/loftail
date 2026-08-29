@@ -30,8 +30,11 @@ class MemoryLogSource final : public loftail::LogSource
 public:
     explicit MemoryLogSource(QByteArray data) : m_data(std::move(data)) {}
 
-    QByteArrayView bytes(qint64 offset, qint64 length) override
+    // `into` is untouched: the whole file is already in stable memory here, so this is
+    // a zero-copy source exactly as the mapped one is (loftail::LogSource::bytes).
+    QByteArrayView bytes(qint64 offset, qint64 length, QByteArray &into) override
     {
+        Q_UNUSED(into);
         if (offset < 0 || length <= 0 || offset >= m_data.size())
             return {};
         const qint64 clamped = qMin<qint64>(length, m_data.size() - offset);

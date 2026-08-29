@@ -194,6 +194,15 @@ bool Indexer::forwardScan(LogSource &source, qint64 startPos, QVector<Record> &r
         }
     };
 
+    // THE CHUNK'S STORAGE, owned by this scan and by nothing else. Hoisted out of the
+    // loop so its capacity is reused rather than reallocated per window; a mapped source
+    // never touches it and the view below points into the mapping instead. It is a local
+    // and not a member of the source for the reason LogSource::bytes gives: this loop
+    // holds `buf` across a whole window of line walking while the GUI thread paints
+    // records out of the SAME source, and a buffer belonging to the source would be
+    // reassigned under one of them (bugs.md 25).
+    QByteArray chunk;
+
     qint64 pos = startPos;
     while (pos < size) {
         // Read a window at `pos`, growing it (rare) only when the very first line
@@ -206,7 +215,7 @@ bool Indexer::forwardScan(LogSource &source, qint64 startPos, QVector<Record> &r
         qsizetype scan = 0;
 
         for (;;) {
-            buf = source.bytes(pos, want);
+            buf = source.bytes(pos, want, chunk);
             if (buf.isEmpty())
                 break;
             atEof = (pos + buf.size() >= size);

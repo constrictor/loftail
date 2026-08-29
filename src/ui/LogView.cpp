@@ -2260,7 +2260,10 @@ void LogView::copySelectionRaw() const
         // the walk above can re-enter the event loop between two records.
         LogSource *src = m_document->source();
         // The true byte range — copy yields full text regardless of display cap (§5).
-        QString text = src ? dec.decode(src->bytes(rec.offset, rec.length)) : QString();
+        // `raw` is this iteration's own storage: a mapped source ignores it, the
+        // buffered one fills it (LogSource::bytes).
+        QByteArray raw;
+        QString text = src ? dec.decode(src->bytes(rec.offset, rec.length, raw)) : QString();
         while (text.endsWith(QLatin1Char('\n')) || text.endsWith(QLatin1Char('\r')))
             text.chop(1);
         if (!first)

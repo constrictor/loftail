@@ -22,6 +22,9 @@
 #include <QFile>
 #include <QTemporaryDir>
 
+#include <atomic>
+#include <thread>
+
 #include "BufferedLogSource.h"
 #include "SharedReadFile.h"
 
@@ -59,10 +62,33 @@ private slots:
     void aRenamedFileGoesOnReadingThroughTheHandle();
     void openingWhatIsNotThereFails();
     void aBufferedSourceHoldsTheFileTheSameWay();
+    void twoThreadsReadingOneHandleEachGetTheirOwnOffset();
+    void twoThreadsReadingOneSourceEachGetTheirOwnBytes();
 
 private:
     QTemporaryDir m_dir;
     QString       m_path;
+
+    // A file whose every kBlock-byte block spells its own block number, so a read that
+    // came back with somebody else's bytes says WHOSE in the failure message rather than
+    // merely differing.
+    static constexpr qint64 kBlock  = 64;
+    static constexpr qint64 kBlocks = 256;
+    static constexpr int    kRounds = 20000;
+
+    static QByteArray blockAt(qint64 index)
+    {
+        return QByteArray::number(index).rightJustified(static_cast<qsizetype>(kBlock), '.');
+    }
+
+    static QByteArray blockedFile()
+    {
+        QByteArray out;
+        out.reserve(static_cast<qsizetype>(kBlock * kBlocks));
+        for (qint64 i = 0; i < kBlocks; ++i)
+            out += blockAt(i);
+        return out;
+    }
 
     static bool writeWhole(const QString &path, const QByteArray &data)
     {
@@ -182,7 +208,7 @@ void TestSharedReadFile::aBufferedSourceHoldsTheFileTheSameWay()
     auto src = BufferedLogSource::open(m_path);
     QVERIFY(src);
     QCOMPARE(src->size(), 10);
-    QCOMPARE(src->bytes(0, 4).toByteArray(), QByteArrayLiteral("0123"));
+    QCOMPARE(src->bytesCopy(0, 4), QByteArrayLiteral("0123"));
 
     QVERIFY(appendTo(m_path, QByteArrayLiteral("abcde")));
     QCOMPARE(src->refreshSize(), 15);
@@ -197,6 +223,117 @@ void TestSharedReadFile::aBufferedSourceHoldsTheFileTheSameWay()
     // window on both. It is left alone here on purpose: a Windows delete against an open
     // handle leaves the name in a "delete pending" limbo whose visibility to
     // QFileInfo::exists() is not something this project can settle from a Linux box.
+}
+
+// --- bugs.md 25: one source, two threads ------------------------------------
+//
+// A log that is scanning is read by TWO threads at once and always has been: the index
+// worker walks chunks out of the source while the GUI thread paints cells out of the
+// same source, each visible cell reaching LogModel::data(). Nothing in the suite had
+// ever driven a LogSource that way, which is why this went nine milestones.
+//
+// Two things were wrong, and each of these cases pins one of them, because either alone
+// leaves the other's failure looking like the one that was fixed.
+//
+// std::thread and not QThread, per ARCHITECTURE.md §13.1: QThread::wait() joins through
+// a QWaitCondition inside an unannotated libQt6Core, which breaks TSan's happens-before
+// chain over the very code a run like this is worth pointing TSan at. Neither case needs
+// a sanitizer to fail, though — both fail on CONTENT, which is the point: the bug is
+// observable as one thread being handed the other's bytes, not merely as a report.
+
+void TestSharedReadFile::twoThreadsReadingOneHandleEachGetTheirOwnOffset()
+{
+    // The lower half. SharedReadFile::read() was seek-then-read on one shared handle, so
+    // two readers could each be served the other's offset with no allocation freed
+    // anywhere. It is pread(2) / ReadFile-with-OVERLAPPED now, which takes the position
+    // as an argument and leaves nothing on the handle to race over.
+    QVERIFY(writeWhole(m_path, blockedFile()));
+
+    SharedReadFile f;
+    QVERIFY(f.open(m_path));
+
+    std::atomic<int> wrong{0};
+    QByteArray firstWrongGot;
+    QByteArray firstWrongWant;
+    std::atomic_flag reported = ATOMIC_FLAG_INIT;
+
+    const auto reader = [&](qint64 firstBlock) {
+        QByteArray into;
+        for (int round = 0; round < kRounds; ++round) {
+            const qint64 block = firstBlock + 2 * (round % (kBlocks / 2));
+            f.read(block * kBlock, kBlock, into);
+            const QByteArray want = blockAt(block);
+            if (into != want) {
+                ++wrong;
+                if (!reported.test_and_set()) {
+                    firstWrongGot = into;
+                    firstWrongWant = want;
+                }
+            }
+        }
+    };
+
+    std::thread even(reader, 0);
+    std::thread odd(reader, 1);
+    even.join();
+    odd.join();
+
+    if (wrong.load() != 0)
+        qWarning("first mismatch: got %s, wanted %s",
+                 firstWrongGot.constData(), firstWrongWant.constData());
+    QCOMPARE(wrong.load(), 0);
+}
+
+void TestSharedReadFile::twoThreadsReadingOneSourceEachGetTheirOwnBytes()
+{
+    // The upper half, and the one the entry is named for. bytes() used to store the data
+    // in a MEMBER buffer and return a view over it, so the second thread's call freed the
+    // allocation the first was still reading — the indexer parsing freed or foreign bytes
+    // into Record offsets, and a painted cell decoding whatever the indexer's chunk left
+    // behind. The storage is the caller's now (LogSource::bytes), so there is no shared
+    // buffer left to clobber.
+    //
+    // The ranges are DISJOINT and equal in length on purpose. Equal lengths make the
+    // allocator hand the clobbering call the block it has just freed, so the unfixed code
+    // fails by returning the wrong CONTENT rather than by crashing — which is what makes
+    // this an assertion about behaviour rather than a sanitizer run.
+    QVERIFY(writeWhole(m_path, blockedFile()));
+
+    auto src = BufferedLogSource::open(m_path);
+    QVERIFY(src);
+    QCOMPARE(src->size(), kBlock * kBlocks);
+
+    std::atomic<int> wrong{0};
+    QByteArray firstWrongGot;
+    QByteArray firstWrongWant;
+    std::atomic_flag reported = ATOMIC_FLAG_INIT;
+
+    const auto reader = [&](qint64 firstBlock) {
+        // Each thread's own storage — that IS the fix, expressed from the caller's side.
+        QByteArray into;
+        for (int round = 0; round < kRounds; ++round) {
+            const qint64 block = firstBlock + 2 * (round % (kBlocks / 2));
+            const QByteArrayView view = src->bytes(block * kBlock, kBlock, into);
+            const QByteArray want = blockAt(block);
+            if (view != QByteArrayView(want)) {
+                ++wrong;
+                if (!reported.test_and_set()) {
+                    firstWrongGot = view.toByteArray();
+                    firstWrongWant = want;
+                }
+            }
+        }
+    };
+
+    std::thread even(reader, 0);
+    std::thread odd(reader, 1);
+    even.join();
+    odd.join();
+
+    if (wrong.load() != 0)
+        qWarning("first mismatch: got %s, wanted %s",
+                 firstWrongGot.constData(), firstWrongWant.constData());
+    QCOMPARE(wrong.load(), 0);
 }
 
 QTEST_MAIN(TestSharedReadFile)

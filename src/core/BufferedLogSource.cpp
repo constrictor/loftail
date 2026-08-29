@@ -38,10 +38,12 @@ std::unique_ptr<BufferedLogSource> BufferedLogSource::open(const QString &path)
     return src;
 }
 
-// The first bytes of the file, read fresh. Deliberately NOT through bytes(), whose
-// QByteArrayView is backed by m_buffer: this runs from refreshSize() on the watch tick,
-// and clobbering the buffer a caller may still be reading from would be a use-after-free
-// in everything but name.
+// The first bytes of the file, read fresh into storage of this call's own. It runs from
+// refreshSize() on the watch tick, concurrently with nothing in particular — but the
+// handle underneath it IS shared with the index worker and the paint path, which is why
+// SharedReadFile::read() is positional rather than seek-then-read (bugs.md 25). Before
+// that it also had to avoid bytes(), whose view was backed by a member buffer; there is
+// no such buffer any more, so what is left here is an ordinary owned read.
 QByteArray BufferedLogSource::readHead()
 {
     return m_file.read(0, HeadWitness::kBytes);
@@ -102,13 +104,19 @@ qint64 BufferedLogSource::refreshSize()
     return m_size;
 }
 
-QByteArrayView BufferedLogSource::bytes(qint64 offset, qint64 length)
+QByteArrayView BufferedLogSource::bytes(qint64 offset, qint64 length, QByteArray &into)
 {
-    if (offset < 0 || length <= 0 || offset >= m_size)
+    if (offset < 0 || length <= 0 || offset >= m_size) {
+        into.resize(0);
         return {};
+    }
     const qint64 clamped = qMin(length, m_size - offset);
-    m_buffer = m_file.read(offset, clamped);
-    return {m_buffer.constData(), m_buffer.size()};
+    // Into the CALLER's buffer, and the returned view belongs to it. This source has to
+    // read to answer, so unlike the mapped one it cannot hand out a pointer of its own —
+    // and the buffer it used to keep for that is precisely what two threads overwrote
+    // under each other (LogSource::bytes, bugs.md 25).
+    m_file.read(offset, clamped, into);
+    return {into.constData(), into.size()};
 }
 
 } // namespace loftail

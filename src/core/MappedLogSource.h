@@ -42,7 +42,7 @@ public:
     // Open and map `path`. Returns nullptr on failure (missing file, mmap error).
     static std::unique_ptr<MappedLogSource> open(const QString &path);
 
-    QByteArrayView bytes(qint64 offset, qint64 length) override;
+    QByteArrayView bytes(qint64 offset, qint64 length, QByteArray &into) override;
     qint64 size() const override { return m_mappedSize; }
     qint64 refreshSize() override;
     bool isRandomAccess() const override { return true; }

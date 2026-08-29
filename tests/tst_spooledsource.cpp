@@ -76,7 +76,7 @@ void TestSpooledSource::readsInitialContentThroughTheSpool()
     auto src = openSource();
     QVERIFY(src);
     QCOMPARE(src->size(), 12);
-    QCOMPARE(src->bytes(0, 12).toByteArray(), QByteArrayLiteral("hello remote"));
+    QCOMPARE(src->bytesCopy(0, 12), QByteArrayLiteral("hello remote"));
     // The spool is an ordinary local file, so the paint path keeps random access —
     // §6.2 predicted false here, and the spool is why it is true (see §6.3).
     QVERIFY(src->isRandomAccess());
@@ -103,7 +103,7 @@ void TestSpooledSource::sizeClampsToCommittedNotToTheSpoolFile()
 
     remote->publish();
     QCOMPARE(src->refreshSize(), 20);
-    QCOMPARE(src->bytes(0, 20).toByteArray(), QByteArrayLiteral("0123456789ABCDEFGHIJ"));
+    QCOMPARE(src->bytesCopy(0, 20), QByteArrayLiteral("0123456789ABCDEFGHIJ"));
 }
 
 void TestSpooledSource::bytesNeverExposesWithheldTail()
@@ -118,13 +118,13 @@ void TestSpooledSource::bytesNeverExposesWithheldTail()
     QCOMPARE(src->refreshSize(), 10);
 
     // A read that would run into the withheld region is clamped, not served.
-    QCOMPARE(src->bytes(5, 100).toByteArray(), QByteArrayLiteral("56789"));
+    QCOMPARE(src->bytesCopy(5, 100), QByteArrayLiteral("56789"));
     // A read starting inside it returns nothing at all.
-    QVERIFY(src->bytes(10, 5).isEmpty());
-    QVERIFY(src->bytes(12, 1).isEmpty());
+    QVERIFY(src->bytesCopy(10, 5).isEmpty());
+    QVERIFY(src->bytesCopy(12, 1).isEmpty());
     // Out-of-range arguments behave as they do for a local source.
-    QVERIFY(src->bytes(-1, 5).isEmpty());
-    QVERIFY(src->bytes(0, 0).isEmpty());
+    QVERIFY(src->bytesCopy(-1, 5).isEmpty());
+    QVERIFY(src->bytesCopy(0, 0).isEmpty());
 }
 
 void TestSpooledSource::appendBecomesVisibleOnRefresh()
@@ -141,7 +141,7 @@ void TestSpooledSource::appendBecomesVisibleOnRefresh()
     // for a local one — growth is not observed until it is asked for.
     QCOMPARE(src->size(), 6);
     QCOMPARE(src->refreshSize(), 13);
-    QCOMPARE(src->bytes(0, 13).toByteArray(), QByteArrayLiteral("first\nsecond\n"));
+    QCOMPARE(src->bytesCopy(0, 13), QByteArrayLiteral("first\nsecond\n"));
     QVERIFY(!src->wasTruncated());
     QVERIFY(!src->wasReplaced());
 }
@@ -164,7 +164,7 @@ void TestSpooledSource::rotationBumpsGenerationAndIsReported()
     QVERIFY(src->wasReplaced());
 
     QCOMPARE(src->refreshSize(), 9);
-    QCOMPARE(src->bytes(0, 9).toByteArray(), QByteArrayLiteral("brand new"));
+    QCOMPARE(src->bytesCopy(0, 9), QByteArrayLiteral("brand new"));
     QVERIFY(src->identity() != firstGeneration);
     // Truncation is latched as well, so a caller that never asks wasReplaced() still
     // learns the byte stream is discontinuous rather than reading stale offsets.
@@ -215,7 +215,7 @@ void TestSpooledSource::truncationLooksLikeARotation()
     QVERIFY(src->wasReplaced());
     QCOMPARE(src->refreshSize(), 2);
     QVERIFY(src->wasTruncated());
-    QCOMPARE(src->bytes(0, 2).toByteArray(), QByteArrayLiteral("bb"));
+    QCOMPARE(src->bytesCopy(0, 2), QByteArrayLiteral("bb"));
 }
 
 void TestSpooledSource::spoolIsSharedBetweenTwoSources()
@@ -278,7 +278,7 @@ void TestSpooledSource::reusePolicyJoinsALiveSpool()
     QVERIFY(reused);
     QVERIFY(error.isEmpty());
     QCOMPARE(remote->startCount(), 1);
-    QCOMPARE(reused->bytes(0, 4).toByteArray(), QByteArrayLiteral("live"));
+    QCOMPARE(reused->bytesCopy(0, 4), QByteArrayLiteral("live"));
 }
 
 void TestSpooledSource::openFailureReportsTheTransportError()

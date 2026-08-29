@@ -57,7 +57,7 @@ public:
     // file is (MappedLogSource::open).
     static std::unique_ptr<SpooledLogSource> open(std::shared_ptr<SourceSpool> spool);
 
-    QByteArrayView bytes(qint64 offset, qint64 length) override;
+    QByteArrayView bytes(qint64 offset, qint64 length, QByteArray &into) override;
     qint64 size() const override { return m_size; }
     qint64 refreshSize() override;
     bool isRandomAccess() const override { return true; } // the spool is a local file

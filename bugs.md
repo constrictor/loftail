@@ -235,6 +235,18 @@ a record boundary is untouched. What the fix deliberately does not reach is stat
 `SPEC.md` §4 rather than left to be found: a multi-line record's trailing fields sit on
 its last line, so those records keep the blank columns they have always had.
 
+Entry 25 has gone too: `bytes()` returned a view into a member buffer, and one
+`LogSource` is read by two threads for the whole of a scan — the index worker walking
+chunks while the paint path decodes the visible cells — so each call freed the
+allocation the other thread was still reading, the indexer parsing freed bytes into
+record offsets and a painted cell decoding whatever the indexer's chunk had left behind.
+`bytes()` takes the caller's own storage now, and a source that already holds the bytes
+in stable memory of its own ignores it and stays zero-copy. The fix took an unreported
+sibling with it: the shared read handle was seeked and then read, and three callers
+share it, so two readers could each be served the other's offset — with nothing freed
+anywhere and nothing for a sanitizer to see. It is a positional read now on both
+platforms.
+
 Entry 26 has gone as well: binding the panes to another tab copied the outgoing log's
 whole highlight rule list onto the incoming log and saved it there. `setDecimals()`
 re-rounds the value a spin box is holding and emits, which the axis editor's handler

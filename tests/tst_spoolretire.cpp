@@ -143,7 +143,7 @@ void TestSpoolRetire::reopeningWhileTheOldFetcherLingersGetsItsOwnDirectory()
     remote->finishStopping();
     QTRY_VERIFY_WITH_TIMEOUT(!QDir(firstDir).exists(), 5000);
     QVERIFY(QDir(secondDir).exists());
-    QCOMPARE(second->bytes(0, second->size()).toByteArray(),
+    QCOMPARE(second->bytesCopy(0, second->size()),
              QByteArrayLiteral("first open\n"));
 }
 
@@ -170,7 +170,7 @@ void TestSpoolRetire::cancelStopsFetchingAndLeavesTheBytesReadable()
     // Reported at once, not a poll later: the state a reader sees the moment it cancels
     // should be the one it asked for.
     QCOMPARE(spooled->fetchStatus().state, FetchStatus::State::Disconnected);
-    QCOMPARE(src->bytes(0, src->size()).toByteArray(), QByteArrayLiteral("kept\n"));
+    QCOMPARE(src->bytesCopy(0, src->size()), QByteArrayLiteral("kept\n"));
     QVERIFY(QDir(spoolDirOf(*src)).exists()); // still ours; cancel is not a retirement
 }
 

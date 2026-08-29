@@ -2647,7 +2647,7 @@ bool MainWindow::formatFits(Document *doc, const FormatSettings &settings)
 {
     const qint64 sampleLen = qMin<qint64>(64LL * 1024, doc->source()->size());
     const QByteArray sample = sampleLen > 0
-        ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
+        ? doc->source()->bytesCopy(0, sampleLen) : QByteArray();
     Decoder decoder = Decoder::detect(sample, settings.encoding);
     return FormatPreview::build(doc->format(), sample, decoder).matchedCount > 0;
 }
@@ -2660,7 +2660,7 @@ MainWindow::FormatOutcome MainWindow::offerFormat(Document *doc, const QString &
 
     const qint64 sampleLen = qMin<qint64>(64LL * 1024, doc->source()->size());
     const QByteArray sample = sampleLen > 0
-        ? doc->source()->bytes(0, sampleLen).toByteArray() : QByteArray();
+        ? doc->source()->bytesCopy(0, sampleLen) : QByteArray();
 
     // What resolved for this log did not match. Autodetect (M8, ARCHITECTURE.md §9) and
     // PRE-FILL the node with the detected pattern for confirmation — never applied
@@ -2696,7 +2696,7 @@ void MainWindow::showPreferences()
     if (DocumentContext *ctx = activeContext(); ctx && ctx->doc && ctx->doc->source()) {
         const qint64 sampleLen = qMin<qint64>(64LL * 1024, ctx->doc->source()->size());
         if (sampleLen > 0)
-            sample = ctx->doc->source()->bytes(0, sampleLen).toByteArray();
+            sample = ctx->doc->source()->bytesCopy(0, sampleLen);
     }
 
     // Re-read before showing rather than trusting the in-memory copy: another instance

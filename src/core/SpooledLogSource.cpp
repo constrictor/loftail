@@ -194,13 +194,20 @@ qint64 SpooledLogSource::refreshSize()
     return m_size;
 }
 
-QByteArrayView SpooledLogSource::bytes(qint64 offset, qint64 length)
+QByteArrayView SpooledLogSource::bytes(qint64 offset, qint64 length, QByteArray &into)
 {
-    if (!m_inner || offset < 0 || length <= 0 || offset >= m_size)
+    if (!m_inner || offset < 0 || length <= 0 || offset >= m_size) {
+        into.resize(0);
         return {};
+    }
     // Clamp to the committed extent, not to the inner source's own idea of the file:
     // the spool on disk may already be longer than what has been published.
-    return m_inner->bytes(offset, qMin(length, m_size - offset));
+    //
+    // `into` is passed straight through, so whichever local source backs the spool
+    // decides whether it is used: a mapping ignores it and stays zero-copy, and the
+    // buffered fallback fills it. This class adds no storage of its own — see
+    // LogSource::bytes for why that matters (bugs.md 25).
+    return m_inner->bytes(offset, qMin(length, m_size - offset), into);
 }
 
 QString sourceStatusText(const LogSource &source, const QString &path)

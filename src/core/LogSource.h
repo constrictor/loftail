@@ -41,10 +41,44 @@ class LogSource
 public:
     virtual ~LogSource() = default;
 
-    // A view over [offset, offset+length) of the file. Valid until the next
-    // grow/close on the source. For random-access sources this is O(1); it is
-    // only ever called for byte ranges already known to be indexed.
-    virtual QByteArrayView bytes(qint64 offset, qint64 length) = 0;
+    // A view over [offset, offset+length) of the file. For random-access sources this
+    // is O(1); it is only ever called for byte ranges already known to be indexed.
+    //
+    // THE STORAGE IS THE CALLER'S, and that is the whole shape of this signature
+    // (bugs.md 25). A source that already holds the bytes in stable memory of its own —
+    // a mapping, or a spool's mapping — IGNORES `into` and hands back a view straight
+    // into that memory, so mmap stays zero-copy and nothing about the POSIX paint path
+    // moved. A source that has to READ the bytes fills `into` and returns a view over
+    // it. Which of the two happened is deliberately not observable: every caller must
+    // treat the view as belonging to `into`.
+    //
+    // LIFETIME. The view is valid until the earlier of: `into` being modified or
+    // destroyed, and the next grow/close on the source. Both halves are the caller's to
+    // keep, which is the point — the buffered source used to return a view into a
+    // MEMBER buffer, so one `LogSource` shared by the index worker and the paint path
+    // handed each thread a view the other's next call freed underneath it. There is no
+    // storage left for a second caller to clobber; one thread's `into` is not another
+    // thread's.
+    //
+    // Concurrency, therefore: bytes() is safe to call from several threads at once on
+    // one source, provided each supplies storage of its own and nobody is calling
+    // refreshSize() (which is single-threaded per instance — SpooledLogSource.h,
+    // IndexController.h).
+    virtual QByteArrayView bytes(qint64 offset, qint64 length, QByteArray &into) = 0;
+
+    // The same bytes, COPIED into a QByteArray the caller owns outright. For the
+    // callers that want an owned sample rather than a view — the 64 KB encoding/format
+    // sniff, and tests — and never for a hot path, where the point of the view is that
+    // a mapped source hands one out without copying anything.
+    QByteArray bytesCopy(qint64 offset, qint64 length)
+    {
+        QByteArray into;
+        const QByteArrayView view = bytes(offset, length, into);
+        // Filled our own storage: hand it over rather than copying it a second time.
+        if (view.data() == into.constData() && view.size() == into.size())
+            return into;
+        return view.toByteArray();
+    }
 
     // The size known as of the last refreshSize(). Re-queried, never assumed final.
     virtual qint64 size() const = 0;
