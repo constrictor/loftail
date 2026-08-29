@@ -61,7 +61,8 @@ QString posixDirOf(const QString &path)
 //
 // QDir::cleanPath and NEVER canonicalFilePath(): a config file that does not exist yet is
 // a SUPPORTED case (the editor opens empty and Save creates it), and canonicalFilePath()
-// answers "" for a path that is not there — the trap logSettingsKey() already records.
+// answers "" for a path that is not there — the trap legacyLogSettingsKey() records, and
+// the reason logSettingsKey() itself no longer canonicalises anything.
 // cleanPath is also pure string work, which keeps the remote branch honest.
 QString placedIn(const QString &dir, const QString &configured)
 {

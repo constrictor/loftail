@@ -128,6 +128,7 @@ private slots:
     void aPatternMatchOpensWithoutADialog();
     void aSystemLogOpensSplitBecauseOfTheSeededPattern();
     void aPatternThatDoesNotParseStillAsks();
+    void aSymlinkedLogIsStoredUnderTheNameItWasOpenedBy();
     // --pattern (SPEC.md §3): it wins over every level of the tree, and is then judged
     // against the log exactly as a resolved node is. One case per branch of that rule.
     void aSuppliedPatternThatFitsIsRememberedForTheLog();
@@ -629,6 +630,73 @@ void TestOpenFlow::aPatternThatDoesNotParseStillAsks()
     w.openFile(housed);
     QVERIFY2(d.seen, "a file pattern that cannot parse the log was applied without asking");
     w.close();
+}
+
+// ONE LOG, ONE SPELLING (bugs.md 27). `latest.log` pointing at today's file is the
+// logrotate convention, and it used to be read under one name and stored under another:
+// the pattern was matched against the name as opened, because logMatchTarget() resolves
+// no symbolic link, while logSettingsKey() answered canonicalFilePath(). So the log
+// opened correctly through its pattern and then had its settings REDUCED against what
+// the canonical name inherits — the defaults — which is a difference, so merely opening
+// it left a per-log record behind, filed under a name its pattern does not claim and
+// shadowing that pattern for ever afterwards. A daily-rotated symlink burned a fresh
+// slot out of the pool of 500 every day, evicting records somebody had configured.
+//
+// The record count is what tells the fix from the bug: the tab, the dialog and the
+// parsed columns were all correct before it. The accepted cost of the other direction
+// is stated in logSettingsKey() — two symlinks to one file are now two logs here.
+void TestOpenFlow::aSymlinkedLogIsStoredUnderTheNameItWasOpenedBy()
+{
+    const QString target = m_dir.filePath(QStringLiteral("2026-08-29.house"));
+    QVERIFY(write(target,
+        "03/12/26 11:50:47 DEBUG Vms::App [] - starting up\n"
+        "03/12/26 11:50:48 INFO  Vms::Http [7f2a] - listening on 8080\n"));
+
+    const QString latest = m_dir.filePath(QStringLiteral("latest.house"));
+    if (!QFile::link(target, latest) || !QFileInfo(latest).isSymLink())
+        QSKIP("this filesystem will not make a symlink");
+
+    {
+        LogSettingsStore store(LogSettingsStore::defaultDir());
+        LogSettingsTree tree;
+        // The DEFAULTS cannot parse the log, and the pattern names the LINK. That is the
+        // whole arrangement: whichever spelling misses the pattern falls through to a
+        // default it disagrees with, which is what a stored record is made of.
+        LogProfile root;
+        root.format.pattern = QStringLiteral("%p|%c|%m%n");
+        tree.setDefaults(root);
+
+        LogPatternNode n;
+        n.match = QStringLiteral("latest.house");
+        n.profile.format.pattern =
+            QStringLiteral("%D{%m/%d/%y %H:%M:%S} %-5p %c [%t] - %m%n");
+        tree.addPattern(n);
+        QVERIFY(store.save(tree));
+    }
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    Dismisser d;
+    dismissWhenShown(d, Qt::Key_Escape); // fires only if a dialog appears, which it must not
+    w.openFile(latest);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    QTest::qWait(200);
+    QVERIFY2(!d.seen, "Preferences was shown for a log its pattern parses");
+
+    LogView *view = w.findChild<LogView *>(QStringLiteral("logView"));
+    QVERIFY(view);
+    QCOMPARE(view->recordCount(), 2);
+
+    // Nothing left behind, ANYWHERE in the pool: asserting on read(latest) alone would
+    // pass with the bug in place under a store that also canonicalises, since both ends
+    // of that lookup would agree on the wrong name. The pool is empty or it is not.
+    w.close();
+    LogFileStore pool(LogFileStore::defaultDir());
+    pool.load();
+    QVERIFY2(pool.addresses().isEmpty(),
+             "merely opening a symlinked log left a per-log record behind");
 }
 
 // The layout m_weird is written in, and one that compiles and matches nothing anywhere.

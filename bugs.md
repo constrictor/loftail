@@ -245,6 +245,20 @@ to notice the loss. The guard now sits in the function that changes the precisio
 than in the handler that hears it, because that emission is a false claim of a user edit
 wherever it is heard.
 
+Entry 27 has gone too: one log's address was spelled two ways — raw when its format was
+resolved, canonical when its record was stored — so a symlinked log, `latest.log`
+pointing at today's file, opened correctly through the pattern naming the link and then
+had its settings filed under the target's name, which that pattern does not claim.
+Merely opening such a log therefore left a per-log record behind for ever, which is
+exactly what the redundancy rule exists to prevent, and a daily rotation burned a fresh
+slot a day out of a pool of 500, evicting records somebody had configured. The name as
+opened is the one spelling now, which `SPEC.md` §4 carries as a product rule rather than
+an implementation note. A record written by a build that canonicalised is **copied**
+under the name asked for and never re-keyed: the old spelling is not a dead one but the
+target file's own current key, so moving the record would hand a configured file's
+settings to a symlink of it, permanently and silently, for nothing more than the link
+being opened once.
+
 Entry 29 has gone too: a log opened before it existed came back with no column header at
 all and every column at Qt's default 100 px, every value elided. A waiting document has
 no compiled format and so no columns, so the constructor's seed measured nothing and the

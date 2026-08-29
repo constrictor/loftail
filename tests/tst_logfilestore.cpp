@@ -108,6 +108,7 @@ private slots:
     void aLostMapIsRebuiltFromTheRecords();
     void aNewerSchemaLoadsEmptyAndRefusesToSave();
     void equivalentSpellingsOfOneAddressAreOneRecord();
+    void aRecordWrittenUnderTheOldCanonicalKeyIsCopiedNotMoved();
 
     // --- The sweep -------------------------------------------------------------------
     void aPatternTaughtWhatItsLogsSaidLeavesThemNothingToSay();
@@ -583,6 +584,95 @@ void TstLogFileStore::equivalentSpellingsOfOneAddressAreOneRecord()
     QVERIFY(back.profile.has_value());
     QCOMPARE(back.profile->format.pattern, QStringLiteral("remote"));
     QCOMPARE(store.addresses().size(), 1);
+}
+
+// THE UPGRADE FALLBACK (bugs.md 27). logSettingsKey() answered canonicalFilePath() for a
+// local log until the name as opened became authoritative, so every record a previous
+// build wrote for a symlinked log is filed under a name nothing asks for any more.
+// Losing all of them on the first launch after the upgrade is not an acceptable reading
+// of the change, so the old spelling is looked up once, on a miss, and the record is
+// COPIED under the name asked for — into a slot of its own, with the old record left
+// exactly where it is.
+//
+// The copy is the half worth pinning, and it is not fastidiousness: the old spelling is a
+// real file's real name, and logSettingsKey() answers that same string for that file
+// today. So a record found here is equally one an old build mis-keyed and one it keyed
+// correctly, and re-keying in place would hand the target file's configured settings to a
+// symlink of it, permanently, for no gesture beyond opening the link once. The second half
+// of the case reads the target's own name back afterwards, which is what fails against a
+// migration that moves.
+void TstLogFileStore::aRecordWrittenUnderTheOldCanonicalKeyIsCopiedNotMoved()
+{
+    QTemporaryDir logs;
+    QVERIFY(logs.isValid());
+    const QString target = logs.filePath(QStringLiteral("2026-08-29.log"));
+    {
+        QFile f(target);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+    }
+    const QString latest = logs.filePath(QStringLiteral("latest.log"));
+    if (!QFile::link(target, latest) || !QFileInfo(latest).isSymLink())
+        QSKIP("this filesystem will not make a symlink");
+
+    const QString canonical = QFileInfo(latest).canonicalFilePath();
+    QVERIFY(canonical != logSettingsKey(latest)); // or there is nothing to migrate
+    QCOMPARE(legacyLogSettingsKey(latest), canonical);
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        // What the old build left behind: the record filed under the canonical name.
+        LogFileStore store(dir.path());
+        store.load();
+        LogFileSettings s;
+        s.address = canonical;
+        s.profile = profileWith(QStringLiteral("HOUSE"));
+        QVERIFY(store.save(s, LogProfile::builtIn()));
+    }
+
+    LogFileStore store(dir.path());
+    store.load();
+    const LogFileSettings back = store.read(latest);
+    QVERIFY2(back.profile.has_value(), "a record written under the old key was lost");
+    QCOMPARE(back.profile->format.pattern, QStringLiteral("HOUSE"));
+    // Answered under the name it was asked about, and filed under it — beside the old
+    // record, which is still there under the name that is still a live key for the file.
+    QCOMPARE(back.address, logSettingsKey(latest));
+    QStringList after = store.addresses();
+    after.sort();
+    QStringList expected{canonical, logSettingsKey(latest)};
+    expected.sort();
+    QCOMPARE(after, expected);
+    // The migration flushes, so the map on disk already names both.
+    QVERIFY(store.flush());
+
+    // Both stay found, which is the half only a fresh store can show: each slot file
+    // carries its own name, so the file-wins check agrees with the map for both.
+    LogFileStore reopened(dir.path());
+    reopened.load();
+    const LogFileSettings again = reopened.read(latest);
+    QVERIFY2(again.profile.has_value(), "the copied record did not survive a reload");
+    QCOMPARE(again.profile->format.pattern, QStringLiteral("HOUSE"));
+
+    // THE FILE'S OWN NAME KEEPS ITS SETTINGS. This is what a migration that re-keyed in
+    // place would lose — silently, permanently, and for nothing more than the symlink
+    // having been opened once.
+    const LogFileSettings targetsOwn = reopened.read(target);
+    QVERIFY2(targetsOwn.profile.has_value(),
+             "opening a symlink took the target file's record away");
+    QCOMPARE(targetsOwn.profile->format.pattern, QStringLiteral("HOUSE"));
+
+    // TWO SYMLINKS TO ONE FILE ARE TWO LOGS NOW, and that is the accepted cost of the
+    // name being authoritative (logSettingsKey()). A second link is a second name, so it
+    // gets a copy of its own rather than nothing — the legacy record is still there to be
+    // found — and the three records are then independent.
+    const QString other = logs.filePath(QStringLiteral("current.log"));
+    if (QFile::link(target, other) && QFileInfo(other).isSymLink()) {
+        const LogFileSettings second = reopened.read(other);
+        QVERIFY(second.profile.has_value());
+        QCOMPARE(second.address, logSettingsKey(other));
+        QCOMPARE(reopened.addresses().size(), 3);
+    }
 }
 
 // ---------------------------------------------------------------------------

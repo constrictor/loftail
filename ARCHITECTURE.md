@@ -1195,6 +1195,45 @@ Everything a log says about itself is one JSON record (M21, `LogFileSettings`), 
 pool under `<AppConfigLocation>/fileSettings/`: a `map` indexing address → slot, and the
 records themselves in slots numbered `0` … `499`.
 
+**One log, one spelling: the address is the name as OPENED.** `logSettingsKey()` is the
+normalized address for anything read through a spool and `QFileInfo::absoluteFilePath()`
+for a plain path — never `canonicalFilePath()`, which is what it was until the two
+spellings were found disagreeing. A file pattern is tested through `logMatchTarget()`,
+which resolves no symbolic link, so a canonical key asked one question about a log
+(*which node does it inherit from*) and answered another (*where does its own record
+live*): `latest.log` pointing at today's file opened correctly through the pattern that
+names the link and then had its settings reduced against what the **target's** name
+inherits, which is a difference, so merely opening it left a record behind — filed under a
+name its pattern does not claim, shadowing that pattern for ever afterwards, and burning a
+fresh slot out of the pool every day on a log rotated daily. Every site that asks the tree
+therefore asks about the key (`MainWindow::resolvedProfile()` names them); two costs come
+with the ruling and are accepted rather than worked around. **Two symlinks to one file are
+two logs here**, with a record each — they are two names, and a pattern, a tab label and
+the recent-files menu already treat them as two. And **a record written by a build that
+canonicalised is keyed on a spelling nothing asks for any more**: `LogFileStore::read()`
+looks that spelling up on a miss and **copies** the record under the name asked for, slot
+file first and map second like every other write, then flushes the map so the migration is
+spent rather than repeated. `legacyLogSettingsKey()` is that lookup and has no other
+caller.
+
+**That migration copies and never moves, and the reason is that the old spelling is not a
+dead one.** `canonicalFilePath()` answers a real file's real name, and `logSettingsKey()`
+answers that same string for that file today — so a record found under it is equally one
+an old build mis-keyed and one it keyed correctly because the log was opened by its own
+name, and nothing on disk tells the two apart. Re-keying in place would therefore take a
+configured file's settings away and give them to a symlink of it, permanently and with
+nothing on screen to say so, for no gesture beyond opening the link once. Writing a second
+record instead can only be wrong in the direction that is visible and undoable: a second
+name for one file starts out configured the way the file it points at was. Three things
+follow. `allocateSlot()` may **evict** on this path, so a read can now cost the least
+recently opened record its entry — `read()` is reached on an open, on a Preferences visit
+and on `resolvedProfile()`'s not-open-in-a-tab branch, never on a watch tick or a paint.
+The legacy record is **protected for the length of that allocation**, or the pool being
+full would turn the copy back into the move, and a pool with no other room declines the
+migration instead. And a **second** link to the same file gets a copy of its own rather
+than nothing, the legacy record still being there to be found — the same ruling as "two
+symlinks are two logs", reached from the other side.
+
 **Why a slot number and not the address as the file name.** An address is a path, a URL or
 an archive address: it carries `/`, `:` and `*`, it outruns `NAME_MAX` on a deep tree, and
 its case folding differs per platform. It would have to be hashed — and a hash needs the

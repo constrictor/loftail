@@ -187,6 +187,94 @@ void LogFileStore::rebuildFromSlots()
     m_mapDirty = !m_entries.isEmpty();
 }
 
+int LogFileStore::adoptLegacyKey(const QString &address, const QString &key)
+{
+    // THE ONE PLACE THE OLD SPELLING IS ALLOWED TO APPEAR. logSettingsKey() used to
+    // answer canonicalFilePath() for a local log, so every record a previous build wrote
+    // for a symlinked log — or for one opened by a non-canonical name — is filed under a
+    // name nothing asks for any more. Losing all of them on the first launch after the
+    // upgrade is not an acceptable reading of "the name as opened is authoritative", so
+    // the old spelling is looked up ONCE, on a miss, and the record is carried over.
+    const QString legacy = legacyLogSettingsKey(address);
+    if (legacy.isEmpty() || legacy == key)
+        return -1;
+    const int i = indexOf(legacy);
+    if (i < 0)
+        return -1;
+
+    bool ok = false;
+    const QJsonDocument doc = AtomicJson::read(slotPath(m_entries.at(i).slot), &ok);
+    if (!ok || !doc.isObject()) {
+        // The map lies, exactly as it may about a live key; drop the entry rather than
+        // leave a slot reserved for a record that is not in it.
+        m_entries.remove(i);
+        m_mapDirty = true;
+        return -1;
+    }
+
+    LogFileSettings s = LogFileSettings::fromJson(doc.object());
+    // THE FILE WINS here exactly as it does in read(): a map entry whose slot holds
+    // another log's record is a stale map, not a record belonging to `legacy`.
+    if (s.address != legacy) {
+        m_entries.remove(i);
+        m_mapDirty = true;
+        return -1;
+    }
+
+    // A COPY, NEVER A MOVE, AND THAT IS THE WHOLE OF WHY THIS IS SAFE TO RUN AT ALL. The
+    // legacy key is not a dead spelling: canonicalFilePath() answers a real file's real
+    // name, and logSettingsKey() answers that same string for that file today. So the
+    // record found here may equally be one an old build MIS-keyed (the bug) or one it
+    // keyed correctly because the log was opened by its own name — and nothing on disk
+    // tells the two apart. Re-keying in place would therefore take a configured file's
+    // settings away and give them to a symlink of it, permanently and silently, for no
+    // gesture beyond opening the link once. Writing a second record instead costs a slot
+    // and can be wrong only in the direction that is visible and undoable: the new name
+    // starts out configured the way the file it points at was, which for two names of one
+    // file is the reading a reader would expect anyway.
+    //
+    // ACCEPTED COSTS, both bounded by the pool and both spent once per name. allocateSlot()
+    // may EVICT here, so a read can now cost the least recently opened record its entry —
+    // read() is reached on an open, a Preferences visit and resolvedProfile()'s
+    // not-open-in-a-tab branch, never on a watch tick or a paint. And a SECOND link to the
+    // same file gets a copy of its own rather than nothing, because the legacy record is
+    // still there to be found; that is the same ruling as "two symlinks are two logs",
+    // arrived at from the other side. What is carried over may also be the junk record
+    // bugs.md 27 itself created — a pattern's format beside the defaults' wrapMode,
+    // configPath and restartScript — and the redundancy sweep clears it wherever it turns
+    // out to say nothing its parents do not.
+    //
+    // The eviction has one case that would undo the ruling above: the legacy record is
+    // exactly the entry allocateSlot() would pick — least recently opened, and not open in
+    // a tab — and handing this copy that very slot is the move again, by another route. So
+    // it is protected for the length of the allocation, and a pool with no other room
+    // declines the migration rather than paying for it out of the file's own name.
+    const bool wasPinned = m_pinned.contains(legacy);
+    m_pinned.insert(legacy);
+    const int slot = allocateSlot(nullptr);
+    if (!wasPinned)
+        m_pinned.remove(legacy);
+    if (slot < 0)
+        return -1; // No room that is not another log's; leave the old record alone.
+
+    // SLOT FILE FIRST, MAP SECOND — the ordinary write order (see the header), for the
+    // ordinary reason: the forbidden state is a map entry naming a slot that holds a
+    // different log's record. A crash in the gap leaves an orphan file, which is what
+    // every crash here is meant to leave.
+    s.address = key;
+    if (!writeSlot(slot, s, nullptr))
+        return -1; // read-only filesystem or a full disk: leave the old record alone.
+    m_entries.push_back(Entry{key, slot, ++m_tick});
+    m_mapDirty = true;
+    // FLUSHED, unlike touch()'s deferred map write, and the difference is how often it
+    // runs: a restored session of twenty tabs is twenty touches, while an adoption happens
+    // once per legacy record for the life of the installation. One map write closes the
+    // window in which the copy exists only as an orphan and the migration has to be run
+    // again — and, since the legacy record is untouched, nothing is lost if it fails.
+    flush();
+    return int(m_entries.size()) - 1;
+}
+
 LogFileSettings LogFileStore::read(const QString &address)
 {
     LogFileSettings empty;
@@ -194,7 +282,9 @@ LogFileSettings LogFileStore::read(const QString &address)
     if (m_readOnly)
         return empty;
 
-    const int i = indexOf(empty.address);
+    int i = indexOf(empty.address);
+    if (i < 0)
+        i = adoptLegacyKey(address, empty.address);
     if (i < 0)
         return empty;
 
@@ -440,7 +530,9 @@ int LogFileStore::adoptLegacy(const QVector<LegacyFileNode> &nodes, const LogSet
         LogFileSettings s;
         s.address = n.path;
         s.profile = n.profile;
-        if (save(s, tree.inherited(n.path)))
+        // Reduced against what the KEY inherits, because that is what the record is filed
+        // under — one spelling per log, the rule resolvedProfile() states.
+        if (save(s, tree.inherited(logSettingsKey(n.path))))
             ++adopted;
     }
     return adopted;

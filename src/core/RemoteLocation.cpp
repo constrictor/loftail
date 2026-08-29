@@ -293,11 +293,53 @@ QString logSettingsKey(const QString &path)
     if (logPathIsSpooled(path))
         return normalizeLogPath(path);
 
+    // THE NAME AS OPENED, made absolute and cleaned — NEVER canonicalFilePath(), which is
+    // what this was and what put one log's address into the store under two spellings.
+    // A pattern is tested against logMatchTarget(), which resolves no symbolic link, so a
+    // key that did put the log under `2026-08-29.log` while its pattern claimed
+    // `latest.log` split the two questions the settings tree asks about one log: which
+    // node it inherits from, and where its own record lives. The visible cost was a
+    // symlinked log getting a per-log record for merely being opened — the redundancy
+    // rule reduces against the pattern the raw name matched, and the record is filed
+    // under a name that matches nothing — so a daily-rotated `latest.log` burned a fresh
+    // slot out of the pool of 500 every day, evicting records somebody did configure, and
+    // shadowed its own pattern for good afterwards. The mirror case is a spelling that is
+    // merely non-canonical (`loftail log/messages` from /var, a `..`, a symlinked
+    // directory): the log opened on the built-in defaults because the raw string missed
+    // the pattern, and that wrong format was then pinned under the canonical key.
+    //
+    // TWO ACCEPTED COSTS, both of them the price of the name being authoritative.
+    // (1) Two symlinks to one file are now two logs here, with a record each; they are
+    //     two names, and a pattern, a tab label and the recent-files menu already treat
+    //     them as two. (2) A record written by a build that canonicalised is keyed on a
+    //     spelling nothing asks for any more — LogFileStore::read() looks that spelling
+    //     up as a fallback and COPIES the record under the name asked for, which is the
+    //     only place the old form is allowed to appear. A copy and never a move, because
+    //     the old spelling is NOT a dead one: it is a real file's real name, and this
+    //     function answers that name unchanged, so re-keying in place would hand a
+    //     configured file's settings to a symlink of it for nothing more than the link
+    //     being opened once.
+    //
+    // absoluteFilePath() cleans `.` and `..` and resolves nothing, so it is stable
+    // against the working directory (which is what the key is for) without being stable
+    // against the file's own identity (which it deliberately no longer claims).
+    return QFileInfo(path).absoluteFilePath();
+}
+
+QString legacyLogSettingsKey(const QString &path)
+{
+    // The spooled branch never canonicalised, so nothing about it moved.
+    if (logPathIsSpooled(path))
+        return QString();
+
     const QFileInfo info(path);
     const QString canonical = info.canonicalFilePath();
-    // A log that does not exist yet (M13) still needs one stable key, and its absolute
-    // path is the best available one.
-    return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+    // Empty for a log that is not there — the old key fell back to the absolute path in
+    // exactly that case, so there is nothing to look up that logSettingsKey() has not
+    // already answered. Same string, same answer: also nothing to look up.
+    if (canonical.isEmpty() || canonical == info.absoluteFilePath())
+        return QString();
+    return canonical;
 }
 
 QString logMatchTarget(const QString &path, bool fullPath)

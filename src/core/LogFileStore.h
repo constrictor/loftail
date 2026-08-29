@@ -182,6 +182,12 @@ private:
     };
 
     int  indexOf(const QString &key) const;
+    // The upgrade fallback for a record written while logSettingsKey() canonicalised a
+    // local path: find it under that spelling, COPY it under `key`, and answer the new
+    // entry's index. -1 when there is nothing to adopt, which is every log on every launch
+    // after the first. A copy and never a move, because the old spelling is still a live
+    // key for the file's own name — see the body.
+    int  adoptLegacyKey(const QString &address, const QString &key);
     int  allocateSlot(QString *error);
     bool writeSlot(int slot, const LogFileSettings &s, QString *error) const;
     void rebuildFromSlots();

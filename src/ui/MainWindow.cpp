@@ -1558,7 +1558,8 @@ DocumentContext *MainWindow::contextOfPath(const QString &address) const
     // Compared through logSettingsKey(), unlike viewOfPath() above, because the callers
     // here arrive with a SETTINGS address — one that has been round-tripped through the
     // store — while a context holds the spelling the log was opened with. The two differ
-    // over a symlink, a relative path and an `ssh://` URL with no port.
+    // over a relative path and an `ssh://` URL with no port. (Not over a symlink: the key
+    // resolves none, which is the whole of bugs.md 27.)
     const QString key = logSettingsKey(address);
     for (const auto &ctx : m_contexts) {
         if (ctx->doc && logSettingsKey(ctx->doc->path()) == key)
@@ -2752,7 +2753,9 @@ void MainWindow::showPreferences()
         // purpose (a format just confirmed reaches ctx->settings before the pool), so
         // asking it here would compare the tab against itself and never see a change.
         const auto own = m_fileStore.read(activePath).profile;
-        const LogProfile stored = own ? *own : m_logSettings.inherited(activePath);
+        // Through the key, like every other site that asks the tree (resolvedProfile()).
+        const LogProfile stored =
+            own ? *own : m_logSettings.inherited(logSettingsKey(activePath));
         if (!(stored == resolvedProfile(activePath)))
             applyProfileToActive(stored);
     }
@@ -2953,7 +2956,10 @@ void MainWindow::commitPreferences(const PreferencesDialog &dlg, const QString &
     LogFileSettings record = ctx ? ctx->fileSettings : m_fileStore.read(address);
     record.address = logSettingsKey(address);
     record.profile = dlg.fileProfile();
-    m_fileStore.save(record, m_logSettings.inherited(address));
+    // THE KEY ON BOTH HALVES OF THE STATEMENT. What the record is reduced against has to
+    // be what the record is filed under, or the redundancy rule is applied to one log's
+    // settings on behalf of another's node — see resolvedProfile().
+    m_fileStore.save(record, m_logSettings.inherited(record.address));
     if (ctx)
         ctx->fileSettings = record; // the change gate's baseline moves with the disk
 }
@@ -2964,6 +2970,16 @@ LogProfile MainWindow::resolvedProfile(const QString &address)
     // reading — a format the user has just changed reaches ctx->fileSettings before it
     // reaches the pool — so a second view created in between must not open on the older
     // answer, and a resolution taken mid-gesture must not disagree with the one on screen.
+    //
+    // ONE SPELLING, and every site that asks the tree must use it. `key` is what the log's
+    // own record is filed under, and it is also what the two inherited levels are asked
+    // about below: the raw address and the key were two different strings here for as long
+    // as logSettingsKey() canonicalised a local path, so a symlinked log could be READ
+    // through one pattern node and STORED against another — a per-log record for merely
+    // opening it, filed under a name its pattern does not claim, shadowing that pattern
+    // afterwards. The four asking sites are this function's two calls, commitPreferences()
+    // and showPreferences()'s comparison; persistFileSettings() already asks about the key
+    // it is writing. They move together or the split comes back.
     const QString key = logSettingsKey(address);
     for (const auto &ctx : m_contexts) {
         if (!ctx->doc || logSettingsKey(ctx->doc->path()) != key)
@@ -2972,7 +2988,7 @@ LogProfile MainWindow::resolvedProfile(const QString &address)
         // own record or its pattern supplies. `settings` is the half that can be newer
         // than the disk — a `--pattern` override, or a format just confirmed in the
         // dialog — so a second view created in between must not open on the older one.
-        LogProfile p = ctx->fileSettings.profile.value_or(m_logSettings.inherited(address));
+        LogProfile p = ctx->fileSettings.profile.value_or(m_logSettings.inherited(key));
         p.format = ctx->settings;
         return p;
     }
@@ -2982,7 +2998,7 @@ LogProfile MainWindow::resolvedProfile(const QString &address)
     // (SPEC.md §4). The two upper levels simply live in another file now.
     if (const auto own = m_fileStore.read(address).profile)
         return *own;
-    return m_logSettings.inherited(address);
+    return m_logSettings.inherited(key);
 }
 
 std::optional<RunSelection> MainWindow::runSelectionOf(const DocumentContext *ctx)

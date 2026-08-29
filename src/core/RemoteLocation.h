@@ -124,14 +124,31 @@ struct RemoteLocation
 // in viewOfPath(), the recent-files dedupe and the format cache no matter who opened it.
 QString normalizeLogPath(const QString &s);
 
-// The key one log is remembered under in the settings tree (LogSettings.h): its
-// normalized address for anything read through a spool, its canonical path otherwise.
+// The key one log is remembered under (LogFileStore.h): its normalized address for
+// anything read through a spool, its absolute path otherwise.
 //
-// The spooled branch is load-bearing. canonicalFilePath() returns EMPTY for a remote
-// URL and for an archive member — neither is a file on this filesystem — and the
-// absoluteFilePath() fallback would then mangle one into "<cwd>/ssh:/user@host/a.log",
-// a key that changes with the working directory and silently loses the log's settings.
+// The spooled branch is load-bearing. QFileInfo means nothing for a remote URL or an
+// archive member — neither is a file on this filesystem — and absoluteFilePath() would
+// mangle one into "<cwd>/ssh:/user@host/a.log", a key that changes with the working
+// directory and silently loses the log's settings.
+//
+// The local branch is absoluteFilePath() and NOT canonicalFilePath(): the authoritative
+// spelling of a log is THE NAME AS OPENED, which is also the name logMatchTarget() gives
+// a file pattern to test. The .cpp records what the two spellings cost while they
+// disagreed and which two consequences of one spelling were accepted.
 QString logSettingsKey(const QString &path);
+
+// The spelling logSettingsKey() used to answer for a local log — its canonical path —
+// or an empty string where that is not a different question (a spooled address, a log
+// that is not there, a path with no symbolic link in it).
+//
+// FOR THE UPGRADE FALLBACK AND NOTHING ELSE. LogFileStore::read() looks a record up
+// under this spelling when the log has none under its own, and COPIES it under the name
+// asked for — a copy because this spelling is still a live key for the file's own name,
+// so a move would take that file's settings away (see LogFileStore.cpp). A second caller
+// would be a second spelling in the store, which is the bug this pair exists to have
+// removed.
+QString legacyLogSettingsKey(const QString &path);
 
 // The string a file pattern is matched against (LogSettings.h).
 //
