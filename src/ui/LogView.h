@@ -447,7 +447,10 @@ signals:
 private slots:
     void handleRowsInserted();
     void handleRowsRemoved();
-    void handleTailChanged(); // a trailing record grew in place (M6 live update)
+    // A trailing record grew in place (M6 live update). The rows are carried through
+    // because the density map has to re-scan exactly them: the row's CONTENT moved
+    // under an unchanged row space, and nothing else in the bar ever revisits a row.
+    void handleTailChanged(int firstRow, int lastRow);
     void handleModelReset();
     void applyDebouncedResize();
     // One step of a drag that has left the viewport: scroll, then extend to whatever
@@ -555,6 +558,14 @@ private:
     void positionFollowButton();            // place the return-to-bottom overlay
 
     void recomputeGeometry();     // recompute selection-dependent wrap + scrollbars
+    // Re-measure m_selWrapCache, the exact path's ONE measured height. Split out of
+    // recomputeGeometry() because a live append has to re-measure without paying that
+    // function's estimated branch (which restarts the resize debounce): the selected
+    // record may be the trailing one, and a trailing record grows in place on every
+    // ingest tick of a live log. Leave it stale and the paint lays the record's new
+    // text into the rows it was given before the growth and drops the rest, with no
+    // ellipsis and no tooltip — truncatedCellText() declines for the selected record.
+    void measureSelectionWrap();
     void updateScrollBars();
     // The header band and the density strip, which are the two things the viewport's
     // margins are spent on — ONE setViewportMargins call, because two would each undo

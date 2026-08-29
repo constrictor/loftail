@@ -307,6 +307,8 @@ private slots:
     // --- the line pitch is the one Qt lays out at (ARCHITECTURE.md §7.1.1) ------
     void everyWrappedLineOfARecordIsDrawnInsideTheRowItWasGiven();
     void aSelectedRecordIsGivenExactlyTheLinesItsWrappedTextTakes();
+    void aGrowingSelectedRecordIsGivenTheLinesItsNewTextTakes();
+    void aFilteredLogsSelectedRecordIsRemeasuredWhenItsRowIsPutBack();
 
     // --- both wrapped-cell paths break lines the same way (bugs.md 4) -----------
     void aTabbedRecordBreaksWhereItAlwaysDidWhenFindIsArmed();
@@ -3670,6 +3672,193 @@ void TestLogView::aSelectedRecordIsGivenExactlyTheLinesItsWrappedTextTakes()
     QCOMPARE(ink.size(), claimed);
     for (int i = 1; i < ink.size(); ++i)
         QCOMPARE(ink.at(i).first - ink.at(i - 1).first, lh);
+}
+
+// THE ONE WHERE THE SELECTED RECORD GREW UNDER THE MEASUREMENT (bugs.md 33). The exact
+// path's twin of the estimated path's bugs.md 1, and it lasted longer because
+// m_selWrapCache has no syncTail(): the three live handlers refreshed the scrollbars and
+// repainted, and nothing re-measured. So while a reader had the trailing record selected
+// — the record a live log keeps rewriting — selWrapLines() went on answering the count it
+// was given before the growth, the paint laid the new text into those rows and dropped
+// the rest, and there is no ellipsis and no tooltip to say so.
+//
+// Read off the PIXELS, because that is the only place it shows: the record's every
+// physical line has to be drawn, and a record given nine rows for forty-nine lines of
+// text draws nine of them and looks perfectly ordinary.
+void TestLogView::aGrowingSelectedRecordIsGivenTheLinesItsNewTextTakes()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; nothing has an advance to wrap at");
+
+    constexpr int kChars = 300;
+    constexpr int kGrownBy = 20; // continuation lines appended to the one record
+
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, makeOneLongRecord(kChars)));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 1);
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    QPalette pal = view.palette();
+    pal.setColor(QPalette::Highlight, QColor(0x1e, 0x28, 0x3c));
+    pal.setColor(QPalette::HighlightedText, QColor(0xe8, 0xea, 0xec));
+    view.setPalette(pal);
+    LiveController live(&doc, &model);
+    const auto settle = [&view] {
+        QPixmap pm(view.viewport()->size());
+        view.viewport()->render(&pm); // delivers the pending resize; nothing is read back
+    };
+
+    // Room for the whole GROWN record from the start, and settled with a render before
+    // anything is measured: the wrap width is the message column's origin to the
+    // viewport's right edge, so a resize taking effect after the measurement would move
+    // the very quantity the case turns on — and a following view's scrollToEnd() then
+    // has nowhere to go, which leaves the record at the top where its band is.
+    const int lh = view.lineHeight();
+    view.resize(700, (kGrownBy + 14) * lh);
+    settle();
+    aimWrapWidth(view, kChars, 5);
+    view.setWrapMode(LogView::WrapMode::SelectedRecordOnly);
+    view.setCurrentRecord(0);
+    settle();
+
+    const int stale = view.selWrapLines();
+    QVERIFY2(stale > 1, "the record has to wrap before it grows");
+
+    // Continuation lines: they do not match recordStartRe, so they grow record 0 in
+    // place (invariant #2) rather than starting records of their own.
+    QByteArray grown;
+    for (int i = 0; i < kGrownBy; ++i)
+        grown += "    at some.frame(Source.java:1)\n";
+    file.write(grown);
+    file.flush();
+    live.checkNow();
+
+    QCOMPARE(doc.index().records.size(), 1);                            // no new row
+    QCOMPARE(doc.index().records.at(0).lineCount, quint16(1 + kGrownBy));
+
+    // The measurement followed the record, WITHOUT waiting for a paint: the handler is
+    // where a live append lands and the scroll range is decided there.
+    const int grownLines = view.selWrapLines();
+    QVERIFY2(grownLines > stale, "the selected record kept the height it was measured at");
+    QVERIFY(grownLines < RecordIndex::kDisplayLineCap);
+    QVERIFY(view.viewport()->height() >= grownLines * lh);
+
+    QImage img(view.viewport()->size(), QImage::Format_ARGB32);
+    img.fill(Qt::transparent);
+    view.viewport()->render(&img, QPoint(), QRegion(), QWidget::DrawWindowBackground);
+
+    // The record is selected, so its fill is the selection's rather than the band's.
+    const QRect band = messageBand(view, grownLines);
+    const QVector<std::pair<int, int>> ink = inkRuns(img, band, pal.highlight().color());
+    QVERIFY2(ink.size() > 1, "this font's glyphs leave no gap between painted lines");
+
+    // Every one of the record's physical lines was drawn. This is what the stale
+    // measurement cost: the band was `stale` rows tall and could hold no more than that
+    // many, so the twenty continuation lines were laid out into rows the cell had not
+    // been given and simply not drawn.
+    QVERIFY2(ink.size() >= 1 + kGrownBy,
+             qPrintable(QStringLiteral("only %1 of the record's %2 lines were drawn")
+                            .arg(ink.size())
+                            .arg(1 + kGrownBy)));
+    // ...and exactly as many as it was given rows for, on the view's own pitch: one more
+    // is a blank strip under the text, one fewer is text cut off.
+    QCOMPARE(ink.size(), grownLines);
+    for (int i = 1; i < ink.size(); ++i)
+        QCOMPARE(ink.at(i).first - ink.at(i - 1).first, lh);
+}
+
+// The same growth, the other route into the view — and the reason all three handlers had
+// to be fixed rather than only the dataChanged one. Under an active filter a tick does
+// not report the provisional record as changed at all: LiveController POPS its view row
+// and re-emits it, so the growth arrives as a rowsRemoved and a rowsInserted and
+// handleTailChanged() is never called. A fix confined to that handler leaves every
+// filtered live log exactly as broken, which is the ordinary case rather than a corner.
+void TestLogView::aFilteredLogsSelectedRecordIsRemeasuredWhenItsRowIsPutBack()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts resolve on this platform; nothing has an advance to wrap at");
+
+    constexpr int kChars = 300;
+    constexpr int kGrownBy = 20;
+
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, makeOneLongRecord(kChars)));
+
+    Document doc;
+    QVERIFY2(doc.open(file.fileName(),
+                      QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                      Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    QPalette pal = view.palette();
+    pal.setColor(QPalette::Highlight, QColor(0x1e, 0x28, 0x3c));
+    pal.setColor(QPalette::HighlightedText, QColor(0xe8, 0xea, 0xec));
+    view.setPalette(pal);
+    const int lh = view.lineHeight();
+    view.resize(700, (kGrownBy + 14) * lh);
+    LiveController live(&doc, &model);
+    const auto settle = [&view] {
+        QPixmap pm(view.viewport()->size());
+        view.viewport()->render(&pm);
+    };
+    settle();
+
+    // A filter the one record passes: what matters is that the view is MATERIALIZED, so
+    // the live tick takes the filtered branch and withdraws the provisional row.
+    doc.filters().priorityEnabled = true;
+    doc.filters().minPriority = Priority::Info;
+    model.beginFilterReset();
+    doc.applyFilters();
+    model.endFilterReset();
+    QVERIFY(doc.filtered().active());
+    QCOMPARE(model.rowCount(), 1);
+
+    aimWrapWidth(view, kChars, 5);
+    view.setWrapMode(LogView::WrapMode::SelectedRecordOnly);
+    view.setCurrentRecord(0);
+    settle();
+
+    const int stale = view.selWrapLines();
+    QVERIFY(stale > 1);
+
+    QByteArray grown;
+    for (int i = 0; i < kGrownBy; ++i)
+        grown += "    at some.frame(Source.java:1)\n";
+    file.write(grown);
+    file.flush();
+    live.checkNow();
+
+    QCOMPARE(model.rowCount(), 1); // the same row, popped and put back
+    QCOMPARE(doc.index().records.at(0).lineCount, quint16(1 + kGrownBy));
+
+    const int grownLines = view.selWrapLines();
+    QVERIFY2(grownLines > stale,
+             "the popped-and-re-added row kept the height it was measured at");
+
+    QImage img(view.viewport()->size(), QImage::Format_ARGB32);
+    img.fill(Qt::transparent);
+    view.viewport()->render(&img, QPoint(), QRegion(), QWidget::DrawWindowBackground);
+
+    // Read against the ordinary row fill and not the selection's: QItemSelectionModel
+    // drops a selected row when it is REMOVED, so the pop takes the highlight with it
+    // and only the CURRENT record survives — which is what selRecordForGeometry() reads
+    // and therefore all this case needs.
+    const QRect band = messageBand(view, grownLines);
+    const QVector<std::pair<int, int>> ink = inkRuns(img, band, pal.base().color());
+    QVERIFY2(ink.size() >= 1 + kGrownBy,
+             qPrintable(QStringLiteral("only %1 of the record's %2 lines were drawn")
+                            .arg(ink.size())
+                            .arg(1 + kGrownBy)));
+    QCOMPARE(ink.size(), grownLines);
 }
 
 // --- the two wrapped-cell paths break lines identically ----------------------

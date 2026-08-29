@@ -118,6 +118,26 @@ public:
     // surviving bucket, since that bucket may be carrying a mark from a row that is gone.
     void setRows(int rows);
 
+    // The rows `firstRow`..`lastRow` (inclusive) changed their CONTENT under an
+    // unchanged row space — the trailing record a live log rewrites in place, which
+    // moves no row count at all and so reaches neither setRows() branch. Whatever was
+    // recorded about them was recorded from an incomplete record, and it is wrong in
+    // both directions: a rule or a query keyed on a word that has only just arrived
+    // leaves a coloured record with no mark, and one keyed on a word the growth has
+    // pushed out of a truncated line leaves a mark nothing clears — marks are only ever
+    // OR-ed into a bucket, so nothing takes one out again.
+    //
+    // The buckets holding those rows are cleared and the scan REWOUND to the first row
+    // of the first of them, which is the shrink branch's argument one trigger over:
+    // nothing records which row put a mark in a bucket, so the only way to un-say one is
+    // to re-scan the bucket that holds it. Both lanes rewind together, because both were
+    // scanned off the same incomplete text.
+    //
+    // A rewind and never clear(Lane): this runs on the INGEST PATH, once per tick of
+    // every live log, and clearing would throw away a whole lane's scan of a
+    // ten-million-record file for one row's worth of doubt.
+    void invalidateRows(int firstRow, int lastRow);
+
     int rows() const { return m_rows; }
     int rowsPerBucket() const { return m_rowsPerBucket; }
     int bucketCount() const { return int(m_lane[0].bucket.size()); }

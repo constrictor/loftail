@@ -36,6 +36,7 @@
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
+#include "LiveController.h"
 #include "FindBar.h"
 #include "Highlight.h"
 #include "LogModel.h"
@@ -510,6 +511,77 @@ private slots:
         const QRect warnColumn = s->ruleColumnRect(2);
         QVERIFY(!errorColumn.isNull() && !warnColumn.isNull());
         QVERIFY(!errorColumn.intersects(warnColumn));
+    }
+
+    // THE ROW THAT CHANGED AFTER IT WAS SCANNED (bugs.md 39). The map is a forward scan
+    // behind a watermark, and until this was fixed the only things that ever moved a row
+    // back behind it were a lane being cleared, a rebind and setRows()'s shrink. A live
+    // log's trailing record grows IN PLACE — no row is inserted and none is removed — so
+    // a record indexed while it was still being written, and scanned within a slice or
+    // two of that, kept the answer its incomplete text gave for the life of the tab.
+    //
+    // Driven through the Find lane because its probe reads the record's whole text,
+    // continuation lines included, which is exactly the OutOfMemoryError-inside-a-stack-
+    // trace shape the entry names. The tick is driven by hand (tst_lastrun's route)
+    // rather than waited for, so the watermark can be read before the scan timer runs.
+    void aRecordThatGrowsAfterItWasScannedIsScannedAgain()
+    {
+        const QString path = m_dir.filePath(QStringLiteral("grow.log"));
+        writeLog(path, 400, 200);
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        openAndSettle(w, path, 400);
+
+        // "needle!" is on records 3, 103, 203 and 303 and on nothing near the end.
+        FindBar *fb = w.findChild<FindBar *>();
+        QVERIFY(fb);
+        QLineEdit *box = fb->findChild<QLineEdit *>();
+        QVERIFY(box);
+        fb->activate();
+        QTest::keyClicks(box, QStringLiteral("needle!"));
+        QTRY_VERIFY(!logView(w)->findMatcher().isEmpty());
+
+        DensityScrollBar *s = bar(w);
+        s->scanNowForTests();
+        scrollToTop(w);
+        QCOMPARE(s->map().scanned(DensityMap::Lane::Find), 400);
+        const int lastBucket = s->map().bucketOf(399);
+        QCOMPARE(s->map().at(DensityMap::Lane::Find, lastBucket), DensityMap::kNone);
+        const QPair<int, int> before = findBand(s);
+        QVERIFY2(before.first >= 0, "the armed query marked nothing to begin with");
+
+        // The record at the end of the file goes on being written: a continuation line,
+        // which does not start a record (invariant #2) and so moves no row count at all.
+        {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::Append));
+            f.write("    at some.frame(Source.java:1) needle!\n");
+        }
+        auto *dv = qobject_cast<DocumentView *>(
+            w.findChild<QTabWidget *>(QStringLiteral("documentTabs"))->widget(0));
+        QVERIFY(dv && dv->context() && dv->context()->live);
+        dv->context()->live->checkNow();
+        QCOMPARE(logView(w)->recordCount(), 400); // no new row: the same record, longer
+
+        // Rewound to that row's bucket and no further — a rewind and not a clear, or an
+        // ingest tick would cost what a keystroke in Find costs the find lane.
+        const int firstRow = s->map().firstRowOf(lastBucket);
+        QCOMPARE(s->map().scanned(DensityMap::Lane::Find), firstRow);
+        QCOMPARE(s->map().scanned(DensityMap::Lane::Rules), firstRow);
+        QVERIFY2(firstRow > 0, "the whole lane was thrown away");
+
+        s->scanNowForTests();
+        scrollToTop(w);
+        QVERIFY2(s->map().at(DensityMap::Lane::Find, lastBucket) != DensityMap::kNone,
+                 "the grown record was never looked at again");
+        // ...and it is on the bar, further down than anything the query had matched
+        // before, which is the only place the reader can see any of it.
+        const QPair<int, int> after = findBand(s);
+        QVERIFY2(after.second > before.second, "the new match is not drawn on the bar");
+        // The rule lane came through the rewind with its own marks intact.
+        QVERIFY2(rulesBand(s).first >= 0, "the ingest tick threw the rule lane away");
     }
 
     // The marks and the thumb sit CENTRED across the bar. Both used to lean left: the

@@ -90,6 +90,12 @@ public:
     // this is safe on the ingest path.
     void rowsChanged();
 
+    // Those rows' CONTENT moved under an unchanged row space — the trailing record a
+    // live log rewrites in place. Both lanes re-scan the buckets holding them and keep
+    // everything else; see DensityMap::invalidateRows for why it is a rewind and not a
+    // clear. This is the only thing on the ingest path that ever revisits a scanned row.
+    void invalidateRows(int firstRow, int lastRow);
+
     // The highlight rules moved: re-scan the rule lane, keep the find lane.
     void invalidateRules();
 

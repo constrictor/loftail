@@ -524,9 +524,15 @@ LogView::LogView(const Document *document, LogModel *model, QWidget *parent, Rol
     connect(m_model, &QAbstractItemModel::modelReset, this, &LogView::handleModelReset);
     // A trailing record that grew in place (M6 live append with no new rows) arrives
     // as a dataChanged, not an insert; it changes that record's height, so refresh
-    // geometry and keep following if attached.
+    // geometry and keep following if attached. The ROWS are carried through rather than
+    // dropped, because the density map has to re-scan exactly them (§7.1.7): their
+    // content moved under an unchanged row space, which is the one thing its forward
+    // scan would otherwise never look at twice.
     connect(m_model, &QAbstractItemModel::dataChanged, this,
-            [this](const QModelIndex &, const QModelIndex &, const QList<int> &) { handleTailChanged(); });
+            [this](const QModelIndex &topLeft, const QModelIndex &bottomRight,
+                   const QList<int> &) {
+                handleTailChanged(topLeft.row(), bottomRight.row());
+            });
 
     // Return-to-bottom control (SPEC.md §3): a small overlay shown only when follow
     // has detached; clicking it re-attaches and jumps to the newest record. A digest
@@ -890,24 +896,29 @@ void LogView::recomputeGeometry()
         return;
     }
 
-    const int sel = selRecordForGeometry();
-    if (sel >= 0) {
-        const int msgCol = wrappedMessageColumn();
-        if (msgCol >= 0) {
-            // The same width the paint lays the cell out in, from the same expression.
-            // These used to floor independently — 50 px here against 10 px there — so
-            // below ~28 px of available width the paint wrapped narrower than the
-            // measure, needed more lines than the rows it had been given, and dropped
-            // the tail of the selected record with no ellipsis and no tooltip.
-            m_selWrapCache = measureWrappedLines(m_model->cellText(sel, msgCol), messageWrapWidth());
-        } else {
-            m_selWrapCache = RecordIndex::displayLines(geom().records.at(sel));
-        }
-    } else {
-        m_selWrapCache = -1;
-    }
+    measureSelectionWrap();
     updateScrollBars();
     viewport()->update();
+}
+
+void LogView::measureSelectionWrap()
+{
+    const int sel = selRecordForGeometry();
+    if (sel < 0) {
+        m_selWrapCache = -1;
+        return;
+    }
+    const int msgCol = wrappedMessageColumn();
+    if (msgCol < 0) {
+        m_selWrapCache = RecordIndex::displayLines(geom().records.at(sel));
+        return;
+    }
+    // The same width the paint lays the cell out in, from the same expression.
+    // These used to floor independently — 50 px here against 10 px there — so
+    // below ~28 px of available width the paint wrapped narrower than the
+    // measure, needed more lines than the rows it had been given, and dropped
+    // the tail of the selected record with no ellipsis and no tooltip.
+    m_selWrapCache = measureWrappedLines(m_model->cellText(sel, msgCol), messageWrapWidth());
 }
 
 void LogView::updateScrollBars()
@@ -2759,12 +2770,32 @@ void LogView::positionFollowButton()
                          viewport()->height() - s.height() - m);
 }
 
+// All three live handlers below re-measure the exact path's one measured height BEFORE
+// they touch the scrollbars, and all three of them are needed.
+//
+// m_selWrapCache is what the paint gives the selected record rows for, and the record a
+// reader has selected on a live log is very often the trailing one — the record the log
+// keeps rewriting, and the one MainWindow selects itself after a run switch. Growth
+// reaches these three by two different routes and neither used to re-measure: an
+// unfiltered log grows the trailing record in place, which arrives as a dataChanged, and
+// a FILTERED one pops its provisional row and re-adds it on every tick, which arrives as
+// a remove and an insert and never reaches handleTailChanged() at all. So fixing the
+// dataChanged handler alone leaves the filtered half exactly as broken.
+//
+// It is the estimated path's syncTail() one mode over (bugs.md 1) — and flooring
+// recordHeightLines() at displayLines() is NOT the fix, however tempting: that settles
+// the geometry statics' disagreement with the paint and leaves the clipping, which is
+// the half the reader can see.
+//
+// The order matters: scrollToEnd() resolves through the line mapping, so a following
+// view must be re-measured before it is asked where the end is.
 void LogView::handleRowsInserted()
 {
     // Stay pinned to the newest record while following (SPEC.md §3). Detached, the
     // rows still index and the view holds its position for reading history.
     if (estimating())
         ensureEstimatorBound(); // extend the estimator over the newly appended blocks
+    measureSelectionWrap();
     updateScrollBars();
     if (m_following)
         scrollToEnd();
@@ -2782,6 +2813,7 @@ void LogView::handleRowsRemoved()
     // the matching re-insert arrives.
     if (estimating())
         ensureEstimatorBound();
+    measureSelectionWrap();
     updateScrollBars();
     if (m_following)
         scrollToEnd();
@@ -2790,18 +2822,27 @@ void LogView::handleRowsRemoved()
         m_density->rowsChanged();
 }
 
-void LogView::handleTailChanged()
+void LogView::handleTailChanged(int firstRow, int lastRow)
 {
     // A trailing record grew taller in place (continuation lines appended) with no
     // new rows: its height changed, so the scroll range must be recomputed.
     if (estimating())
         ensureEstimatorBound();
+    measureSelectionWrap();
     updateScrollBars();
     if (m_following)
         scrollToEnd();
     viewport()->update();
+    // The row's CONTENT moved, so whatever the density scan recorded about it was
+    // recorded from an incomplete record — a colour rule or a Find query keyed on a
+    // word in a continuation line answers differently now, in both directions. This is
+    // the ONE place a scanned row is ever revisited on the unfiltered live path:
+    // setRows()'s growth branch leaves the watermark alone by design, and refresh() is
+    // a repaint. It is a rewind of the buckets these rows fall in and emphatically not
+    // a clear() of the lanes — an ingest tick would otherwise throw away the whole rule
+    // scan, which is what a keystroke in Find already costs the find lane.
     if (m_density)
-        m_density->refresh();
+        m_density->invalidateRows(firstRow, lastRow);
 }
 
 void LogView::beginFilterUpdate()

@@ -148,6 +148,13 @@ void DensityScrollBar::rowsChanged()
     startScanning();
 }
 
+void DensityScrollBar::invalidateRows(int firstRow, int lastRow)
+{
+    syncRows();
+    m_map.invalidateRows(firstRow, lastRow);
+    startScanning();
+}
+
 void DensityScrollBar::invalidateRules()
 {
     syncRows();

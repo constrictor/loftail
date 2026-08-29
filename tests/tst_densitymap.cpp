@@ -193,6 +193,71 @@ private slots:
         QVERIFY(p.calls - 10000 <= m.rowsPerBucket());
     }
 
+    // THE ROW THAT CHANGED UNDER THE SCAN (bugs.md 39). A live log rewrites its
+    // trailing record in place, which moves no row count at all — so neither setRows()
+    // branch is reached and the answer the row's incomplete text gave stood for the life
+    // of the tab. It leaks both ways, marks being only ever OR-ed into a bucket: a rule
+    // keyed on a word inside a stack trace never marks the record, and one whose word
+    // the growth pushed out of a truncated line keeps a mark nothing clears.
+    //
+    // The rewind is to the changed row's BUCKET, both lanes together, and everything
+    // before it stands — which is the whole of why this is affordable on the ingest
+    // path where clear(Lane) would not be.
+    void aChangedRowIsRescannedAndNothingElseIs()
+    {
+        DensityMap m;
+        m.rebind(10000);
+        Probe rules;
+        rules.markedRow = 100;
+        scanAll(m, DensityMap::Lane::Rules, rules.fn());
+        Probe find;
+        find.markedRow = 100;
+        scanAll(m, DensityMap::Lane::Find, find.fn());
+        QCOMPARE(m.scanned(DensityMap::Lane::Rules), 10000);
+        QCOMPARE(m.scanned(DensityMap::Lane::Find), 10000);
+        QCOMPARE(rules.calls, 10000);
+
+        // The trailing record grew: its row now answers differently.
+        m.invalidateRows(9999, 9999);
+
+        // Rewound to that row's bucket and no further, in BOTH lanes — they were scanned
+        // off the same incomplete text, so both were wrong about it.
+        const int first = m.firstRowOf(m.bucketOf(9999));
+        QCOMPARE(m.scanned(DensityMap::Lane::Rules), first);
+        QCOMPARE(m.scanned(DensityMap::Lane::Find), first);
+        // And a rewind, never a clear: the mark 9899 rows earlier is still there, which
+        // is the whole scan of the log the ingest path must not be paying for again.
+        QCOMPARE(m.at(DensityMap::Lane::Rules, m.bucketOf(100)), DensityMap::classBit(0));
+        QCOMPARE(m.at(DensityMap::Lane::Find, m.bucketOf(100)), DensityMap::classBit(0));
+
+        // The re-scan sees the row it was told about, and asks about no more rows than
+        // the bucket holding it covers.
+        rules.markedRow = 9999;
+        scanAll(m, DensityMap::Lane::Rules, rules.fn());
+        QVERIFY(rules.calls - 10000 <= m.rowsPerBucket());
+        QCOMPARE(m.at(DensityMap::Lane::Rules, m.bucketOf(9999)), DensityMap::classBit(0));
+    }
+
+    // The other direction, which the OR-ing is what makes possible: a row that matched
+    // on the text it had and stops matching once it is complete. Nothing but a re-scan
+    // of its bucket can take that mark off the bar.
+    void aRowThatStopsMatchingLosesItsMark()
+    {
+        DensityMap m;
+        m.rebind(64); // one bucket per row, so the claim is about the row itself
+        QCOMPARE(m.rowsPerBucket(), 1);
+        Probe p;
+        p.markedRow = 63;
+        scanAll(m, DensityMap::Lane::Find, p.fn());
+        QCOMPARE(m.at(DensityMap::Lane::Find, m.bucketOf(63)), DensityMap::classBit(0));
+
+        m.invalidateRows(63, 63);
+        p.markedRow = -1;
+        scanAll(m, DensityMap::Lane::Find, p.fn());
+        QCOMPARE(m.at(DensityMap::Lane::Find, m.bucketOf(63)), DensityMap::kNone);
+        QVERIFY(!m.anyMark(DensityMap::Lane::Find));
+    }
+
     // A rebind is the one thing that throws everything away, because a view row now
     // names a different record.
     void rebindingDropsEverything()

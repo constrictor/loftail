@@ -91,6 +91,25 @@ void DensityMap::setRows(int rows)
     reshape();
 }
 
+void DensityMap::invalidateRows(int firstRow, int lastRow)
+{
+    if (m_rows <= 0 || bucketCount() <= 0)
+        return;
+    const int from = qBound(0, qMin(firstRow, lastRow), m_rows - 1);
+    const int to = qBound(0, qMax(firstRow, lastRow), m_rows - 1);
+    const int firstBucket = bucketOf(from);
+    const int lastBucket = bucketOf(to);
+    // The first row of the FIRST affected bucket, not `from`: the bucket is cleared
+    // whole, so every row it covers has to be offered again or the rows before `from`
+    // lose the marks they had.
+    const int rewindTo = firstRowOf(firstBucket);
+    for (LaneState &lane : m_lane) {
+        for (int b = firstBucket; b <= lastBucket; ++b)
+            lane.bucket[b] = kNone;
+        lane.scanned = qMin(lane.scanned, rewindTo);
+    }
+}
+
 void DensityMap::reshape()
 {
     if (m_rows <= 0) {

@@ -334,6 +334,23 @@ as the menu item now, and the fix took a smaller sibling with it: the copy also 
 the writability check, so a build without SSH got that same sentence rather than the one
 naming the dependency it lacks.
 
+Entries 33 and 39 have gone together, because they are one omission in the three handlers
+a live append reaches: a record that grows in place moves no row count, so nothing
+revisited it. Under Line Wrap ▸ Selected record only that left the selected record — very
+often the trailing one, which is the record a live log keeps rewriting and the one the
+window selects itself after a run switch — with the height it was measured at, and the
+paint draws only the lines that height gave it, so text arriving after the measurement
+was laid out and not drawn, with no ellipsis and no tooltip; nine cached lines against a
+true forty-nine in the case measured. In the density scrollbar it left the record wearing
+whatever marks its incomplete text had produced, for the life of the tab, and in both
+directions, marks being only ever OR-ed into a bucket: a rule matching a word that
+arrives in a continuation line never marks the record, and a mark the growth invalidates
+is never cleared. The measured height is re-measured by all three handlers now, and the
+bar's scan is rewound to the changed row rather than a lane being cleared — which would
+cost an ingest tick what a keystroke in Find already costs the find lane. The filtered
+path turned out to have been accidentally immune to both, its per-tick withdrawal of the
+provisional row reaching the shrink branch.
+
 Entry 34 has gone as well: a stale remote tab lost its strip, its ⊘ and its reason the
 moment the transport gave up trying, because "the origin is no longer reported gone" was
 being read as "the source is delivering again" — and for a spool the first is exactly the
