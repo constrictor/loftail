@@ -25,6 +25,7 @@
 #include "SecretStore.h"
 #include "SocketDetach.h"
 #include "SshExecCommands.h"
+#include "SshSessionHealth.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -58,6 +59,43 @@ struct Tr
 };
 } // namespace
 
+// The numbers SshSessionHealth.h mirrors are libssh2's own. This is the only translation
+// unit in the tree that can see the real header, so it is the only one that can check the
+// mirror — and it does, so that a drift is a compile error here rather than a
+// misclassification nobody notices on a machine nobody can reproduce.
+static_assert(SshError::kNone == LIBSSH2_ERROR_NONE, "libssh2 error code mirror drifted");
+static_assert(SshError::kSocketNone == LIBSSH2_ERROR_SOCKET_NONE, "mirror drifted");
+static_assert(SshError::kBannerRecv == LIBSSH2_ERROR_BANNER_RECV, "mirror drifted");
+static_assert(SshError::kBannerSend == LIBSSH2_ERROR_BANNER_SEND, "mirror drifted");
+static_assert(SshError::kInvalidMac == LIBSSH2_ERROR_INVALID_MAC, "mirror drifted");
+static_assert(SshError::kKexFailure == LIBSSH2_ERROR_KEX_FAILURE, "mirror drifted");
+static_assert(SshError::kAlloc == LIBSSH2_ERROR_ALLOC, "mirror drifted");
+static_assert(SshError::kSocketSend == LIBSSH2_ERROR_SOCKET_SEND, "mirror drifted");
+static_assert(SshError::kKeyExchangeFailure == LIBSSH2_ERROR_KEY_EXCHANGE_FAILURE,
+              "mirror drifted");
+static_assert(SshError::kTimeout == LIBSSH2_ERROR_TIMEOUT, "mirror drifted");
+static_assert(SshError::kDecrypt == LIBSSH2_ERROR_DECRYPT, "mirror drifted");
+static_assert(SshError::kSocketDisconnect == LIBSSH2_ERROR_SOCKET_DISCONNECT,
+              "mirror drifted");
+static_assert(SshError::kProto == LIBSSH2_ERROR_PROTO, "mirror drifted");
+static_assert(SshError::kAuthenticationFailed == LIBSSH2_ERROR_AUTHENTICATION_FAILED,
+              "mirror drifted");
+static_assert(SshError::kChannelFailure == LIBSSH2_ERROR_CHANNEL_FAILURE, "mirror drifted");
+static_assert(SshError::kChannelRequestDenied == LIBSSH2_ERROR_CHANNEL_REQUEST_DENIED,
+              "mirror drifted");
+static_assert(SshError::kChannelClosed == LIBSSH2_ERROR_CHANNEL_CLOSED, "mirror drifted");
+static_assert(SshError::kChannelEofSent == LIBSSH2_ERROR_CHANNEL_EOF_SENT, "mirror drifted");
+static_assert(SshError::kZlib == LIBSSH2_ERROR_ZLIB, "mirror drifted");
+static_assert(SshError::kSocketTimeout == LIBSSH2_ERROR_SOCKET_TIMEOUT, "mirror drifted");
+static_assert(SshError::kSftpProtocol == LIBSSH2_ERROR_SFTP_PROTOCOL, "mirror drifted");
+static_assert(SshError::kRequestDenied == LIBSSH2_ERROR_REQUEST_DENIED, "mirror drifted");
+static_assert(SshError::kEagain == LIBSSH2_ERROR_EAGAIN, "mirror drifted");
+static_assert(SshError::kBadUse == LIBSSH2_ERROR_BAD_USE, "mirror drifted");
+static_assert(SshError::kCompress == LIBSSH2_ERROR_COMPRESS, "mirror drifted");
+static_assert(SshError::kSocketRecv == LIBSSH2_ERROR_SOCKET_RECV, "mirror drifted");
+static_assert(SshError::kEncrypt == LIBSSH2_ERROR_ENCRYPT, "mirror drifted");
+static_assert(SshError::kBadSocket == LIBSSH2_ERROR_BAD_SOCKET, "mirror drifted");
+static_assert(SshError::kMacFailure == LIBSSH2_ERROR_MAC_FAILURE, "mirror drifted");
 
 namespace {
 
@@ -198,6 +236,12 @@ struct SshSession::Impl
     ExecTools         execTools;            // what the connect-time probe found
     SizeSource        execSize = SizeSource::None; // settled at openFile(), per open
 
+    // Whether the transport underneath is still usable (SshSessionHealth.h, bugs.md 30).
+    // MUTABLE because every operation on this class is entitled to record what libssh2
+    // just told it, including the const ones — a `stat` that failed because the link died
+    // is exactly the observation isConnected() has to be able to make.
+    mutable SessionHealth health;
+
     ~Impl() { teardown(); }
 
     // The ladder, wired to this session. Built fresh per use — it holds no state worth
@@ -222,6 +266,35 @@ struct SshSession::Impl
                 return execRead(offset, buffer.data(), length, nullptr);
             }};
     }
+
+    // Record what a libssh2 call just answered, so that isConnected() can stop testing a
+    // pointer and start testing the link (bugs.md 30). LATCHES ONLY — nothing here frees,
+    // closes or tears anything down, because the thread inside libssh2 owns the session
+    // and every one of these may be reached from it (see SshSessionHealth.h).
+    //
+    // Two spellings because libssh2 reports in two ways: the channel and SFTP read/write
+    // calls RETURN the negative error code, while everything that answers with a null
+    // pointer or a plain non-zero leaves it in the session for last_errno() to fetch.
+    //
+    // Prefer the RETURNED code wherever there is one. libssh2 does not clear last_errno
+    // on success, so the session's copy is only trustworthy immediately after a call that
+    // actually failed — which is every noteSessionError() site here, each of them inside
+    // the failure branch of the call that set it. Calling it anywhere else reads whatever
+    // went wrong last, possibly minutes ago, and condemns a live session for it.
+    void noteError(int code) const { health.noteError(code); }
+    void noteSessionError() const
+    {
+        if (session)
+            health.noteError(libssh2_session_last_errno(session));
+    }
+
+    // The other direction: this call got a whole answer back, so the link is there. Said
+    // only where a round trip COMPLETED — not merely where a call did not report a
+    // transport code, which a dead link produces all day. See SshSessionHealth.h for why
+    // the latch has to be clearable at all: it is set from calls that can latch without
+    // failing, and an unclearable flag then fires arbitrarily later on an unrelated and
+    // perfectly benign failure.
+    void noteAlive() const { health.markAlive(); }
 
     // Run `command` on the server and collect its stdout. Blocking, bounded by the
     // session timeout like everything else here. Returns false when the channel could
@@ -292,11 +365,18 @@ bool SshSession::Impl::runCommand(const QString &command, QByteArray *stdOut, in
         return false;
 
     LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(session);
-    if (!channel)
+    if (!channel) {
+        // A channel that will not open is usually the LINK being gone rather than the
+        // server saying no, and this is the call the whole exec transport goes through —
+        // every stat, every read, every size probe — so it is where a dropped connection
+        // is first noticed on that side.
+        noteSessionError();
         return false;
+    }
 
     const QByteArray line = command.toUtf8();
     if (libssh2_channel_exec(channel, line.constData()) != 0) {
+        noteSessionError();
         libssh2_channel_free(channel);
         return false;
     }
@@ -319,8 +399,22 @@ bool SshSession::Impl::runCommand(const QString &command, QByteArray *stdOut, in
         } while (err > 0);
         if (n == 0 && libssh2_channel_eof(channel))
             break;
-        if (n < 0)
-            break; // timeout or transport error; whatever arrived is what we have
+        if (n < 0) {
+            // Timeout or transport error; whatever arrived is what we have. WHICH of the
+            // two it was decides whether this session has a future, so the code is
+            // recorded before it is thrown away — libssh2 returns it here rather than
+            // leaving it in the session.
+            //
+            // This one latches even though the caller is about to be told `true`, unlike
+            // readAt()'s partial read, and the difference is that whether the partial
+            // output is an ANSWER is not knowable here — it is knowable one level up,
+            // where statPath() clears the latch the moment a rung parses (noteAlive()).
+            // So a drain cut short by a blip costs at most the rest of this poll, and only
+            // matters if the next poll's stat fails too, by which time the session
+            // probably has died.
+            noteError(int(n));
+            break;
+        }
     }
 
     libssh2_channel_close(channel);
@@ -358,11 +452,14 @@ bool SshSession::Impl::runScriptStreaming(
         return fail(Tr::tr("Not connected."));
 
     LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(session);
-    if (!channel)
+    if (!channel) {
+        noteSessionError();
         return fail(sessionError(session, Tr::tr("Opening a command channel failed")));
+    }
 
     const QByteArray line = command.toUtf8();
     if (libssh2_channel_exec(channel, line.constData()) != 0) {
+        noteSessionError();
         const QString why = sessionError(session, Tr::tr("Starting the command failed"));
         libssh2_channel_free(channel);
         return fail(why);
@@ -413,6 +510,12 @@ bool SshSession::Impl::runScriptStreaming(
         if (broken) {
             // The ordinary way out of an ABORTED run: abort() shuts the descriptor, so
             // the next read fails. Whatever arrived before that is what the reader keeps.
+            // Either way the session is finished — an abort shuts the socket for good —
+            // so the code is recorded rather than only rendered into a sentence.
+            if (out < 0 && out != LIBSSH2_ERROR_EAGAIN)
+                noteError(int(out));
+            if (err < 0 && err != LIBSSH2_ERROR_EAGAIN)
+                noteError(int(err));
             transportError = sessionError(session, Tr::tr("The command was interrupted"));
             break;
         }
@@ -451,11 +554,14 @@ bool SshSession::Impl::runCommandWithInput(const QString &command, const QByteAr
         return fail(Tr::tr("Not connected."));
 
     LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(session);
-    if (!channel)
+    if (!channel) {
+        noteSessionError();
         return fail(Tr::tr("The server would not open a channel to write with."));
+    }
 
     const QByteArray line = command.toUtf8();
     if (libssh2_channel_exec(channel, line.constData()) != 0) {
+        noteSessionError();
         libssh2_channel_free(channel);
         return fail(Tr::tr("The server would not run the command to write the file."));
     }
@@ -469,12 +575,18 @@ bool SshSession::Impl::runCommandWithInput(const QString &command, const QByteAr
         const ssize_t n = libssh2_channel_write(channel, stdIn.constData() + written,
                                                 size_t(stdIn.size() - written));
         if (n < 0) {
+            noteError(int(n));
             ok = false;
             break;
         }
         if (n == 0) {
             // No progress and no error: the peer is gone or the session has timed out.
             // Spinning here would hang the worker for ever.
+            //
+            // Deliberately NOT noted as a transport failure: libssh2 set no code for
+            // this, so last_errno() here would answer with whatever failed last — see
+            // noteSessionError(). The write is reported as failed on its own, which is
+            // what this path is for.
             ok = false;
             break;
         }
@@ -882,7 +994,16 @@ bool SshSession::isConnected() const
     // An exec session never has an SFTP handle, so "connected" has to mean the session
     // rather than the subsystem. Getting this wrong would make the reconnect loop treat
     // a perfectly healthy exec session as a dropped link, forever.
-    return d->session != nullptr
+    //
+    // THE POINTERS ARE NOT ENOUGH, and for six milestones they were all this asked: they
+    // are cleared only by teardown(), whose every caller is a failed connect or an
+    // explicit close, so once a connect had succeeded this answered true for the life of
+    // the object however dead the link. SshFetcher::pollOnce()'s "the connection dropped,
+    // let go of it so the next turn re-establishes it" branch was therefore unreachable,
+    // and a tab whose machine went away polled a corpse for ever (bugs.md 30). The latch
+    // is what asks the transport instead; it is set by whichever thread was inside the
+    // failing libssh2 call and frees nothing (SshSessionHealth.h).
+    return d->session != nullptr && !d->health.dead()
         && (d->mode == Mode::Exec || d->sftp != nullptr);
 }
 
@@ -1060,6 +1181,13 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
             // No handle exists in this mode, so the inode substitute is unavailable and
             // SshFetcher's weaker mtime/head-compare rotation check is what applies.
             d->fstatTracks = false;
+            // AND THE HEALTH LATCH IS CLEARED, which is not tidying: the probe above will
+            // usually have run through a TIMEOUT — the whole shape this fallback exists
+            // for — and a timeout is terminal (SshSessionHealth.h). Leaving it latched
+            // would hand back an exec session isConnected() calls dead, on exactly the
+            // servers this branch was written for. A command has just run on it; it is
+            // alive, whatever the SFTP subsystem said.
+            d->health.markAlive();
             kind = Failure::None;
             return true;
         }
@@ -1111,6 +1239,9 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
         d->teardown();
         return false;
     }
+    // A connect that got all the way in is the one thing that clears the latch on a live
+    // session — see the exec branch above, which is where it matters.
+    d->health.markAlive();
     kind = Failure::None;
     return true;
 }
@@ -1197,6 +1328,10 @@ bool SshSession::openFile(QString *error, Failure *failure)
                                    static_cast<unsigned int>(path.size()), LIBSSH2_FXF_READ, 0,
                                    LIBSSH2_SFTP_OPENFILE);
     if (!d->file) {
+        // The SESSION's code, not the file's: a server refusing a path answers
+        // LIBSSH2_ERROR_SFTP_PROTOCOL, which is not terminal, so a missing log leaves the
+        // link alone — while a link that died between the connect and here is caught.
+        d->noteSessionError();
         const unsigned long sftpError = libssh2_sftp_last_error(d->sftp);
         // "Not there" and "not readable by me" are both things that change on their own
         // — a log gets written, a permission gets fixed — and both are what a LOCAL
@@ -1273,6 +1408,7 @@ bool SshSession::readFileAt(const QString &path, QByteArray *out, bool *existed,
         libssh2_sftp_open_ex(d->sftp, raw.constData(), static_cast<unsigned int>(raw.size()),
                              LIBSSH2_FXF_READ, 0, LIBSSH2_SFTP_OPENFILE);
     if (!handle) {
+        d->noteSessionError();
         const unsigned long code = libssh2_sftp_last_error(d->sftp);
         if (code == LIBSSH2_FX_NO_SUCH_FILE || code == LIBSSH2_FX_NO_SUCH_PATH)
             return true; // not there, and that is a supported answer
@@ -1296,6 +1432,7 @@ bool SshSession::readFileAt(const QString &path, QByteArray *out, bool *existed,
         }
         if (n == 0)
             break; // end of file
+        d->noteError(int(n));
         libssh2_sftp_close(handle);
         return fail(Tr::tr("The connection dropped while reading %1.").arg(path));
     }
@@ -1365,6 +1502,7 @@ bool SshSession::writeFileAt(const QString &path, const QByteArray &bytes, QStri
         d->sftp, raw.constData(), static_cast<unsigned int>(raw.size()),
         LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC, 0644, LIBSSH2_SFTP_OPENFILE);
     if (!handle) {
+        d->noteSessionError();
         const unsigned long code = libssh2_sftp_last_error(d->sftp);
         if (code == LIBSSH2_FX_PERMISSION_DENIED)
             return fail(Tr::tr("%1 on %2 cannot be written.").arg(path, d->location.host));
@@ -1384,6 +1522,7 @@ bool SshSession::writeFileAt(const QString &path, const QByteArray &bytes, QStri
         const ssize_t n = libssh2_sftp_write(handle, bytes.constData() + written,
                                              size_t(bytes.size() - written));
         if (n < 0) {
+            d->noteError(int(n));
             libssh2_sftp_close(handle);
             return fail(Tr::tr("The connection dropped while writing %1 — it may now be "
                                "incomplete.")
@@ -1433,6 +1572,10 @@ SshSession::Attrs SshSession::statPath() const
             return out;
         ExecSizeProbe probe = d->sizeProbe();
         const ExecAttrs parsed = probe.query(d->execSize);
+        // A rung that parsed is a command that ran, printed and came back — the exec
+        // transport's evidence of life, and the mirror of the SFTP branch below.
+        if (parsed.ok)
+            d->noteAlive();
         out.valid = parsed.ok;
         out.size = parsed.size;
         out.mtime = parsed.mtime;
@@ -1445,8 +1588,19 @@ SshSession::Attrs SshSession::statPath() const
     if (libssh2_sftp_stat_ex(d->sftp, path.constData(), static_cast<unsigned int>(path.size()),
                              LIBSSH2_SFTP_STAT, &attrs)
         != 0) {
+        // THE site the fetcher's dropped-link branch hangs off: pollOnce() asks for this
+        // stat first and asks isConnected() the moment it comes back invalid, so this is
+        // where a machine that has gone away is noticed, once per poll.
+        d->noteSessionError();
         return out;
     }
+    // And the same call is where the latch is CLEARED, which is the other half of the
+    // same argument: this is the one round trip pollOnce() makes every turn, before
+    // anything else, so a stat that answered is the cheapest and narrowest proof the link
+    // is there — and without it a latch set by a call that did not fail (readAt() below)
+    // would sit unseen until some later, unrelated stat failure fired it as a dropped
+    // link. See SshSessionHealth.h.
+    d->noteAlive();
     out.valid = true;
     out.size = static_cast<qint64>(attrs.filesize);
     out.mtime = static_cast<qint64>(attrs.mtime);
@@ -1462,8 +1616,10 @@ SshSession::Attrs SshSession::statHandle() const
     if (d->mode == Mode::Exec || !d->file)
         return out;
     LIBSSH2_SFTP_ATTRIBUTES attrs{};
-    if (libssh2_sftp_fstat_ex(d->file, &attrs, 0) != 0)
+    if (libssh2_sftp_fstat_ex(d->file, &attrs, 0) != 0) {
+        d->noteSessionError();
         return out;
+    }
     out.valid = true;
     out.size = static_cast<qint64>(attrs.filesize);
     out.mtime = static_cast<qint64>(attrs.mtime);
@@ -1500,6 +1656,22 @@ qint64 SshSession::readAt(qint64 offset, char *buffer, qint64 length, QString *e
         if (n == 0)
             break; // EOF: the remote file has no more bytes right now
         if (n < 0) {
+            // libssh2 returns the code here rather than leaving it in the session, and
+            // this is the read the tail loop lives on: a link that drops mid-fetch is
+            // condemned now, so the next poll reconnects instead of reporting the log as
+            // unreadable for ever.
+            //
+            // ONLY WHEN NOTHING ARRIVED, though, which is exactly the case the return
+            // below calls a failure. A partial read is handed back as a POSITIVE count and
+            // SshFetcher::fetchForward() treats it as an ordinary short read — it writes
+            // the bytes, advances and asks again — so latching here would condemn a
+            // session on a call its caller counted as success, silently, with the
+            // misdiagnosis surfacing arbitrarily later on some unrelated stat failure.
+            // Nothing is lost by waiting: if the link really has gone, the very next
+            // libssh2_sftp_read returns the same code with nothing read, and this branch
+            // latches then.
+            if (total == 0)
+                d->noteError(int(n));
             if (error) {
                 *error = sessionError(d->session, Tr::tr("Reading %1 from %2 failed")
                                                       .arg(d->location.path, d->location.host));

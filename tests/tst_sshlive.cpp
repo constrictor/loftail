@@ -163,6 +163,12 @@ private slots:
     void aRestartScriptRunsOnTheFarEndAndKeepsItsStderr();
     void aRestartScriptOutlivesTheConnectTimeout();
     void abortingARemoteScriptReturnsAtOnce();
+
+    // bugs.md 30 — the only execution of the dead-session latch. The classification
+    // behind it is pinned without a server (tst_sshsessionhealth); that a real libssh2
+    // actually reports one of those codes when the link goes, and that an ordinary
+    // missing file does not, can only be found out against a real one.
+    void aDroppedLinkIsNoticedRatherThanPolledForEver();
 };
 
 void TestSshLive::initTestCase()
@@ -548,6 +554,54 @@ void TestSshLive::abortingARemoteScriptReturnsAtOnce()
 
     QVERIFY2(elapsed < 5000,
              qPrintable(QStringLiteral("abort took %1 ms").arg(elapsed)));
+}
+
+void TestSshLive::aDroppedLinkIsNoticedRatherThanPolledForEver()
+{
+    // isConnected() used to test a POINTER, so once a connect had succeeded it answered
+    // true for the life of the object — and SshFetcher::pollOnce()'s "the link dropped,
+    // let go of it and reconnect" branch could never be taken. The tab reported the log
+    // as unreadable once per session timeout for ever and did not recover when the host
+    // came back (bugs.md 30).
+    QVERIFY(writeRemote(QByteArray("one line\n")));
+
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(m_location, nullptr, 20000, &error), qPrintable(error));
+    QVERIFY2(session.openFile(&error), qPrintable(error));
+    QVERIFY(session.isConnected());
+    QVERIFY(session.statPath().valid);
+
+    // FIRST the half that must not regress: a path that is not there is the server
+    // answering about a FILE, on a link that is perfectly healthy. Condemning the session
+    // for it would tear a working connection down once a second on a log that has merely
+    // not been created yet — the state M13 exists to wait in.
+    bool existed = true;
+    QVERIFY2(session.readFileAt(m_remotePath + QStringLiteral(".no-such-file"), nullptr,
+                                &existed, &error),
+             qPrintable(error));
+    QVERIFY(!existed);
+    QVERIFY2(session.isConnected(), "a missing file was taken for a dropped link");
+
+    // Now take the link away. abort() shuts the socket and frees nothing, which is what
+    // the far end going down looks like from in here — and it is the only way to stage
+    // one without a machine to unplug.
+    session.abort();
+
+    // The next operation is what notices. statPath() is the one pollOnce() runs first,
+    // and it is the call whose failure the fetcher answers by asking isConnected().
+    QVERIFY(!session.statPath().valid);
+    QVERIFY2(!session.isConnected(),
+             "the session still reports itself connected after the link went away");
+
+    // And it stays condemned. The latch IS clearable — a `stat` that answers un-says it,
+    // which is what stops a flag set by a call that did not fail (a partial read that
+    // timed out) firing much later on an unrelated stat failure — but clearing it needs
+    // an answer out of the far end, and after this there are none. So asking again is the
+    // whole of the safety argument for that clear, in one line.
+    QVERIFY(!session.statPath().valid);
+    QVERIFY2(!session.isConnected(),
+             "a second failed stat un-said the latch instead of leaving it set");
 }
 
 QTEST_GUILESS_MAIN(TestSshLive)

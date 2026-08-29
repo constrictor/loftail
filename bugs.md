@@ -293,6 +293,23 @@ other seed, with Reset Widths the only way back. This is the M13 headline case, 
 /var/log/app.log` before the service has created it, and the unreadable-file case beside
 it.
 
+Entry 30 has gone as well, and it had made a milestone's worth of work unreachable:
+`isConnected()` tested a pointer that only a teardown clears, so once a connect had
+succeeded the answer was permanently true. The fetcher's dropped-link branch could never
+be taken, it never let go of the dead session, and a tab whose machine went away
+reported that the log was not readable once per session timeout for the rest of its
+life — including after the host came back, with File ▸ Reconnect poking the same corpse
+and the reboot-grace work reachable only through the branch that was never taken. The
+session asks the transport now, latching on an error code that names a socket or
+transport failure. The clearing rule is the half worth keeping: the latch is set from
+calls that do **not** fail their caller — a partial read is handed back as a positive
+byte count and the tab tails on normally — so an absolute latch went stale invisibly and
+then fired on the first perfectly benign stat failure afterwards, reporting a dropped
+link about a link that never dropped and paying a full connect, host-key check,
+authentication and re-fetch from offset 0 for it, once per poll. A call that gets a whole
+answer back therefore clears it, which cannot re-open the bug: when the link is genuinely
+gone, nothing succeeds.
+
 Entries 31 and 35 have gone together, being the two halves of one primitive's
 discipline. The gate that carries a question to the application thread refused a call
 made by the running work itself — where there is no second dialog to stack, so the work

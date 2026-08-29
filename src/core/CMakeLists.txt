@@ -255,6 +255,13 @@ target_sources(loftail_core PRIVATE
     # in CI at all.
     SshRetryPolicy.cpp
     SshRetryPolicy.h
+    # Whether a libssh2 error code means the SESSION is finished, and the latch that
+    # remembers the answer. Always compiled for the fourth time on the same argument,
+    # with one addition: the situation it decides — a machine going away under a tab
+    # that is already connected — needs a machine to take away, so nothing in CI can
+    # reach the transport that consumes it (bugs.md 30).
+    SshSessionHealth.cpp
+    SshSessionHealth.h
 )
 target_link_libraries(loftail_core PRIVATE Qt6::Network)
 

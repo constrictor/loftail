@@ -475,6 +475,16 @@ qt_add_executable(tst_sshretry tst_sshretry.cpp)
 target_link_libraries(tst_sshretry PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_sshretry COMMAND tst_sshretry)
 
+# Whether a libssh2 error code means the SESSION is finished, and the latch that remembers
+# it. UNGATED for the fourth time on the same argument, and the situation it stands for is
+# the one nothing in CI can stage at all: a machine that goes away under a tab which is
+# already connected, which needs a server to connect to and then a server to take away.
+# The decision is a pure function of the error code, so the whole of it runs here in
+# microseconds with no libssh2 anywhere (bugs.md 30).
+qt_add_executable(tst_sshsessionhealth tst_sshsessionhealth.cpp)
+target_link_libraries(tst_sshsessionhealth PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_sshsessionhealth COMMAND tst_sshsessionhealth)
+
 # Why the SSH transport takes its socket away from Qt. UNGATED and network-free
 # (loopback only): the behaviour worked around is Qt's own, so it must be pinned in a
 # build with no SSH support too — and a Qt that stopped doing it would make the whole
