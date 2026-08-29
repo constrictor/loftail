@@ -217,7 +217,7 @@ Files are opened in binary mode; CRLF is handled explicitly rather than via plat
 Detection runs on open, over the first ~64 KB:
 
 1. **BOM** — decisive when present: UTF-8, UTF-16LE, UTF-16BE.
-2. **No BOM** — a high frequency of NUL bytes at alternating positions indicates UTF-16, and which position identifies the byte order. Otherwise, validate as UTF-8; on failure fall back to the system 8-bit codepage.
+2. **No BOM** — a high frequency of NUL bytes at alternating positions indicates UTF-16, and which position identifies the byte order. Otherwise, validate as UTF-8; on failure fall back to the system 8-bit codepage. **That validation sees the sample trimmed back to its last complete UTF-8 sequence, and only it does** — the 64 KB slice is cut at a byte boundary, so a multi-byte character straddling the cut reaches a `Stateless` converter as an error and used to flip the whole file to the system codepage, which on Windows is the ANSI codepage and renders a CJK log as mojibake (`bugs.md` 36). The NUL-parity count above keeps seeing every byte, being a frequency over the bytes that are there; and the trim drops only a sequence running off the *end*, so an invalid byte anywhere else still answers System — the converter stays `Stateless`, which is what keeps genuinely invalid UTF-8 out.
 3. The resolved encoding is surfaced in the format editor so a wrong guess is visible rather than silent.
 
 Forcing an encoding skips detection entirely. Detection is a heuristic — unreliable on short files, on files whose leading records are pure ASCII, and on legacy 8-bit logs — so the explicit choice is a first-class path, not a fallback.

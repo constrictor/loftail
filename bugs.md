@@ -336,6 +336,15 @@ now, through a new `isDelivering()` on the source; going stale in the first plac
 still the vanish branch's decision, so a host that was down before anything arrived still
 waits in the ordinary way.
 
+Entry 36 has gone too: the 64 KB sample the encoding detector is given is cut at a byte
+boundary, and a multi-byte character straddling that cut was read as "not UTF-8",
+flipping the whole file to the system codepage. On Linux that is UTF-8 and only the
+reported name was wrong; on Windows it is the ANSI codepage, so a CJK log rendered as
+mojibake — on a supported platform and on precisely the population that writes non-ASCII
+logs. The UTF-8 validation now sees the sample trimmed back to its last complete
+character, and nothing else does: the NUL-parity test above it is a frequency over the
+bytes that are there and needs every one of them.
+
 Entry 37 has gone as well: a `%d{...}` made only of codes Qt cannot spell — `%s`, the
 skip-only ordinals, or empty braces — fell back to a default written in the **strftime**
 vocabulary rather than the display one, so the Time column rendered `%Y-%15-%27

@@ -61,6 +61,50 @@ Resolved resolveForced(Encoding e, QByteArrayView sample)
     return {Encoding::Utf8, 0, 1};
 }
 
+// How much of `sample` ends on a complete UTF-8 sequence.
+//
+// The sample is the first ~64 KB of a file — an arbitrary BYTE boundary, not a
+// character or line one — so a multi-byte character straddling the cut arrives
+// as a lead byte with its continuation bytes left behind in the file. Step 3
+// below validates with a Stateless converter, for which such a tail is an
+// *error* rather than carried-over state, so an unaligned cut used to flip the
+// whole file to the system codepage: mojibake on Windows, where System is the
+// ANSI codepage, on precisely the logs that carry non-ASCII text. Trimming the
+// dangling head of the cut character is the whole of the fix.
+//
+// Two things about it are easy to undo. The trim applies to the VALIDATION
+// ONLY — step 2's NUL-parity count must keep seeing the whole sample, since it
+// is a frequency over the bytes that are actually there. And only a sequence
+// that runs off the END is dropped: an invalid byte anywhere else is left where
+// it is, so genuinely non-UTF-8 text still answers System, which is why this
+// walks back at most three bytes rather than switching the converter away from
+// Stateless (which would accept invalid UTF-8 outright).
+qsizetype completeUtf8Prefix(const unsigned char *p, qsizetype n)
+{
+    // A UTF-8 sequence is at most four bytes, so a cut can strand at most three
+    // continuation bytes; anything further back is a complete character or an
+    // error that is not this function's business.
+    qsizetype i = n - 1;
+    while (i >= 0 && (n - i) <= 3 && (p[i] & 0xC0) == 0x80)
+        --i;
+    if (i < 0)
+        return n;
+
+    qsizetype need = 0;
+    if (p[i] < 0x80)
+        need = 1;
+    else if ((p[i] & 0xE0) == 0xC0)
+        need = 2;
+    else if ((p[i] & 0xF0) == 0xE0)
+        need = 3;
+    else if ((p[i] & 0xF8) == 0xF0)
+        need = 4;
+    else
+        return n; // not a lead byte at all — a real error, and step 3's to report
+
+    return (i + need > n) ? i : n;
+}
+
 // The §6.1 heuristic for a file with no BOM.
 Resolved sniff(QByteArrayView sample)
 {
@@ -99,10 +143,12 @@ Resolved sniff(QByteArrayView sample)
         }
     }
 
-    // 3. Validate as UTF-8; on failure fall back to the system codepage.
+    // 3. Validate as UTF-8; on failure fall back to the system codepage. The
+    //    sample is cut at a byte boundary, so the last character may be
+    //    incomplete through no fault of the file — see completeUtf8Prefix().
     QStringDecoder dec(QStringConverter::Utf8,
                        QStringConverter::Flag::Stateless | QStringConverter::Flag::ConvertInvalidToNull);
-    QString decoded = dec.decode(sample);
+    QString decoded = dec.decode(sample.sliced(0, completeUtf8Prefix(p, n)));
     if (dec.hasError())
         return {Encoding::System, 0, 1};
     return {Encoding::Utf8, 0, 1};
