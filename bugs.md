@@ -221,6 +221,20 @@ can still be referred to by one.
 Everything the 2026-08-18 pass raised has been fixed. The list below starts again at
 23, which is where that pass left the numbering.
 
+Entry 24 has gone: the indexer read its field captures out of `recordStartRe` using
+`recordRe`'s group numbers, and `recordStartRe` holds only the groups written before
+`%m`, so every field a pattern puts after the message was indexed from an out-of-range
+group — which Qt answers with a null string rather than an error. Under `%d{...} [%t]
+%-5p %m (%c)%n`, an ordinary log4cplus layout, every record's subsystem was interned as
+`""`: a blank column, an empty Filters list, and no integer axis left to filter or
+colour on, while the Preferences preview — which drives the full regex — showed the
+split exactly as it had been asked for. That is the shape the user reports it in. The
+record's first line is now matched a second time against `recordRe` where the pattern
+needs it, gated so that a pattern ending `%m%n` pays nothing, and the regex that decides
+a record boundary is untouched. What the fix deliberately does not reach is stated in
+`SPEC.md` §4 rather than left to be found: a multi-line record's trailing fields sit on
+its last line, so those records keep the blank columns they have always had.
+
 Entry 26 has gone as well: binding the panes to another tab copied the outgoing log's
 whole highlight rule list onto the incoming log and saved it there. `setDecimals()`
 re-rounds the value a spin box is holding and emits, which the axis editor's handler

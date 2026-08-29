@@ -56,6 +56,19 @@ private:
         return indexer.index(src);
     }
 
+    // The same pass under a pattern the case supplies, for the shapes kPattern
+    // cannot express — a field written after %m, above all.
+    static RecordIndex indexWith(const char *pattern, const QByteArray &bytes,
+                                 const QTimeZone &zone = QTimeZone::utc())
+    {
+        MemoryLogSource src(bytes);
+        auto r = PatternCompiler::compile(QString::fromUtf8(pattern));
+        Q_ASSERT(r);
+        Decoder dec = Decoder::detect(src.bytes(0, qMin<qint64>(src.size(), 64 * 1024)), Encoding::Utf8);
+        Indexer indexer(r.value(), dec, zone);
+        return indexer.index(src);
+    }
+
 private slots:
     void recordIsThirtyTwoBytes();
     void severityOrder();
@@ -63,6 +76,7 @@ private slots:
     void multiLineContinuation();
     void unparsedLeadingLines();
     void internsLoggersAndThreads();
+    void fieldsWrittenAfterTheMessageAreStillParsed();
     void timestampIsUtcEpochMs();
     void timestampRespectsSourceZone();
     void crlfHandled();
@@ -151,6 +165,48 @@ void TestIndexer::internsLoggersAndThreads()
 
     QCOMPARE(idx.loggers.name(idx.records.at(0).loggerId), QStringLiteral("net.socket"));
     QCOMPARE(idx.threads.name(idx.records.at(1).threadId), QStringLiteral("worker"));
+}
+
+void TestIndexer::fieldsWrittenAfterTheMessageAreStillParsed()
+{
+    // `%d{...} [%t] %-5p %m (%c)%n` is an ordinary log4cplus pattern: the subsystem is
+    // written AFTER the message. recordStartRe stops at the message, so it captures
+    // three groups while %c is numbered 4 against recordRe — and Qt answers an
+    // out-of-range group with a null string rather than an error, so every record used
+    // to intern the empty logger name, silently, leaving the Subsystem column blank and
+    // the Filters pane's list empty on a log that plainly carries subsystems.
+    static constexpr auto kTailPattern = "%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %m (%c)%n";
+    const QByteArray log =
+        "2026-07-21 14:32:05,123 [main] INFO  Connection opened (net.socket)\n"
+        "2026-07-21 14:32:06,000 [worker] WARN  Pool exhausted (db.pool)\n";
+    const RecordIndex idx = indexWith(kTailPattern, log);
+
+    QCOMPARE(idx.records.size(), 2);
+    QCOMPARE(idx.loggers.name(idx.records.at(0).loggerId), QStringLiteral("net.socket"));
+    QCOMPARE(idx.loggers.name(idx.records.at(1).loggerId), QStringLiteral("db.pool"));
+    QVERIFY(idx.records.at(0).loggerId != idx.records.at(1).loggerId);
+
+    // The fields recordStartRe does reach are unaffected — they are still read from the
+    // start match, so nothing about an existing pattern moves.
+    QCOMPARE(idx.records.at(0).priorityEnum(), Priority::Info);
+    QCOMPARE(idx.records.at(1).priorityEnum(), Priority::Warn);
+    QCOMPARE(idx.threads.name(idx.records.at(0).threadId), QStringLiteral("main"));
+    QVERIFY(idx.records.at(0).timestamp != Record::kNoTimestamp);
+
+    // The known remaining gap, pinned here so it is a decision rather than a surprise:
+    // recordStartRe stays the SOLE record-boundary decider (invariant #2), and recordRe
+    // is ^...$-anchored, so a MULTI-LINE record's first line — whose trailing `(%c)` sits
+    // on its last line — does not match it. Such a record keeps the blank subsystem it
+    // has always had; widening the boundary regex to reach it is what the invariant
+    // forbids.
+    const QByteArray multi =
+        "2026-07-21 14:32:05,123 [main] ERROR Exception:\n"
+        "    at foo() (app.core)\n";
+    const RecordIndex midx = indexWith(kTailPattern, multi);
+    QCOMPARE(midx.records.size(), 1);
+    QCOMPARE(midx.records.at(0).lineCount, quint16(2));
+    QCOMPARE(midx.records.at(0).priorityEnum(), Priority::Error);
+    QCOMPARE(midx.loggers.name(midx.records.at(0).loggerId), QString());
 }
 
 void TestIndexer::timestampIsUtcEpochMs()

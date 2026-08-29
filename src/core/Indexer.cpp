@@ -23,6 +23,7 @@
 
 #include <QRegularExpression>
 
+#include <optional>
 #include <utility>
 
 namespace loftail {
@@ -46,7 +47,34 @@ bool Indexer::forwardScan(LogSource &source, qint64 startPos, QVector<Record> &r
                             && m_format.recordStartRe.isValid();
 
     const QRegularExpression &startRe = m_format.recordStartRe;
+    const QRegularExpression &fullRe = m_format.recordRe;
     const TimestampParser tsParser(m_format.impliedDateFormat, m_sourceZone);
+
+    // Every group number in LogFormat is numbered against recordRe, which carries one
+    // capturing group per field in pattern order; recordStartRe is assembled from the
+    // pieces BEFORE %m only, so it holds strictly fewer groups whenever anything follows
+    // the message. Qt answers an out-of-range group with a null string rather than an
+    // error, so under an ordinary pattern like `%d{...} [%t] %-5p %m (%c)%n` the record's
+    // subsystem was interned as "" on every row — blank column, empty Filters list, no
+    // integer axis (invariant #4) — and the same silently for a %p, %t or %d written past
+    // the message. Where that can happen, the first line is matched a SECOND time against
+    // recordRe and the trailing groups are read out of that match instead.
+    //
+    // Three things about this are easy to undo. It is gated on the pattern actually
+    // needing it, because this is the index path and the extra match is a whole regex per
+    // record — a pattern ending %m%n (every seeded one, and every autodetected one) pays
+    // nothing. A group that recordStartRe DOES capture keeps being read from the start
+    // match, so nothing about an existing pattern moves. And recordStartRe stays the sole
+    // record-boundary decider (invariant #2): recordRe is ^…$-anchored, so under such a
+    // pattern a MULTI-LINE record's first line — whose trailing fields sit on its last
+    // line — does not match it, and those records keep the blank trailing fields they have
+    // always had rather than the boundary regex being widened to reach them.
+    const int startCaptures = haveFormat ? startRe.captureCount() : 0;
+    const bool needsTailMatch = haveFormat && fullRe.isValid() && !fullRe.pattern().isEmpty()
+                                && (m_format.dateGroup > startCaptures
+                                    || m_format.prioGroup > startCaptures
+                                    || m_format.loggerGroup > startCaptures
+                                    || m_format.threadGroup > startCaptures);
 
     // Index of the record currently open for continuations, or -1 for none, and
     // whether it is a parsed (matched) record. Continuations attach only to a
@@ -78,19 +106,59 @@ bool Indexer::forwardScan(LogSource &source, qint64 startPos, QVector<Record> &r
                 r.lineCount = 1;
                 r.reserved = 0;
 
+                // The second match, for the fields recordStartRe does not reach. Absent
+                // for a single-line pattern that needs none; present but without a match
+                // for a multi-line record whose trailing fields are not on this line.
+                //
+                // It is a std::optional and not a plain QRegularExpressionMatch, which is
+                // what makes the gate above mean what it claims — that a pattern ending
+                // %m%n pays NOTHING. That class's default constructor is out-of-line in
+                // libQt6Core and allocates TWICE (a match private, which default-
+                // constructs a QRegularExpression of its own), measured at ~30 ns per
+                // construction; declared unconditionally it ran per record on every log,
+                // including the ones the gate exists to spare. Two cautions against
+                // reopening this on either side. It does NOT show up end to end — against
+                // a 110 MB / 1M-record log the two spellings are indistinguishable inside
+                // bench_index's run-to-run noise, because 30 ns sits against ~1.3 us of
+                // per-record regex work and the malloc/free pair is same-size-class and
+                // tcache-served — so do not restore the plain declaration on the grounds
+                // that the benchmark cannot tell, and do not quote a percentage of
+                // indexing time for it either. And hoisting it to forwardScan() scope
+                // removes the allocation just as well and must still NOT be done: a match
+                // outliving the iteration holds a stale QStringView into a decoded block
+                // that has since been replaced, which is a worse trap than the cost.
+                std::optional<QRegularExpressionMatch> tail;
+                if (needsTailMatch) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+                    tail.emplace(fullRe.matchView(text));
+#else
+                    tail.emplace(fullRe.match(text));
+#endif
+                }
+                // Which of the two matches owns a group: recordRe's numbering is the
+                // canonical one, so anything past recordStartRe's capture count can only
+                // be read from the full match.
+                const auto matchFor = [&](int group) -> const QRegularExpressionMatch & {
+                    return (group > startCaptures && tail && tail->hasMatch()) ? *tail : m;
+                };
+
                 r.priority = static_cast<quint8>(
-                    m_format.prioGroup > 0 ? parsePriority(m.capturedView(m_format.prioGroup))
-                                           : Priority::Unknown);
+                    m_format.prioGroup > 0
+                        ? parsePriority(matchFor(m_format.prioGroup).capturedView(m_format.prioGroup))
+                        : Priority::Unknown);
 
                 r.loggerId = (m_format.loggerGroup > 0)
-                                 ? loggers.intern(m.captured(m_format.loggerGroup))
+                                 ? loggers.intern(matchFor(m_format.loggerGroup)
+                                                      .captured(m_format.loggerGroup))
                                  : 0;
                 r.threadId = (m_format.threadGroup > 0)
-                                 ? threads.intern(m.captured(m_format.threadGroup))
+                                 ? threads.intern(matchFor(m_format.threadGroup)
+                                                      .captured(m_format.threadGroup))
                                  : 0;
 
                 r.timestamp = (m_format.dateGroup > 0)
-                                  ? tsParser.parse(m.capturedView(m_format.dateGroup))
+                                  ? tsParser.parse(matchFor(m_format.dateGroup)
+                                                       .capturedView(m_format.dateGroup))
                                   : Record::kNoTimestamp;
 
                 records.append(r);
