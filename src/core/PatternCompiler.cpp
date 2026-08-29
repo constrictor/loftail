@@ -38,8 +38,18 @@ struct Tr
 
 namespace {
 
-// The format log4cplus uses for %d / %D when no braces are supplied.
+// The format log4cplus uses for %d / %D when no braces are supplied. This is the
+// strftime spelling — the INPUT to translateDateFormat(), the first of the two
+// vocabularies this file speaks.
 constexpr QLatin1String kDefaultDateFormat("%Y-%m-%d %H:%M:%S");
+
+// The same instant in the SECOND vocabulary: QDateTime's, which is what
+// DateFormat::qtFormat holds and what LogModel's Time column renders through. It is
+// exactly what translateDateFormat(kDefaultDateFormat) produces, and the two must
+// never be swapped for one another — QDateTime::toString() reads the strftime
+// spelling as a literal '%' plus a field code, so "%Y-%m-%d %H:%M:%S" renders as
+// "%Y-%15-%27 %10:%8:%S", varying per record.
+constexpr QLatin1String kDefaultQtDateFormat("yyyy-MM-dd HH:mm:ss");
 
 // A month or weekday name. strftime renders these in the process's locale, so the
 // run is any letters rather than three ASCII ones — \p{L} and not \w, which
@@ -286,9 +296,14 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
     }
 
     // A format made only of codes Qt cannot spell (%s on its own is the realistic
-    // one) would leave the As Written column blank. Give it something readable.
+    // one) would leave the As Written column blank. Give it something readable —
+    // in the Qt vocabulary, never the strftime one: qtFormat's only consumers are
+    // QDateTime::toString() (LogModel's Time column, in all three wall-clock modes)
+    // and TimestampParser's token-less fromString() fallback, and neither of them
+    // speaks strftime. This assigned kDefaultDateFormat until 2026-08-29, which is
+    // why the column read "%Y-%15-%27 %10:%8:%S" for %d{%s} and %d{}.
     if (qt.isEmpty())
-        qt = QString(kDefaultDateFormat);
+        qt = QString(kDefaultQtDateFormat);
 
     result.format.isValid = true;
     return result;

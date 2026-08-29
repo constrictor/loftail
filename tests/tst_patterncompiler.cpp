@@ -58,6 +58,8 @@ private slots:
     void dateTranslation();
 
     void defaultDateFormat();
+    void unspellableDateFormatStillRendersAsATime_data();
+    void unspellableDateFormatStillRendersAsATime();
     void impliedZone_data();
     void impliedZone();
 
@@ -269,6 +271,38 @@ void TestPatternCompiler::defaultDateFormat()
     const QRegularExpressionMatch m = fmt.recordRe.match(QStringLiteral("2026-07-21 14:32:05 hello"));
     QVERIFY(m.hasMatch());
     QCOMPARE(m.captured(fmt.dateGroup), QStringLiteral("2026-07-21 14:32:05"));
+}
+
+void TestPatternCompiler::unspellableDateFormatStillRendersAsATime_data()
+{
+    QTest::addColumn<QString>("inner"); // the strftime format inside %d{...}
+
+    // Every %d{...} whose codes all lack a Qt spelling, so the fallback at the end
+    // of translateDateFormat() is what fills qtFormat in.
+    QTest::newRow("epoch seconds") << "%s";        // log4cplus renders this itself
+    QTest::newRow("day of year")   << "%j";        // matched and dropped
+    QTest::newRow("iso week year") << "%G";        // matched and dropped
+    QTest::newRow("empty braces")  << "";          // nothing at all
+}
+
+void TestPatternCompiler::unspellableDateFormatStillRendersAsATime()
+{
+    QFETCH(QString, inner);
+
+    // bugs.md 37. qtFormat speaks QDateTime's vocabulary and nothing else — it is
+    // what LogModel's Time column calls toString() with, in As Written, Local time
+    // and UTC alike. The fallback used to hand it the STRFTIME spelling of the same
+    // instant, which toString() reads as a literal percent plus an unrelated field
+    // code each time: "%Y-%m-%d %H:%M:%S" renders "%Y-%15-%27 %10:%8:%S", varying
+    // per record. Assert the rendering and not merely the string, because the two
+    // vocabularies are the sort of thing a reader compares by eye and passes.
+    const LogFormat fmt = compileOk(QStringLiteral("%d{") + inner + QStringLiteral("} %m%n"));
+    QVERIFY(fmt.impliedDateFormat.isValid);
+    QCOMPARE(fmt.impliedDateFormat.qtFormat, QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+
+    const QDateTime when(QDate(2026, 7, 21), QTime(14, 32, 5));
+    QCOMPARE(when.toString(fmt.impliedDateFormat.qtFormat),
+             QStringLiteral("2026-07-21 14:32:05"));
 }
 
 void TestPatternCompiler::impliedZone_data()

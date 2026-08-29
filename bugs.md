@@ -242,6 +242,14 @@ other seed, with Reset Widths the only way back. This is the M13 headline case, 
 /var/log/app.log` before the service has created it, and the unreadable-file case beside
 it.
 
+Entry 37 has gone as well: a `%d{...}` made only of codes Qt cannot spell — `%s`, the
+skip-only ordinals, or empty braces — fell back to a default written in the **strftime**
+vocabulary rather than the display one, so the Time column rendered `%Y-%15-%27
+%10:%8:%S` and varied per record, in every display mode rather than only As Written.
+There are two default constants now, one per vocabulary, each saying which it speaks and
+what swapping them costs. Parsing was correct throughout, the parser being driven by
+tokens rather than by the display string.
+
 ---
 
 ### 23. The Highlighters pane imposes a ~456 px minimum width on the whole pane dock under Breeze
