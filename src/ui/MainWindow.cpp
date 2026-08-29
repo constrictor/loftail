@@ -1323,6 +1323,22 @@ ConfigView *MainWindow::openConfigAt(const QString &address)
         }
     }
 
+    ConfigView *view = buildConfigTab(address, /*insertAt=*/-1, std::nullopt);
+    if (!view)
+        return nullptr;
+
+    // Raising is THIS caller's, not the builder's: session restore builds its editor
+    // pages through the same funnel and must leave the current tab alone, because
+    // `session.activeTab` decides which page is in front and is applied after every
+    // page — log and editor alike — is on the bar.
+    m_tabs->setCurrentWidget(view);
+    view->setFocus();
+    return view;
+}
+
+ConfigView *MainWindow::buildConfigTab(const QString &address, int insertAt,
+                                       std::optional<ConfigSyntax> chosenSyntax)
+{
     // A build with no SSH cannot reach a remote config at all, and that is a no-I/O
     // refusal — decidable without asking anybody — so it makes no tab, exactly as a
     // remote LOG open does in this configuration (§6.5).
@@ -1331,6 +1347,14 @@ ConfigView *MainWindow::openConfigAt(const QString &address)
         return nullptr;
     }
 
+    // THE SPLIT IS WHY THIS FUNCTION EXISTS. readConfigFile() opens with a refusal for a
+    // remote address by design — it is the local reader — so anything that reaches it
+    // without asking configAddressIsRemote() first refuses every config file on another
+    // machine. Session restore did exactly that with a copy of this body, so a remote
+    // editor tab was never rebuilt and the launch reported "must be read over SSH" in the
+    // notice strip instead, on every launch, for as long as the address stayed in the
+    // session (bugs.md 32). One funnel, and a second remote branch is never grown beside
+    // this one.
     const bool remote = configAddressIsRemote(address);
     ConfigReadResult read;
     if (!remote) {
@@ -1342,6 +1366,11 @@ ConfigView *MainWindow::openConfigAt(const QString &address)
     }
 
     auto *view = new ConfigView(address, this);
+    // BEFORE setContents(), which re-sniffs the grammar only while nothing was chosen by
+    // hand — and it has to be before for the remote branch in any case, where the bytes
+    // arrive on a later tick and there is no other moment that covers both paths.
+    if (chosenSyntax)
+        view->setSyntax(*chosenSyntax, /*chosen=*/true);
     if (!remote)
         view->setContents(read.bytes, read.existed);
     m_editors.append(view);
@@ -1353,10 +1382,13 @@ ConfigView *MainWindow::openConfigAt(const QString &address)
         m_editors.removeIf([obj](ConfigView *v) { return v == obj; });
     });
 
-    m_tabs->addTab(view, QString());
+    // A negative index appends; the restore passes the page's recorded position, which is
+    // what walks the bar back to the shape it had with the log tabs already in place.
+    if (insertAt < 0)
+        m_tabs->addTab(view, QString());
+    else
+        m_tabs->insertTab(qMin(insertAt, m_tabs->count()), view, QString());
     updateConfigTabTitle(view);
-    m_tabs->setCurrentWidget(view);
-    view->setFocus();
     updateEmptyState();
 
     if (remote) {
@@ -5323,26 +5355,21 @@ void MainWindow::restoreSession(SessionRestore restore)
                   return a.tabIndex < b.tabIndex;
               });
     for (const SessionEditor &e : std::as_const(editors)) {
-        const ConfigReadResult read = readConfigFile(e.address);
-        if (!read.ok) {
-            // Listed with its reason like any other refused restore, rather than an
-            // error dialog on every launch (SPEC.md §10).
-            reportOpenRefusal(logSourceDisplayName(e.address), read.error);
-            continue;
-        }
-        auto *view = new ConfigView(e.address, this);
-        view->setContents(read.bytes, read.existed);
-        if (e.syntaxChosen)
-            view->setSyntax(static_cast<ConfigSyntax>(e.syntax), /*chosen=*/true);
-        m_editors.append(view);
-        connect(view, &ConfigView::zoomStepRequested, this, &MainWindow::stepLogFontSize);
-        connect(view, &ConfigView::modifiedChanged, this,
-                [this, view](bool) { updateConfigTabTitle(view); });
-        connect(view, &QObject::destroyed, this, [this](QObject *obj) {
-            m_editors.removeIf([obj](ConfigView *v) { return v == obj; });
-        });
-        m_tabs->insertTab(qMin(e.tabIndex, m_tabs->count()), view, QString());
-        updateConfigTabTitle(view);
+        // Through the SAME funnel openConfigAt() uses, never a copy of its body: this
+        // loop used to call readConfigFile() unconditionally, which is the local reader
+        // and refuses a remote address outright, so a config file on another machine was
+        // never rebuilt and every launch reported "must be read over SSH" in the notice
+        // strip instead (bugs.md 32). The funnel also brings back the writability check,
+        // so a build with no SSH gets the "not compiled in" sentence rather than that one.
+        //
+        // It does not raise the page and does not take the focus: `session.activeTab`
+        // below is what decides which page is in front. Any refusal stays on the notice
+        // strip and is never a modal — this runs in the constructor, before show(), where
+        // a dialog would be a stack of them over no window (SPEC.md §10).
+        buildConfigTab(e.address, e.tabIndex,
+                       e.syntaxChosen
+                           ? std::optional<ConfigSyntax>(static_cast<ConfigSyntax>(e.syntax))
+                           : std::nullopt);
     }
 
     endOpenBatch();

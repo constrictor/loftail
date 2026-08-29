@@ -325,6 +325,15 @@ dropped, and never re-posted — the asking fetcher then slept until something e
 happened to make a gate call, with no dialog, no diagnostic line and a tab sitting on
 "connecting…".
 
+Entry 32 has gone too: a remote config file's editor tab was never restored. The session
+path held a copy of the open function's body without its local/remote split, so it called
+the local reader — which refuses a remote address by design — and every launch reported
+"must be read over SSH" on the notice strip instead, for as long as the address stayed in
+the session, while the quit went on writing it. The restore goes through the same funnel
+as the menu item now, and the fix took a smaller sibling with it: the copy also skipped
+the writability check, so a build without SSH got that same sentence rather than the one
+naming the dependency it lacks.
+
 Entry 34 has gone as well: a stale remote tab lost its strip, its ⊘ and its reason the
 moment the transport gave up trying, because "the origin is no longer reported gone" was
 being read as "the source is delivering again" — and for a spool the first is exactly the

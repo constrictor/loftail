@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "ConfigSyntax.h"
 #include "DocumentContext.h"
 #include "FormatSettings.h"
 #include "LogFileStore.h"
@@ -638,6 +639,19 @@ private:
     // caller must abandon what it was doing — including quitting.
     bool confirmDiscard(ConfigView *view);
     void updateConfigTabTitle(ConfigView *view);
+
+    // Build the editor page for `address` and start whatever reading it needs — the local
+    // read, or the connect that a remote address's bytes arrive on later. The ONE funnel:
+    // openConfigAt() and session restore both go through it, or the restore grows a
+    // second remote branch beside this one, which is what it had and what refused every
+    // remote config file on every launch (bugs.md 32).
+    //
+    // `insertAt` < 0 appends; the restore passes the page's recorded tab index. It does
+    // NOT raise the page or take the focus — that is openConfigAt()'s, because the restore
+    // settles the current tab from `session.activeTab` once every page is on the bar.
+    // Returns null for a no-I/O refusal, which is reported on the notice strip.
+    ConfigView *buildConfigTab(const QString &address, int insertAt,
+                               std::optional<ConfigSyntax> chosenSyntax);
 
     // Make `view` the active one: repoint the status bar, title and per-file
     // actions at it, and re-emit activeDocumentChanged when the Document changes.

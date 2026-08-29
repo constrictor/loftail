@@ -33,6 +33,7 @@
 #include <QElapsedTimer>
 #include <QCloseEvent>
 
+#include "ConfigFileIO.h"
 #include "ConfigReset.h"
 #include "ConfigView.h"
 #include "DocumentView.h"
@@ -43,6 +44,7 @@
 #include "LogSettings.h"
 #include "LogSettingsStore.h"
 #include "MainWindow.h"
+#include "SessionStore.h"
 
 using namespace loftail;
 
@@ -77,6 +79,8 @@ private slots:
     void cancellingTheUnsavedPromptAbortsTheQuitAndWritesNoSession();
     void aRemoteConfigPutsItsTabUpBeforeTheFarEndAnswers();
     void closingATabMidConnectDoesNotWaitForIt();
+    void aRemoteEditorTabComesBackAfterARelaunch();
+    void aRestoredRemoteEditorNamesTheDependencyThatIsMissing();
 
 private:
     QString writeLog(const QString &name);
@@ -616,6 +620,99 @@ void TestConfigEditor::closingATabMidConnectDoesNotWaitForIt()
         QVERIFY2(clock.elapsed() < 6000,
                  qPrintable(QStringLiteral("shutdown waited %1 ms").arg(clock.elapsed())));
     }
+#endif
+}
+
+void TestConfigEditor::aRemoteEditorTabComesBackAfterARelaunch()
+{
+#if !defined(LOFTAIL_HAVE_SSH)
+    QSKIP("SSH support is not built into this copy");
+#else
+    // SPEC.md §4 promises two things at once — an open config file comes back where it
+    // was on the bar, and a config file on another machine opens over SSH — and the
+    // restore silently cancelled the first for every address the second covers: it
+    // called readConfigFile(), the LOCAL reader, which refuses a remote address by
+    // design, so the tab was never rebuilt and the launch reported "must be read over
+    // SSH" on the notice strip instead, every time (bugs.md 32).
+    {
+        std::unique_ptr<MainWindow> w(new MainWindow);
+        w->show();
+        QVERIFY(w->openConfigAt(blackHoleConfig()));
+        auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+        QVERIFY(tabs);
+        QCOMPARE(tabs->count(), 1);
+        // A real quit, so the session is written by the path that actually writes it —
+        // and saveSession() has no remote filter, which is why the address is there to
+        // be refused on every launch after this one.
+        QCloseEvent e;
+        QApplication::sendEvent(w.get(), &e);
+        QVERIFY(e.isAccepted());
+    }
+
+    // The relaunch.
+    std::unique_ptr<MainWindow> back(new MainWindow);
+    back->show();
+    auto *tabs = back->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    QCOMPARE(tabs->count(), 1);
+    auto *editor = qobject_cast<ConfigView *>(tabs->widget(0));
+    QVERIFY(editor);
+    QCOMPARE(editor->address(), blackHoleConfig());
+
+    // Restored the way it is OPENED, which is the whole point of routing the restore
+    // through the same funnel: the bytes arrive over SSH on a later tick, so the page
+    // comes back connecting rather than filled, with the tab up before the far end has
+    // answered anything.
+    QVERIFY(editor->isBusy());
+
+    // And nothing was refused. This is the assertion that fails loudest against the old
+    // restore, where the strip carried the local reader's sentence and the bar was empty.
+    auto *notice = back->findChild<QLabel *>(QStringLiteral("openNoticeText"));
+    QVERIFY(notice);
+    QVERIFY2(notice->text().isEmpty(), qPrintable(notice->text()));
+#endif
+}
+
+void TestConfigEditor::aRestoredRemoteEditorNamesTheDependencyThatIsMissing()
+{
+#if defined(LOFTAIL_HAVE_SSH)
+    QSKIP("this copy has SSH support, so a remote config address is not refused");
+#else
+    // The other half of the same funnel. Without SSH a remote config is a no-I/O
+    // refusal, and the restore used to skip the writability check entirely and reach
+    // readConfigFile(), whose sentence is about a caller that forgot to ask rather than
+    // about a dependency that is not built in.
+    //
+    // The session is seeded rather than quit into, because there is no way to open the
+    // tab in this configuration — which is precisely the shape a store written by a
+    // build WITH SSH and read by one without has.
+    const QString address = QStringLiteral("ssh://198.51.100.7/etc/log4cplus.properties");
+    {
+        QSettings settings;
+        Session s;
+        SessionEditor e;
+        e.address = address;
+        e.tabIndex = 0;
+        s.editors.append(e);
+        s.activeTab = 0;
+        SessionStore::save(settings, s);
+        settings.sync();
+    }
+
+    std::unique_ptr<MainWindow> back(new MainWindow);
+    back->show();
+    auto *tabs = back->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QVERIFY(tabs);
+    QCOMPARE(tabs->count(), 0);
+
+    // Against the function's own wording, never a copy of the prose: the claim is that
+    // the restore asked configAddressIsWritable(), not that any particular sentence is
+    // on screen.
+    QString expected;
+    QVERIFY(!configAddressIsWritable(address, &expected));
+    auto *notice = back->findChild<QLabel *>(QStringLiteral("openNoticeText"));
+    QVERIFY(notice);
+    QVERIFY2(notice->text().contains(expected), qPrintable(notice->text()));
 #endif
 }
 
