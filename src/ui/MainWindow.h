@@ -587,6 +587,13 @@ private:
     // A view is being destroyed (its tab was closed, or the window is going down):
     // drop it from the bookkeeping and reap its file if that was its last view.
     void onViewDestroyed(QObject *obj);
+    // Everything that has to happen once the last log has gone, in ONE place because
+    // there are two routes to it and they had drifted (bugs.md 38, 41): the per-view
+    // reaping above, and File ▸ Close All, which takes the same set down wholesale and
+    // deliberately cannot reach onViewDestroyed() — it disconnects each view's
+    // `destroyed` signal first. Closing every tab at once must leave the window in the
+    // state closing them one at a time leaves it in.
+    void documentsUnbound();
     // The tab bar moved to another page: that page IS the active view.
     void onCurrentTabChanged(int index);
     // The user dragged a tab: keep m_views in tab order, which is the order the

@@ -379,6 +379,15 @@ There are two default constants now, one per vocabulary, each saying which it sp
 what swapping them costs. Parsing was correct throughout, the parser being driven by
 tokens rather than by the display string.
 
+Entries 38 and 41 have gone together, both being File ▸ Close All taking the tabs down by
+a route the per-tab teardown never runs on. It left the notification's context pointer
+dangling, so activating a bubble still on screen was a use-after-free; it left the tray
+icon standing for logs that were gone, which is the one thing the comment beside that
+icon's destruction says must not happen; and it left the status bar naming the log that
+had been in front, while the centre correctly said "No file open". The three are one
+funnel now, reached from the per-view teardown and from both of Close All's exits —
+including the early one taken when only config-editor pages were open.
+
 Entry 40 has gone too: the rotation branch of the SSH fetcher's poll published a healthy
 `Live` whether or not the re-fetch had worked, and publishing a state clears the error
 with it, so a spool write failure or a link that dropped during a rotation was erased and

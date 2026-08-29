@@ -1176,11 +1176,31 @@ void MainWindow::onViewDestroyed(QObject *obj)
     // Removing the tab already moved the current page, and with it the active view;
     // reaching here with none means the last tab went. Unbind the panes (invariant
     // #7) and disable the per-file actions.
-    if (m_views.isEmpty()) {
-        emit activeDocumentChanged(nullptr);
-        updateActionStates();
-        updateStatus();
-    }
+    if (m_views.isEmpty())
+        documentsUnbound();
+}
+
+void MainWindow::documentsUnbound()
+{
+    // m_lastNotified is a raw DocumentContext * into m_contexts and the tray's
+    // messageClicked lambda dereferences it, so it dangles the moment its context goes;
+    // and the icon itself must not outlive the rules that asked for it — an icon sitting
+    // in the user's tray for a feature nothing is currently asking for is a claim on
+    // their desktop that loftail has not earned (updateTrayPresence). Both are already
+    // true on the per-view route, whose std::erase_if nulls the pointer per reaped
+    // context and calls updateTrayPresence() when the count moved; restating them here
+    // is what makes them true on the wholesale one as well, and the repeat costs
+    // nothing — with no contexts left, updateTrayPresence() answers "not wanted".
+    m_lastNotified = nullptr;
+    updateTrayPresence();
+
+    // Unbind the panes from the now-gone document (invariant #7).
+    emit activeDocumentChanged(nullptr);
+    updateActionStates();
+    // updateStatus() is the ONLY writer of m_statusLabel's "No file open", and nothing
+    // else repaints it while no document is open: leave it out and the bar goes on
+    // naming the log that was in front, beside a well showing the empty-state notice.
+    updateStatus();
 }
 
 // --- The config-file editor (SPEC.md §4) -----------------------------------
@@ -2033,7 +2053,9 @@ void MainWindow::closeAllDocuments(Prompt prompt)
     if (m_contexts.empty()) {
         m_activeView = nullptr;
         updateEmptyState();
-        updateActionStates();
+        // This exit needs the same reset as the one below: only editor pages were open,
+        // and their names and unsaved-changes sentences are in the status bar too.
+        documentsUnbound();
         return;
     }
 
@@ -2065,10 +2087,7 @@ void MainWindow::closeAllDocuments(Prompt prompt)
     m_contexts.clear(); // ~DocumentContext stops the workers and deletes the model
 
     updateEmptyState();
-
-    // Unbind the panes from the now-gone document (invariant #7).
-    emit activeDocumentChanged(nullptr);
-    updateActionStates();
+    documentsUnbound();
 }
 
 void MainWindow::primeRemoteCredentials(const QString &path)

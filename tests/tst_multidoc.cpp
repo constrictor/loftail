@@ -126,6 +126,15 @@ private:
     {
         return w.findChild<QLabel *>(QStringLiteral("openNoticeText"));
     }
+
+    // The status bar's own label, which updateStatus() is the only writer of. By
+    // object name, never by its text — the text is what is asserted.
+    static QString statusText(const MainWindow &w)
+    {
+        auto *label = w.findChild<QLabel *>(QStringLiteral("statusLabel"));
+        return label ? label->text() : QString();
+    }
+
     static QString noticeText(const MainWindow &w)
     {
         QLabel *label = noticeLabel(w);
@@ -171,6 +180,17 @@ private slots:
     void closingATabLeavesTheOtherFileOpen();
     void fileClosesWithItsLastViewOnly();
     void closingEverythingUnbindsThePanes();
+    // File ▸ Close All takes the whole set down by a route that cannot reach
+    // onViewDestroyed() — it disconnects each view's `destroyed` signal first — so
+    // everything that route does at the end had to be restated, and was not
+    // (bugs.md 38, 41). Both of the function's exits need it, which is why there are
+    // two cases: the ordinary one, and the one taken when nothing but config-editor
+    // pages were open. What is NOT pinned here is the tray half of 38 — a dangling
+    // m_lastNotified and an icon outliving every log both need a desktop where
+    // QSystemTrayIcon::isSystemTrayAvailable() and supportsMessages() are true, which
+    // the offscreen runners are not and cannot be made to be.
+    void closingEverythingLeavesTheStatusBarSayingNoFileOpen();
+    void closingEverythingWhenOnlyEditorsWereOpenClearsTheStatusBarToo();
 
     // Timestamp display modes (SPEC.md §4). The mode is per FILE and the menu lives
     // on the timestamp column's header, so scope and persistence are the things a
@@ -535,6 +555,51 @@ void TestMultiDoc::closingEverythingUnbindsThePanes()
     auto *fp = w.findChild<FilterPane *>();
     QVERIFY(fp);
     QVERIFY(!fp->isEnabled()); // FilterPane::setDocument(nullptr) disables it
+}
+
+void TestMultiDoc::closingEverythingLeavesTheStatusBarSayingNoFileOpen()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    w.openFile(m_a);
+    w.openFile(m_b);
+    QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 2);
+    waitUntilIndexed(w);
+    // The bar is describing the log in front, which is the state the defect leaves
+    // standing: assert it is there to be cleared, or the case passes vacuously.
+    QVERIFY2(statusText(w).contains(QStringLiteral("b.log")), qPrintable(statusText(w)));
+
+    trigger(w, "closeAllAction");
+    QTRY_COMPARE(tabCount(w), 0);
+
+    // Nothing repaints the label once no document is open, so this is not a race: the
+    // sentence is either written by the close or never. Compared exactly, because
+    // "does not name b.log" would also be satisfied by it still naming a.log.
+    QCOMPARE(statusText(w), QStringLiteral("No file open"));
+}
+
+void TestMultiDoc::closingEverythingWhenOnlyEditorsWereOpenClearsTheStatusBarToo()
+{
+    const QString config = m_dir.filePath(QStringLiteral("log4cplus.properties"));
+    QFile f(config);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("log4cplus.rootLogger=INFO, STDOUT\n");
+    f.close();
+
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+    // No log at all: the exit closeAllDocuments() takes when m_contexts is empty is a
+    // separate early return, and it had the same hole.
+    QVERIFY(w.openConfigAt(config));
+    QTRY_COMPARE(tabCount(w), 1);
+    QVERIFY2(statusText(w).contains(QStringLiteral("log4cplus.properties")),
+             qPrintable(statusText(w)));
+
+    trigger(w, "closeAllAction");
+    QTRY_COMPARE(tabCount(w), 0);
+    QCOMPARE(statusText(w), QStringLiteral("No file open"));
 }
 
 void TestMultiDoc::timestampModeIsPerFileNotPerView()
