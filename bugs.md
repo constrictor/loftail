@@ -221,6 +221,16 @@ can still be referred to by one.
 Everything the 2026-08-18 pass raised has been fixed. The list below starts again at
 23, which is where that pass left the numbering.
 
+Entry 26 has gone as well: binding the panes to another tab copied the outgoing log's
+whole highlight rule list onto the incoming log and saved it there. `setDecimals()`
+re-rounds the value a spin box is holding and emits, which the axis editor's handler
+reads as a hand edit, and it fired mid-rebind — after the pane had taken the incoming
+document and before it had reloaded the rules — so the outgoing log's rules were written
+onto the incoming document, persisted, and read straight back, leaving nothing on screen
+to notice the loss. The guard now sits in the function that changes the precision rather
+than in the handler that hears it, because that emission is a false claim of a user edit
+wherever it is heard.
+
 ---
 
 ### 23. The Highlighters pane imposes a ~456 px minimum width on the whole pane dock under Breeze

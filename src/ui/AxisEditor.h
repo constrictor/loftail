@@ -406,7 +406,10 @@ private:
     // Callers hold m_populating around this: it writes a widget whose signal is a
     // user edit everywhere else.
     void    setBoundInstant(TimeBound which, qint64 utcMs);
-    // Show the pair the display mode calls for, at the column's own precision.
+    // Show the pair the display mode calls for, at the column's own precision. Holds
+    // m_populating itself (saved and restored): changing the precision re-rounds a
+    // held value and emits, and none of that is ever a user edit — see the comment on
+    // the definition, and bugs.md 26 for what one unguarded caller cost.
     void    syncTimeEditorKind();
 
     Document *m_document = nullptr;

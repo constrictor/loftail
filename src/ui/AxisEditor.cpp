@@ -1064,6 +1064,27 @@ void AxisEditor::syncTimeEditorKind()
 {
     if (!m_timeStart || !m_secStart)
         return;
+    // Nothing this function writes is a user edit, in any caller — and one of the
+    // writes has a signal behind it: setDecimals() below re-rounds the value the spin
+    // box is holding and emits valueChanged when the rounding moves it. The
+    // secondsEdited handler is guarded on m_populating alone, so an unguarded call
+    // reaches it, latches m_timeUserEdited and emits changed() — a claim that the user
+    // edited an axis, which is false wherever it is heard.
+    //
+    // It WAS heard: setDocument() called this without the guard, so rebinding the panes
+    // from a log whose format carries milliseconds (whose observed span had seeded a
+    // fractional value into the hidden seconds pair) onto one whose format does not took
+    // the decimals 3 → 0 mid-rebind, and HighlighterPane's changed handler — by then
+    // holding the INCOMING document but still the outgoing log's m_rules — wrote the
+    // outgoing log's whole rule list onto the incoming document, persisted it, and read
+    // it straight back so nothing on screen was left to notice (bugs.md 26).
+    //
+    // Guarded here rather than at the call sites, so a fifth caller cannot forget it,
+    // and SAVED AND RESTORED rather than cleared on the way out: three of the four
+    // callers are already inside an m_populating block of their own and clearing it
+    // would unguard the rest of their own writes.
+    const bool wasPopulating = m_populating;
+    m_populating = true;
     const bool seconds = secondsMode();
     // Milliseconds only where the file's own %d carries them, which is the rule the
     // column renders by (LogModel::formatSeconds, DateFormat::hasMillis): ".000" under
@@ -1087,6 +1108,7 @@ void AxisEditor::syncTimeEditorKind()
     }
     m_timeStart->setVisible(!seconds);
     m_timeEnd->setVisible(!seconds);
+    m_populating = wasPopulating;
 }
 
 bool AxisEditor::observedSpan(qint64 &lo, qint64 &hi) const

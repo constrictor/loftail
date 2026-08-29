@@ -330,6 +330,9 @@ private slots:
     void aRerenderThatMovesNoZoneLeavesTheSeededRulesAlone();
     void aDisplayZoneChangeMovesEveryRulesBoundsAndNothingElse();
 
+    // Nor is REBINDING the pane to another log (bugs.md #26).
+    void rebindingToALogWithoutMillisecondsLeavesItsRulesAlone();
+
     // A button under the table is live only while it has something to act on.
     void theRuleButtonsAreDeadWhileThereIsNothingToActOn();
     void upAndDownAreDeadAtTheEndsOfTheList();
@@ -1967,6 +1970,91 @@ void TestHighlighterPane::aDisplayZoneChangeMovesEveryRulesBoundsAndNothingElse(
     pane.refreshTimeBounds();
     for (int row = seeded; row < rules.size(); ++row)
         QCOMPARE(rules.at(row).match.start, bound);
+}
+
+// Rebinding the pane to another tab is not an edit to the rules either — and this one
+// took the whole rule LIST across rather than one rule's bounds.
+//
+// AxisEditor::setDocument() called syncTimeEditorKind() with m_populating false.
+// That function sets the two seconds editors' precision, QDoubleSpinBox::setDecimals()
+// re-rounds the value it is holding, and a rounding that MOVES the value emits
+// valueChanged — which the secondsEdited handler reads as a hand edit and answers with
+// changed(). HighlighterPane's handler runs unguarded there, with m_document already
+// the INCOMING log while m_rules still holds the outgoing one's, so it wrote the
+// outgoing log's whole list onto the incoming document, persisted it through
+// highlightersChanged, and then setDocument()'s next line read it back into the table,
+// leaving nothing on screen to notice the loss (bugs.md 26).
+//
+// The trigger needs both halves. The outgoing log's format carries milliseconds and its
+// observed span seeded a genuinely FRACTIONAL value into the hidden seconds pair; the
+// incoming log's format carries none, so the decimals go 3 → 0 and the rounding bites.
+// Both preconditions are asserted below, or the case would pass vacuously the day the
+// seed or the precision rule moves.
+//
+// The assertion is on the incoming document's RULES and not on the pane's marker: a
+// patch that repaired only the bounds of the copied row would leave the wrong list on
+// the wrong log and still satisfy a marker-only test.
+void TestHighlighterPane::rebindingToALogWithoutMillisecondsLeavesItsRulesAlone()
+{
+    // Outgoing: kPattern's %q, over records whose milliseconds are not zero.
+    Document msLog;
+    QTemporaryFile msFile;
+    QVERIFY(msFile.open());
+    msFile.write("2026-07-21 12:00:00,480 [main] INFO  net.socket - a\n"
+                 "2026-07-21 12:00:01,750 [main] WARN  db.pool - b\n");
+    msFile.flush();
+    QVERIFY(msLog.open(msFile.fileName(), QString::fromLatin1(kPattern), Encoding::Utf8,
+                       QTimeZone::utc()));
+
+    // Incoming: a format with no %d at all, seeded with exactly the rules MainWindow
+    // gives a log it has not seen before. It has to be a log whose span the editor will
+    // not seed — no %d here, an unscanned or timestamp-less log in the field — because
+    // setDocument()'s own refreshDiscoveredLists() reaches syncTimeEditorKind() first,
+    // through refreshObservedSpan(), which is guarded: where that seed runs it absorbs
+    // the precision change under its own m_populating and the unguarded call two lines
+    // later has nothing left to round.
+    Document plainLog;
+    QTemporaryFile plainFile;
+    QVERIFY(plainFile.open());
+    plainFile.write("[main] INFO  net.socket - a\n"
+                    "[main] WARN  db.pool - b\n");
+    plainFile.flush();
+    QVERIFY(plainLog.open(plainFile.fileName(),
+                          QStringLiteral("[%t] %-5p %c - %m%n"),
+                          Encoding::Utf8, QTimeZone::utc()));
+    plainLog.highlighters().rules = HighlighterSet::defaults().rules;
+
+    HighlighterPane pane;
+    pane.setDocument(&msLog);
+
+    // A rule of the outgoing log's own, so a list copied across is one this test can
+    // see — and addRule() selects it, which is the state the write-back happened in:
+    // with no row current the handler returned early and nothing was copied.
+    MatchCriteria c;
+    c.text.enabled = true;
+    c.text.matcher.set(QStringLiteral("outgoing"), /*regex=*/false, Qt::CaseInsensitive);
+    pane.addRule(c);
+    QCOMPARE(ruleTable(pane)->currentRow(), msLog.highlighters().rules.size() - 1);
+
+    // The two preconditions, stated rather than assumed.
+    auto *secs = pane.findChild<QDoubleSpinBox *>(QStringLiteral("timeStartSeconds"));
+    QVERIFY(secs);
+    const qint64 firstAt = msLog.index().records.first().timestamp;
+    QVERIFY2(firstAt % 1000 != 0, "the outgoing log's span must carry a real fraction");
+    QCOMPARE(secs->decimals(), 3);
+    QCOMPARE(secs->value(), double(firstAt) / 1000.0); // the seed reached the editor
+
+    QSignalSpy persisted(&pane, &HighlighterPane::highlightersChanged);
+    pane.setDocument(&plainLog);
+
+    // The incoming log keeps its own rules, nothing was written back through the
+    // Document, and the table shows the log it is now bound to.
+    QCOMPARE(plainLog.highlighters().rules, HighlighterSet::defaults().rules);
+    QCOMPARE(persisted.count(), 0);
+    QCOMPARE(ruleTable(pane)->rowCount(), HighlighterSet::defaults().rules.size());
+    QVERIFY(!pane.hasCustomRules());
+    // ...and the precision did follow the incoming format, so the sync itself still ran.
+    QCOMPARE(secs->decimals(), 0);
 }
 
 void TestHighlighterPane::theRuleButtonsAreDeadWhileThereIsNothingToActOn()
