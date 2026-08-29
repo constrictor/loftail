@@ -51,8 +51,24 @@ namespace loftail {
 //      afterwards. The interrupt is what keeps the resulting wait short: it ends the
 //      dialog rather than waiting for the user. The call is a shared_ptr owned by both
 //      sides so the object outlives whichever of them lets go first.
-//   3. One call runs at a time. A second request delivered inside the first dialog's
-//      nested event loop would stack two modal dialogs.
+//   3. One ASKER runs at a time. A request from another thread, delivered inside the
+//      first dialog's nested event loop, would stack two modal dialogs, so it is
+//      refused (from the application thread) or queued (from any other). But the work
+//      itself may re-enter the gate on the thread already running it — GuiSshPrompter's
+//      body asks the marshalled SecretStore whether there is a keychain — and that is
+//      not a second asker and not a second dialog. So the gate records the thread that
+//      OWNS the in-flight call and runs inline for it, nested, counting the depth; the
+//      counter is the only thing that clears "a call is running", or a nested return
+//      would unblock the queue with the outer modal still on screen.
+//      Two things follow that are easy to undo. Refusing on "a call is running" alone
+//      does not prevent a dialog, it skips the work and hands the caller whatever its
+//      out-parameter already held — silently, which is how a machine with KWallet
+//      running came to be told it had no keychain (bugs.md 31). And a call that ran
+//      inline must re-arm the pump on its way out, after the flag is cleared and only
+//      at depth 0: drain() declines to re-post while a call is in flight, on the
+//      understanding that the running call re-arms for it, so an inline call that
+//      swallowed a drain() delivered into its nested loop and did not re-post left the
+//      queued asker parked until an unrelated call or the teardown cancel (bugs.md 35).
 //   4. A caller must not hold ITS OWN locks across call(). A fetcher that called this
 //      under the mutex guarding its status would block every watch tick on the
 //      application thread — the freeze, by another route.

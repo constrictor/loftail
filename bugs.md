@@ -281,6 +281,21 @@ other seed, with Reset Widths the only way back. This is the M13 headline case, 
 /var/log/app.log` before the service has created it, and the unreadable-file case beside
 it.
 
+Entries 31 and 35 have gone together, being the two halves of one primitive's
+discipline. The gate that carries a question to the application thread refused a call
+made by the running work itself — where there is no second dialog to stack, so the work
+was simply skipped and the caller kept its default — and that is what the password
+prompt does: it asked the marshalled keychain whether there was a keychain, was refused,
+and told the user there was none on a machine where one was running, after which ticking
+the box wrote the password into `hosts.json` as plain text. The gate counts askers now
+rather than calls, so the thread owning the in-flight call re-enters nested while a
+second thread is still refused. The other half is the same branch's exit: a call that ran
+inline never re-armed the pump, so a request pushed while the application thread sat in
+one whose work spins a nested event loop had its posted drain delivered into that loop,
+dropped, and never re-posted — the asking fetcher then slept until something else
+happened to make a gate call, with no dialog, no diagnostic line and a tab sitting on
+"connecting…".
+
 Entry 37 has gone as well: a `%d{...}` made only of codes Qt cannot spell — `%s`, the
 skip-only ordinals, or empty braces — fell back to a default written in the **strftime**
 vocabulary rather than the display one, so the Time column rendered `%Y-%15-%27

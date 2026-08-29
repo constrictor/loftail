@@ -195,6 +195,27 @@ void hammer(int threads, const std::function<void(QTimer *)> &arrange)
     guiCallGate().reopen();
 }
 
+// Runs the application thread's event loop until `flag` is set, and answers whether it
+// was. A stranded worker is released by the caller before anything is asserted, because
+// a failed QVERIFY returns from the slot and a std::thread still parked on the gate
+// would then terminate the process instead of reporting the failure.
+bool pumpUntil(const std::atomic_bool &flag, int timeoutMs)
+{
+    QElapsedTimer t;
+    t.start();
+    while (!flag.load() && t.elapsed() < timeoutMs)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    if (flag.load())
+        return true;
+    // Neither answered nor refused, which is the hang this file exists to catch. Let the
+    // waiter go so the case can say so.
+    guiCallGate().cancel();
+    t.restart();
+    while (!flag.load() && t.elapsed() < timeoutMs)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    return false;
+}
+
 } // namespace
 
 // M17 — the concurrent window the rest of the suite does not open.
@@ -222,6 +243,9 @@ private slots:
     void aCancelInsideTheDialogDoesNotReleaseTheRunningCaller();
     void onlyOneCallRunsAtATimeUnderLoad();
     void everyCallIsEitherAnsweredOrRefused();
+
+    void theRunningWorkMayReachBackThroughTheGate();
+    void aCallQueuedDuringAnInlineCallIsNotStranded();
 };
 
 // RULE 2, and the bug itself. A cancel raised from inside the work — the modal dialog
@@ -293,6 +317,114 @@ void TestGateStress::everyCallIsEitherAnsweredOrRefused()
     QVERIFY(g_refused.load() > 0);
     QVERIFY(!g_releasedWhileRunning.load());
     QVERIFY(!g_twoAtOnce.load());
+}
+
+// RULE 3, the other half of it: the running work reaching BACK through the gate is not a
+// second asker (bugs.md 31).
+//
+// This is the product's own shape. A fetcher's thread asks a question, so the whole of
+// GuiSshPrompter's body runs under the gate on the application thread — and inside that
+// body it asks the marshalled SecretStore whether there is a keychain, which is a gate
+// call of its own from the thread already inside the first. Refusing it does not prevent
+// a dialog: the work is simply skipped and the caller keeps whatever its out-parameter
+// held, so the prompt claimed there was no keychain on a machine running one and the
+// remembered password went to plain text.
+//
+// Deliberately unhurried rather than hammered: what is pinned here is one answer, and
+// under load a refusal could equally well have come from a genuine second asker.
+void TestGateStress::theRunningWorkMayReachBackThroughTheGate()
+{
+    guiCallGate().reopen();
+
+    std::atomic_bool finished{false};
+    std::atomic_bool outerOk{false};
+    std::atomic_bool nestedOk{false};
+    std::atomic_bool nestedRan{false};
+
+    std::thread worker([&]() {
+        QString outerAnswer;
+        outerOk.store(guiCallGate().call([&]() {
+            outerAnswer = QStringLiteral("outer");
+            QString backend;
+            nestedOk.store(guiCallGate().call([&backend, &nestedRan]() {
+                backend = QStringLiteral("KWallet");
+                nestedRan.store(true);
+            }));
+        }));
+        finished.store(true);
+    });
+
+    // Not QTRY_*: a failed QVERIFY returns from the slot, and a return with the worker
+    // still parked on the gate would terminate the process in std::thread's destructor
+    // rather than report anything. Release it first, then assert.
+    const bool stranded = !pumpUntil(finished, 5000);
+    worker.join();
+    guiCallGate().reopen();
+
+    QVERIFY2(!stranded, "the queued question was neither answered nor refused");
+    QVERIFY2(outerOk.load(), "the queued question was never answered");
+    QVERIFY2(nestedRan.load(),
+             "the running work's own gate call was refused, so its work never ran and "
+             "the caller kept its default (bugs.md 31)");
+    QVERIFY(nestedOk.load());
+}
+
+// The pump must be re-armed by the INLINE path too (bugs.md 35).
+//
+// drain() early-returns without re-posting while a call is in flight, on the
+// understanding that the running call re-arms on its way out — which the queued path
+// does and the inline path did not. So a request pushed by a worker while the
+// application thread is inside an inline call that spins a nested event loop has its
+// posted drain() delivered into that loop, dropped, and never re-posted: the worker
+// parks on the gate's condition variable until some unrelated call or the teardown
+// cancel releases it. In the product the inline call is
+// OpenRemoteDialog::updateConsentNote() waiting on a keychain probe, and the stranded
+// worker is a fetcher that has reached a password question.
+//
+// No cancel and no other gate traffic anywhere in this case, so if the queued call is
+// answered at all it is because the inline path re-armed the pump.
+void TestGateStress::aCallQueuedDuringAnInlineCallIsNotStranded()
+{
+    guiCallGate().reopen();
+
+    std::atomic_bool asking{false};
+    std::atomic_bool queuedAnswered{false};
+    std::atomic_bool queuedFinished{false};
+
+    std::thread worker([&]() {
+        asking.store(true);
+        QString answer;
+        queuedAnswered.store(
+            guiCallGate().call([&answer]() { answer = QStringLiteral("queued"); }));
+        queuedFinished.store(true);
+    });
+
+    const bool inlineOk = guiCallGate().call([&]() {
+        // BUSY-WAIT, never qWait: processing events here would deliver the worker's
+        // posted drain() before the nested loop below exists, which is a different
+        // (and harmless) interleaving and would let this case pass against the bug.
+        // Nothing is delivered until the loop starts, so the drop is deterministic.
+        QElapsedTimer t;
+        t.start();
+        while (!asking.load() && t.elapsed() < 2000) { }
+        t.restart();
+        while (t.elapsed() < 50) { }
+
+        // The modal dialog's nested event loop, which is where the drain() lands.
+        QEventLoop nested;
+        QTimer::singleShot(100, &nested, [&nested]() { nested.quit(); });
+        nested.exec();
+    });
+
+    const bool stranded = !pumpUntil(queuedFinished, 3000);
+    worker.join();
+    guiCallGate().reopen();
+
+    QVERIFY(inlineOk);
+    QVERIFY2(!stranded,
+             "a call queued while the application thread was inside an inline one was "
+             "never delivered: the inline path did not re-arm the pump (bugs.md 35)");
+    QVERIFY2(queuedAnswered.load(), "the queued call was refused rather than answered");
 }
 
 QTEST_MAIN(TestGateStress)

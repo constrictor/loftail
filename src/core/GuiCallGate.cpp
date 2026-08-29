@@ -59,6 +59,36 @@ public:
     bool                                    running = false; // rule 3
     std::function<void()>                   interrupt;
 
+    // Rule 3's bookkeeping, in one place because the queued path and the inline path
+    // must agree about it exactly.
+    //
+    // `owner` is what tells a SECOND ASKER — refuse, or two modal dialogs stack — from
+    // the running work RE-ENTERING the gate on the very thread already inside it, which
+    // is not a stack at all and must run. `depth` counts those re-entries and is the
+    // ONLY thing that clears `running`: a nested return that cleared it would unblock
+    // the queue while the outer modal is still on screen, which is the stack again by
+    // the other door.
+    Qt::HANDLE                              owner = nullptr;
+    int                                     depth = 0;
+
+    // Both called with `mutex` held. leaveLocked() answers whether this was the
+    // outermost entry, i.e. whether the gate is free again.
+    void enterLocked()
+    {
+        running = true;
+        owner = QThread::currentThreadId();
+        ++depth;
+    }
+
+    bool leaveLocked()
+    {
+        if (--depth > 0)
+            return false;
+        running = false;
+        owner = nullptr;
+        return true;
+    }
+
     // Application thread. Takes at most one call, runs it OUTSIDE the mutex (rule 1),
     // and re-arms itself if more arrived meanwhile.
     void drain()
@@ -78,7 +108,11 @@ public:
             run = !next->abandoned && next->work != nullptr;
             if (run) {
                 next->started = true;
-                running = true;
+                // Records the application thread as the owner, which is what lets the
+                // work reach back through the gate — GuiSshPrompter's body asking the
+                // marshalled SecretStore whether there is a keychain — instead of being
+                // refused and handed a default (bugs.md 31).
+                enterLocked();
             }
         }
 
@@ -89,7 +123,7 @@ public:
         {
             std::unique_lock<std::mutex> lock(mutex);
             if (run)
-                running = false;
+                leaveLocked();
             next->done = true;
             more = !queue.empty();
             answered.notify_all();
@@ -182,18 +216,38 @@ bool GuiCallGate::call(const std::function<void()> &work)
         // the ordinary path for an interactive open, where the connect and the dialog
         // are on the same thread to begin with.
         //
-        // Rule 3 still holds: reaching here while running is true would mean a dialog's
-        // nested event loop delivered a second question, which is the stack this refuses.
+        // Rule 3 still holds, and the whole of what it is for is WHOSE question this is.
+        // A call arriving from a DIFFERENT thread while one runs is the second asker the
+        // rule refuses — its dialog would stack on the one already up. A call from the
+        // thread that is already inside the running work is not that: there is no second
+        // asker, and refusing it does not prevent a dialog, it silently skips the work
+        // and hands the caller its default. Testing `running` alone did exactly that to
+        // GuiSshPrompter, whose body runs under the gate and asks the marshalled
+        // SecretStore whether a keychain is there — answered "no" on a machine running
+        // one, so the remembered password went to plain text (bugs.md 31).
         {
             std::unique_lock<std::mutex> lock(d->mutex);
-            if (d->running)
+            if (d->running && d->owner != QThread::currentThreadId())
                 return false;
-            d->running = true;
+            d->enterLocked();
         }
         work();
-        std::unique_lock<std::mutex> lock(d->mutex);
-        d->running = false;
-        d->answered.notify_all();
+        bool more = false;
+        {
+            std::unique_lock<std::mutex> lock(d->mutex);
+            more = d->leaveLocked() && !d->queue.empty();
+            d->answered.notify_all();
+        }
+
+        // Re-arm, because drain() early-returns without re-posting while a call is in
+        // flight: a queued request whose posted drain() was delivered INTO this call's
+        // nested event loop was dropped, and nothing else will ever come back for it —
+        // the asker parks on answered.wait() until some unrelated call or the teardown
+        // cancel releases it (bugs.md 35). It has to be AFTER `running` is cleared and
+        // only at depth 0, or the posted drain() is dropped a second time for the same
+        // reason and the fix reproduces the bug exactly.
+        if (more)
+            d->rearm();
         return true;
     }
 
