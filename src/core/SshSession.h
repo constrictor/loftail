@@ -84,12 +84,52 @@ public:
         Refused,
     };
 
+    // What the caller means to DO with the connection, settled at connectTo() (§6.3).
+    //
+    // The default is what every reader wants and what `SshFetcher` gets by saying nothing.
+    // The other value exists to buy back a wait, and the size of that wait is the whole
+    // reason there is a parameter here at all — see connectTo() below.
+    enum class Need {
+        // Read something: the log this session was connected for, or a config file at an
+        // arbitrary path. The connect settles a transport — SFTP where the server offers
+        // it, the exec fallback where it does not (§6.3.1) — so that openFile(),
+        // statPath(), statHandle(), readAt(), readFileAt() and writeFileAt() all have
+        // something to dispatch on.
+        LogTransport,
+        // Run a command, and nothing else. runScript() is the ONLY operation such a
+        // session supports; every one of the six above refuses it by name.
+        ExecOnly,
+    };
+
     // Connect, verify the host key, and authenticate. Blocking, bounded by
     // `timeoutMs`. `prompter` may be null, in which case anything needing a person
     // fails rather than waits. Returns false and fills `error` — never with anything
     // derived from a credential.
+    //
+    // `need` DECIDES WHETHER SFTP IS ASKED FOR AT ALL, and the twenty seconds that saves
+    // is the point of it. A `LogTransport` connect ends in `libssh2_sftp_init()`, and on
+    // a server that ACCEPTS the subsystem channel with no `sftp-server` behind it — the
+    // stripped-down embedded image the exec fallback exists for (§6.3.1) — libssh2 waits
+    // for a version packet that is never coming and gives up with a plain TIMEOUT, at
+    // `timeoutMs`, which is 20 s for every attended gesture (`kSshWorkerConnectTimeoutMs`).
+    // Only then does the shell probe rescue it. A caller that was only ever going to open
+    // an exec channel paid that whole wait for a subsystem it did not want; on a server
+    // that DOES answer SFTP it paid a needless channel open and version exchange instead.
+    // `Need::ExecOnly` skips the init and the probe together and returns as soon as the
+    // login is in — which is what File ▸ Restart App does, and why it now starts running
+    // the script at once instead of after twenty seconds of silence (§6.9).
+    //
+    // AN ExecOnly SESSION HAS NO SFTP HANDLE AND NO SETTLED SIZE RUNG; DO NOT REACH FOR
+    // ONE. It never asked the server which transport it offers, so there is nothing to
+    // dispatch a read on and no probe result to read a size ladder out of. Handing one to
+    // openFile()/statPath()/statHandle()/readAt()/readFileAt()/writeFileAt() is a
+    // programming error, and each of those refuses it in words rather than answering: the
+    // natural failures are all SILENT — readAt() would return 0, which is exactly what end
+    // of file looks like, and readFileAt()/writeFileAt() would quietly take the *shell*
+    // path on a server whose SFTP is perfectly good.
     bool connectTo(const RemoteLocation &location, SshPrompter *prompter, int timeoutMs,
-                   QString *error, Failure *failure = nullptr);
+                   QString *error, Failure *failure = nullptr,
+                   Need need = Need::LogTransport);
 
     // Consulted repeatedly while connecting; returning true abandons the attempt with
     // Failure::Unreachable. Set before connectTo() by an owner that may be asked to stop
@@ -132,6 +172,14 @@ public:
     // hiding: the exec transport spends a process per read on the far end and detects
     // rotation more weakly, so a user seeing odd behaviour deserves to know which one
     // they are on.
+    //
+    // Exec for a `Need::ExecOnly` session too, which is NOT the same statement: there the
+    // server was never asked, and the answer means "this session talks over exec channels"
+    // rather than "this server refused SFTP". It is deliberately not a third enumerator —
+    // every `mode == Exec` branch inside this class routes away from the null `d->sftp`,
+    // which is exactly where an ExecOnly session must not go, so the binary spelling is
+    // what makes it safe by construction. Nothing outside reads mode() except the
+    // fetcher's diagnostic line, and a fetcher never holds an ExecOnly session.
     Mode mode() const;
 
     // How an exec session measures the file, settled at openFile() by probing this

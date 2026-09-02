@@ -167,6 +167,7 @@ private slots:
     void aRestartScriptRunsOnTheFarEndAndKeepsItsStderr();
     void aRestartScriptOutlivesTheConnectTimeout();
     void abortingARemoteScriptReturnsAtOnce();
+    void aRestartScriptRunsOnAnExecOnlyConnect();
 
     // bugs.md 30 — the only execution of the dead-session latch. The classification
     // behind it is pinned without a server (tst_sshsessionhealth); that a real libssh2
@@ -628,6 +629,81 @@ void TestSshLive::abortingARemoteScriptReturnsAtOnce()
 
     QVERIFY2(elapsed < 5000,
              qPrintable(QStringLiteral("abort took %1 ms").arg(elapsed)));
+}
+
+void TestSshLive::aRestartScriptRunsOnAnExecOnlyConnect()
+{
+    // THE ONLY EXECUTION of Need::ExecOnly. It is a connect that stops after the login —
+    // no libssh2_sftp_init(), no shell probe — and the claim it has to support is that
+    // runScript() still works on what comes back, because that is the whole of what
+    // File ▸ Restart App does with the session.
+    //
+    // WHY THE PARAMETER EXISTS, which this cannot measure here and which is worth saying:
+    // on a server that ACCEPTS the SFTP subsystem channel with no `sftp-server` behind it,
+    // the init that has just been skipped waits out the whole connect budget — twenty
+    // seconds — for a version packet that never comes, before the probe rescues it. This
+    // case runs against a server that presumably answers SFTP promptly, so the saving it
+    // demonstrates is only the channel open; the twenty seconds need the stripped-down
+    // image the exec fallback exists for, which is the same thing
+    // theExecFallbackWritesTheSameBytes() says about itself.
+    const QString marker = m_remotePath + QStringLiteral(".execonly-marker");
+    QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(marker)));
+
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(m_location, nullptr, 20000, &error, nullptr,
+                               SshSession::Need::ExecOnly),
+             qPrintable(error));
+    QVERIFY(session.isConnected());
+    // Exec, although this server was very likely never asked: the answer means "this
+    // session talks over exec channels", not "this server refused SFTP" (SshSession.h).
+    QCOMPARE(session.mode(), SshSession::Mode::Exec);
+    // No handle was opened and none can be: an ExecOnly session settles no transport.
+    QVERIFY(!session.hasFile());
+    QVERIFY(!session.fstatTracksHandle());
+
+    QByteArray out;
+    int code = -1;
+    const bool ran = session.runScript(
+        restartScriptCommand(QStringLiteral("printf ran\ntouch '%1'\n").arg(marker), {}),
+        [&out](const QByteArray &bytes, bool isStdErr) {
+            if (!isStdErr)
+                out.append(bytes);
+        },
+        &code, &error);
+    QVERIFY2(ran, qPrintable(error));
+    QCOMPARE(code, 0);
+    QCOMPARE(out, QByteArray("ran"));
+    QCOMPARE(remoteShellOutput(QStringLiteral("test -e %1 && printf yes").arg(marker)),
+             QByteArray("yes"));
+
+    // And the other half of the contract: every file operation refuses BY NAME rather
+    // than answering. Each of these would otherwise fail silently — readAt() with the 0
+    // that means end of file, readFileAt() by quietly reading the config with `cat` on a
+    // server whose SFTP is perfectly good.
+    QString why;
+    QVERIFY(!session.openFile(&why));
+    QVERIFY(!why.isEmpty());
+    why.clear();
+    QVERIFY(!session.readFileAt(m_remotePath, nullptr, nullptr, &why));
+    QVERIFY(!why.isEmpty());
+    why.clear();
+    // A scratch path and not the log: if the guard were ever removed this case must fail
+    // rather than silently overwrite the file every other case in this class reads.
+    QVERIFY(!session.writeFileAt(m_remotePath + QStringLiteral(".execonly-write"),
+                                 QByteArray("no"), &why));
+    QVERIFY(!why.isEmpty());
+    QCOMPARE(remoteShellOutput(QStringLiteral("test -e %1.execonly-write && printf yes")
+                                   .arg(m_remotePath)),
+             QByteArray());
+    why.clear();
+    char scratch[8] = {};
+    QCOMPARE(session.readAt(0, scratch, sizeof(scratch), &why), qint64(-1));
+    QVERIFY(!why.isEmpty());
+    QVERIFY(!session.statPath().valid);
+    QVERIFY(!session.statHandle().valid);
+    // The log is untouched by all of that — a refusal writes nothing.
+    QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(marker)));
 }
 
 void TestSshLive::aDroppedLinkIsNoticedRatherThanPolledForEver()

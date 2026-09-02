@@ -57,6 +57,17 @@ struct Tr
 {
     Q_DECLARE_TR_FUNCTIONS(loftail::SshSession)
 };
+
+// What a file operation says when it is handed a Need::ExecOnly session (SshSession.h).
+// Translated like everything else that can reach a status bar, although in a tree without
+// bugs nobody ever sees it: it is cheaper to phrase it for a person than to decide it can
+// never escape, and every one of these failures travels the same way an ordinary
+// transport error does.
+QString execOnlyRefusal()
+{
+    return Tr::tr("This connection was opened only to run a command, so it cannot read "
+                  "or write files.");
+}
 } // namespace
 
 // The numbers SshSessionHealth.h mirrors are libssh2's own. This is the only translation
@@ -270,6 +281,21 @@ struct SshSession::Impl
     ExecTools         execTools;            // what the connect-time probe found
     SizeSource        execSize = SizeSource::None; // settled at openFile(), per open
 
+    // Connected with Need::ExecOnly: signed in, and then STOPPED — no SFTP init, no shell
+    // probe, no size ladder (SshSession.h). Such a session can run a command and nothing
+    // else, and this flag is what says so out loud.
+    //
+    // IT IS NOT AN OPTIMISATION FLAG, IT IS A REFUSAL FLAG. `mode` is set to Exec for such
+    // a session, which keeps every branch in this file away from the null `d->sftp` — but
+    // it also lands the file operations on the *shell* path, where `execTools` is empty
+    // and `execSize` was never settled. Every one of them would then fail in a way the
+    // caller cannot tell from an ordinary answer: readAt() returns 0, which is end of
+    // file; openFile() runs a ladder over tools nobody probed for and reports the log as
+    // missing; readFileAt()/writeFileAt() would actually SUCCEED, over `cat`, on a server
+    // whose SFTP is perfectly good — which is the worst of the four, being a silent change
+    // of transport rather than a failure. So they ask notForExecOnly() first.
+    bool              execOnly = false;
+
     // Whether the transport underneath is still usable (SshSessionHealth.h, bugs.md 30).
     // MUTABLE because every operation on this class is entitled to record what libssh2
     // just told it, including the const ones — a `stat` that failed because the link died
@@ -329,6 +355,25 @@ struct SshSession::Impl
     // failing, and an unclearable flag then fires arbitrarily later on an unrelated and
     // perfectly benign failure.
     void noteAlive() const { health.markAlive(); }
+
+    // The guard every file operation owes an ExecOnly session, written once so that the
+    // six of them cannot come to disagree about what such a session is allowed to do.
+    // `what` is the operation's own name for the diagnostic log — untranslated, like
+    // every other name in there (DiagnosticLog.h).
+    //
+    // It is LOUD on purpose. Reaching one of those operations on an ExecOnly session is a
+    // programming error and not a state a user can produce, so the point of the log line
+    // is that the next person to add a caller to withSshSession() and give it the wrong
+    // Need sees the reason rather than an empty file or a phantom end of file.
+    bool notForExecOnly(const char *what) const
+    {
+        if (!execOnly)
+            return false;
+        diagLog("ssh", QStringLiteral("%1: %2 asked of a session connected to run a "
+                                      "command only — refused")
+                           .arg(location.target(), QString::fromLatin1(what)));
+        return true;
+    }
 
     // Run `command` on the server and collect its stdout. Blocking, bounded by the
     // session timeout like everything else here. Returns false when the channel could
@@ -1078,7 +1123,7 @@ void SshSession::abort()
 }
 
 bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter, int timeoutMs,
-                           QString *error, Failure *failure)
+                           QString *error, Failure *failure, Need need)
 {
     QString scratch;
     QString &err = error ? *error : scratch;
@@ -1167,6 +1212,42 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     if (!d->authenticate(prompter, &err, &kind)) {
         d->teardown();
         return false;
+    }
+
+    // Settled HERE and not in teardown(), beside `mode` and for the same reason: this
+    // object can be connected more than once, teardown() frees handles rather than
+    // resetting descriptions, and a flag carried over from a previous connect would
+    // describe the wrong one.
+    d->execOnly = (need == Need::ExecOnly);
+    if (d->execOnly) {
+        // SIGNED IN, AND THAT IS THE WHOLE ERRAND. An exec channel needs the session and
+        // nothing else — runScript() is documented as the one operation on this class with
+        // no mode branch — so asking for SFTP here buys nothing and can cost twenty
+        // seconds: a server that accepts the subsystem channel with no `sftp-server`
+        // behind it makes libssh2 wait out `timeoutMs` for a version packet that is never
+        // coming, and only then does the probe below rescue it. That wait, once per
+        // gesture, is what File ▸ Restart App used to spend before anything happened at
+        // all (§6.9). On a server that does answer SFTP the saving is smaller and still
+        // real: a channel open and a version exchange nobody wanted.
+        //
+        // Mode::Exec, deliberately, although this server was never asked and may well do
+        // SFTP: every `mode == Mode::Exec` branch in this file routes away from `d->sftp`,
+        // which is null here and must stay unreachable, so the binary spelling is what
+        // makes the state safe rather than merely unused. What it does NOT make safe is
+        // the shell path those branches lead to — `execTools` is empty and `execSize` was
+        // never settled, because no probe ran — and that is `execOnly`'s job: the six file
+        // operations refuse by name instead of failing silently (Impl::notForExecOnly).
+        d->mode = Mode::Exec;
+        // No handle exists, here or ever on this session, so the inode substitute is
+        // unavailable exactly as it is for a genuine exec transport.
+        d->fstatTracks = false;
+        // The link demonstrably works: the handshake, the host key and the whole auth
+        // ladder just completed over it. Same clear, same reason, as the two branches
+        // below — an unclearable latch left over from a probe inside authenticate() would
+        // hand back a session isConnected() calls dead.
+        d->health.markAlive();
+        kind = Failure::None;
+        return true;
     }
 
     d->mode = Mode::Sftp;
@@ -1310,6 +1391,16 @@ bool SshSession::openFile(QString *error, Failure *failure)
     Failure ignored = Failure::None;
     Failure &kind = failure ? *failure : ignored;
 
+    // An ExecOnly session settled no transport and probed for no tools, so the ladder
+    // below would run against an empty ExecTools and report the log as unmeasurable —
+    // which upstream reads as "not there" and waits for, for ever (SshSession.h).
+    if (d->notForExecOnly("openFile")) {
+        kind = Failure::Refused;
+        if (error)
+            *error = execOnlyRefusal();
+        return false;
+    }
+
     if (d->mode == Mode::Exec) {
         // Nothing to open: every read runs its own command. "Opening" therefore means
         // settling on a way to measure this file and confirming it answers — which is
@@ -1418,6 +1509,15 @@ bool SshSession::readFileAt(const QString &path, QByteArray *out, bool *existed,
     if (existed)
         *existed = false;
 
+    // THIS ONE WOULD OTHERWISE WORK, which is why it is guarded rather than left to fail.
+    // An ExecOnly session reports Mode::Exec, so without this it would fall into the shell
+    // branch below and read the config with `cat` — succeeding, on a server whose SFTP is
+    // perfectly good, having silently changed transport because of how the connection
+    // happened to be opened. A refusal is the honest answer; the fix for a caller that
+    // hits it is Need::LogTransport, not this branch.
+    if (d->notForExecOnly("readFileAt"))
+        return fail(execOnlyRefusal());
+
     if (d->mode == Mode::Exec) {
         // Existence FIRST and on its own round trip: an empty file that is there and a
         // file that is not are the same empty stdout, and which of the two it is decides
@@ -1497,6 +1597,12 @@ bool SshSession::writeFileAt(const QString &path, const QByteArray &bytes, QStri
             *error = text;
         return false;
     };
+
+    // The same trap as readFileAt()'s, one direction worse: an unguarded ExecOnly write
+    // would land on `cat > 'path'` and put the bytes there, so nothing would ever look
+    // wrong — the transport would simply not be the one the caller was entitled to.
+    if (d->notForExecOnly("writeFileAt"))
+        return fail(execOnlyRefusal());
 
     if (d->mode == Mode::Exec) {
         // `cat > 'path'` truncates the existing inode rather than replacing it, so the
@@ -1608,6 +1714,12 @@ void SshSession::closeFile()
 SshSession::Attrs SshSession::statPath() const
 {
     Attrs out;
+    // An invalid Attrs is what the rung-less exec branch below would answer anyway, so
+    // this changes no result — it is here to say so in the log, because "invalid by
+    // accident" and "invalid because you asked the wrong session" are the same silence
+    // upstream, where an invalid stat means the log is not there and is waited for.
+    if (d->notForExecOnly("statPath"))
+        return out;
     if (d->mode == Mode::Exec) {
         // Whichever rung openFile() settled on. No re-validation here: that question was
         // answered once, and asking it again would double the cost of every poll.
@@ -1655,7 +1767,11 @@ SshSession::Attrs SshSession::statHandle() const
     Attrs out;
     // Mode::Exec has no handle to stat, and must not pretend otherwise: reporting the
     // path's attributes here would make the two agree by construction and silently
-    // defeat the rotation check that compares them.
+    // defeat the rotation check that compares them. An ExecOnly session has no handle
+    // either, and is named separately for statPath()'s reason — the answer is the same,
+    // the diagnostic is not.
+    if (d->notForExecOnly("statHandle"))
+        return out;
     if (d->mode == Mode::Exec || !d->file)
         return out;
     LIBSSH2_SFTP_ATTRIBUTES attrs{};
@@ -1685,6 +1801,15 @@ qint64 SshSession::readAt(qint64 offset, char *buffer, qint64 length, QString *e
 {
     if (length <= 0)
         return 0;
+    // -1 AND A REASON, never the 0 the exec branch below would answer with `execFileOpen`
+    // false: 0 from here means end of file, so an ExecOnly session let through would look
+    // to the fetcher like a log that is simply empty — the exact silence that made a
+    // `head` without `-c` open an empty tab and never say why (§6.3.1).
+    if (d->notForExecOnly("readAt")) {
+        if (error)
+            *error = execOnlyRefusal();
+        return -1;
+    }
     if (d->mode == Mode::Exec)
         return d->execFileOpen ? d->execRead(offset, buffer, length, error) : 0;
     if (!d->file)

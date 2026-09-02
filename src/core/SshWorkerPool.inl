@@ -18,9 +18,16 @@ namespace loftail {
 // one a background retry uses.
 inline constexpr int kSshWorkerConnectTimeoutMs = 20000;
 
+// `need` is REQUIRED and comes before `body` on purpose, where SshSession::connectTo()
+// defaults it. There it has to default, or every fetcher call site would have to be
+// touched to say what it already means; here there are a handful of callers, each one is
+// a whole errand rather than a step in one, and the wrong value fails in the direction
+// that costs twenty seconds or silently changes transport (SshSession.h). Making the next
+// caller answer the question is worth the four words.
 template <class Body>
 QString withSshSession(const QString &address, SshPrompter *prompter,
-                       const std::shared_ptr<SshWorkerShared> &shared, Body body)
+                       const std::shared_ptr<SshWorkerShared> &shared, SshSession::Need need,
+                       Body body)
 {
     const auto location = RemoteLocation::parse(address);
     if (!location || !location->isValid()) {
@@ -54,8 +61,10 @@ QString withSshSession(const QString &address, SshPrompter *prompter,
     } unpublish{shared};
 
     QString error;
-    if (!session->connectTo(*location, prompter, kSshWorkerConnectTimeoutMs, &error, nullptr))
+    if (!session->connectTo(*location, prompter, kSshWorkerConnectTimeoutMs, &error, nullptr,
+                            need)) {
         return error;
+    }
     if (shared->abandoned)
         return {};
     return body(*session, location->path);

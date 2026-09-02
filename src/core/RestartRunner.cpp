@@ -402,8 +402,20 @@ void RestartRunner::startRemote(const RestartTarget &target)
                 Qt::QueuedConnection);
         };
 
+        // ExecOnly, and it is worth twenty seconds. runScript() opens a plain exec
+        // channel, which needs the session and nothing else — so the SFTP init a
+        // LogTransport connect ends with buys this errand nothing, and on the servers the
+        // exec fallback exists for it costs the WHOLE connect budget before the script
+        // starts: sshd accepts the subsystem channel, no `sftp-server` answers, and
+        // libssh2 waits out kSshWorkerConnectTimeoutMs for a version packet that is never
+        // coming (SshSession.h, §6.9). That was the reported "Restart App takes twenty
+        // seconds before anything happens".
+        //
+        // Nothing in this lambda may reach for a file: an ExecOnly session has no SFTP
+        // handle and no settled size rung, and every operation that would want one refuses
+        // it by name. runScript() is the one thing here, which is the whole errand.
         const QString error = withSshSession(
-            address, &shared->relay, shared,
+            address, &shared->relay, shared, SshSession::Need::ExecOnly,
             [&out, &code, &command, &onChunk, &shared](SshSession &session, const QString &) {
                 QString why;
                 // The chunk callback also RECORDS whether stderr was touched, on the

@@ -225,8 +225,14 @@ void ConfigTransfer::startRead(const QString &address)
     QPointer<ConfigTransfer> self(this);
     startSshWorker([address, shared, self]() {
         ConfigReadResult out;
+        // LogTransport, not ExecOnly: readFileAt() and writeFileAt() branch on the mode
+        // the connect settled, and SFTP is the transport this errand is entitled to on a
+        // server that offers it — an ExecOnly session would have to read the config with
+        // `cat`, which is the fallback rather than the choice, so those two refuse one
+        // outright (SshSession.h).
         const QString error = withSshSession(
-            address, &shared->relay, shared, [&out, &address](SshSession &session, const QString &path) {
+            address, &shared->relay, shared, SshSession::Need::LogTransport,
+            [&out, &address](SshSession &session, const QString &path) {
                 QString why;
                 if (!session.readFileAt(path, &out.bytes, &out.existed, &why))
                     return why;
@@ -273,7 +279,7 @@ void ConfigTransfer::startWrite(const QString &address, const QByteArray &bytes)
     startSshWorker([address, bytes, shared, self]() {
         ConfigWriteResult out;
         const QString error =
-            withSshSession(address, &shared->relay, shared,
+            withSshSession(address, &shared->relay, shared, SshSession::Need::LogTransport,
                         [&out, &bytes](SshSession &session, const QString &path) {
                             QString why;
                             if (!session.writeFileAt(path, bytes, &why))
