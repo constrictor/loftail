@@ -42,7 +42,6 @@
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
-#include <cstring>
 #include <mutex>
 
 namespace loftail {
@@ -281,6 +280,45 @@ struct SshSession::Impl
     ExecTools         execTools;            // what the connect-time probe found
     SizeSource        execSize = SizeSource::None; // settled at openFile(), per open
 
+    // Mode::Exec's answer to `file`/`filePos` above: the channel a `tail -c +N` is
+    // currently streaming out of, and the byte offset it stands at.
+    //
+    // WHY THERE IS A STREAM AT ALL. Every exec-mode read used to be a whole command —
+    // channel open, `tail -c +N | head -c L`, drain, close, free — and SshFetcher walks a
+    // log in 256 KB steps, so catching up on a 100 MB log was four hundred remote process
+    // spawns and four hundred round-trip sequences to read a file one `cat` would hand
+    // over in a single pass. Those reads are STRICTLY FORWARD (fetchForward(): each offset
+    // is the previous one plus exactly what the previous call returned), so one `tail`
+    // started at the first offset already holds every byte the pass will ask for, in the
+    // order it will ask for them. execRead() serves out of it while the offsets line up.
+    //
+    // THE DANGEROUS DIRECTION IS THE SAME ONE `filePos` RECORDS, and worse here, because
+    // what survives is not a number but a file. A stream is `tail` on a path the server
+    // resolved ONCE, at spawn; a rotation gives that path to a different inode while the
+    // stream goes on delivering the old one's bytes. Serving those to a caller that thinks
+    // it is reading the new generation splices one file's bytes onto another's spool, at
+    // offsets an indexer is walking, with nothing downstream able to notice. So the stream
+    // is invalidated WITH the state it describes: it is written only by adoptReadStream()
+    // below, and closeFile() and teardown() go through it — which covers every open, every
+    // rotation reopen, every close and every reconnect, since SshFetcher answers a rotation
+    // with closeFile() + openFile() and openFile()'s exec branch opens with closeFile().
+    // The sentinel is "no stream, so start one", which is what a forgotten drop would have
+    // to produce to be safe, and is what it does produce.
+    //
+    // A STREAM MEANS TWO CHANNELS OPEN AT ONCE, which this transport never had before:
+    // the poll's `stat` runs on its own channel while the stream sits idle. That is what
+    // SSH multiplexing is for and needs nothing said to libssh2 — packets for the stream
+    // arrive while runCommand() drains the stat's channel and are QUEUED against the
+    // stream rather than lost, which is precisely what makes the next execRead() correct.
+    // What bounds the queue is the channel's receive window, which is adjusted only as
+    // this side reads, so an idle stream costs a window of memory here and a `tail`
+    // blocked in write() over there — and nothing more, because the far end stops when
+    // the window is full.
+    //
+    // `readStreamPos` is meaningless while `readStream` is null and is never read then.
+    LIBSSH2_CHANNEL  *readStream = nullptr;
+    qint64            readStreamPos = 0;
+
     // Connected with Need::ExecOnly: signed in, and then STOPPED — no SFTP init, no shell
     // probe, no size ladder (SshSession.h). Such a session can run a command and nothing
     // else, and this flag is what says so out loud.
@@ -415,8 +453,44 @@ struct SshSession::Impl
         filePos = kFilePosUnknown;
     }
 
+    // The ONE place `readStream` is written, closing whatever was there. adoptFile()'s
+    // twin, and for the identical reason: the channel and the offset it stands at are a
+    // single fact, so a new stream cannot be adopted without its offset going with it and
+    // an old one cannot be dropped without its offset being forgotten. Passing nullptr is
+    // how the stream is dropped.
+    //
+    // CLOSING IS WHAT KILLS THE REMOTE `tail`, which matters because the streaming command
+    // carries no `head -c` and would otherwise run to the end of the file whether or not
+    // anybody is reading. libssh2_channel_close() sends SSH_MSG_CHANNEL_CLOSE; the server
+    // closes the process's pipe; `tail` takes an EPIPE or a SIGPIPE on its next write and
+    // dies; sshd answers with its own CHANNEL_CLOSE, which is what wait_closed() is
+    // waiting for. All three calls, in that order, exactly as runCommand() ends — a bare
+    // free() leaves libssh2 to do the close itself and leaves the ordering to the version
+    // that happens to be installed.
+    //
+    // What it costs is that abandoning a stream mid-file can block for as long as it takes
+    // the bytes already in flight to arrive: the server may have filled the channel window
+    // before it saw our close, and libssh2 reads and discards those packets while waiting.
+    // That is bounded by the session timeout like everything else here, and it is paid
+    // only on an offset the stream cannot serve — a rotation, a reopen, or the 4 KB head
+    // probe — never on the sequential path this exists for.
+    void adoptReadStream(LIBSSH2_CHANNEL *channel, qint64 startOffset)
+    {
+        if (readStream && readStream != channel) {
+            libssh2_channel_close(readStream);
+            libssh2_channel_wait_closed(readStream);
+            libssh2_channel_free(readStream);
+        }
+        readStream = channel;
+        readStreamPos = startOffset;
+    }
+
     void teardown()
     {
+        // FIRST, and before the session is freed: a channel belongs to a session, and
+        // freeing the session out from under one is a use-after-free in libssh2 rather
+        // than a leak. Same argument as the descriptor going last, from the other end.
+        adoptReadStream(nullptr, 0);
         adoptFile(nullptr);
         if (sftp) {
             libssh2_sftp_shutdown(sftp);
@@ -706,22 +780,111 @@ bool SshSession::Impl::runCommandWithInput(const QString &command, const QByteAr
 
 qint64 SshSession::Impl::execRead(qint64 offset, char *buffer, qint64 length, QString *error)
 {
-    QByteArray out;
-    int exitCode = 0;
-    if (!runCommand(readCommand(location.path, offset, length), &out, &exitCode)) {
+    if (length <= 0)
+        return 0;
+
+    const auto refuse = [&]() -> qint64 {
         if (error) {
             *error = Tr::tr("Reading %1 from %2 failed: the server would not run a "
-                                    "command.")
+                            "command.")
                          .arg(location.path, location.host);
         }
         return -1;
+    };
+
+    if (!session)
+        return refuse();
+
+    // Serve from the stream when it stands exactly where the caller is asking, and start
+    // a new one otherwise. THE COMPARISON IS EQUALITY AND NOT `>=`: a stream can only hand
+    // back the next byte it has, so there is no forward skipping to be had, and a caller
+    // that jumped forward would be given the bytes at the stream's position while
+    // believing they came from the offset it named — the same splice a stale position
+    // makes, from the other direction. Every mismatch — a rotation, a reopen, the paced
+    // 4 KB head probe at the base offset, the size ladder's proof read at the last byte —
+    // costs one command, which is what every read used to cost.
+    if (!readStream || offset != readStreamPos) {
+        adoptReadStream(nullptr, 0);
+
+        LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(session);
+        if (!channel) {
+            // Same reading as runCommand()'s: a channel that will not open is usually the
+            // link being gone rather than the server saying no.
+            noteSessionError();
+            return refuse();
+        }
+        const QByteArray line = streamReadCommand(location.path, offset).toUtf8();
+        if (libssh2_channel_exec(channel, line.constData()) != 0) {
+            noteSessionError();
+            libssh2_channel_free(channel);
+            return refuse();
+        }
+        adoptReadStream(channel, offset);
     }
+
+    qint64 total = 0;
+    char sink[4096];
+    while (total < length) {
+        const ssize_t n =
+            libssh2_channel_read(readStream, buffer + total, size_t(length - total));
+        if (n > 0) {
+            total += n;
+            readStreamPos += n;
+            continue;
+        }
+
+        // stderr is drained and DISCARDED, runCommand()'s rule and for its reason: a
+        // server that prints a warning there must not be able to wedge the channel by
+        // filling its window, and its complaint is not the answer we asked for. It matters
+        // more on a stream than on a one-shot command, because a wedged channel here stops
+        // a whole catch-up pass rather than one 256 KB window.
+        ssize_t err = 0;
+        do {
+            err = libssh2_channel_read_stderr(readStream, sink, sizeof(sink));
+        } while (err > 0);
+
+        if (n == 0) {
+            if (!libssh2_channel_eof(readStream))
+                continue; // nothing yet, and the far end has not finished
+            // END OF THE STREAM, WHICH IS NOT THE END OF THE LOG. `tail` without `-f`
+            // stops at the file's EOF as it stood when it got there, so this is the
+            // ordinary answer at the end of a catch-up pass and again on every poll of a
+            // log that is not growing. The stream is DROPPED rather than remembered as
+            // exhausted: a log that stops growing and then grows again must resume, and a
+            // stream kept at its own end would answer 0 for ever — the tab would go quiet
+            // with the link perfectly healthy and nothing anywhere to say why. Dropping it
+            // means the next read, at this offset or any other, runs a fresh `tail`.
+            adoptReadStream(nullptr, 0);
+            break;
+        }
+
+        // n < 0. LATCH ONLY WHERE NOTHING ARRIVED, which is readAt()'s rule rather than
+        // runCommand()'s, and the difference is that here it is knowable: a partial read
+        // is handed back as a positive count and SshFetcher::fetchForward() treats it as an
+        // ordinary short read — it writes the bytes, advances and asks again — so
+        // condemning the session on a call its caller counted as a success would surface
+        // arbitrarily later, on some unrelated stat failure. If the link really has gone,
+        // the next call gets the same code with nothing read and latches then.
+        if (total == 0)
+            noteError(int(n));
+        // And the stream goes, whatever came back. A failed read is the one moment the
+        // channel's position stops being something that can be reasoned about from here —
+        // an error inside the transport need not have advanced it by what was handed back
+        // — so the next call starts a `tail` at an offset the caller names rather than
+        // trusting a number this one cannot vouch for.
+        adoptReadStream(nullptr, 0);
+        if (total > 0)
+            break;
+        if (error) {
+            *error = sessionError(session, Tr::tr("Reading %1 from %2 failed")
+                                               .arg(location.path, location.host));
+        }
+        return -1;
+    }
+
     // A short read is not an error: it is EOF, which is the ordinary answer while
     // tailing a log that has not grown since the size was taken.
-    const qint64 got = qMin<qint64>(out.size(), length);
-    if (got > 0)
-        std::memcpy(buffer, out.constData(), size_t(got));
-    return got;
+    return total;
 }
 
 bool SshSession::Impl::verifyHostKey(SshPrompter *prompter, QString *error,
@@ -1708,6 +1871,13 @@ bool SshSession::writeFileAt(const QString &path, const QByteArray &bytes, QStri
 void SshSession::closeFile()
 {
     d->execFileOpen = false;
+    // The exec transport's half of the same statement. This is the call SshFetcher makes
+    // when it has decided the log rotated, and it is the first thing openFile()'s exec
+    // branch does — so it is where a stream reading the file that USED to be at this path
+    // has to stop being consulted. A stream that outlived a rotation would go on handing
+    // back the old inode's bytes to a caller writing them into the new generation's spool
+    // at offsets an indexer is walking, silently (see Impl::readStream).
+    d->adoptReadStream(nullptr, 0);
     d->adoptFile(nullptr);
 }
 

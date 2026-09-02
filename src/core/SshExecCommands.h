@@ -136,6 +136,33 @@ QString wcSizeCommand(const QString &path);
 // of a large log does not stream the whole thing.
 QString readCommand(const QString &path, qint64 offset, qint64 length);
 
+// Everything from `offset` (0-based) to the end of the file, on stdout, AS ONE STREAM.
+//
+// THE MISSING `| head -c L` IS THE WHOLE POINT, and putting it back defeats the feature
+// rather than merely slowing it down. readCommand() above is one command per window, and
+// a window is 256 KB (SshFetcher::kChunkBytes) — so catching up on a 100 MB log meant
+// four hundred channel opens, four hundred remote `tail` processes and four hundred
+// round-trip sequences, to read a file that one `cat` would have handed over in a single
+// pass. `SshFetcher::fetchForward()` reads STRICTLY FORWARD, each offset being the
+// previous one plus what the previous call returned, so a single `tail -c +N` started at
+// the first offset already contains every byte the whole pass is going to ask for, in
+// exactly the order it is going to ask for them. The exec transport streams from one
+// channel and reads out of it per call (§6.3.1).
+//
+// WHAT BOUNDS THE READ, then, since the command no longer does. Two things, and neither
+// is on the far end: the caller's own `length` per call, which is what SshSession reads
+// out of the channel and hands back, and the tear-down when the caller stops asking —
+// closing the channel makes the server close the pipe, `tail` takes an EPIPE on its next
+// write and dies. Nothing streams that nobody is reading; what a stream costs while it
+// is idle is one blocked remote process per open log, which is the price of not paying a
+// process per 256 KB.
+//
+// `tail` with no `-f`, deliberately: it stops at the file's EOF as it stood when it got
+// there, which is exactly the extent one catch-up pass wants. Following on the far end
+// would be a second thing that decides when there are new bytes, competing with the poll
+// that already does (§6.3) and answering with no size to clamp against.
+QString streamReadCommand(const QString &path, qint64 offset);
+
 // --- The config-file editor's whole-file operations (SPEC.md §4) -------------
 //
 // A log is read in windows with `tail`/`head` because it is large and grows. A CONFIG

@@ -146,6 +146,40 @@ private:
         return predicate();
     }
 
+    // The same two, against an ARBITRARY location rather than m_location. Only the
+    // exec-stream case needs them: the server that refuses SFTP is a second machine (or
+    // the same one with `Subsystem sftp` commented out), so it has a URL of its own and
+    // the fixture has to be written over there rather than here.
+    static QStringList sshArgsFor(const RemoteLocation &where, const QString &command)
+    {
+        QStringList args;
+        args << QStringLiteral("-o") << QStringLiteral("BatchMode=yes");
+        if (where.port != RemoteLocation::kDefaultPort)
+            args << QStringLiteral("-p") << QString::number(where.port);
+        args << (where.user.isEmpty() ? where.host : where.user + u'@' + where.host);
+        args << command;
+        return args;
+    }
+
+    // Put `content` at `where.path` over the system ssh client. Used to SET UP the
+    // fixture — the code under test is loftail's own libssh2 exec path.
+    static bool writeRemoteAt(const RemoteLocation &where, const QByteArray &content,
+                              bool append = false)
+    {
+        QProcess ssh;
+        ssh.start(QStringLiteral("ssh"),
+                  sshArgsFor(where, QStringLiteral("cat %1 %2")
+                                        .arg(QString::fromLatin1(append ? ">>" : ">"),
+                                             shellQuote(where.path))));
+        if (!ssh.waitForStarted(15000))
+            return false;
+        ssh.write(content);
+        ssh.closeWriteChannel();
+        if (!ssh.waitForFinished(60000))
+            return false;
+        return ssh.exitStatus() == QProcess::NormalExit && ssh.exitCode() == 0;
+    }
+
 private slots:
     void initTestCase();
     void cleanup();
@@ -155,6 +189,13 @@ private slots:
     void reportsAnUnreachableHostClearly();
     void theExecFallbackReadsTheSameBytes();
     void theExecFallbackSizesWithoutStat();
+
+    // The exec transport's streaming read (§6.3.1). GATED TWICE, like tst_keychainlive:
+    // it needs a server that genuinely refuses SFTP, because nothing a client can do makes
+    // libssh2_sftp_init() fail against one that does not. See the function for how to get
+    // one. Everything above execRead() is identical either way, so what this pins is the
+    // one thing that is not — the stream's own state machine.
+    void theExecStreamServesAForwardWalkFromOneChannel();
 
     // The seek elision in SshSession::readAt(). Only a real server executes any of it —
     // the subject is libssh2's own read cursor, so there is nothing to fake.
@@ -386,6 +427,137 @@ void TestSshLive::theExecFallbackSizesWithoutStat()
         QCOMPARE(viaWc.size, viaSftp.size);
         QCOMPARE(viaWc.mtime, kUnknownMtime);
     }
+}
+
+void TestSshLive::theExecStreamServesAForwardWalkFromOneChannel()
+{
+    // WHAT THIS IS FOR. Mode::Exec used to run a whole command per read — channel open,
+    // `tail -c +N | head -c L`, drain, close, free — and SshFetcher::fetchForward() walks a
+    // log in 256 KB steps, so a 100 MB catch-up was four hundred remote process spawns.
+    // It now keeps one `tail -c +N` streaming and reads out of it while the caller's
+    // offsets line up (Impl::readStream). Three things about that state machine can only
+    // be found out against a real server, and all three are silent when wrong:
+    //
+    //   * a forward walk must come out of ONE channel and hand back the file's own bytes
+    //     in order — a stream serving the wrong offset shifts a log rather than failing;
+    //   * a backwards jump must tear the stream down and start a new one — a stream that
+    //     answered from where it stood would give the head of the file to a caller that
+    //     asked for the middle, which is how one generation's bytes reach another's spool;
+    //   * EOF must DROP the stream — `tail` without `-f` stops at the file's end as it
+    //     stood when it got there, so a stream remembered as exhausted answers 0 for ever
+    //     and a log that grows again is never read, with the link perfectly healthy.
+    //
+    // GATED TWICE, and the second gate is unavoidable: this branch is reached only when
+    // libssh2_sftp_init() fails, and nothing a client can do makes it fail against a
+    // server that has a working sftp-server. So it needs one that does not. Point
+    // LOFTAIL_TEST_SSH_EXEC_URL at a disposable path on a host whose sshd has no
+    // `Subsystem sftp` line (commenting it out and reloading sshd on a throwaway VM is the
+    // cheapest way), e.g.
+    //
+    //   LOFTAIL_TEST_SSH_EXEC_URL=ssh://me@nosftp/tmp/loftail-exec.log
+    //
+    // With it unset this skips, which is the honest state: what runs with no such server
+    // is the command text through a real /bin/sh (tst_sshexec) and nothing else.
+    const QString url =
+        QProcessEnvironment::systemEnvironment().value(QStringLiteral("LOFTAIL_TEST_SSH_EXEC_URL"));
+    if (url.isEmpty()) {
+        QSKIP("Set LOFTAIL_TEST_SSH_EXEC_URL=ssh://user@host/tmp/disposable.log, where the "
+              "host's sshd has NO working sftp-server, to exercise the exec transport's "
+              "streaming read. Nothing else reaches it.");
+    }
+    const auto parsed = RemoteLocation::parse(url);
+    QVERIFY2(parsed.has_value(), "LOFTAIL_TEST_SSH_EXEC_URL is not a valid ssh:// URL");
+    const RemoteLocation where = *parsed;
+
+    // Big enough that the walk below takes several chunks and comfortably more than one
+    // 256 KB fetch window, which is the size at which the old command-per-read behaviour
+    // and this one stop being indistinguishable. Every line names its own ordinal, so a
+    // stream that hands back the wrong region is a mismatch and not a plausible-looking
+    // block of log.
+    QByteArray content;
+    content.reserve(900 * 1024);
+    for (int i = 0; content.size() < 900 * 1024; ++i) {
+        content += "2026-07-21 00:00:01,000 [t0] INFO  logger.a - exec stream line "
+            + QByteArray::number(i).rightJustified(8, '0') + "\n";
+    }
+    QVERIFY2(writeRemoteAt(where, content), "could not write the fixture on the exec host");
+
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(where, nullptr, 30000, &error), qPrintable(error));
+    // WITHOUT THIS THE REST PROVES NOTHING. A host that turned out to speak SFTP after all
+    // would run every assertion below through readAt()'s SFTP branch and pass, while the
+    // code this case exists for was never entered.
+    QCOMPARE(session.mode(), SshSession::Mode::Exec);
+    QVERIFY2(session.openFile(&error), qPrintable(error));
+
+    const SshSession::Attrs attrs = session.statPath();
+    QVERIFY(attrs.valid);
+    QCOMPARE(attrs.size, qint64(content.size()));
+
+    qint64 lastRead = 0;
+    const auto readChunk = [&](qint64 off, qint64 len) {
+        QByteArray buffer(int(len), '\0');
+        lastRead = session.readAt(off, buffer.data(), len, &error);
+        if (lastRead < 0)
+            return QByteArray();
+        buffer.resize(int(lastRead));
+        return buffer;
+    };
+
+    // (1) THE FORWARD WALK, which is fetchForward()'s own shape: every offset is the
+    // previous one plus exactly what came back. All of it out of one channel — there is no
+    // counter to assert on from out here, so what is asserted is the consequence, that the
+    // bytes are the file's and in order, plus the wall clock, which is the only place the
+    // saving shows. Four hundred spawns against one is orders of magnitude, so the bound
+    // is deliberately loose: the claim is that a process per chunk is not happening, and a
+    // regression fails it by minutes.
+    QElapsedTimer walk;
+    walk.start();
+    QByteArray gathered;
+    qint64 offset = 0;
+    while (offset < content.size()) {
+        const QByteArray chunk = readChunk(offset, 64 * 1024);
+        QVERIFY2(!chunk.isEmpty(), qPrintable(error));
+        gathered += chunk;
+        offset += chunk.size();
+    }
+    QCOMPARE(gathered, content);
+    QVERIFY2(walk.elapsed() < 60000,
+             "the forward walk took long enough to suggest a command per chunk");
+
+    // (2) THE BACKWARDS JUMP. Nothing about the stream can serve it, so it must be torn
+    // down and a fresh `tail` started at the offset actually asked for. A stream that
+    // answered from where it stood would hand back the END of the file here and every
+    // assertion about sizes would still pass.
+    QCOMPARE(readChunk(0, 4096), content.left(4096));
+    // And straight on from there, which is the stream being reused again after the restart.
+    QCOMPARE(readChunk(4096, 4096), content.mid(4096, 4096));
+    // A jump into the middle, then forward from it.
+    QCOMPARE(readChunk(500000, 1000), content.mid(500000, 1000));
+    QCOMPARE(readChunk(501000, 1000), content.mid(501000, 1000));
+
+    // (3) THE RESUMED TAIL. Read at the end: `tail` has nothing to give and exits, which
+    // is EOF and not an error — 0 bytes, no message, the ordinary answer on every poll of
+    // a log that is not growing.
+    QCOMPARE(readChunk(content.size(), 8192), QByteArray());
+    QCOMPARE(lastRead, qint64(0));
+    // Now the log grows. THE ONE THAT MATTERS: the read that follows is at the very offset
+    // the exhausted stream stood at, so a stream kept instead of dropped would answer 0
+    // again — for ever, since nothing else ever revisits it — and the tab would go quiet
+    // with the machine reachable and the file growing.
+    const QByteArray extra =
+        "2026-07-21 00:00:09,000 [t9] WARN  logger.b - appended after end of stream\n";
+    QVERIFY2(writeRemoteAt(where, extra, /*append=*/true), "could not append on the exec host");
+    QCOMPARE(readChunk(content.size(), extra.size()), extra);
+    // Twice over, because the first resume could be luck: a second stall and a second
+    // append have to behave the same way.
+    QCOMPARE(readChunk(content.size() + extra.size(), 8192), QByteArray());
+    QCOMPARE(lastRead, qint64(0));
+    QVERIFY2(writeRemoteAt(where, extra, /*append=*/true), "could not append again");
+    QCOMPARE(readChunk(content.size() + extra.size(), extra.size()), extra);
+
+    session.close();
 }
 
 void TestSshLive::sequentialReadsLandWhereTheyAskedWithNoSeekBetweenThem()

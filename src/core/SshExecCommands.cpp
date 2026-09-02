@@ -83,6 +83,26 @@ QString readCommand(const QString &path, qint64 offset, qint64 length)
              QString::number(qMax<qint64>(0, length)));
 }
 
+QString streamReadCommand(const QString &path, qint64 offset)
+{
+    // The same 1-based `+N` as readCommand(), and deliberately the same expression rather
+    // than a second derivation of it: the two commands have to agree about which byte
+    // `offset` names, because the streaming one is what serves a sequential pass and the
+    // bounded one is still what ExecSizeProbe proves a rung with, and a one-byte
+    // disagreement between them would show up as a spool shifted by one byte rather than
+    // as anything that fails.
+    const qint64 from = qMax<qint64>(0, offset) + 1;
+    // No `| head -c`, and see the header for why at length. In one line: the caller reads
+    // as much as it wants out of the channel and closes it when it is done, so the bound
+    // moved from the far end to this end.
+    //
+    // ONE arg() call with two arguments, for readCommand()'s reason — chaining rescans
+    // the string it has already substituted the path into, so a path containing a literal
+    // %1 has that token replaced by whatever the next call passes.
+    return QStringLiteral("tail -c +%1 %2")
+        .arg(QString::number(from), shellQuote(path));
+}
+
 namespace {
 // The marker configExistsCommand() prints. Its own, not probeMarker()'s, so a stray
 // probe reply arriving late on a reused channel cannot be read as an answer about a file.

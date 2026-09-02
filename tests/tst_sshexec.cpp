@@ -77,6 +77,15 @@ private slots:
     void statReportsSizeAndMtime();
     void readHonoursTheOneBasedOffset();
     void readCommandSurvivesAPercentInThePath();
+
+    // The streaming read (§6.3.1). One `tail -c +N` with no `head -c` serves a whole
+    // sequential catch-up out of one channel, where the bounded command above served
+    // 256 KB of it — so the claim worth running through a real shell is that dropping the
+    // bound changed nothing about WHICH byte the command starts at and WHAT it hands
+    // back, only how much of it comes at once.
+    void theStreamingReadStartsAtTheSameByteAsTheBoundedOne();
+    void theStreamingReadIsNotBoundedByAnyLength();
+    void theStreamingReadSurvivesAPercentInThePath();
     void statOutputParsingRejectsRubbish();
     void lsReportsTheSizeOfARegularFile();
     void lsFollowsASymlinkToTheLog();
@@ -153,6 +162,13 @@ void TestSshExec::anInjectingPathCannotRunAnything()
     runSh(readCommand(hostile, 0, 16), &code);
     QVERIFY2(!QFileInfo::exists(canary), "shell injection through readCommand");
 
+    // The streaming read is a second command carrying the same path to the same shell, so
+    // it is a second way through the same boundary and needs its own canary. It is the
+    // one command with nothing after the path — no `| head` to swallow a stray token —
+    // which is exactly the shape where a quoting slip would run rather than break.
+    runSh(streamReadCommand(hostile, 0), &code);
+    QVERIFY2(!QFileInfo::exists(canary), "shell injection through streamReadCommand");
+
     // Substitution must not happen either: a path naming $HOME stays literal.
     const QByteArray out = runSh(
         QStringLiteral("echo %1").arg(shellQuote(QStringLiteral("$HOME/`id`"))));
@@ -208,6 +224,84 @@ void TestSshExec::readCommandSurvivesAPercentInThePath()
     QCOMPARE(runSh(readCommand(path, 4, 3)), QByteArray("456"));
     // The path must appear in the command exactly as given, markers and all.
     QVERIFY(readCommand(path, 0, 4).contains(QStringLiteral("%1-%2-%3.log")));
+}
+
+void TestSshExec::theStreamingReadStartsAtTheSameByteAsTheBoundedOne()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh");
+    // Binary, not text: the stream carries a log's bytes and nothing may translate them.
+    QByteArray content;
+    for (int i = 0; i < 4096; ++i)
+        content += char(i % 251);
+    const QString path = write(QStringLiteral("stream.log"), content);
+    QVERIFY(!path.isEmpty());
+
+    // THE CLAIM: for every range the bounded command can serve, the streaming one starts
+    // at the same byte and its first `length` bytes are the same bytes. That is the whole
+    // of what makes it safe to swap one for the other under a caller whose offsets index
+    // a spool — a stream that began one byte off would not fail, it would shift the log.
+    for (const qint64 offset : {qint64(0), qint64(1), qint64(255), qint64(1000),
+                                qint64(4095)}) {
+        for (const qint64 length : {qint64(1), qint64(7), qint64(300)}) {
+            const QByteArray bounded = runSh(readCommand(path, offset, length));
+            const QByteArray streamed = runSh(streamReadCommand(path, offset));
+            QCOMPARE(bounded, content.mid(int(offset), int(length)));
+            QCOMPARE(streamed.left(int(length)), bounded);
+            // And the rest of it is the rest of the file, in order.
+            QCOMPARE(streamed, content.mid(int(offset)));
+        }
+    }
+
+    // Asking past the end yields nothing rather than an error, exactly as the bounded
+    // command does — which is the EOF a tailing caller sees on a log that has not grown.
+    QCOMPARE(runSh(streamReadCommand(path, content.size())), QByteArray());
+    QCOMPARE(runSh(streamReadCommand(path, content.size() + 1000)), QByteArray());
+}
+
+void TestSshExec::theStreamingReadIsNotBoundedByAnyLength()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh");
+    // The point of the command, stated as the thing that would fail if somebody put the
+    // `| head -c L` back "for safety": one invocation has to hand over more than the
+    // 256 KB window a single fetchForward() chunk asks for, or the whole saving — one
+    // channel per catch-up instead of one per chunk — is silently undone while every
+    // other assertion in this file still passes.
+    QByteArray content;
+    content.reserve(700 * 1024);
+    for (int i = 0; content.size() < 700 * 1024; ++i)
+        content += QByteArray::number(i).rightJustified(15, '.') + "\n";
+    const QString path = write(QStringLiteral("big.log"), content);
+    QVERIFY(!path.isEmpty());
+
+    const QByteArray whole = runSh(streamReadCommand(path, 0));
+    QCOMPARE(whole.size(), content.size());
+    QCOMPARE(whole, content);
+    QVERIFY2(whole.size() > 256 * 1024,
+             "one streaming read handed back less than a single fetch chunk");
+
+    // And from a mid-file offset, which is where a catch-up actually starts: the prime has
+    // already taken the head of the log through the same command.
+    const qint64 from = 300 * 1024;
+    QCOMPARE(runSh(streamReadCommand(path, from)), content.mid(int(from)));
+}
+
+void TestSshExec::theStreamingReadSurvivesAPercentInThePath()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh");
+    // readCommandSurvivesAPercentInThePath()'s claim, one command over. This one takes two
+    // arg() substitutions rather than three, which is exactly the kind of difference that
+    // makes somebody think chaining is safe here — it is not: the second call rescans the
+    // path the first inserted.
+    const QString path = write(QStringLiteral("s-%1-%2.log"),
+                               QByteArrayLiteral("0123456789"));
+    QVERIFY(!path.isEmpty());
+
+    QCOMPARE(runSh(streamReadCommand(path, 0)), QByteArray("0123456789"));
+    QCOMPARE(runSh(streamReadCommand(path, 4)), QByteArray("456789"));
+    QVERIFY(streamReadCommand(path, 4).contains(QStringLiteral("s-%1-%2.log")));
 }
 
 void TestSshExec::statOutputParsingRejectsRubbish()
