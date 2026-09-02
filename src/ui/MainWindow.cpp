@@ -553,6 +553,7 @@ void MainWindow::buildMenus()
     // menu of its own.
     m_openConfigAction = fileMenu->addAction(tr("Open Config File &Editor"));
     m_openConfigAction->setObjectName(QStringLiteral("openConfigAction")); // findChild
+    m_openConfigAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
     m_openConfigAction->setEnabled(false);
     connect(m_openConfigAction, &QAction::triggered, this, &MainWindow::openConfigEditor);
 
