@@ -113,6 +113,7 @@ private:
     QSpinBox  *m_poll = nullptr;
     QCheckBox *m_tailOnly = nullptr;
     QSpinBox  *m_tailMb = nullptr;
+    QCheckBox *m_compress = nullptr;
 
     CollapsibleSection *m_advanced = nullptr;
     QDialogButtonBox   *m_buttons = nullptr;

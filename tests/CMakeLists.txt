@@ -484,6 +484,15 @@ qt_add_executable(tst_sshsessioncache tst_sshsessioncache.cpp)
 target_link_libraries(tst_sshsessioncache PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_sshsessioncache COMMAND tst_sshsessioncache)
 
+# Whether a remote fetch asks the far end to compress, and the rule that says an errand
+# never does. UNGATED for the sixth time on the same argument, and here the argument is
+# the sharpest it has been: what a compressed connect does can only be seen against a
+# real sshd (tst_sshlive), but the DECISION is constexpr and lives in the always-compiled
+# header, so a build with no libssh2 states it exactly as well as one with it.
+qt_add_executable(tst_sshoptions tst_sshoptions.cpp)
+target_link_libraries(tst_sshoptions PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_sshoptions COMMAND tst_sshoptions)
+
 # Whether a libssh2 error code means the SESSION is finished, and the latch that remembers
 # it. UNGATED for the fourth time on the same argument, and the situation it stands for is
 # the one nothing in CI can stage at all: a machine that goes away under a tab which is

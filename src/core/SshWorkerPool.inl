@@ -154,8 +154,20 @@ QString withSshSession(const QString &address, SshPrompter *prompter,
             auto fresh = std::make_unique<SshSession>();
             fresh->setAbandonCheck(abandonCheck);
             publish(fresh.get());
+            // `userAsked = true` DELIBERATELY, and it is not a bug. An errand moves
+            // kilobytes and the deflating would be done by the machine holding the log, so
+            // it does not compress even for a host whose FETCHES do — and passing the
+            // strongest possible request here is what makes that a statement rather than
+            // an omission somebody could quietly reverse by wiring the option through
+            // (SshSession::compressionFor, pinned without a server in tst_sshoptions).
+            //
+            // It is also what keeps the idle cache's key honest at target+role: no
+            // compressed session is ever created on this path, so none can be checked in
+            // and handed to an errand that did not ask for one (SshSessionCache.h).
             if (!fresh->connectTo(*location, prompter, kSshWorkerConnectTimeoutMs, &error,
-                                  nullptr, need)) {
+                                  nullptr, need,
+                                  SshSession::compressionFor(SshSession::Purpose::Errand,
+                                                             /*userAsked=*/true))) {
                 publish(nullptr);
                 return Connect::Failed;
             }

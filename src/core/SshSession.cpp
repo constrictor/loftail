@@ -276,6 +276,14 @@ struct SshSession::Impl
     static constexpr qint64 kFilePosUnknown = -1;
     qint64 filePos = kFilePosUnknown;
     RemoteLocation    location;
+
+    // What the key exchange settled on for compression, latched at the handshake rather
+    // than asked of libssh2 on demand: the strings belong to the session, so reading them
+    // after teardown() would be a use-after-free, and the answer cannot change for the
+    // life of a connection anyway (§6.3).
+    QString           compressIn;
+    QString           compressOut;
+
     bool              fstatTracks = false;
     SshSession::Mode  mode = SshSession::Mode::Sftp;
     bool              execFileOpen = false; // Mode::Exec has no handle, only this flag
@@ -1288,7 +1296,7 @@ void SshSession::abort()
 }
 
 bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter, int timeoutMs,
-                           QString *error, Failure *failure, Need need)
+                           QString *error, Failure *failure, Need need, Compression compression)
 {
     QString scratch;
     QString &err = error ? *error : scratch;
@@ -1360,12 +1368,45 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     // indefinitely — this runs on the thread that opened the document.
     libssh2_session_set_timeout(d->session, timeoutMs);
 
+    // BEFORE THE HANDSHAKE AND NOWHERE ELSE. Compression is agreed by the key exchange,
+    // so this flag is only read while the client's method list is being built; set after
+    // the handshake it is accepted and ignored, which is why the choice is a connectTo()
+    // argument rather than a setter somebody could call too late (SshSession.h).
+    //
+    // What it puts on the wire is `zlib,zlib@openssh.com,none`. `none` LAST and always
+    // present is what makes this safe to offer at all: a server running `Compression no`,
+    // and a libssh2 built with no zlib (which then offers nothing but `none` from this
+    // end), both settle on it by ordinary negotiation instead of failing the KEX. The
+    // delayed variant is in libssh2 1.11 (src/comp.c, comp_method_zlib_openssh, held off
+    // until LIBSSH2_STATE_AUTHENTICATED by transport.c), which is what a stock modern
+    // sshd offers — it advertises `none,zlib@openssh.com` and nothing else.
+    if (compression == Compression::Zlib)
+        libssh2_session_flag(d->session, LIBSSH2_FLAG_COMPRESS, 1);
+
     if (libssh2_session_handshake(d->session, static_cast<libssh2_socket_t>(d->fd))) {
         err = sessionError(d->session, Tr::tr("SSH handshake with %1 failed")
                                            .arg(location.host));
         d->teardown();
         return false;
     }
+
+    // Latch what the KEX actually settled on, and say so once per connect. The three
+    // reasons a ticked box buys nothing — the server refuses compression, this libssh2 has
+    // no zlib, the option never reached here — are indistinguishable from outside, and
+    // this line is the only thing that tells them apart (SshSession.h).
+    const auto negotiated = [&](int method) {
+        const char *name = libssh2_session_methods(d->session, method);
+        return name ? QString::fromUtf8(name) : QString();
+    };
+    d->compressIn = negotiated(LIBSSH2_METHOD_COMP_SC);
+    d->compressOut = negotiated(LIBSSH2_METHOD_COMP_CS);
+    diagLog("ssh", QStringLiteral("compression %1: %2 — negotiated in=%3 out=%4")
+                       .arg(location.target(),
+                            compression == Compression::Zlib
+                                ? QStringLiteral("asked for zlib")
+                                : QStringLiteral("not asked for"),
+                            d->compressIn.isEmpty() ? QStringLiteral("?") : d->compressIn,
+                            d->compressOut.isEmpty() ? QStringLiteral("?") : d->compressOut));
 
     if (!d->verifyHostKey(prompter, &err, &kind)) {
         d->teardown();
@@ -1544,6 +1585,11 @@ SshSession::Mode SshSession::mode() const
 SizeSource SshSession::sizeSource() const
 {
     return d->execSize;
+}
+
+SshSession::CompressionMethods SshSession::negotiatedCompression() const
+{
+    return {d->compressIn, d->compressOut};
 }
 
 void SshSession::close()

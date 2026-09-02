@@ -330,7 +330,12 @@ bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *
     // permission, not the pointer — a null prompter at call time refuses by itself.
     PromptRelay relay;
     SshPrompter *asker = mayPrompt ? &relay : nullptr;
-    if (!m_session->connectTo(m_location, asker, timeout, error, failure)) {
+    // The one connect in the process entitled to compress, and only where the host was
+    // ticked for it (SshFetchOptions::compress, SshSession::compressionFor).
+    if (!m_session->connectTo(m_location, asker, timeout, error, failure,
+                              SshSession::Need::LogTransport,
+                              SshSession::compressionFor(SshSession::Purpose::Fetch,
+                                                         m_options.compress))) {
         resetSession();
         return false;
     }

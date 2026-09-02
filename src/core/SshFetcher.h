@@ -41,6 +41,24 @@ struct SshFetchOptions
 
     // Bounds the connect and every subsequent SFTP call.
     int timeoutMs = 20000;
+
+    // Ask the server to deflate the bytes it sends (ARCHITECTURE.md §6.3).
+    //
+    // OFF BY DEFAULT BECAUSE THE WORK IS NOT DONE HERE. Log text compresses about 6.6x,
+    // which on a slow or metered link is most of the transfer gone — but every one of
+    // those bytes is deflated by the machine holding the log, which is the machine being
+    // observed, and invariant #5's whole subject is not disturbing it. Roughly a second
+    // of one core per 100 MB on a desktop-class box, several times that on the
+    // stripped-down embedded images the exec fallback exists for, plus ~256 KB of zlib
+    // state per direction. libssh2 hardcodes Z_DEFAULT_COMPRESSION and offers no API to
+    // ask for a cheaper level, so there is no middle setting to offer. That is a trade
+    // only the person who knows the far end can make, which is why this is a tick box
+    // under Advanced beside the poll cadence rather than something loftail decides.
+    //
+    // A FETCH OPTION, AND ONLY A FETCH OPTION. Reading a config file or running a restart
+    // script moves kilobytes over a connection somebody else's CPU pays for; those
+    // connects pass Compression::None by name (SshSession::compressionFor).
+    bool compress = false;
 };
 
 // How much one SshFetcher::fetchForward() read asks for, and therefore how deep

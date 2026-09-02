@@ -78,6 +78,15 @@ namespace loftail {
 //
 // Which is not a curiosity: "save the config, then restart the service" is the errand pair
 // this whole file exists for, and the borrow is what makes the second one free.
+// COMPRESSION IS DELIBERATELY NOT PART OF THE KEY, and the reason is that it cannot
+// reach this file. Only `withSshSession()` ever checks a session in — a fetcher builds
+// its own and keeps it for the life of the tab — and that connect passes
+// `compressionFor(Purpose::Errand, true)`, i.e. no compression however the host is
+// configured (SshWorkerPool.inl). So every entry here is uncompressed by construction,
+// and a third key axis would distinguish a state nothing can produce. If a compressed
+// connect ever becomes reachable from an errand, this key has to gain it in the same
+// commit: handing a compressed session to an errand that did not ask for one would spend
+// the observed machine's CPU on a gesture that never asked to.
 enum class SshSessionRole {
     // Need::ExecOnly. The login and nothing else.
     ExecOnly,

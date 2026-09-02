@@ -101,10 +101,57 @@ public:
         ExecOnly,
     };
 
+    // Whether this connection asks the far end to deflate what it sends.
+    //
+    // ONE FLAG AND NO LEVEL, because libssh2 offers no level: it hardcodes
+    // Z_DEFAULT_COMPRESSION, so "zlib" is the whole of what can be requested.
+    enum class Compression {
+        None,
+        // libssh2_session_flag(LIBSSH2_FLAG_COMPRESS), which puts `zlib` and
+        // `zlib@openssh.com` in front of `none` in the client's KEX list. `none` stays
+        // last, so a server built or configured without compression settles on it by
+        // ordinary negotiation rather than failing (§6.3).
+        Zlib,
+    };
+
+    // Who is connecting, for the one rule that differs between them.
+    enum class Purpose {
+        // Reading a log: the whole file once and then every line of it for as long as
+        // the tab is open. The only connect worth compressing.
+        Fetch,
+        // A config read, a config write, a restart script. Kilobytes, on somebody else's
+        // CPU (SshWorkerPool.inl, §6.8, §6.9).
+        Errand,
+    };
+
+    // What a connect made for `purpose` asks for, given what the user ticked for the host.
+    //
+    // THE ONE PLACE THE "A FETCH MAY COMPRESS, AN ERRAND MAY NOT" RULE LIVES, so that it
+    // is a fact about this function rather than about which call site remembered to leave
+    // an argument out. Every errand connect passes `userAsked = true` deliberately: it
+    // states that an errand does not compress even for a host whose fetches do, instead of
+    // depending on the option happening to be off — and it makes the rule falsifiable in a
+    // build with no libssh2, which is every build CI runs (tst_sshoptions).
+    //
+    // constexpr and defined here, not in SshSession.cpp, for exactly that reason: the .cpp
+    // is the one file gated on LOFTAIL_HAVE_SSH.
+    static constexpr Compression compressionFor(Purpose purpose, bool userAsked)
+    {
+        return purpose == Purpose::Fetch && userAsked ? Compression::Zlib : Compression::None;
+    }
+
     // Connect, verify the host key, and authenticate. Blocking, bounded by
     // `timeoutMs`. `prompter` may be null, in which case anything needing a person
     // fails rather than waits. Returns false and fills `error` — never with anything
     // derived from a credential.
+    //
+    // `compression` IS AN ARGUMENT HERE RATHER THAN A SETTER, and the reason is an
+    // ordering trap: `libssh2_session_flag(LIBSSH2_FLAG_COMPRESS)` has to be set between
+    // `libssh2_session_init()` and `libssh2_session_handshake()`, both of which are inside
+    // this function, because compression is settled by the key exchange and nothing after
+    // it can move. A `setCompression()` called after connectTo() would therefore be a
+    // silent no-op — the box ticked, the option stored, the session uncompressed, and
+    // nothing anywhere to say so. Settled at the connect, exactly as `need` is.
     //
     // `need` DECIDES WHETHER SFTP IS ASKED FOR AT ALL, and the twenty seconds that saves
     // is the point of it. A `LogTransport` connect ends in `libssh2_sftp_init()`, and on
@@ -129,7 +176,26 @@ public:
     // path on a server whose SFTP is perfectly good.
     bool connectTo(const RemoteLocation &location, SshPrompter *prompter, int timeoutMs,
                    QString *error, Failure *failure = nullptr,
-                   Need need = Need::LogTransport);
+                   Need need = Need::LogTransport,
+                   Compression compression = Compression::None);
+
+    // What the key exchange actually settled on for compression, in each direction, in
+    // the server's own spelling — `zlib@openssh.com`, `zlib`, or `none`. Empty before a
+    // connect, and latched at the handshake so it survives close().
+    //
+    // WORTH HAVING BECAUSE THE FEATURE IS OTHERWISE UNANSWERABLE FROM OUTSIDE. "I ticked
+    // the box and it is not faster" has three explanations that look identical — the
+    // server runs `Compression no`, this libssh2 was built without zlib (in which case it
+    // offers no compression methods at all and the negotiation is clean but silent), or
+    // the box did not reach the connect — and only what came back off the wire tells them
+    // apart. connectTo() writes it to the diagnostic log once per connect for that reason;
+    // this accessor is what a test can assert on.
+    struct CompressionMethods
+    {
+        QString inbound;  // server → client, LIBSSH2_METHOD_COMP_SC — the one that matters
+        QString outbound; // client → server, LIBSSH2_METHOD_COMP_CS
+    };
+    CompressionMethods negotiatedCompression() const;
 
     // Consulted repeatedly while connecting; returning true abandons the attempt with
     // Failure::Unreachable. Set before connectTo() by an owner that may be asked to stop

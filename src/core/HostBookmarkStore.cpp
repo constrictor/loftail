@@ -64,6 +64,10 @@ QJsonObject toJson(const HostBookmark &b)
         o.insert(QStringLiteral("keyFile"), b.keyFile);
     o.insert(QStringLiteral("pollMs"), b.pollMs);
     o.insert(QStringLiteral("tailStartBytes"), static_cast<double>(b.tailStartBytes));
+    // ADDED KEY, NO SCHEMA BUMP — the tree's standing rule (CLAUDE.md, M20/M24): an older
+    // binary reads an absent key as false, which is this option's default, whereas a bumped
+    // version makes it refuse the whole file and forget every saved host.
+    o.insert(QStringLiteral("compress"), b.compress);
     QJsonArray paths;
     for (const QString &p : b.paths)
         paths.append(p);
@@ -89,6 +93,7 @@ HostBookmark fromJson(const QJsonObject &o)
     b.keyFile = o.value(QStringLiteral("keyFile")).toString();
     b.pollMs = o.value(QStringLiteral("pollMs")).toInt(1000);
     b.tailStartBytes = static_cast<qint64>(o.value(QStringLiteral("tailStartBytes")).toDouble());
+    b.compress = o.value(QStringLiteral("compress")).toBool();
     const QJsonArray paths = o.value(QStringLiteral("paths")).toArray();
     for (const auto &v : paths) {
         if (v.isString())
@@ -121,6 +126,7 @@ SshFetchOptions HostBookmark::fetchOptions() const
     SshFetchOptions options;
     options.pollMs = pollMs > 0 ? pollMs : 1000;
     options.tailStartBytes = tailStartBytes;
+    options.compress = compress;
     return options;
 }
 

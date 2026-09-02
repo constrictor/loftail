@@ -46,6 +46,11 @@ struct HostBookmark
     QStringList paths;           // remembered log paths on this host
     int     pollMs = 1000;       // network poll cadence
     qint64  tailStartBytes = 0;  // 0 = fetch the whole file
+    // Ask this host to deflate what it sends. Off by default, because the deflating is
+    // done by the machine holding the log (SshFetchOptions::compress). Persisted as an
+    // ADDED key with no schema bump: an older binary reads it as absent, which is the
+    // default, where a bump would make it refuse the whole file and lose every host.
+    bool    compress = false;
 
     // Whether `password` below is stored ON DISK IN CLEAR TEXT. Off by default, and
     // the UI must state plainly what turning it on means before it can be turned on

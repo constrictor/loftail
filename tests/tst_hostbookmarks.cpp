@@ -71,6 +71,7 @@ private slots:
     void rejectsAnUnknownSchemaVersion();
     void findMatchesOnTheConnectionIdentity();
     void bookmarkBuildsItsLocationAndOptions();
+    void theCompressionChoiceSurvivesAndReadsBackFromAnOlderFile();
     void credentialCacheAsksOncePerHost();
     void aPasswordNeverLeaksIntoAPathString();
     // M14 — the keychain, and what it does and does not change about the file above.
@@ -341,6 +342,49 @@ void TestHostBookmarks::bookmarkBuildsItsLocationAndOptions()
     const SshFetchOptions options = b.fetchOptions();
     QCOMPARE(options.pollMs, 2000);
     QCOMPARE(options.tailStartBytes, 8LL * 1024 * 1024);
+    QVERIFY2(!options.compress, "a host says nothing about compression until it is ticked");
+}
+
+// The transfer-compression tick box (§6.3). Two halves, and the second is the one worth
+// the case: an ADDED key with no schema bump, so a file written by a build that never
+// heard of it reads back as the default rather than being refused outright — which is
+// what a version bump would cost, and it would cost every saved host, not this one field.
+void TestHostBookmarks::theCompressionChoiceSurvivesAndReadsBackFromAnOlderFile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    HostBookmarkStore store(dir.path());
+
+    HostBookmark b = sample();
+    QVERIFY2(!b.compress, "off by default: the far end pays for it");
+    b.compress = true;
+    QVERIFY(store.save(b));
+
+    QCOMPARE(store.all().size(), 1);
+    QVERIFY(store.all().at(0).compress);
+    QVERIFY(store.all().at(0).fetchOptions().compress);
+
+    // Now the file as an older binary would have written it: same schema version, no
+    // "compress" key at all.
+    QFile f(store.filePath());
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+    f.close();
+    QJsonArray hosts = root.value(QStringLiteral("hosts")).toArray();
+    QCOMPARE(hosts.size(), 1);
+    QJsonObject only = hosts.at(0).toObject();
+    QVERIFY2(only.contains(QStringLiteral("compress")), "the key is written");
+    only.remove(QStringLiteral("compress"));
+    hosts.replace(0, only);
+    root.insert(QStringLiteral("hosts"), hosts);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    f.write(QJsonDocument(root).toJson());
+    f.close();
+
+    const QVector<HostBookmark> back = store.all();
+    QCOMPARE(back.size(), 1); // read, not refused
+    QCOMPARE(back.at(0).host, QStringLiteral("web1.example.com"));
+    QVERIFY2(!back.at(0).compress, "an absent key is the default, not a rejected file");
 }
 
 void TestHostBookmarks::credentialCacheAsksOncePerHost()

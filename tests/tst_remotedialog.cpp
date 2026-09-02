@@ -80,6 +80,7 @@ private slots:
     void theConsentNoteIsPresentInBothSignInModes();
     void theEmptyListExplainsItself();
     void advancedIsFoldedUnlessTheHostChangedSomethingInIt();
+    void theCompressionBoxIsOffByDefaultAndTravelsBothWays();
 };
 
 // The button used to be permanently enabled, and accept() returned silently when the
@@ -315,6 +316,53 @@ void TestRemoteDialog::advancedIsFoldedUnlessTheHostChangedSomethingInIt()
 
     list->setCurrentRow(1); // tuned: fetches only the tail
     QVERIFY2(advanced->isExpanded(), "a setting moved off its default must not be hidden");
+}
+
+// The transfer-compression tick box (§6.3). It is under Advanced beside the poll cadence
+// because it is the same kind of decision — this end's convenience paid for at the other
+// end — and the round trip is what makes a saved host's choice mean anything: preset()
+// has to show it and currentFields() has to carry it back, or the box is decoration.
+//
+// Found by OBJECT NAME, never by its label, which is translated prose.
+void TestRemoteDialog::theCompressionBoxIsOffByDefaultAndTravelsBothWays()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    HostBookmarkStore store(dir.path());
+    store.save(host(QStringLiteral("plain"), QStringLiteral("web1"),
+                    {QStringLiteral("/var/log/a.log")}));
+
+    HostBookmark squeezed = host(QStringLiteral("squeezed"), QStringLiteral("web2"),
+                                 {QStringLiteral("/var/log/b.log")});
+    squeezed.compress = true;
+    store.save(squeezed);
+
+    OpenRemoteDialog dialog(&store);
+    auto *box = dialog.findChild<QCheckBox *>(QStringLiteral("remoteCompress"));
+    auto *advanced = dialog.findChild<CollapsibleSection *>(
+        QStringLiteral("remoteAdvancedSection"));
+    auto *list = dialog.findChild<QListWidget *>(QStringLiteral("remoteBookmarkList"));
+    auto *save = dialog.findChild<QPushButton *>(QStringLiteral("remoteSaveButton"));
+    QVERIFY(box && advanced && list && save);
+
+    QVERIFY2(!box->isChecked(), "the work is done by the machine holding the log");
+    QVERIFY2(!box->toolTip().isEmpty(), "and the tooltip is where that is said");
+
+    list->setCurrentRow(0); // plain
+    QVERIFY(!box->isChecked());
+    QVERIFY(!advanced->isExpanded());
+
+    list->setCurrentRow(1); // squeezed
+    QVERIFY2(box->isChecked(), "a saved host's choice comes back");
+    QVERIFY2(advanced->isExpanded(), "a setting moved off its default must not be hidden");
+
+    // And back out again, through the same Save the other Advanced options go through.
+    box->setChecked(false);
+    save->click();
+    const QVector<HostBookmark> back = store.all();
+    const int row = HostBookmarkStore::indexOfName(back, QStringLiteral("squeezed"));
+    QVERIFY(row >= 0);
+    QVERIFY2(!back.at(row).compress, "unticking it is saved too");
 }
 
 int main(int argc, char *argv[])

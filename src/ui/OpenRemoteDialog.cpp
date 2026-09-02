@@ -250,6 +250,24 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
     tailRow->addStretch();
     advancedForm->addRow(tailRow);
 
+    // Beside the poll cadence and the tail-start choice because it is the same kind of
+    // decision: a convenience at this end paid for at the other one. Off by default, and
+    // the tooltip says WHOSE processor does the work, because that is the whole of what
+    // the person ticking it has to weigh and nothing else on screen can tell them.
+    m_compress = new QCheckBox(tr("&Compress the transfer (zlib)"), advancedContent);
+    m_compress->setObjectName(QStringLiteral("remoteCompress"));
+    m_compress->setToolTip(tr("Ask the server to compress the log before sending it. Log "
+                              "text usually shrinks by about six times, which is worth "
+                              "having on a slow or metered link.\n\n"
+                              "The compression is done by the machine holding the log, "
+                              "not by this one — roughly a second of processor time per "
+                              "100 MB on a desktop, considerably more on a small or busy "
+                              "server. Leave it off unless you know that machine can "
+                              "spare it.\n\n"
+                              "A server configured not to compress simply sends the log "
+                              "uncompressed."));
+    advancedForm->addRow(m_compress);
+
     m_advanced->setContentWidget(advancedContent);
     rightColumn->addWidget(m_advanced);
     rightColumn->addStretch();
@@ -336,9 +354,11 @@ void OpenRemoteDialog::preset(const HostBookmark &bookmark, const QString &path)
     m_tailOnly->setChecked(bookmark.tailStartBytes > 0);
     if (bookmark.tailStartBytes > 0)
         m_tailMb->setValue(int(bookmark.tailStartBytes / (1024LL * 1024)));
+    m_compress->setChecked(bookmark.compress);
 
     // A host whose defaults have been changed should say so without being unfolded.
-    if (bookmark.tailStartBytes > 0 || (bookmark.pollMs > 0 && bookmark.pollMs != 1000))
+    if (bookmark.tailStartBytes > 0 || bookmark.compress
+        || (bookmark.pollMs > 0 && bookmark.pollMs != 1000))
         m_advanced->setExpanded(true);
 }
 
@@ -411,6 +431,7 @@ HostBookmark OpenRemoteDialog::currentFields() const
     b.pollMs = m_poll->value();
     b.tailStartBytes =
         m_tailOnly->isChecked() ? qint64(m_tailMb->value()) * 1024 * 1024 : 0;
+    b.compress = m_compress->isChecked();
     b.savePassword = m_remember->isChecked();
 
     // The paths on the combo ARE the remembered list, so what it holds is what should be

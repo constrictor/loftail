@@ -213,6 +213,11 @@ private slots:
     void abortingARemoteScriptReturnsAtOnce();
     void aRestartScriptRunsOnAnExecOnlyConnect();
 
+    // The per-host transfer-compression option (§6.3). THE ONLY EXECUTION of
+    // LIBSSH2_FLAG_COMPRESS: what compression a key exchange settles on is decided by the
+    // server and by how this libssh2 was built, so there is nothing a fake could answer.
+    void compressionIsNegotiatedWhenTheHostAsksForItAndNotOtherwise();
+
     // bugs.md 30 — the only execution of the dead-session latch. The classification
     // behind it is pinned without a server (tst_sshsessionhealth); that a real libssh2
     // actually reports one of those codes when the link goes, and that an ordinary
@@ -886,6 +891,71 @@ void TestSshLive::aRestartScriptRunsOnAnExecOnlyConnect()
     QVERIFY(!session.statHandle().valid);
     // The log is untouched by all of that — a refusal writes nothing.
     QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(marker)));
+}
+
+void TestSshLive::compressionIsNegotiatedWhenTheHostAsksForItAndNotOtherwise()
+{
+    // The whole point of the accessor and of the diagnostic line behind it: "I ticked the
+    // box and it is not faster" has three explanations that look identical from outside —
+    // the server runs `Compression no`, this libssh2 was built without zlib, or the option
+    // never reached the connect — and only what came back off the wire tells them apart.
+    //
+    // A stock modern sshd offers `none,zlib@openssh.com`, so an asking client settles on
+    // the delayed variant; one configured with `Compression no` offers `none` alone and
+    // the KEX succeeds anyway, because `none` is last in our list rather than absent from
+    // it. So the assertion this can always make is the NEGATIVE one — an unasked connect
+    // is never compressed — plus the positive one wherever the server will play along.
+
+    SshSession plain;
+    QString error;
+    QVERIFY2(plain.connectTo(m_location, nullptr, 20000, &error), qPrintable(error));
+    const SshSession::CompressionMethods none = plain.negotiatedCompression();
+    QVERIFY2(!none.inbound.isEmpty(), "libssh2 reports the negotiated method after a KEX");
+    // Not asked for, so it must not happen — a connect that compressed anyway would be
+    // spending the observed machine's processor with nobody having agreed to it.
+    QCOMPARE(none.inbound, QStringLiteral("none"));
+    QCOMPARE(none.outbound, QStringLiteral("none"));
+    // Latched at the handshake, so it outlives the session it describes.
+    plain.close();
+    QCOMPARE(plain.negotiatedCompression().inbound, QStringLiteral("none"));
+
+    SshSession squeezed;
+    QVERIFY2(squeezed.connectTo(m_location, nullptr, 20000, &error, nullptr,
+                                SshSession::Need::LogTransport,
+                                SshSession::compressionFor(SshSession::Purpose::Fetch, true)),
+             qPrintable(error));
+    const SshSession::CompressionMethods asked = squeezed.negotiatedCompression();
+    QVERIFY(!asked.inbound.isEmpty());
+
+    if (asked.inbound == QStringLiteral("none")) {
+        // Not a failure of loftail's: the fallback is the feature working. Which of the
+        // two reasons it is, is exactly what the diagnostic line says.
+        QSKIP("This server or this libssh2 offers no compression — the KEX fell back to "
+              "`none`, which is the designed behaviour. Check `Compression` in sshd_config "
+              "and that libssh2 was built with zlib.");
+    }
+
+    QVERIFY2(asked.inbound.startsWith(QStringLiteral("zlib")),
+             qPrintable(QStringLiteral("server->client settled on %1").arg(asked.inbound)));
+    QVERIFY2(asked.outbound.startsWith(QStringLiteral("zlib")),
+             qPrintable(QStringLiteral("client->server settled on %1").arg(asked.outbound)));
+
+    // And the connection still works, which is the half that matters: `zlib@openssh.com`
+    // does not start deflating until the session is authenticated (libssh2 1.11,
+    // transport.c gating on LIBSSH2_STATE_AUTHENTICATED), so every byte below is read
+    // through the compressor rather than around it.
+    const QByteArray body = QByteArray("compressible compressible compressible\n");
+    // The newline is a real one inside the shell's single quotes, exactly as the config
+    // cases above write theirs.
+    QVERIFY(remoteShell(QStringLiteral("printf '%1\n' > %2")
+                            .arg(QString::fromLatin1(body.chopped(1)), m_remotePath)));
+    QVERIFY2(squeezed.openFile(&error), qPrintable(error));
+    const SshSession::Attrs attrs = squeezed.statPath();
+    QVERIFY(attrs.valid);
+    QCOMPARE(attrs.size, qint64(body.size()));
+    QByteArray got(body.size(), '\0');
+    QCOMPARE(squeezed.readAt(0, got.data(), got.size(), &error), qint64(body.size()));
+    QCOMPARE(got, body);
 }
 
 void TestSshLive::aDroppedLinkIsNoticedRatherThanPolledForEver()
