@@ -589,8 +589,24 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
     // while the rule was invisible and showOnlyValue() was the only way into it. It is
     // not now that the rule is the row directly above: a row that unticks itself when
     // the user ticks another one is worse than no row at all.
-    connect(list, &QListWidget::itemChanged, this,
-            [this](QListWidgetItem *) { emitChanged(); });
+    connect(list, &QListWidget::itemChanged, this, [this, axis](QListWidgetItem *item) {
+        // The memo behind the discovery rule follows the ROW, and it has to be written
+        // here rather than at the next repopulation: what a name is remembered as is
+        // read only once the row is gone, and the only thing that takes a row away is a
+        // rotation replacing the index — by which time there is nothing left to read it
+        // off. Every route that moves a tick passes through here (a click, All/None/
+        // Invert, the record menu, setCriteria), which is why it is one line and not a
+        // rule repeated per caller. "Others" is a rule and not a name, so it is skipped
+        // exactly as checkedNames() skips it.
+        // Not while POPULATING: populateList() maintains the memo itself and its rules
+        // are not all "record what the row says" — ListRule::Unstated deliberately
+        // UN-sees a name it leaves unticked, and it builds those rows through
+        // setCheckState(), so writing here would put every one of them straight back
+        // and leave the axis that ships switched off empty for good.
+        if (!m_populating && item && !isOthersRow(item))
+            seenFor(axis).insert(item->text(), item->checkState() == Qt::Checked);
+        emitChanged();
+    });
     // All / None / Invert carry the same answer to the values that have not turned up
     // yet: "everything" and "nothing" are claims about the axis, not about the six
     // names that happen to be listed a third of the way through a scan. They set the
@@ -1384,6 +1400,11 @@ QSet<QString> &AxisEditor::manualFor(ValueAxis axis)
     return axis == ValueAxis::Subsystem ? m_loggerManualNames : m_threadManualNames;
 }
 
+QHash<QString, bool> &AxisEditor::seenFor(ValueAxis axis)
+{
+    return axis == ValueAxis::Subsystem ? m_loggerSeen : m_threadSeen;
+}
+
 bool AxisEditor::axisOfViewport(const QObject *viewport, ValueAxis &axis) const
 {
     if (m_loggerList && viewport == m_loggerList->viewport()) {
@@ -1608,7 +1629,7 @@ void AxisEditor::setTimeRange(qint64 fromUtcMs, qint64 toUtcMs)
 
 bool AxisEditor::populateList(QListWidget *list, const QStringList &names,
                               const QSet<QString> &checked, const QSet<QString> &manual,
-                              QSet<QString> &seen, ListRule rule, bool restrictive)
+                              QHash<QString, bool> &seen, ListRule rule, bool restrictive)
 {
     if (!list)
         return false;
@@ -1656,6 +1677,17 @@ bool AxisEditor::populateList(QListWidget *list, const QStringList &names,
     // unticked value stay unticked across the repopulations indexing drives —
     // including one the user typed in and then unticked.
     //
+    // RETURNING NAMES (under Discover): a name that has been shown but is NOT on screen
+    // now comes back with the state it was last shown in, because `seen` records that
+    // state and not mere membership. The only thing that takes a name off the list is
+    // the index being replaced wholesale — a rotation or a truncation — and for a
+    // REMOTE log that leaves a long gap, since the spool is re-fetched from the top and
+    // the rescan lands on almost nothing. Recording membership alone made every one of
+    // those names read as "shown, and the user unticked it": the whole subsystem list
+    // came back unticked an ingest tick later, the axis narrowed to nothing, and the
+    // log the reader was watching emptied itself. It is the same misreading setDocument()
+    // clears `seen` to avoid across a rebind, arriving from inside one binding instead.
+    //
     // The answer is worked out in full BEFORE the widget is touched, because this
     // function runs on every ingest tick of a growing log and the answer is almost
     // always the one already on screen. Rebuilding it anyway — clearValueRows() and a
@@ -1664,6 +1696,14 @@ bool AxisEditor::populateList(QListWidget *list, const QStringList &names,
     // in a pane nothing about the append changed. `seen` is still updated for every
     // name whatever the comparison decides, since that bookkeeping is what the
     // discovery rule reads and it must not depend on whether the rows moved.
+    // Which names are ON SCREEN right now, ticked or not. Only a name that is NOT is
+    // answered from `seen`'s remembered state: for one that is, the widget is the truth
+    // and the memo is a pass behind it, so consulting it would re-tick a row the user
+    // had just unticked.
+    QSet<QString> listedNow;
+    for (int i = kFirstValueRow; i < list->count(); ++i)
+        listedNow.insert(list->item(i)->text());
+
     QList<QPair<QString, bool>> wanted;
     wanted.reserve(sorted.size());
     for (const QString &n : sorted) {
@@ -1671,7 +1711,8 @@ bool AxisEditor::populateList(QListWidget *list, const QStringList &names,
         bool       on = false;
         switch (rule) {
         case ListRule::Discover:
-            on = checked.contains(n) || (fresh && (!restrictive || manual.contains(n)));
+            on = checked.contains(n) || (fresh && (!restrictive || manual.contains(n)))
+                 || (!fresh && !listedNow.contains(n) && seen.value(n));
             break;
         case ListRule::Load:
         case ListRule::Unstated:
@@ -1689,7 +1730,7 @@ bool AxisEditor::populateList(QListWidget *list, const QStringList &names,
         // follows this one finds nothing fresh and the axis stays empty for good, which
         // is the whole defect on the axis that ships switched off.
         if (on || rule != ListRule::Unstated)
-            seen.insert(n);
+            seen.insert(n, on);
         else
             seen.remove(n);
         wanted.append({n, on});

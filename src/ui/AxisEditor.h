@@ -21,6 +21,7 @@
 #include "MatchCriteria.h"
 #include "TimeDisplay.h"
 
+#include <QHash>
 #include <QSet>
 #include <QString>
 #include <QTimeZone>
@@ -330,7 +331,7 @@ private:
     // rebuild.
     bool populateList(QListWidget *list, const QStringList &names,
                       const QSet<QString> &checked, const QSet<QString> &manual,
-                      QSet<QString> &seen, ListRule rule, bool restrictive);
+                      QHash<QString, bool> &seen, ListRule rule, bool restrictive);
     static bool   allChecked(const QListWidget *list);
     // What criteria() writes into MatchCriteria::loggerCoversAll / threadCoversAll:
     // allChecked(), plus the one state the ticks cannot express. An axis that is
@@ -357,6 +358,7 @@ private:
     QListWidget *listFor(ValueAxis axis) const;
     QGroupBox   *enableFor(ValueAxis axis) const;
     QSet<QString> &manualFor(ValueAxis axis);
+    QHash<QString, bool> &seenFor(ValueAxis axis);
     // The discovery rule, read off and written to the axis's "Others" row — which IS
     // the state, so there is no bool for the two to fall out of step over. Restrictive
     // is the row unticked: a value the file has not produced yet is not part of what
@@ -435,7 +437,12 @@ private:
     QListWidget  *m_loggerList = nullptr;
     QAbstractButton *m_loggerListButtons[3] = {}; // All, None, Invert
     QSet<QString> m_loggerManualNames; // manually-added subsystems (may be absent)
-    QSet<QString> m_loggerSeen;        // every subsystem name ever listed
+    // Every subsystem name ever listed, and the check state it was last listed WITH.
+    // The state half is what survives a name LEAVING the list, which is a thing only
+    // a rotation does: the index is replaced wholesale, so for one pass — and for as
+    // long as a remote log takes to re-fetch — the file names nothing at all. Recording
+    // mere membership made every name that came back read as "shown, and unticked".
+    QHash<QString, bool> m_loggerSeen;
     // "Tick subsystems that turn up later" — the discovery rule as a control the user
     // can see and set, and it is the FIRST ROW OF THE LIST, ticked like any other,
     // because that is the question the rest of the list leaves open: these values, and
@@ -452,7 +459,7 @@ private:
     QListWidget  *m_threadList = nullptr;
     QAbstractButton *m_threadListButtons[3] = {};
     QSet<QString> m_threadManualNames;
-    QSet<QString> m_threadSeen;
+    QHash<QString, bool> m_threadSeen;
     QListWidgetItem *m_threadOthers = nullptr;
 
     // Message text

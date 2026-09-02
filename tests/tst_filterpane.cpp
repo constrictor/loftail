@@ -39,10 +39,14 @@
 
 #include "AxisEditor.h"
 #include "Document.h"
+#include "FakeFetcher.h"
 #include "FilterPane.h"
 #include "Filter.h"
 #include "LogFormat.h"
+#include "LiveController.h"
+#include "LogModel.h"
 #include "Priority.h"
+#include "RemoteLocation.h"
 #include "SectionBox.h"
 #include "RecordIndex.h"
 
@@ -184,6 +188,9 @@ private slots:
     void subsystemDiscoveredLaterArrivesChecked();
     void anAppendThatDiscoversNothingLeavesTheListAlone();
     void rebindingForgetsSeenNames();
+    void aRotationThatEmptiesTheLogKeepsItsSubsystemsChecked();
+    void aRotationDoesNotResurrectAnUntickedSubsystem();
+    void aRemoteRotationDoesNotEmptyTheViewWhileTheSpoolRefills();
 
     // The record menu's edits (SPEC.md §5) land here, on the same controls a hand
     // edit uses — so the cases that matter are about what each edit MEANS, and above
@@ -354,6 +361,153 @@ void TestFilterPane::subsystemDiscoveredLaterArrivesChecked()
 // tick and count was right throughout. So it is asserted on the item POINTERS, which
 // survive only if the rows were never rebuilt — and the second half of the case appends
 // a genuinely new subsystem to show that the comparison can tell the difference.
+// A ROTATION EMPTIES THE INDEX FOR A MOMENT, AND THE NAMES MUST COME BACK AS THEY WERE.
+// The log is replaced (or truncated) behind the application: LiveController rescans, and
+// for a remote log the rescan lands on a spool that has been re-fetched from the top and
+// holds almost nothing yet. Every subsystem therefore vanishes from the list — and comes
+// back one ingest tick later, by which time `seen` still holds the name while the row
+// carrying its check state is gone, so the discovery rule reads it as "shown, and the
+// user unticked it".
+void TestFilterPane::aRotationThatEmptiesTheLogKeepsItsSubsystemsChecked()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    QListWidget *list = loggerList(pane, QStringLiteral("net.socket"));
+    QVERIFY(list);
+    QCOMPARE(valueCount(list), 2);
+
+    // The writer replaces the log; the rescan lands while it is still empty.
+    {
+        QFile f(file.fileName());
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.close();
+    }
+    QVERIFY(doc.rescan());
+    pane.refreshDiscoveredLists();
+
+    // The bytes arrive, carrying the same two subsystems.
+    {
+        QFile f(file.fileName());
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(kTwoLoggers);
+        f.close();
+    }
+    QVERIFY(doc.rescan());
+    pane.refreshDiscoveredLists();
+
+    list = loggerList(pane, QStringLiteral("net.socket"));
+    QVERIFY(list);
+    QCOMPARE(valueCount(list), 2);
+    for (int i = AxisEditor::kFirstValueRow; i < list->count(); ++i)
+        QVERIFY2(list->item(i)->checkState() == Qt::Checked,
+                 qPrintable(list->item(i)->text()));
+
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 2);
+}
+
+// The other half of the rule above: what comes back is what was there, so a name the
+// user ruled out before the rotation is still ruled out after it. Restoring the state
+// rather than clearing `seen` is what buys this — and it is what keeps a restrictive
+// selection (tick one subsystem, untick "Others") meaning the same thing across a
+// rotation instead of collapsing to a view with nothing in it.
+void TestFilterPane::aRotationDoesNotResurrectAnUntickedSubsystem()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    QListWidget *list = loggerList(pane, QStringLiteral("net.socket"));
+    QVERIFY(list);
+    for (int i = 0; i < list->count(); ++i)
+        if (list->item(i)->text() == QStringLiteral("db.pool"))
+            list->item(i)->setCheckState(Qt::Unchecked);
+
+    {
+        QFile f(file.fileName());
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.close();
+    }
+    QVERIFY(doc.rescan());
+    pane.refreshDiscoveredLists();
+
+    {
+        QFile f(file.fileName());
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(kTwoLoggers);
+        f.close();
+    }
+    QVERIFY(doc.rescan());
+    pane.refreshDiscoveredLists();
+
+    list = loggerList(pane, QStringLiteral("net.socket"));
+    QVERIFY(list);
+    QCOMPARE(valueCount(list), 2);
+    QCOMPARE(stateOf(list, QStringLiteral("net.socket")), Qt::Checked);
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Unchecked);
+
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 1);
+}
+
+// THE SHAPE THE BUG WAS REPORTED IN, driven through the whole stack with no network.
+// The two cases above make the rescan land on an empty index by hand; a remote log does
+// it by itself and for much longer, because a rotation opens a fresh generation and
+// re-fetches from the top — so LiveController rescans against a spool holding nothing,
+// and the bytes arrive over the ticks that follow. FakeRemote::beginReplacing() is
+// exactly that window.
+void TestFilterPane::aRemoteRotationDoesNotEmptyTheViewWhileTheSpoolRefills()
+{
+    FakeRemoteFarm farm;
+    const QString url = QStringLiteral("ssh://deploy@web1/var/log/app.log");
+    auto remote = farm.at(url);
+    remote->setInitialContent(kTwoLoggers);
+
+    Document doc;
+    QVERIFY2(doc.open(url, QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.size(), 2);
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    QListWidget *list = loggerList(pane, QStringLiteral("net.socket"));
+    QVERIFY(list);
+    QCOMPARE(valueCount(list), 2);
+
+    // The far end rolls the log. The generation moves before a byte of the new file has
+    // been fetched, which is where the rescan lands.
+    remote->beginReplacing(qstrlen(kTwoLoggers));
+    live.checkNow();
+    pane.refreshDiscoveredLists();
+
+    // The new file turns out to carry the same two subsystems, as a rolled log does.
+    remote->finishReplacing(kTwoLoggers);
+    live.checkNow();
+    pane.refreshDiscoveredLists();
+
+    QCOMPARE(doc.index().records.size(), 2);
+    list = loggerList(pane, QStringLiteral("net.socket"));
+    QVERIFY(list);
+    QCOMPARE(valueCount(list), 2);
+    for (int i = AxisEditor::kFirstValueRow; i < list->count(); ++i)
+        QVERIFY2(list->item(i)->checkState() == Qt::Checked,
+                 qPrintable(list->item(i)->text()));
+
+    // The whole point: the reader is still looking at the log rather than at nothing.
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 2);
+}
+
 void TestFilterPane::anAppendThatDiscoversNothingLeavesTheListAlone()
 {
     QTemporaryFile file;
