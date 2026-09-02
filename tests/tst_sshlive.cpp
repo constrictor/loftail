@@ -153,6 +153,10 @@ private slots:
     void reportsAnUnreachableHostClearly();
     void theExecFallbackReadsTheSameBytes();
     void theExecFallbackSizesWithoutStat();
+
+    // The seek elision in SshSession::readAt(). Only a real server executes any of it —
+    // the subject is libssh2's own read cursor, so there is nothing to fake.
+    void sequentialReadsLandWhereTheyAskedWithNoSeekBetweenThem();
     void aConfigFileIsReadAndWrittenWholeOverSftp();
     void writingAConfigKeepsItsPermissions();
     void theExecFallbackWritesTheSameBytes();
@@ -374,6 +378,76 @@ void TestSshLive::theExecFallbackSizesWithoutStat()
         QCOMPARE(viaWc.size, viaSftp.size);
         QCOMPARE(viaWc.mtime, kUnknownMtime);
     }
+}
+
+void TestSshLive::sequentialReadsLandWhereTheyAskedWithNoSeekBetweenThem()
+{
+    // readAt() issues libssh2_sftp_seek64() only when libssh2's cursor is not already at
+    // the offset asked for. That is a performance decision — a seek flushes the handle's
+    // read-ahead and drops its outstanding requests, so seeking per chunk restarted the
+    // pipeline cold on the strictly forward reads SshFetcher::fetchForward() makes — and
+    // the saving is not observable from out here. What IS observable, and what this pins,
+    // is the risk the decision takes on: a tracked position that outlives the handle it
+    // described makes a read skip a seek it needed, so bytes from one place are written
+    // into the spool at the offset of another, silently, under an indexer walking that
+    // spool by offset. There is no fake worth writing for this, the whole subject being
+    // libssh2's cursor, so it lives here with the rest of what needs a real sftp-server.
+    QByteArray content;
+    for (int i = 0; content.size() < 40000; ++i) {
+        content += "2026-07-21 00:00:01,000 [t0] INFO  logger.a - chunked read line "
+            + QByteArray::number(i).rightJustified(6, '0') + "\n";
+    }
+    QVERIFY(writeRemote(content));
+
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(m_location, nullptr, 20000, &error), qPrintable(error));
+    QCOMPARE(session.mode(), SshSession::Mode::Sftp);
+    QVERIFY2(session.openFile(&error), qPrintable(error));
+
+    const auto readChunk = [&](qint64 off, qint64 len) {
+        QByteArray buffer(int(len), '\0');
+        const qint64 n = session.readAt(off, buffer.data(), len, &error);
+        if (n < 0)
+            return QByteArray();
+        buffer.resize(int(n));
+        return buffer;
+    };
+
+    // The path the elision is for: every offset is the previous one plus what came back,
+    // so no seek is issued after the first.
+    QByteArray gathered;
+    qint64 offset = 0;
+    while (offset < content.size()) {
+        const QByteArray chunk = readChunk(offset, 4096);
+        QVERIFY2(!chunk.isEmpty(), qPrintable(error));
+        gathered += chunk;
+        offset += chunk.size();
+    }
+    QCOMPARE(gathered, content);
+
+    // And the path it is not: offsets that jump about, each of which must still seek.
+    QCOMPARE(readChunk(content.size() - 100, 100), content.right(100));
+    QCOMPARE(readChunk(0, 512), content.left(512));
+    QCOMPARE(readChunk(12345, 777), content.mid(12345, 777));
+    // Straight on from where that landed, which is the elided case again.
+    QCOMPARE(readChunk(12345 + 777, 777), content.mid(12345 + 777, 777));
+
+    // THE ONE THAT MATTERS. Read forward, then take a fresh handle — which is what a
+    // rotation does — and ask for the same offset again. A position that survived the
+    // reopen would skip the seek and hand back the head of the file while claiming to be
+    // 4096 bytes in, which is exactly how the wrong bytes reach the spool.
+    QCOMPARE(readChunk(0, 4096), content.left(4096));
+    QVERIFY2(session.openFile(&error), qPrintable(error));
+    QCOMPARE(readChunk(4096, 4096), content.mid(4096, 4096));
+
+    // The same claim through closeFile(), the other route by which a handle goes away.
+    QCOMPARE(readChunk(8192, 4096), content.mid(8192, 4096));
+    session.closeFile();
+    QVERIFY2(session.openFile(&error), qPrintable(error));
+    QCOMPARE(readChunk(12288, 4096), content.mid(12288, 4096));
+
+    session.close();
 }
 
 void TestSshLive::cleanup()

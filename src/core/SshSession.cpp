@@ -243,6 +243,26 @@ struct SshSession::Impl
     LIBSSH2_SESSION  *session = nullptr;
     LIBSSH2_SFTP     *sftp = nullptr;
     LIBSSH2_SFTP_HANDLE *file = nullptr;
+
+    // Where libssh2's own read cursor on `file` stands, or kFilePosUnknown for "no idea,
+    // so seek first". SshFetcher::fetchForward() reads STRICTLY FORWARD — every offset is
+    // the previous one plus what the previous call returned — so the seek readAt() used to
+    // issue before every read was not merely redundant: libssh2_sftp_seek64() FLUSHES the
+    // handle's read-ahead buffer and throws away the outstanding read requests with it, so
+    // a seek per 256 KB chunk restarts the request pipeline cold and pays a round trip that
+    // read-ahead exists to hide. Skipping it when the cursor is already there is the whole
+    // of the saving; nothing else about the read path moves.
+    //
+    // THE DANGEROUS DIRECTION IS THE OTHER ONE, and it is why this is not a plain member
+    // assigned wherever `file` is. A position that outlives the handle it described makes
+    // readAt() skip a seek it needed, and the bytes then land in the spool at an offset
+    // naming different bytes — silent corruption of a file the indexer is walking by
+    // offset, which is far worse than the round trip being saved and which nothing
+    // downstream could notice. So the position is invalidated WITH the handle, by the one
+    // function that assigns it (adoptFile below), and every open, close, teardown and
+    // rotation goes through that function rather than touching `file` directly.
+    static constexpr qint64 kFilePosUnknown = -1;
+    qint64 filePos = kFilePosUnknown;
     RemoteLocation    location;
     bool              fstatTracks = false;
     SshSession::Mode  mode = SshSession::Mode::Sftp;
@@ -337,12 +357,22 @@ struct SshSession::Impl
                             const std::function<void(const QByteArray &, bool)> &onChunk,
                             int *exitCode, QString *error) const;
 
+    // The ONE place `file` is written, closing whatever was there. A handle and the
+    // position libssh2 holds on it are a single fact; splitting them across two statements
+    // is exactly how a stale position survives a reopen (see filePos above), so a new
+    // handle cannot be adopted without its position going back to "unknown" in the same
+    // breath. Passing nullptr is how the handle is dropped.
+    void adoptFile(LIBSSH2_SFTP_HANDLE *handle)
+    {
+        if (file && file != handle)
+            libssh2_sftp_close(file);
+        file = handle;
+        filePos = kFilePosUnknown;
+    }
+
     void teardown()
     {
-        if (file) {
-            libssh2_sftp_close(file);
-            file = nullptr;
-        }
+        adoptFile(nullptr);
         if (sftp) {
             libssh2_sftp_shutdown(sftp);
             sftp = nullptr;
@@ -1338,9 +1368,11 @@ bool SshSession::openFile(QString *error, Failure *failure)
     closeFile();
 
     const QByteArray path = d->location.path.toUtf8();
-    d->file = libssh2_sftp_open_ex(d->sftp, path.constData(),
-                                   static_cast<unsigned int>(path.size()), LIBSSH2_FXF_READ, 0,
-                                   LIBSSH2_SFTP_OPENFILE);
+    // Through adoptFile(), never `d->file = …`: a fresh handle starts at byte 0 and knows
+    // nothing of where the previous one had got to, and this is the reopen a rotation takes.
+    d->adoptFile(libssh2_sftp_open_ex(d->sftp, path.constData(),
+                                      static_cast<unsigned int>(path.size()), LIBSSH2_FXF_READ,
+                                      0, LIBSSH2_SFTP_OPENFILE));
     if (!d->file) {
         // The SESSION's code, not the file's: a server refusing a path answers
         // LIBSSH2_ERROR_SFTP_PROTOCOL, which is not terminal, so a missing log leaves the
@@ -1570,10 +1602,7 @@ bool SshSession::writeFileAt(const QString &path, const QByteArray &bytes, QStri
 void SshSession::closeFile()
 {
     d->execFileOpen = false;
-    if (d->file) {
-        libssh2_sftp_close(d->file);
-        d->file = nullptr;
-    }
+    d->adoptFile(nullptr);
 }
 
 SshSession::Attrs SshSession::statPath() const
@@ -1661,7 +1690,14 @@ qint64 SshSession::readAt(qint64 offset, char *buffer, qint64 length, QString *e
     if (!d->file)
         return 0;
 
-    libssh2_sftp_seek64(d->file, static_cast<libssh2_uint64_t>(offset));
+    // Only when libssh2 is not already standing where we want it (Impl::filePos). On the
+    // ordinary path — fetchForward() asking for the next chunk after the one it just got —
+    // this is skipped, and the handle's read-ahead carries across the call instead of being
+    // flushed by a seek to the position it had already reached.
+    if (offset != d->filePos) {
+        libssh2_sftp_seek64(d->file, static_cast<libssh2_uint64_t>(offset));
+        d->filePos = offset;
+    }
 
     qint64 total = 0;
     while (total < length) {
@@ -1686,6 +1722,13 @@ qint64 SshSession::readAt(qint64 offset, char *buffer, qint64 length, QString *e
             // latches then.
             if (total == 0)
                 d->noteError(int(n));
+            // An error is the one moment libssh2's cursor stops being something that can be
+            // reasoned about from here — a partial read may have advanced it, and a failure
+            // inside the read-ahead machinery need not have advanced it by what was handed
+            // back. So it goes back to "unknown" and the next call seeks, which costs one
+            // round trip on a path that has just failed and is the only answer that cannot
+            // put the following chunk in the spool at the wrong offset.
+            d->filePos = Impl::kFilePosUnknown;
             if (error) {
                 *error = sessionError(d->session, Tr::tr("Reading %1 from %2 failed")
                                                       .arg(d->location.path, d->location.host));
@@ -1693,6 +1736,7 @@ qint64 SshSession::readAt(qint64 offset, char *buffer, qint64 length, QString *e
             return total > 0 ? total : -1;
         }
         total += n;
+        d->filePos += n;
     }
     return total;
 }
