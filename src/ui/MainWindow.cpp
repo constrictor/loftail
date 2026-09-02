@@ -86,6 +86,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
 #include <QUrl>
 #include <QMimeData>
@@ -569,6 +570,23 @@ void MainWindow::buildMenus()
     m_saveConfigAction->setVisible(false);
     m_saveConfigAction->setEnabled(false);
     connect(m_saveConfigAction, &QAction::triggered, this, &MainWindow::saveActiveConfig);
+
+    // The whole errand in one gesture: the reason somebody has a config file open beside
+    // a log is almost always that they are about to change what goes into it and watch
+    // what comes out. Visible only on an editor page, exactly as Save is and for the same
+    // reason — on a log tab there is no editor to save and none to close.
+    //
+    // Ctrl+D, which is free. NOT gated on the buffer being modified, unlike Save: with
+    // nothing typed the close and the restart are still two thirds of a gesture worth
+    // making, where Save alone would have nothing to do.
+    m_saveCloseRestartAction = fileMenu->addAction(tr("Save, Close, an&d Restart"));
+    m_saveCloseRestartAction->setObjectName(
+        QStringLiteral("saveCloseRestartAction")); // findChild, for tests
+    m_saveCloseRestartAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
+    m_saveCloseRestartAction->setVisible(false);
+    m_saveCloseRestartAction->setEnabled(false);
+    connect(m_saveCloseRestartAction, &QAction::triggered, this,
+            &MainWindow::saveCloseAndRestart);
 
     fileMenu->addSeparator();
 
@@ -1280,6 +1298,18 @@ void MainWindow::restartActiveApp()
     if (!ctx || !ctx->doc)
         return;
     const QString path = ctx->doc->path();
+
+    const std::optional<RestartTarget> target = runnableRestartTarget(path);
+    if (!target)
+        return; // it has already said why, in whichever of the three ways applies
+
+    RestartDialog dlg(logSourceDisplayName(path), *target, this);
+    dlg.run();
+    dlg.exec();
+}
+
+std::optional<RestartTarget> MainWindow::runnableRestartTarget(const QString &path)
+{
     const QString name = logSourceDisplayName(path);
 
     const RestartTarget target =
@@ -1290,7 +1320,7 @@ void MainWindow::restartActiveApp()
         // m_statusLabel from the active document on every ingest tick, so beside a live log
         // a reason written there is gone before it is read.
         reportOpenRefusal(name, target.reason);
-        return;
+        return {};
     }
 
     if (target.state == RestartTarget::State::Unset) {
@@ -1318,17 +1348,15 @@ void MainWindow::restartActiveApp()
         // over a message box that is still up is two modals deep on one gesture.
         if (box.clickedButton() == prefs)
             showPreferences();
-        return;
+        return {};
     }
 
     if (QString why; !restartTargetIsRunnable(target, &why)) {
         reportOpenRefusal(name, why);
-        return;
+        return {};
     }
 
-    RestartDialog dlg(name, target, this);
-    dlg.run();
-    dlg.exec();
+    return target;
 }
 
 ConfigView *MainWindow::openConfigAt(const QString &address)
@@ -1476,7 +1504,11 @@ void MainWindow::updateConfigTabTitle(ConfigView *view)
 
 void MainWindow::saveActiveConfig()
 {
-    ConfigView *view = activeConfigView();
+    saveConfig(activeConfigView(), {});
+}
+
+void MainWindow::saveConfig(ConfigView *view, std::function<void()> then)
+{
     if (!view || view->isBusy())
         return;
 
@@ -1491,7 +1523,7 @@ void MainWindow::saveActiveConfig()
         updateActionStates();
         auto *transfer = new ConfigTransfer(view);
         connect(transfer, &ConfigTransfer::writeFinished, view,
-                [this, view, transfer, sentAt](const ConfigWriteResult &result) {
+                [this, view, transfer, sentAt, then](const ConfigWriteResult &result) {
                     view->setBusy(false, QString());
                     if (!result.ok) {
                         view->showNotice(result.error);
@@ -1504,6 +1536,12 @@ void MainWindow::saveActiveConfig()
                     updateConfigTabTitle(view);
                     updateActionStates();
                     transfer->deleteLater();
+                    // QUEUED, and only here. The continuation closes the editor page, and
+                    // `view` is this connection's own receiver — deleting it on the stack
+                    // of its own slot is the one thing this lambda may not do. The local
+                    // branch below runs it directly, there being no signal in flight.
+                    if (result.ok && then)
+                        QMetaObject::invokeMethod(this, then, Qt::QueuedConnection);
                 });
         transfer->startWrite(view->address(), payload);
         return;
@@ -1523,10 +1561,62 @@ void MainWindow::saveActiveConfig()
         // Saved, but with something worth saying — a permission that could not be put
         // back. Not a failure, so the flag is cleared above, and still not silent.
         view->showNotice(result.error);
+        // The bytes ARE on disk, so the continuation runs: this is not the failure branch
+        // above, and declining to restart here would leave the reader looking at a saved
+        // file and a service still running the old one, with nothing saying why.
+        if (then)
+            then();
         return;
     }
     view->clearNotice();
     statusBar()->showMessage(tr("Saved %1").arg(view->displayName()), 5000);
+    if (then)
+        then();
+}
+
+void MainWindow::saveCloseAndRestart()
+{
+    ConfigView *view = activeConfigView();
+    if (!view || view->isBusy())
+        return;
+    // The BOUND log, which an editor page keeps (see onCurrentTabChanged) — that is what
+    // makes this command reachable from the page it is about at all.
+    DocumentContext *ctx = activeContext();
+    if (!ctx || !ctx->doc)
+        return;
+    const QString path = ctx->doc->path();
+
+    // UP FRONT, before a byte is written or a tab is closed. A gesture whose third verb
+    // cannot run does none of the three: the reader is left exactly where they were, with
+    // their edits and their tab, and with the explanation runnableRestartTarget() has
+    // already given — which for the ordinary case (no script configured yet) is a box
+    // offering Preferences, i.e. the place to make Ctrl+D work.
+    const std::optional<RestartTarget> target = runnableRestartTarget(path);
+    if (!target)
+        return;
+
+    // Everything after the save is the CONTINUATION, because a remote save is a round
+    // trip on another thread and lands on a later turn of the event loop. Written as two
+    // statements it would close the editor and bounce the service while the bytes were
+    // still in flight — restarting the application onto the config it already had.
+    auto then = [this, view = QPointer<ConfigView>(view), name = logSourceDisplayName(path),
+                 target = *target]() {
+        if (!view)
+            return; // the page went away while the save was in flight
+        closeEditorPage(view);
+        RestartDialog dlg(name, target, this);
+        dlg.run();
+        dlg.exec();
+    };
+
+    // Nothing typed: there is nothing to write, and writing anyway would move the file's
+    // mtime — and, on a remote config, spend a round trip that can fail — to put back the
+    // bytes already there. The other two verbs still run.
+    if (!view->isModified()) {
+        then();
+        return;
+    }
+    saveConfig(view, then);
 }
 
 bool MainWindow::confirmDiscard(ConfigView *view)
@@ -1568,10 +1658,7 @@ void MainWindow::closeViewAt(int index)
     if (auto *editor = qobject_cast<ConfigView *>(m_tabs->widget(index))) {
         if (!confirmDiscard(editor))
             return; // the reader cancelled: the tab stays, with its edits
-        m_tabs->removeTab(index);
-        delete editor; // its destroyed handler takes it out of m_editors
-        updateEmptyState();
-        updateActionStates();
+        closeEditorPage(editor);
         return;
     }
 
@@ -1583,6 +1670,20 @@ void MainWindow::closeViewAt(int index)
     // onViewDestroyed, which reaps the file if this was its last view.
     m_tabs->removeTab(index);
     delete view;
+}
+
+// Takes the page down with NO prompt: every caller has already settled what becomes of
+// the buffer — closeViewAt() through confirmDiscard(), saveCloseAndRestart() by having
+// just written it out.
+void MainWindow::closeEditorPage(ConfigView *editor)
+{
+    const int index = m_tabs->indexOf(editor);
+    if (index < 0)
+        return;
+    m_tabs->removeTab(index);
+    delete editor; // its destroyed handler takes it out of m_editors
+    updateEmptyState();
+    updateActionStates();
 }
 
 void MainWindow::closeActiveView()
@@ -1731,6 +1832,13 @@ void MainWindow::updateActionStates()
     if (m_saveConfigAction) {
         m_saveConfigAction->setVisible(editor != nullptr);
         m_saveConfigAction->setEnabled(editor != nullptr && editor->isModified());
+    }
+    if (m_saveCloseRestartAction) {
+        // Visible with Save, and enabled without its isModified() term: with nothing typed
+        // there is still a page to close and a service to bounce. It DOES need a bound log,
+        // which Save does not — the restart is that log's, not the editor's.
+        m_saveCloseRestartAction->setVisible(editor != nullptr);
+        m_saveCloseRestartAction->setEnabled(editor != nullptr && hasFile);
     }
     // hasFile, NOT onLog, and for openConfigAction's reason one line up: this acts on the
     // BOUND log's address and never on the view in front, so it stays live on that log's

@@ -24,6 +24,7 @@
 #include "LogFileStore.h"
 #include "LogSettingsStore.h"
 #include "LogView.h"
+#include "RestartTarget.h" // std::optional<RestartTarget> needs it complete
 #include "SshPromptDialogs.h"
 
 #include <QElapsedTimer>
@@ -33,6 +34,7 @@
 #include <QVector>
 
 #include <memory>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -145,6 +147,11 @@ public:
     // hanging one is abortable, that a log with no script is not a refusal — cannot be
     // made through a menu item.
     void restartActiveApp();
+    // The restart target for `path`, or nothing — having ALREADY said why, in whichever
+    // of the three ways the reason calls for: a refusal strip for a Refused target or a
+    // build that cannot run it, and the explanatory box that offers Preferences for a log
+    // with no script configured.
+    std::optional<RestartTarget> runnableRestartTarget(const QString &path);
 
     // Put one settings node onto the log that is open: its wrap mode into the tree and
     // the live views, then its format through applySettings(), which re-reads the log in
@@ -642,6 +649,18 @@ private:
     // log the reader is not looking at.
     bool activePageIsLog() const;
     void saveActiveConfig();
+    // Write `view` out and run `then` once the bytes have LANDED, never before. The
+    // continuation is the whole reason this is not two statements at every call site: a
+    // remote save is a round trip on a worker thread and finishes on a later turn of the
+    // event loop, so anything that depends on the file being written has to be carried
+    // rather than sequenced. `then` is not run when the save failed.
+    void saveConfig(ConfigView *view, std::function<void()> then);
+    // File ▸ Save, Close, and Restart (Ctrl+D). The three verbs of the config errand in
+    // one gesture, and ALL THREE OR NONE: the restart target is resolved first, so a log
+    // with no restart script gets the explanation and keeps both its edits and its tab.
+    void saveCloseAndRestart();
+    // Take an editor page down with no prompt. Callers settle the buffer first.
+    void closeEditorPage(ConfigView *editor);
     // Ask about one editor's unsaved changes. False means the user cancelled, and every
     // caller must abandon what it was doing — including quitting.
     bool confirmDiscard(ConfigView *view);
@@ -718,6 +737,7 @@ private:
     QAction *m_openConfigAction = nullptr;
     QAction *m_restartAppAction = nullptr;
     QAction *m_saveConfigAction = nullptr;
+    QAction *m_saveCloseRestartAction = nullptr;
     DocumentView *m_activeView = nullptr;
 
     QMenu   *m_recentMenu = nullptr;

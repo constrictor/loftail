@@ -24,7 +24,9 @@
 #include <QFile>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QTextCursor>
 #include <QSettings>
 #include <QTabWidget>
@@ -44,6 +46,7 @@
 #include "LogSettings.h"
 #include "LogSettingsStore.h"
 #include "MainWindow.h"
+#include "RestartDialog.h"
 #include "SessionStore.h"
 
 using namespace loftail;
@@ -82,11 +85,18 @@ private slots:
     void aRemoteEditorTabComesBackAfterARelaunch();
     void aRestoredRemoteEditorNamesTheDependencyThatIsMissing();
 
+    void saveCloseRestartCarriesCtrlDAndLivesOnlyOnAnEditorTab();
+    void saveCloseRestartWritesTheFileClosesTheTabAndRunsTheScript();
+    void withNoRestartScriptTheGestureDoesNothingAtAll();
+
 private:
     QString writeLog(const QString &name);
     QString configPathFor(const QString &logPath, const QString &configName);
     // Open `log`, having pointed it at `configName` in its own settings node.
     MainWindow *openWithConfig(const QString &logPath, const QString &configRelative);
+    // Put a restart script at the DEFAULTS level, where the config path already goes.
+    static bool setDefaultRestartScript(const QString &script);
+    static bool haveShell() { return QFileInfo::exists(QStringLiteral("/bin/sh")); }
 
     QTemporaryDir m_dir;
 };
@@ -714,6 +724,161 @@ void TestConfigEditor::aRestoredRemoteEditorNamesTheDependencyThatIsMissing()
     QVERIFY(notice);
     QVERIFY2(notice->text().contains(expected), qPrintable(notice->text()));
 #endif
+}
+
+bool TestConfigEditor::setDefaultRestartScript(const QString &script)
+{
+    LogSettingsStore store(LogSettingsStore::defaultDir());
+    LogSettingsTree tree = store.load();
+    LogProfile defaults = tree.defaults();
+    defaults.restartScript = script;
+    tree.setDefaults(defaults);
+    return store.save(tree);
+}
+
+void TestConfigEditor::saveCloseRestartCarriesCtrlDAndLivesOnlyOnAnEditorTab()
+{
+    const QString log = writeLog(QStringLiteral("ctrld.log"));
+    const QString config = configPathFor(log, QStringLiteral("d.properties"));
+    {
+        QFile f(config);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write("a=1\n");
+    }
+    std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("d.properties")));
+
+    auto *action = w->findChild<QAction *>(QStringLiteral("saveCloseRestartAction"));
+    QVERIFY(action);
+    QCOMPARE(action->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_D));
+
+    // "Ctrl+D is free" is a claim about the WHOLE window and it decays the next time
+    // somebody reaches for an obvious accelerator, exactly as Ctrl+R's does.
+    const QKeySequence ctrlD(Qt::CTRL | Qt::Key_D);
+    int holders = 0;
+    const auto actions = w->findChildren<QAction *>();
+    for (const QAction *a : actions) {
+        if (a->shortcuts().contains(ctrlD))
+            ++holders;
+    }
+    QCOMPARE(holders, 1);
+
+    // On the LOG page there is no editor to save and none to close, so it is gone with
+    // Save rather than merely greyed.
+    QVERIFY(!action->isVisible());
+
+    w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
+    QVERIFY(action->isVisible());
+    // Enabled with NOTHING typed, unlike Save: the close and the restart are still two
+    // thirds of a gesture worth making.
+    auto *save = w->findChild<QAction *>(QStringLiteral("saveConfigAction"));
+    QVERIFY(!save->isEnabled());
+    QVERIFY(action->isEnabled());
+}
+
+void TestConfigEditor::saveCloseRestartWritesTheFileClosesTheTabAndRunsTheScript()
+{
+    if (!haveShell())
+        QSKIP("no shell to run a script in");
+
+    const QString log = writeLog(QStringLiteral("errand.log"));
+    const QString config = configPathFor(log, QStringLiteral("e.properties"));
+    {
+        QFile f(config);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write("a=1\n");
+    }
+    const QString marker = m_dir.filePath(QStringLiteral("errand-ran"));
+    QFile::remove(marker);
+    QVERIFY(setDefaultRestartScript(
+        QStringLiteral("printf '%s' \"$LOGFILE\" > %1\n").arg(marker)));
+
+    std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("e.properties")));
+    w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
+    auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    QCOMPARE(tabs->count(), 2);
+    auto *editor = qobject_cast<ConfigView *>(tabs->currentWidget());
+    QVERIFY(editor);
+
+    // TYPED, so the document really is modified — setPlainText() clears that flag and the
+    // case would then be exercising the nothing-to-save branch by accident.
+    QTextCursor typing = editor->editor()->textCursor();
+    typing.movePosition(QTextCursor::End);
+    typing.insertText(QStringLiteral("b=2\n"));
+
+    // The restart dialog is modal and exec()s, so it is dismissed from a timer: a modal
+    // exec()'d from a test is a nested event loop looking for a deadlock.
+    QTimer poll;
+    poll.setInterval(20);
+    QObject::connect(&poll, &QTimer::timeout, [&]() {
+        if (auto *dlg = qobject_cast<RestartDialog *>(QApplication::activeModalWidget())) {
+            if (dlg->isFinished()) {
+                dlg->accept();
+                poll.stop();
+            }
+        }
+    });
+    poll.start();
+
+    w->findChild<QAction *>(QStringLiteral("saveCloseRestartAction"))->trigger();
+    poll.stop();
+
+    // All three verbs, asserted on the three surfaces only a real run leaves behind.
+    QFile written(config);
+    QVERIFY(written.open(QIODevice::ReadOnly));
+    QVERIFY2(QString::fromUtf8(written.readAll()).contains(QStringLiteral("b=2")),
+             "the edit was never written");
+    QCOMPARE(tabs->count(), 1); // the editor page is gone and the log tab is not
+    QVERIFY(qobject_cast<DocumentView *>(tabs->widget(0)));
+    QVERIFY2(QFileInfo::exists(marker), "the restart script never ran");
+}
+
+void TestConfigEditor::withNoRestartScriptTheGestureDoesNothingAtAll()
+{
+    // ALL THREE OR NONE. With no script configured the third verb cannot run, so the
+    // first two must not either — the reader keeps their edits and their tab, and gets
+    // the same explanation File ▸ Restart App gives.
+    const QString log = writeLog(QStringLiteral("noscript-d.log"));
+    const QString config = configPathFor(log, QStringLiteral("n.properties"));
+    {
+        QFile f(config);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write("a=1\n");
+    }
+    std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("n.properties")));
+    w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
+    auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    auto *editor = qobject_cast<ConfigView *>(tabs->currentWidget());
+    QVERIFY(editor);
+
+    QTextCursor typing = editor->editor()->textCursor();
+    typing.movePosition(QTextCursor::End);
+    typing.insertText(QStringLiteral("b=2\n"));
+
+    bool sawBox = false;
+    QTimer poll;
+    poll.setInterval(20);
+    QObject::connect(&poll, &QTimer::timeout, [&]() {
+        auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+        if (!box || box->objectName() != QLatin1String("restartNotConfiguredBox"))
+            return;
+        sawBox = true;
+        auto *close = box->findChild<QPushButton *>(QStringLiteral("restartNotConfiguredClose"));
+        QVERIFY(close);
+        close->click();
+        poll.stop();
+    });
+    poll.start();
+
+    w->findChild<QAction *>(QStringLiteral("saveCloseRestartAction"))->trigger();
+    poll.stop();
+
+    QVERIFY2(sawBox, "no explanation was given");
+    QCOMPARE(tabs->count(), 2); // the tab stays
+    QVERIFY(editor->isModified()); // and so do the edits, unwritten
+    QFile written(config);
+    QVERIFY(written.open(QIODevice::ReadOnly));
+    QVERIFY2(!QString::fromUtf8(written.readAll()).contains(QStringLiteral("b=2")),
+             "the file was written for a gesture that could not finish");
 }
 
 int main(int argc, char *argv[])
