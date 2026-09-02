@@ -140,6 +140,24 @@ QString RemoteLocation::toString() const
     return url.toString(QUrl::FullyEncoded);
 }
 
+QString RemoteLocation::toDisplayString() const
+{
+    // Built by hand rather than through QUrl, which has no "serialize decoded" mode:
+    // QUrl::toString() rejects FullyDecoded outright, and decoding component by
+    // component and re-joining is what this already is. The shape is toString()'s,
+    // term for term, so the two agree byte for byte whenever nothing needs encoding.
+    QString out = QStringLiteral("ssh://");
+    if (!user.isEmpty())
+        out += user + u'@';
+    // An IPv6 literal is bracketed, as QUrl brackets it in toString(): RemoteLocation
+    // stores the host unbracketed (parse() takes QUrl::host()), so an address that
+    // came back through here unbracketed would not be one either half could re-parse.
+    out += host.contains(u':') ? u'[' + host + u']' : host;
+    out += u':' + QString::number(port);
+    out += pathToUrl(path);
+    return out;
+}
+
 QString RemoteLocation::effectiveUser() const
 {
     if (!user.isEmpty())
@@ -342,11 +360,47 @@ QString legacyLogSettingsKey(const QString &path)
     return canonical;
 }
 
+namespace {
+
+// A normal-form address with its percent-encoding taken back off, for the two things a
+// PERSON reads: the address a file pattern is matched against and the one shown on a
+// tooltip or in a refusal. They ask one function because they have to agree — the
+// pattern is typed by somebody reading the path — and because the disagreement is
+// silent both ways: a whole-path pattern spelled `*/1/my app.log` matched nothing at
+// all against `ssh://u@h:22/1/my%20app.log`, and nothing on screen said to type `%20`,
+// so a remote log whose path holds a space (or any non-ASCII character) could be
+// claimed by its bare file name and by nothing else.
+//
+// The argument is already normalized: this only ever undoes the encoding, never the
+// absolutizing or the port. A container that did not PARSE keeps its own spelling and
+// goes through withoutPassword(), which is the rule everywhere an address is shown.
+QString decodedAddress(const QString &normalized)
+{
+    if (const auto loc = ArchiveLocation::split(normalized)) {
+        const auto url = RemoteLocation::parse(loc->container);
+        if (!url)
+            return RemoteLocation::withoutPassword(normalized); // local, or unparseable
+        // The member is stored verbatim and was never encoded, so only the container
+        // half moves — and the collapse rule stays ArchiveLocation::toString()'s, which
+        // cannot be reused here: it re-normalizes a remote container and would put the
+        // encoding straight back.
+        const QString base = url->toDisplayString();
+        if (loc->isSingleStream() || loc->member.isEmpty())
+            return base;
+        return base + u'/' + loc->member;
+    }
+    if (const auto url = RemoteLocation::parse(normalized))
+        return url->toDisplayString();
+    return RemoteLocation::withoutPassword(normalized);
+}
+
+} // namespace
+
 QString logMatchTarget(const QString &path, bool fullPath)
 {
     QString normalized = normalizeLogPath(path);
     if (fullPath)
-        return normalized;
+        return decodedAddress(normalized);
 
     if (const auto loc = ArchiveLocation::split(normalized))
         return loc->displayMember();
@@ -401,15 +455,16 @@ QString logSourceBareName(const QString &path)
 
 QString logSourceDisplayPath(const QString &path)
 {
-    // Both toString()s are already password-free: they are built from a parse() that
-    // dropped it. The fall-through is not — it is the raw string precisely because
-    // nothing could parse it — and an archive's normal form keeps a container it could
-    // not normalize verbatim for the same reason, so both go through the one filter.
-    if (const auto loc = ArchiveLocation::split(path))
-        return RemoteLocation::withoutPassword(loc->toString());
-    if (const auto loc = RemoteLocation::parse(path))
-        return loc->toString();
-    return RemoteLocation::withoutPassword(path);
+    // The normal form with its percent-encoding taken off — the SAME string a whole-path
+    // file pattern is tested against, which is the point of both going through
+    // decodedAddress(): what the pattern sees is exactly what the dialog shows, and it
+    // stopped being true the moment a remote path held a space.
+    //
+    // Password-free in every branch. A parsed address is built from a parse() that
+    // dropped it; the fall-through is the raw string precisely because nothing could
+    // parse it, and an archive's normal form keeps a container it could not normalize
+    // verbatim for the same reason, so both go through the one filter.
+    return decodedAddress(normalizeLogPath(path));
 }
 
 LogPresence logSourcePresence(const QString &path)

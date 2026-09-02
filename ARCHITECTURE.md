@@ -1228,6 +1228,33 @@ file first and map second like every other write, then flushes the map so the mi
 spent rather than repeated. `legacyLogSettingsKey()` is that lookup and has no other
 caller.
 
+**But the KEY is not what a pattern is matched against, and a remote address is a URL.**
+`RemoteLocation::toString()` percent-encodes the path — that is what makes it a normal
+form and what `logSettingsKey()` stores — while `logMatchTarget()`'s file-NAME branch
+reads `loc->path`, which `parse()` has already decoded. The two disagreed, so a whole-path
+pattern was tested against `ssh://u@h:22/1/df_log_vmsapp%20(1).txt` while everything a
+person could see said `df_log_vmsapp (1).txt`: a remote log whose path holds a space, or
+any non-ASCII character, could be claimed by a pattern naming its bare file name and by
+**nothing else** — `*/1/df_log_vmsapp (1).txt` matched nothing, `*df_log_vmsapp (1).txt`
+with *Match the whole path* on matched nothing, and only the `%20` spelling worked, which
+nothing on screen suggested because `logSourceDisplayPath()` showed the encoded form too.
+`RemoteLocation::toDisplayString()` is the decoded form and `decodedAddress()` in
+`RemoteLocation.cpp` is the one place it is derived; four things about it are easy to undo.
+It is **not a key and never becomes one** — `logSettingsKey()`, the session file and the
+recent-files list go on storing `toString()`, or every record already in the pool would be
+re-keyed by a display change. The **match target and `logSourceDisplayPath()` ask the same
+function**, because a pattern is typed by somebody reading a path and the failure is silent
+in both directions otherwise. It is built **by hand rather than through `QUrl`**, which has
+no serialize-decoded mode (`QUrl::toString()` rejects `FullyDecoded`), term for term with
+`toString()` so the two agree byte for byte wherever nothing needs encoding — which is
+what keeps every pattern that works today working. And an **IPv6 host is re-bracketed**:
+`RemoteLocation::host` is stored unbracketed because `parse()` takes `QUrl::host()`, so an
+unbracketed answer would not be an address either half could read back. The member half of
+an archive address needs none of this — it is stored verbatim and was never encoded — but
+its remote container is substituted rather than routed back through
+`ArchiveLocation::toString()`, which re-normalizes a remote container and would put the
+encoding straight back.
+
 **That migration copies and never moves, and the reason is that the old spelling is not a
 dead one.** `canonicalFilePath()` answers a real file's real name, and `logSettingsKey()`
 answers that same string for that file today — so a record found under it is equally one

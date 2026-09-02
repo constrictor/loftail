@@ -24,6 +24,7 @@
 #include <QTemporaryDir>
 
 #include "LogFileStore.h"
+#include "LogSettings.h"
 #include "RemoteLocation.h"
 
 using namespace loftail;
@@ -58,6 +59,7 @@ private slots:
     void presenceTellsAnAbsentLogFromAnUnreadableOne();
     void settingsKeyIsWorkingDirectoryIndependent();
     void theSettingsTreeRoundTripsARemotePath();
+    void aWholePathPatternSeesTheAddressAsAPersonWouldTypeIt();
 };
 
 void TestRemoteLocation::recognisesRemoteSchemes()
@@ -471,6 +473,73 @@ void TestRemoteLocation::theSettingsTreeRoundTripsARemotePath()
 
     // A different remote file is not confused with it.
     QVERIFY(!store.read(QStringLiteral("ssh://deploy@web2/var/log/app.log")).saysSomething());
+}
+
+// REGRESSION. A remote address is a URL, so RemoteLocation::toString() percent-encodes
+// everything that is not URL-safe — and logMatchTarget(fullPath) handed that encoded
+// string to a file pattern while the file-NAME branch one line down read the decoded
+// path. So a log on another machine whose path holds a space (or any non-ASCII
+// character) could be claimed by a pattern naming its bare file name and by NOTHING
+// else: `*/1/my app.log` matched nothing, `*my app.log` with "Match the whole path" on
+// matched nothing, and only `*/1/my%20app.log` worked — which nothing on screen said,
+// logSourceDisplayPath() having shown the encoded form too.
+//
+// The two now answer one string, which is the claim worth stating: what the pattern
+// sees is what the dialog shows. The KEY is deliberately NOT in it — logSettingsKey()
+// still answers the encoded normal form, or every record already stored would be
+// re-keyed by this fix.
+void TestRemoteLocation::aWholePathPatternSeesTheAddressAsAPersonWouldTypeIt()
+{
+    RemoteLocation loc;
+    loc.user = QStringLiteral("deploy");
+    loc.host = QStringLiteral("web1");
+    loc.port = 22;
+    loc.path = QStringLiteral("/1/df_log_vmsapp (1).txt");
+    const QString address = loc.toString(); // exactly what OpenRemoteDialog hands over
+
+    QVERIFY(address.contains(QStringLiteral("%20")));  // the address IS encoded
+    QCOMPARE(logSettingsKey(address), address);        // and the key stays that way
+
+    const QString typed = QStringLiteral("ssh://deploy@web1:22/1/df_log_vmsapp (1).txt");
+    QCOMPARE(logMatchTarget(address, true), typed);
+    QCOMPARE(logSourceDisplayPath(address), typed);    // the pattern sees what is shown
+
+    LogSettingsTree tree;
+    LogProfile root;
+    root.format.pattern = QStringLiteral("ROOT");
+    tree.setDefaults(root);
+
+    LogPatternNode n;
+    n.match = QStringLiteral("*/1/df_log_vmsapp (1).txt");
+    n.matchFullPath = true;
+    n.profile.format.pattern = QStringLiteral("BY-PATH");
+    tree.addPattern(n);
+    QCOMPARE(tree.inherited(logSettingsKey(address)).format.pattern,
+             QStringLiteral("BY-PATH"));
+
+    // Non-ASCII is the same defect and is fixed by the same line.
+    loc.path = QStringLiteral("/logs/журнал.log");
+    const QString cyrillic = loc.toString();
+    QVERIFY(cyrillic.contains(QStringLiteral("%D0")));
+    QCOMPARE(logMatchTarget(cyrillic, true),
+             QStringLiteral("ssh://deploy@web1:22/logs/журнал.log"));
+
+    // Nothing moved for an address that needed no encoding: toDisplayString() is
+    // toString() term for term, so every pattern that works today goes on working.
+    loc.path = QStringLiteral("/var/log/app.log");
+    QCOMPARE(loc.toDisplayString(), loc.toString());
+    QCOMPARE(logMatchTarget(loc.toString(), true), loc.toString());
+
+    // An IPv6 literal keeps its brackets, or the answer is not an address either half
+    // could parse back.
+    RemoteLocation six;
+    six.host = QStringLiteral("::1");
+    six.port = 22;
+    six.path = QStringLiteral("/var/log/my app.log");
+    QCOMPARE(six.toDisplayString(), QStringLiteral("ssh://[::1]:22/var/log/my app.log"));
+
+    // The file-NAME branch is untouched, and is what worked all along.
+    QCOMPARE(logMatchTarget(address, false), QStringLiteral("df_log_vmsapp (1).txt"));
 }
 
 QTEST_APPLESS_MAIN(TestRemoteLocation)

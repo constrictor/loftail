@@ -69,6 +69,22 @@ struct RemoteLocation
     // recent-files list and the window title; a credential must not ride along.
     QString toString() const;
 
+    // The same address with the path and the account AS WRITTEN rather than
+    // percent-encoded — `ssh://u@h:22/var/log/my app.log`, not `.../my%20app.log`.
+    //
+    // Identical to toString() for every address whose path needs no encoding, which is
+    // nearly all of them; it differs exactly where a person reading the address would
+    // not recognise the normal form. It is what a FILE PATTERN is matched against and
+    // what logSourceDisplayPath() shows, and those two must keep answering one string:
+    // a pattern is typed by somebody reading a path, so a target carrying `%20` where
+    // they typed a space cannot be matched by anything but the bare file name — which
+    // is the whole of what this exists to fix.
+    //
+    // NOT the normal form and never a key: logSettingsKey() and the session file go on
+    // storing toString(), so nothing already stored is re-keyed by this existing. And
+    // never a password either, for toString()'s reason — parse() dropped it.
+    QString toDisplayString() const;
+
     // `s` with any URL password taken out, for a string that is about to be SHOWN.
     //
     // parse() drops a password on the floor, so everything downstream of a SUCCESSFUL
@@ -157,8 +173,13 @@ QString legacyLogSettingsKey(const QString &path);
 //                      the last component of the remote path for an ssh:// address.
 //                      An archive is a file TYPE and SSH is a TRANSPORT; neither is
 //                      part of what the log is called.
-//   fullPath == true   the normalized address verbatim, scheme and port included, so
-//                      what the pattern sees is exactly what the dialog shows.
+//   fullPath == true   the normalized address, scheme and port included, with its
+//                      percent-encoding taken back off — so what the pattern sees is
+//                      exactly what logSourceDisplayPath() shows and exactly what a
+//                      person reading the path would type. `%20` in the target is what
+//                      made a remote log whose path holds a space matchable by its bare
+//                      file name and by nothing else. The KEY is unaffected:
+//                      logSettingsKey() still answers the encoded normal form.
 QString logMatchTarget(const QString &path, bool fullPath);
 
 // Whether this path is read through a spool rather than directly, so what grows on
