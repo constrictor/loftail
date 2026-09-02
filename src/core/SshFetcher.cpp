@@ -54,14 +54,18 @@ struct Tr
 
 namespace {
 
-// Read size per SFTP round trip. Large enough that priming a big log is not dominated
-// by round-trip latency, small enough that committedSize advances often during a long
-// prime so the user sees the view fill rather than a frozen count.
-constexpr qint64 kChunkBytes = 256LL * 1024;
-
+// Read size per SFTP round trip, and the depth of libssh2's request pipeline with it.
+// It is kSshFetchChunkBytes in SshFetcher.h, where the whole of the reasoning is: how
+// libssh2 turns the length asked for here into bytes in flight, where the ceiling on
+// that is, and why the granularity of committedSize still bounds it from the other side.
+//
 // Fetched synchronously in start(), before the Document takes its 64 KB format sample
 // (Document::prepare) — so autodetection and the format preview see real bytes rather
-// than an empty file. The rest streams in on the fetcher thread.
+// than an empty file. The rest streams in on the fetcher thread. SEPARATE FROM THE CHUNK
+// AND SMALLER THAN IT: this one is about how soon the first records are on screen, so it
+// wants to be the least that settles a format and an encoding, and the chunk is about
+// throughput over a whole catch-up. fetchForward() asks for the span it is given, so
+// raising the chunk cannot silently enlarge the prime.
 constexpr qint64 kPrimeBytes = 128LL * 1024;
 
 // Compared against the spool's head when a server's FSTAT cannot be trusted to follow
@@ -578,8 +582,15 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
         return false;
     }
 
+    // SIZED TO THE WORK, not to the chunk. A tailing log's ordinary poll fetches the few
+    // kilobytes that were written since the last one, and allocating and touching a whole
+    // chunk for that — once per poll, per open remote tab — is the cost that would make
+    // the chunk's size a per-tab standing charge rather than something spent only while a
+    // catch-up is running (SshFetcher.h). qBound and not qMin because a span of zero is
+    // reachable, and a negative resize is not a thing to find out about later.
+    const qint64 span = qBound(qint64(0), toRemoteOffset - fromRemoteOffset, kSshFetchChunkBytes);
     QByteArray buffer;
-    buffer.resize(kChunkBytes);
+    buffer.resize(qsizetype(span));
     qint64 offset = fromRemoteOffset;
 
     while (offset < toRemoteOffset) {
@@ -593,7 +604,10 @@ bool SshFetcher::fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset)
                 break;
         }
 
-        const qint64 want = qMin(kChunkBytes, toRemoteOffset - offset);
+        // Against `span` and not against the chunk, which is the same number on every
+        // pass — `offset` only ever advances — and says so where the buffer is, rather
+        // than leaving "the ask can never exceed the allocation" to be re-derived.
+        const qint64 want = qMin(span, toRemoteOffset - offset);
         QString readError;
         const qint64 got = m_session->readAt(offset, buffer.data(), want, &readError);
         if (got < 0) {

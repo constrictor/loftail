@@ -31,6 +31,7 @@
 #include "LogSource.h"
 #include "RemoteLocation.h"
 #include "SshExecCommands.h"
+#include "SshFetcher.h"
 
 // std::thread and not QThread: ARCHITECTURE.md §13.1 — a QThread join goes through a
 // QWaitCondition, which breaks TSan's happens-before chain at the unannotated system Qt.
@@ -433,7 +434,7 @@ void TestSshLive::theExecStreamServesAForwardWalkFromOneChannel()
 {
     // WHAT THIS IS FOR. Mode::Exec used to run a whole command per read — channel open,
     // `tail -c +N | head -c L`, drain, close, free — and SshFetcher::fetchForward() walks a
-    // log in 256 KB steps, so a 100 MB catch-up was four hundred remote process spawns.
+    // log a chunk at a time, so a 100 MB catch-up was hundreds of remote process spawns.
     // It now keeps one `tail -c +N` streaming and reads out of it while the caller's
     // offsets line up (Impl::readStream). Three things about that state machine can only
     // be found out against a real server, and all three are silent when wrong:
@@ -469,14 +470,16 @@ void TestSshLive::theExecStreamServesAForwardWalkFromOneChannel()
     QVERIFY2(parsed.has_value(), "LOFTAIL_TEST_SSH_EXEC_URL is not a valid ssh:// URL");
     const RemoteLocation where = *parsed;
 
-    // Big enough that the walk below takes several chunks and comfortably more than one
-    // 256 KB fetch window, which is the size at which the old command-per-read behaviour
-    // and this one stop being indistinguishable. Every line names its own ordinal, so a
-    // stream that hands back the wrong region is a mismatch and not a plausible-looking
-    // block of log.
+    // Big enough that the walk below takes several reads and comfortably more than one
+    // fetch window, which is the size at which the old command-per-read behaviour and this
+    // one stop being indistinguishable — derived from kSshFetchChunkBytes rather than
+    // written down, since a copied tuning number stops meaning "more than one chunk" the
+    // moment the chunk moves. Every line names its own ordinal, so a stream that hands
+    // back the wrong region is a mismatch and not a plausible-looking block of log.
+    const qint64 span = kSshFetchChunkBytes + 64 * 1024;
     QByteArray content;
-    content.reserve(900 * 1024);
-    for (int i = 0; content.size() < 900 * 1024; ++i) {
+    content.reserve(qsizetype(span));
+    for (int i = 0; content.size() < span; ++i) {
         content += "2026-07-21 00:00:01,000 [t0] INFO  logger.a - exec stream line "
             + QByteArray::number(i).rightJustified(8, '0') + "\n";
     }
@@ -509,7 +512,7 @@ void TestSshLive::theExecStreamServesAForwardWalkFromOneChannel()
     // previous one plus exactly what came back. All of it out of one channel — there is no
     // counter to assert on from out here, so what is asserted is the consequence, that the
     // bytes are the file's and in order, plus the wall clock, which is the only place the
-    // saving shows. Four hundred spawns against one is orders of magnitude, so the bound
+    // saving shows. Hundreds of spawns against one is orders of magnitude, so the bound
     // is deliberately loose: the claim is that a process per chunk is not happening, and a
     // regression fails it by minutes.
     QElapsedTimer walk;

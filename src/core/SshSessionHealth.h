@@ -142,7 +142,7 @@ public:
     // "the stat that just replied proves the link" is both the narrowest true statement
     // available and the one that runs once per poll ahead of everything else. It has to be
     // said, because the flag is set from calls that can latch WITHOUT failing: a
-    // 256 KB SFTP read that delivered 200 KB and then timed out hands its caller a
+    // one-megabyte SFTP read that delivered 800 KB and then timed out hands its caller a
     // positive byte count, the spool advances and the tab tails on normally — so an
     // unclearable latch would sit there invisibly and then fire on the first perfectly
     // benign stat failure afterwards (the gap during a `logrotate`, or M13's "the log is

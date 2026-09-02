@@ -21,6 +21,7 @@
 #include <QProcess>
 
 #include "SshExecCommands.h"
+#include "SshFetcher.h" // kSshFetchChunkBytes: the window the bounded command served
 
 using namespace loftail;
 
@@ -79,9 +80,9 @@ private slots:
     void readCommandSurvivesAPercentInThePath();
 
     // The streaming read (§6.3.1). One `tail -c +N` with no `head -c` serves a whole
-    // sequential catch-up out of one channel, where the bounded command above served
-    // 256 KB of it — so the claim worth running through a real shell is that dropping the
-    // bound changed nothing about WHICH byte the command starts at and WHAT it hands
+    // sequential catch-up out of one channel, where the bounded command above served one
+    // fetch chunk of it — so the claim worth running through a real shell is that dropping
+    // the bound changed nothing about WHICH byte the command starts at and WHAT it hands
     // back, only how much of it comes at once.
     void theStreamingReadStartsAtTheSameByteAsTheBoundedOne();
     void theStreamingReadIsNotBoundedByAnyLength();
@@ -264,13 +265,21 @@ void TestSshExec::theStreamingReadIsNotBoundedByAnyLength()
     if (!haveShell())
         QSKIP("no /bin/sh");
     // The point of the command, stated as the thing that would fail if somebody put the
-    // `| head -c L` back "for safety": one invocation has to hand over more than the
-    // 256 KB window a single fetchForward() chunk asks for, or the whole saving — one
-    // channel per catch-up instead of one per chunk — is silently undone while every
-    // other assertion in this file still passes.
+    // `| head -c L` back "for safety": one invocation has to hand over more than a single
+    // fetchForward() chunk asks for, or the whole saving — one channel per catch-up
+    // instead of one per chunk — is silently undone while every other assertion in this
+    // file still passes.
+    //
+    // THE FIXTURE IS DERIVED FROM kSshFetchChunkBytes AND NOT WRITTEN DOWN. That constant
+    // is a tuning number and has already moved once; a copy of it here does not fail when
+    // it moves again, it just stops being about a chunk — a 700 KB fixture said "more than
+    // one chunk" while the chunk was 256 KB and says "less than one" now, with the
+    // assertion still green either way. This is the one ungated place the chunk size is
+    // observable at all, which is why it is stated as a relation.
+    const qint64 span = kSshFetchChunkBytes + 64 * 1024;
     QByteArray content;
-    content.reserve(700 * 1024);
-    for (int i = 0; content.size() < 700 * 1024; ++i)
+    content.reserve(qsizetype(span));
+    for (int i = 0; content.size() < span; ++i)
         content += QByteArray::number(i).rightJustified(15, '.') + "\n";
     const QString path = write(QStringLiteral("big.log"), content);
     QVERIFY(!path.isEmpty());
@@ -278,12 +287,12 @@ void TestSshExec::theStreamingReadIsNotBoundedByAnyLength()
     const QByteArray whole = runSh(streamReadCommand(path, 0));
     QCOMPARE(whole.size(), content.size());
     QCOMPARE(whole, content);
-    QVERIFY2(whole.size() > 256 * 1024,
+    QVERIFY2(whole.size() > kSshFetchChunkBytes,
              "one streaming read handed back less than a single fetch chunk");
 
     // And from a mid-file offset, which is where a catch-up actually starts: the prime has
     // already taken the head of the log through the same command.
-    const qint64 from = 300 * 1024;
+    const qint64 from = kSshFetchChunkBytes / 2;
     QCOMPARE(runSh(streamReadCommand(path, from)), content.mid(int(from)));
 }
 

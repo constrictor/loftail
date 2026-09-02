@@ -259,9 +259,11 @@ struct SshSession::Impl
     // the previous one plus what the previous call returned — so the seek readAt() used to
     // issue before every read was not merely redundant: libssh2_sftp_seek64() FLUSHES the
     // handle's read-ahead buffer and throws away the outstanding read requests with it, so
-    // a seek per 256 KB chunk restarts the request pipeline cold and pays a round trip that
+    // a seek per chunk restarted the request pipeline cold and paid a round trip that the
     // read-ahead exists to hide. Skipping it when the cursor is already there is the whole
-    // of the saving; nothing else about the read path moves.
+    // of the saving; nothing else about the read path moves — and it is what lets the chunk
+    // itself be large, libssh2's read-ahead being a multiple of the length asked for and a
+    // seek being exactly what threw that read-ahead away (SshFetcher.h, kSshFetchChunkBytes).
     //
     // THE DANGEROUS DIRECTION IS THE OTHER ONE, and it is why this is not a plain member
     // assigned wherever `file` is. A position that outlives the handle it described makes
@@ -285,8 +287,8 @@ struct SshSession::Impl
     //
     // WHY THERE IS A STREAM AT ALL. Every exec-mode read used to be a whole command —
     // channel open, `tail -c +N | head -c L`, drain, close, free — and SshFetcher walks a
-    // log in 256 KB steps, so catching up on a 100 MB log was four hundred remote process
-    // spawns and four hundred round-trip sequences to read a file one `cat` would hand
+    // log a chunk at a time, so catching up on a 100 MB log was hundreds of remote process
+    // spawns and hundreds of round-trip sequences to read a file one `cat` would hand
     // over in a single pass. Those reads are STRICTLY FORWARD (fetchForward(): each offset
     // is the previous one plus exactly what the previous call returned), so one `tail`
     // started at the first offset already holds every byte the pass will ask for, in the
@@ -837,7 +839,7 @@ qint64 SshSession::Impl::execRead(qint64 offset, char *buffer, qint64 length, QS
         // server that prints a warning there must not be able to wedge the channel by
         // filling its window, and its complaint is not the answer we asked for. It matters
         // more on a stream than on a one-shot command, because a wedged channel here stops
-        // a whole catch-up pass rather than one 256 KB window.
+        // a whole catch-up pass rather than one fetch window.
         ssize_t err = 0;
         do {
             err = libssh2_channel_read_stderr(readStream, sink, sizeof(sink));

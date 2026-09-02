@@ -140,8 +140,8 @@ QString readCommand(const QString &path, qint64 offset, qint64 length);
 //
 // THE MISSING `| head -c L` IS THE WHOLE POINT, and putting it back defeats the feature
 // rather than merely slowing it down. readCommand() above is one command per window, and
-// a window is 256 KB (SshFetcher::kChunkBytes) — so catching up on a 100 MB log meant
-// four hundred channel opens, four hundred remote `tail` processes and four hundred
+// a window is one fetch chunk (kSshFetchChunkBytes) — so catching up on a 100 MB log
+// meant hundreds of channel opens, hundreds of remote `tail` processes and hundreds of
 // round-trip sequences, to read a file that one `cat` would have handed over in a single
 // pass. `SshFetcher::fetchForward()` reads STRICTLY FORWARD, each offset being the
 // previous one plus what the previous call returned, so a single `tail -c +N` started at
@@ -155,7 +155,7 @@ QString readCommand(const QString &path, qint64 offset, qint64 length);
 // closing the channel makes the server close the pipe, `tail` takes an EPIPE on its next
 // write and dies. Nothing streams that nobody is reading; what a stream costs while it
 // is idle is one blocked remote process per open log, which is the price of not paying a
-// process per 256 KB.
+// process per chunk.
 //
 // `tail` with no `-f`, deliberately: it stops at the file's EOF as it stood when it got
 // there, which is exactly the extent one catch-up pass wants. Following on the far end
