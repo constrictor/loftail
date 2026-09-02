@@ -18,6 +18,8 @@
 
 #include "SshWorkerPool.h"
 
+#include "SshSessionCache.h"
+
 #if defined(LOFTAIL_HAVE_SSH)
 #include "SshSession.h"
 #endif
@@ -94,6 +96,16 @@ void startSshWorker(std::function<void()> body)
 
 void drainSshWorkers(int budgetMs)
 {
+    // FIRST, and outside the gate. A cached connection is a live socket and a QTcpSocket
+    // that would otherwise be torn down after the application object has gone — the same
+    // SEGV the wait below exists for, arriving from an object nobody is waiting on.
+    // Closing also LATCHES the cache shut, which is what covers the straggler case: a
+    // worker that finishes after the budget expires finds a closed cache, destroys its own
+    // session inline exactly as it did before any of this existed, and leaves nothing
+    // behind. In a build with no SSH the cache is permanently empty and this is a lock and
+    // a flag (SshSessionCache.h).
+    sshSessionCache().close();
+
 #if !defined(LOFTAIL_HAVE_SSH)
     Q_UNUSED(budgetMs);
 #else

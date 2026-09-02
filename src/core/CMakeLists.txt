@@ -95,6 +95,13 @@ add_library(loftail_core STATIC
     SshWorkerPool.cpp
     SshWorkerPool.h
     SshWorkerPool.inl
+    # The idle connections an errand may take instead of connecting again. Always
+    # compiled, and it names no libssh2 type on purpose: the transport is reachable in one
+    # build configuration on one kind of server, so the checkout, the single ownership,
+    # the idle deadline, the cap and the shutdown latch are all pinned here with no
+    # server (tst_sshsessioncache), exactly as SshRetryPolicy and SshSessionHealth are.
+    SshSessionCache.cpp
+    SshSessionCache.h
     ArchiveFetcher.h
     # Declares the member listing and the reader; free of libarchive types, so the
     # member-picker dialog compiles either way and both builds' UI looks the same.

@@ -475,6 +475,15 @@ qt_add_executable(tst_sshretry tst_sshretry.cpp)
 target_link_libraries(tst_sshretry PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_sshretry COMMAND tst_sshretry)
 
+# Who owns a reused SSH connection, when it stops being reusable, and what happens to one
+# at shutdown. UNGATED for the fifth time on the same argument: the transport that consumes
+# it needs libssh2, a server and a network, so a rule compiled only there is a rule tested
+# only there. The cache holds its sessions behind an interface and names no libssh2 type, so
+# the whole of the bookkeeping runs here against a fake, with the clock as a parameter.
+qt_add_executable(tst_sshsessioncache tst_sshsessioncache.cpp)
+target_link_libraries(tst_sshsessioncache PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_sshsessioncache COMMAND tst_sshsessioncache)
+
 # Whether a libssh2 error code means the SESSION is finished, and the latch that remembers
 # it. UNGATED for the fourth time on the same argument, and the situation it stands for is
 # the one nothing in CI can stage at all: a machine that goes away under a tab which is

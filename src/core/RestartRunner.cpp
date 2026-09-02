@@ -414,8 +414,15 @@ void RestartRunner::startRemote(const RestartTarget &target)
         // Nothing in this lambda may reach for a file: an ExecOnly session has no SFTP
         // handle and no settled size rung, and every operation that would want one refuses
         // it by name. runScript() is the one thing here, which is the whole errand.
+        // Repeat::NEVER, and this is the call site that enum exists for. A session taken
+        // from the idle cache was proven when it was made, not when it was handed over, so
+        // it can fail partway — and "the link died before the script started" and "the link
+        // died while it was running" are the same error from in here. Repeating would run
+        // the user's restart script a second time on a service that may already be coming
+        // back up. The honest answer is to report it: the dead session is dropped rather
+        // than returned, so pressing Restart again connects afresh and works.
         const QString error = withSshSession(
-            address, &shared->relay, shared, SshSession::Need::ExecOnly,
+            address, &shared->relay, shared, SshSession::Need::ExecOnly, SshErrandRepeat::Never,
             [&out, &code, &command, &onChunk, &shared](SshSession &session, const QString &) {
                 QString why;
                 // The chunk callback also RECORDS whether stderr was touched, on the

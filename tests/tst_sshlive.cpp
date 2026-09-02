@@ -39,6 +39,8 @@
 #include "SourceSpool.h"
 #include "SshPrompter.h"
 #include "SshSession.h"
+#include "SshSessionCache.h"
+#include "SshWorkerPool.h"
 
 using namespace loftail;
 
@@ -174,6 +176,11 @@ private slots:
     // actually reports one of those codes when the link goes, and that an ordinary
     // missing file does not, can only be found out against a real one.
     void aDroppedLinkIsNoticedRatherThanPolledForEver();
+
+    // The idle session cache, end to end (§6.3). DECLARED LAST on purpose: it finishes by
+    // draining, which latches the process's one cache shut for good, so anything after it
+    // would be testing a build with the feature turned off.
+    void oneConnectionServesSeveralErrandsAndTheDrainLetsItGo();
 };
 
 void TestSshLive::initTestCase()
@@ -752,6 +759,110 @@ void TestSshLive::aDroppedLinkIsNoticedRatherThanPolledForEver()
     QVERIFY(!session.statPath().valid);
     QVERIFY2(!session.isConnected(),
              "a second failed stat un-said the latch instead of leaving it set");
+}
+
+// The whole of the cache, against a real server (SshSessionCache.h, §6.3).
+//
+// EVERYTHING BELOW IS PINNED WITHOUT A SERVER EXCEPT THE ONE THING THAT MATTERS: that an
+// SshSession which has already done an errand is still good for the next one. The
+// bookkeeping — the checkout, the single ownership, the deadline, the cap, the latch — is
+// tst_sshsessioncache's, driven against a fake. Whether a real libssh2 session survives a
+// whole-file SFTP write, then an exec channel with the timeout suspended and the session
+// flipped to non-blocking and back, and then another SFTP read, cannot be faked at all: a
+// fake is good for as many errands as you like by construction.
+//
+// The claim is stated as POINTER IDENTITY, which is the narrowest observation available —
+// the second and third errands ran on the very object the first one made, so no connect,
+// no key exchange, no host-key check and no authentication happened for either.
+void TestSshLive::oneConnectionServesSeveralErrandsAndTheDrainLetsItGo()
+{
+    const QString cfg = m_remotePath + QStringLiteral(".reuse.properties");
+    QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(cfg)));
+
+    RemoteLocation configLocation = m_location;
+    configLocation.path = cfg;
+    const QString address = configLocation.toString();
+
+    auto shared = std::make_shared<SshWorkerShared>();
+    QCOMPARE(sshSessionCache().size(), 0);
+
+    const QByteArray body = "log4cplus.rootLogger=INFO, STDOUT\n";
+
+    SshSession *first = nullptr;
+    QString error = withSshSession(
+        address, nullptr, shared, SshSession::Need::LogTransport, SshErrandRepeat::Allowed,
+        [&first, &body](SshSession &session, const QString &path) {
+            first = &session;
+            QString why;
+            if (!session.writeFileAt(path, body, &why))
+                return why;
+            return QString();
+        });
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(first != nullptr);
+    // Handed back rather than destroyed, which is what the next errand will find.
+    QCOMPARE(sshSessionCache().size(), 1);
+
+    // THE ONE-WAY BORROW. A restart wants ExecOnly; what is sitting there is a Transport
+    // session, which can open an exec channel as readily — and taking it is what makes
+    // "save the config, then bounce the service" cost one connect rather than two.
+    SshSession *second = nullptr;
+    QByteArray  said;
+    int         code = -1;
+    error = withSshSession(
+        address, nullptr, shared, SshSession::Need::ExecOnly, SshErrandRepeat::Never,
+        [&second, &said, &code](SshSession &session, const QString &) {
+            second = &session;
+            QString why;
+            if (!session.runScript(
+                    QStringLiteral("printf bounced"),
+                    [&said](const QByteArray &bytes, bool isStdErr) {
+                        if (!isStdErr)
+                            said.append(bytes);
+                    },
+                    &code, &why)) {
+                return why;
+            }
+            return QString();
+        });
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(second, first);
+    QCOMPARE(code, 0);
+    QCOMPARE(said, QByteArray("bounced"));
+
+    // And back to SFTP on the same session, which is the half runScript() could have
+    // broken: it suspends the session timeout and flips the session to non-blocking, so a
+    // restore that did not happen would show up here and nowhere else.
+    SshSession *third = nullptr;
+    QByteArray  got;
+    bool        existed = false;
+    error = withSshSession(
+        address, nullptr, shared, SshSession::Need::LogTransport, SshErrandRepeat::Allowed,
+        [&third, &got, &existed](SshSession &session, const QString &path) {
+            third = &session;
+            QString why;
+            if (!session.readFileAt(path, &got, &existed, &why))
+                return why;
+            return QString();
+        });
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(third, first);
+    QVERIFY(existed);
+    QCOMPARE(got, body);
+    // Filed back under what it IS, not under what the ExecOnly errand asked for — or this
+    // third read would have missed and connected again.
+    QCOMPARE(sshSessionCache().size(), 1);
+
+    // The shutdown rule, which is the other half nothing without a server can execute: the
+    // window's drain has to leave no live socket behind, because Qt's globals go with the
+    // application object and a QTcpSocket torn down after that is the SEGV SshWorkerPool.h
+    // records. This latches the cache shut for the rest of the process, which is why this
+    // case is the last one declared.
+    drainSshWorkers();
+    QVERIFY(sshSessionCache().closed());
+    QCOMPARE(sshSessionCache().size(), 0);
+
+    QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(cfg)));
 }
 
 QTEST_GUILESS_MAIN(TestSshLive)

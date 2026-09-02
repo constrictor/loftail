@@ -20,6 +20,13 @@
 
 #include "PromptRelay.h"
 
+#if defined(LOFTAIL_HAVE_SSH)
+// For SshSession::Need, which withSshSession() takes by value. The header names no libssh2
+// type (SshSession.h says so and it is load-bearing), so including it costs a build with SSH
+// nothing and a build without it is not compiling any of this.
+#include "SshSession.h"
+#endif
+
 #include <QString>
 
 #include <atomic>
@@ -29,6 +36,8 @@
 
 namespace loftail {
 
+// Forward-declared for SshWorkerShared::session below, which is a POINTER and is present
+// in every build — the abandon rule it serves must read the same with and without libssh2.
 class SshSession;
 class SshPrompter;
 
@@ -78,23 +87,58 @@ struct SshWorkerShared
 // libQt6Network — a SEGV on the worker, which is what AddressSanitizer caught in CI.
 void startSshWorker(std::function<void()> body);
 
-// Stop waiting for workers, up to `budgetMs`. Called by the window on its way out.
+// Stop waiting for workers, up to `budgetMs`, and let every cached connection go. Called
+// by the window on its way out.
 //
 // Work is ABANDONED rather than joined while the process is alive — see SshWorkerShared —
 // but at shutdown that is not enough: Qt's own globals go with the application object, and
 // a worker still inside QTcpSocket then writes through a pointer that has just become
 // null. Bounded, because a quit that can hang is worse than a budget that can be exceeded.
+//
+// It also CLOSES the idle session cache, and that is not housekeeping: a session sitting
+// there past this point is a live socket and a QTcpSocket to be torn down after the
+// application object has gone, which is the same SEGV in different clothing. Closing
+// latches, so a worker that finishes after the budget expires cannot put one back.
 void drainSshWorkers(int budgetMs = 3000);
 
 #if defined(LOFTAIL_HAVE_SSH)
-// Connect for `address` and hand the open session to `body`, which does the one operation
-// the caller is for. Everything every caller shares lives here.
+// Whether this errand may be RUN TWICE.
+//
+// A session taken out of the idle cache (SshSessionCache.h) was proven when it was made,
+// not when it was handed over, so it can turn out to have been closed by the far end while
+// it sat there. For an errand that can simply be done again, the honest answer is to throw
+// that session away and repeat it on a fresh connect, so a stale hit costs a moment rather
+// than a failure the user has to understand. For one that cannot, it is to report what
+// happened and let the person decide.
+//
+// GETTING THIS BACKWARDS IS SILENT IN BOTH DIRECTIONS. Say `Allowed` of something that is
+// not repeatable and a link that dies mid-errand runs it a second time — for File ▸ Restart
+// App that is the user's restart script executed twice, which is exactly the situation
+// where a half-run script must not be re-run behind their back, since nothing here can know
+// how far the first attempt got. Say `Never` of something that is repeatable and a stale
+// hit turns into a config save that failed for no reason the user can act on.
+enum class SshErrandRepeat {
+    // Whole-file and idempotent: reading a config, and writing one (which truncates and
+    // rewrites, so a second attempt lands the same bytes whatever the first one managed).
+    Allowed,
+    // Runs at most once, whatever happens. Anything with a side effect on the far end.
+    Never,
+};
+
+// Get a session for `address` and hand it to `body`, which does the one operation the
+// caller is for. Everything every caller shares lives here.
+//
+// The session is TAKEN FROM THE IDLE CACHE where one is there and connected otherwise, and
+// returned to the cache afterwards if it is still healthy — so a run of errands against one
+// machine pays one connect rather than one each (§6.3). Nothing about `body` changes: it is
+// handed a connected `SshSession` and the remote path, exactly as before.
 //
 // Returns an error string for the caller to report; EMPTY means either success or "asked
 // to stop", which the caller tells apart by whether its own result was filled in.
 template <class Body>
 QString withSshSession(const QString &address, SshPrompter *prompter,
-                       const std::shared_ptr<SshWorkerShared> &shared, Body body);
+                       const std::shared_ptr<SshWorkerShared> &shared, SshSession::Need need,
+                       SshErrandRepeat repeat, Body body);
 #endif
 
 } // namespace loftail

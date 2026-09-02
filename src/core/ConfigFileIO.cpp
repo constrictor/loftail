@@ -230,8 +230,12 @@ void ConfigTransfer::startRead(const QString &address)
         // server that offers it — an ExecOnly session would have to read the config with
         // `cat`, which is the fallback rather than the choice, so those two refuse one
         // outright (SshSession.h).
+        // Repeat::Allowed: reading a file is idempotent, so a connection taken from the
+        // idle cache that turns out to have died while it sat there costs a moment rather
+        // than a failure the user has to interpret (SshWorkerPool.h).
         const QString error = withSshSession(
             address, &shared->relay, shared, SshSession::Need::LogTransport,
+            SshErrandRepeat::Allowed,
             [&out, &address](SshSession &session, const QString &path) {
                 QString why;
                 if (!session.readFileAt(path, &out.bytes, &out.existed, &why))
@@ -279,7 +283,13 @@ void ConfigTransfer::startWrite(const QString &address, const QByteArray &bytes)
     startSshWorker([address, bytes, shared, self]() {
         ConfigWriteResult out;
         const QString error =
+            // Repeat::Allowed, and the reason is stronger than the read's rather than
+            // weaker: writeFileAt() TRUNCATES and rewrites, so a second attempt after a
+            // stale cache hit lands exactly the intended bytes whatever the first one
+            // managed to put there — which is also the only way to finish a write that
+            // died halfway, the remote write being deliberately non-atomic (§6.8).
             withSshSession(address, &shared->relay, shared, SshSession::Need::LogTransport,
+                        SshErrandRepeat::Allowed,
                         [&out, &bytes](SshSession &session, const QString &path) {
                             QString why;
                             if (!session.writeFileAt(path, bytes, &why))
