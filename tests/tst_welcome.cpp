@@ -21,6 +21,8 @@
 #include <QAction>
 #include <QApplication>
 #include <QDir>
+#include <QFontDatabase>
+#include <QPalette>
 #include <QFile>
 #include <QLabel>
 #include <QListWidget>
@@ -108,6 +110,9 @@ private slots:
     void clearingTheRecentListEmptiesThePageAsWellAsTheMenu();
     void theRecentListFollowsTheMenuAfterAnOpen();
     void openingALogClearsTheCouldNotBeReopenedMessage();
+    void theContentIsCentredRatherThanFillingTheWindow();
+    void aThemeThatSuppliesNoBandStillGetsOne();
+    void eachActionButtonSitsLevelWithItsListRatherThanItsHeading();
 #if defined(LOFTAIL_HAVE_SSH)
     void aRememberedRemoteLogIsARowAndASavedHostWithNoneIsAnother();
 #else
@@ -291,6 +296,105 @@ void TestWelcome::openingALogClearsTheCouldNotBeReopenedMessage()
     QVERIFY(w.openFile(m_good));
     QVERIFY(message(w)->text().isEmpty());
     QVERIFY(!message(w)->isVisibleTo(welcome(w)));
+}
+
+void TestWelcome::theContentIsCentredRatherThanFillingTheWindow()
+{
+    // The lists are bounded so the page has something to CENTRE. Letting them stretch is
+    // what made the first version of this screen two tall empty boxes with a caption over
+    // them: the content WAS the viewport, so there was no spare height, nothing to centre
+    // it in, and the whole page grew emptier the larger the window got.
+    MainWindow w;
+    w.resize(1200, 900);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+
+    auto *view = welcome(w);
+    auto *title = w.findChild<QLabel *>(QStringLiteral("welcomeTitle"));
+    QListWidget *last = remoteList(w);
+    QVERIFY(view && title && last);
+
+    const int above = title->mapTo(view, QPoint(0, 0)).y();
+    const int below = view->height() - (last->mapTo(view, QPoint(0, 0)).y() + last->height());
+
+    // Stated as RELATIONS against the viewport and never as pixel counts, which would pass
+    // under one style and font and fail under the next.
+    //
+    // The slack has to be SUBSTANTIAL and not merely non-zero, which is the whole of what
+    // makes this case discriminating: a stretching layout leaves a layout margin at each
+    // end, so "there is a gap" and "the two gaps are equal" are both true of it and prove
+    // nothing. A fifth of the viewport is far below what centring actually leaves (about
+    // two fifths at this size) and far above a margin.
+    QVERIFY2(above + below >= view->height() / 5,
+             qPrintable(QStringLiteral("above %1, below %2, viewport %3")
+                            .arg(above).arg(below).arg(view->height())));
+    // And it is spread over both ends rather than piled at one, which is what centred
+    // means as against top- or bottom-aligned.
+    QVERIFY2(qAbs(above - below) <= (above + below) / 2,
+             qPrintable(QStringLiteral("above %1, below %2").arg(above).arg(below)));
+}
+
+void TestWelcome::aThemeThatSuppliesNoBandStillGetsOne()
+{
+    // Banding is asked for AND its colour is supplied, which is the log table's own rule
+    // (UiColors::alternateRowColor, ARCHITECTURE.md §8.3). Nothing obliges a theme to make
+    // AlternateBase differ from Base, and one that leaves them equal takes the band away
+    // in silence — banded on the developer's desktop and flat on the user's.
+    //
+    // So the theme under test is one that leaves them equal, which is the only way this
+    // case can tell a supplied colour from a lucky one: under Fusion the roles already
+    // differ and setAlternatingRowColors() alone would pass.
+    const QPalette original = QApplication::palette();
+    QPalette flat = original;
+    flat.setColor(QPalette::AlternateBase, flat.color(QPalette::Base));
+    QApplication::setPalette(flat);
+
+    {
+        MainWindow w;
+        for (QListWidget *list : {recentList(w), remoteList(w)}) {
+            QVERIFY(list);
+            QVERIFY(list->alternatingRowColors());
+            QCOMPARE_NE(list->palette().color(QPalette::AlternateBase),
+                        list->palette().color(QPalette::Base));
+        }
+    }
+
+    QApplication::setPalette(original);
+}
+
+void TestWelcome::eachActionButtonSitsLevelWithItsListRatherThanItsHeading()
+{
+    // Kate's arrangement, and the reason it reads as a page: the button is beside the
+    // thing it acts on. Level with the heading instead, it reads as part of the caption —
+    // and the taller of the two heading rows (only one carries Clear) then drags its
+    // button out of line with the other section's.
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no font database: every widget resolves to the same fallback geometry");
+
+    MainWindow w;
+    w.resize(1200, 800);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+
+    auto *view = welcome(w);
+    const auto topIn = [view](QWidget *child) {
+        return child->mapTo(view, QPoint(0, 0)).y();
+    };
+
+    struct Pair { const char *button; QListWidget *list; };
+    const Pair pairs[] = {{"welcomeOpen", recentList(w)}, {"welcomeOpenRemote", remoteList(w)}};
+    for (const Pair &p : pairs) {
+        auto *button = w.findChild<QPushButton *>(QLatin1String(p.button));
+        QVERIFY(button);
+        QVERIFY(p.list);
+        // A relation with a tolerance of one row, not an equality: a button and a list
+        // frame do not have to begin on the same pixel, only on the same LINE.
+        QVERIFY2(qAbs(topIn(button) - topIn(p.list)) <= button->height(),
+                 qPrintable(QStringLiteral("%1 top %2 against list top %3")
+                                .arg(QLatin1String(p.button))
+                                .arg(topIn(button))
+                                .arg(topIn(p.list))));
+    }
 }
 
 #if defined(LOFTAIL_HAVE_SSH)

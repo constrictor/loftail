@@ -23,6 +23,7 @@
 #include <QWidget>
 
 class QLabel;
+class QLayout;
 class QListWidget;
 class QPushButton;
 
@@ -104,7 +105,14 @@ protected:
     void changeEvent(QEvent *event) override;
 
 private:
-    void applyMutedColours();
+    // One section: its action button in a column on the LEFT, its heading and its list on
+    // the right, with the list bounded in height. Returns the row for the caller to add.
+    static QLayout *buildSection(QWidget *parent, const QString &heading,
+                                 QPushButton *action, QPushButton *listAction,
+                                 QListWidget *list);
+    static QLabel *makeEmptyLabel(QListWidget *list, const QString &text,
+                                  const QString &objectName);
+    void applyThemeColours();
 
     QLabel       *m_title = nullptr;
     QLabel       *m_tagline = nullptr;

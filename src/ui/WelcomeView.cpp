@@ -59,12 +59,28 @@ constexpr int kVisibleRows = 6;
 // Between the empty-state message and the edge of the viewport it is centred in.
 constexpr int kEmptyInset = 8;
 
+// Between a section's button column and its list.
+constexpr int kSectionGap = 12;
+
 // What a row stands for. Three plain strings rather than the Entry itself in a
 // QVariant: these are the only fields an activation needs, and a row carrying a
 // registered metatype is a metatype to keep registered.
 constexpr int kAddressRole = Qt::UserRole;
 constexpr int kHostRole    = Qt::UserRole + 1;
 constexpr int kPathRole    = Qt::UserRole + 2;
+
+// How tall a row of either list actually is, under this style and this font. MEASURED
+// from a prototype rather than derived from the font's height: an item view spends the
+// style's own item margin above and below the text, which is 2 px a side under Fusion and
+// more under Breeze, so a written-down guess shows five and a half rows on one desktop
+// and six and a bit on the next.
+int measuredRowHeight(QListWidget *list)
+{
+    list->addItem(QStringLiteral("Ag"));
+    const int height = list->sizeHintForRow(0);
+    delete list->takeItem(0);
+    return qMax(1, height);
+}
 
 // Put the empty-state message over the list it belongs to. Called on every refresh as
 // well as on every resize, because the list may never have been laid out when the first
@@ -99,6 +115,84 @@ void fillList(QListWidget *list, QLabel *empty, const QVector<WelcomeView::Entry
 
 } // namespace
 
+QLabel *WelcomeView::makeEmptyLabel(QListWidget *list, const QString &text,
+                                   const QString &objectName)
+{
+    // A LABEL over the viewport and never a row, which is HighlighterPane's rule for its
+    // rule table and is here for the same reason: a row is an entry to everything that
+    // walks rows, and nothing in a list has a way of being uncountable.
+    auto *empty = new QLabel(text, list->viewport());
+    empty->setObjectName(objectName); // findChild, for tests
+    empty->setAlignment(Qt::AlignCenter);
+    empty->setWordWrap(true);
+    // Transparent to the mouse, or the empty message swallows a click on the list it is
+    // lying over. HighlighterPane's rule-table placeholder, verbatim.
+    empty->setAttribute(Qt::WA_TransparentForMouseEvents);
+    return empty;
+}
+
+QLayout *WelcomeView::buildSection(QWidget *parent, const QString &heading,
+                                   QPushButton *action, QPushButton *listAction,
+                                   QListWidget *list)
+{
+    // BUTTONS TO THE LEFT OF THE LIST, top-aligned with it, which is Kate's arrangement
+    // and the reason it reads as a page rather than as a form: the thing you do sits
+    // beside the thing you do it to, and the two sections' buttons line up in a column
+    // of their own down the left. Under the list they read as a footer belonging to
+    // nothing in particular, and each one pushed the next section a button's height
+    // further down.
+    auto *row = new QHBoxLayout;
+
+    auto *buttons = new QVBoxLayout;
+    buttons->setContentsMargins(0, 0, 0, 0);
+    buttons->addWidget(action);
+    buttons->addStretch(1); // top-aligned against the LIST, not centred on it
+    row->addLayout(buttons);
+    row->addSpacing(kSectionGap);
+
+    auto *right = new QVBoxLayout;
+    right->setContentsMargins(0, 0, 0, 0);
+
+    auto *headRow = new QHBoxLayout;
+    auto *title = new QLabel(heading, parent);
+    {
+        QFont f = title->font();
+        f.setBold(true);
+        title->setFont(f);
+    }
+    headRow->addWidget(title);
+    headRow->addStretch(1);
+    // The per-list action, where there is one: it acts on what is BELOW it and not on
+    // the application, which is why it is not down in the button column with the opens.
+    if (listAction)
+        headRow->addWidget(listAction);
+    right->addLayout(headRow);
+
+    // A FIXED height, not a minimum: this is what stops the two lists absorbing the whole
+    // window between them and leaves the page something to centre. A list with more rows
+    // than fit scrolls, which is what a list is for.
+    list->setFixedHeight(measuredRowHeight(list) * kVisibleRows + 2 * list->frameWidth());
+    // Zebra, so a long address is read across without losing the row. Qt's own
+    // AlternatingRowColors alone is not enough — see applyThemeColours(), which supplies
+    // the colour, because nothing obliges a theme to make AlternateBase differ from Base.
+    list->setAlternatingRowColors(true);
+    right->addWidget(list);
+
+    row->addLayout(right, 1);
+    // The button column keeps its own width and the LIST takes the slack, which is what
+    // makes the two lists the same width as each other whatever their buttons say.
+    row->setStretch(0, 0);
+
+    // The button sits level with the LIST and not with the heading over it, which is
+    // where Kate puts it and what makes the two sections' buttons read as a column of
+    // their own: level with the heading they read as part of it, and the taller of the
+    // two heading rows then drags its button out of line with the other section's. The
+    // offset is MEASURED from the heading row that was just built, because that row is a
+    // caption alone in one section and a caption and a button in the other.
+    buttons->insertSpacing(0, headRow->sizeHint().height() + right->spacing());
+    return row;
+}
+
 WelcomeView::WelcomeView(QWidget *parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("welcomeView")); // findChild, for tests
@@ -128,6 +222,12 @@ WelcomeView::WelcomeView(QWidget *parent) : QWidget(parent)
     pageLayout->addStretch(1);
 
     auto *layout = new QVBoxLayout(column);
+    // VERTICALLY CENTRED, which is what the bounded list heights below buy: with the
+    // lists stretching there was nothing to centre — the content was the viewport — and
+    // the page read as two tall empty boxes with a caption over them. The stretches
+    // collapse to nothing on a window too short for the content, at which point the
+    // scroll area takes over, so this costs the short case nothing.
+    layout->addStretch(1);
 
     m_title = new QLabel(QStringLiteral("loftail"), column);
     // NOT tr(): the name of the application is a name (CLAUDE.md, Conventions).
@@ -166,29 +266,19 @@ WelcomeView::WelcomeView(QWidget *parent) : QWidget(parent)
     m_message->setVisible(false);
     layout->addWidget(m_message);
 
-    const int rowHeight = fontMetrics().height() + kEmptyInset;
-
     // --- Recent logs ---------------------------------------------------------------
 
-    auto *recentHead = new QHBoxLayout;
-    auto *recentTitle = new QLabel(tr("Recent logs"), column);
-    {
-        QFont f = recentTitle->font();
-        f.setBold(true);
-        recentTitle->setFont(f);
-    }
-    recentHead->addWidget(recentTitle);
-    recentHead->addStretch(1);
+    auto *open = new QPushButton(tr("Open Log..."), column);
+    open->setObjectName(QStringLiteral("welcomeOpen")); // findChild, for tests
+    connect(open, &QPushButton::clicked, this, &WelcomeView::browseRequested);
+
     m_clearRecent = new QPushButton(tr("Clear"), column);
     m_clearRecent->setObjectName(QStringLiteral("welcomeClearRecent")); // findChild, for tests
     m_clearRecent->setToolTip(tr("Forget every remembered log"));
     connect(m_clearRecent, &QPushButton::clicked, this, &WelcomeView::clearRecentRequested);
-    recentHead->addWidget(m_clearRecent);
-    layout->addLayout(recentHead);
 
     m_recent = new QListWidget(column);
     m_recent->setObjectName(QStringLiteral("welcomeRecentList")); // findChild, for tests
-    m_recent->setMinimumHeight(rowHeight * kVisibleRows);
     // ACTIVATED, never doubleClicked: one signal is both the double-click and Return on
     // the selected row, and a list reachable only by double-click is not reachable from
     // a keyboard at all — which nothing on screen would say.
@@ -196,25 +286,11 @@ WelcomeView::WelcomeView(QWidget *parent) : QWidget(parent)
         if (item)
             emit recentActivated(item->data(kAddressRole).toString());
     });
+    m_recentEmpty = makeEmptyLabel(m_recent, tr("No logs opened yet."),
+                                   QStringLiteral("welcomeRecentEmpty"));
     m_recent->viewport()->installEventFilter(this);
-    layout->addWidget(m_recent, 1);
 
-    m_recentEmpty = new QLabel(tr("No logs opened yet."), m_recent->viewport());
-    m_recentEmpty->setObjectName(QStringLiteral("welcomeRecentEmpty")); // findChild, for tests
-    m_recentEmpty->setAlignment(Qt::AlignCenter);
-    m_recentEmpty->setWordWrap(true);
-    // Transparent to the mouse, or the empty message swallows a click on the list it is
-    // lying over. HighlighterPane's rule-table placeholder, verbatim.
-    m_recentEmpty->setAttribute(Qt::WA_TransparentForMouseEvents);
-
-    auto *recentButtons = new QHBoxLayout;
-    recentButtons->addStretch(1);
-    auto *open = new QPushButton(tr("Open Log..."), column);
-    open->setObjectName(QStringLiteral("welcomeOpen")); // findChild, for tests
-    connect(open, &QPushButton::clicked, this, &WelcomeView::browseRequested);
-    recentButtons->addWidget(open);
-    layout->addLayout(recentButtons);
-
+    layout->addLayout(buildSection(column, tr("Recent logs"), open, m_clearRecent, m_recent));
     layout->addSpacing(fontMetrics().height());
 
     // --- Remote hosts --------------------------------------------------------------
@@ -223,20 +299,15 @@ WelcomeView::WelcomeView(QWidget *parent) : QWidget(parent)
     // than hiding four things and leaving their spacing behind.
     m_remoteSection = new QWidget(column);
     m_remoteSection->setObjectName(QStringLiteral("welcomeRemoteSection")); // findChild, for tests
-    auto *remoteLayout = new QVBoxLayout(m_remoteSection);
-    remoteLayout->setContentsMargins(0, 0, 0, 0);
+    auto *remoteOuter = new QVBoxLayout(m_remoteSection);
+    remoteOuter->setContentsMargins(0, 0, 0, 0);
 
-    auto *remoteTitle = new QLabel(tr("Remote hosts"), m_remoteSection);
-    {
-        QFont f = remoteTitle->font();
-        f.setBold(true);
-        remoteTitle->setFont(f);
-    }
-    remoteLayout->addWidget(remoteTitle);
+    auto *openRemote = new QPushButton(tr("Open Remote..."), m_remoteSection);
+    openRemote->setObjectName(QStringLiteral("welcomeOpenRemote")); // findChild, for tests
+    connect(openRemote, &QPushButton::clicked, this, &WelcomeView::openRemoteRequested);
 
     m_remotes = new QListWidget(m_remoteSection);
     m_remotes->setObjectName(QStringLiteral("welcomeRemoteList")); // findChild, for tests
-    m_remotes->setMinimumHeight(rowHeight * kVisibleRows);
     connect(m_remotes, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) {
         if (!item)
             return;
@@ -248,31 +319,30 @@ WelcomeView::WelcomeView(QWidget *parent) : QWidget(parent)
         emit remoteActivated(item->data(kHostRole).toString(),
                              item->data(kPathRole).toString());
     });
+    m_remotesEmpty = makeEmptyLabel(m_remotes, tr("No saved hosts yet."),
+                                    QStringLiteral("welcomeRemoteEmpty"));
     m_remotes->viewport()->installEventFilter(this);
-    remoteLayout->addWidget(m_remotes, 1);
 
-    m_remotesEmpty = new QLabel(tr("No saved hosts yet."), m_remotes->viewport());
-    m_remotesEmpty->setObjectName(QStringLiteral("welcomeRemoteEmpty")); // findChild, for tests
-    m_remotesEmpty->setAlignment(Qt::AlignCenter);
-    m_remotesEmpty->setWordWrap(true);
-    m_remotesEmpty->setAttribute(Qt::WA_TransparentForMouseEvents);
+    remoteOuter->addLayout(buildSection(m_remoteSection, tr("Remote hosts"), openRemote,
+                                        nullptr, m_remotes));
+    layout->addWidget(m_remoteSection);
 
-    auto *remoteButtons = new QHBoxLayout;
-    remoteButtons->addStretch(1);
-    auto *openRemote = new QPushButton(tr("Open Remote..."), m_remoteSection);
-    openRemote->setObjectName(QStringLiteral("welcomeOpenRemote")); // findChild, for tests
-    connect(openRemote, &QPushButton::clicked, this, &WelcomeView::openRemoteRequested);
-    remoteButtons->addWidget(openRemote);
-    remoteLayout->addLayout(remoteButtons);
+    layout->addStretch(1);
 
-    layout->addWidget(m_remoteSection, 1);
+    // The two button columns are widened to the SAME measurement, which is what makes
+    // both lists start at one x — the whole point of putting the buttons beside the
+    // lists rather than under them. Done after both exist, since the number is the wider
+    // of the two hints.
+    const int buttonWidth = qMax(open->sizeHint().width(), openRemote->sizeHint().width());
+    open->setMinimumWidth(buttonWidth);
+    openRemote->setMinimumWidth(buttonWidth);
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->addWidget(scroll);
     scroll->setWidget(page);
 
-    applyMutedColours();
+    applyThemeColours();
     // The two lists start empty, so the two messages start on screen.
     fillList(m_recent, m_recentEmpty, {});
     fillList(m_remotes, m_remotesEmpty, {});
@@ -302,7 +372,7 @@ void WelcomeView::setMessage(const QString &text)
 }
 
 
-void WelcomeView::applyMutedColours()
+void WelcomeView::applyThemeColours()
 {
     // From the palette, never a constant: this page is read on a light theme and a dark
     // one, and a grey chosen for either is invisible on the other.
@@ -321,6 +391,19 @@ void WelcomeView::applyMutedColours()
         pal.setColor(QPalette::WindowText, onList);
         label->setPalette(pal);
     }
+
+    // THE ZEBRA IS SUPPLIED, not left to QPalette::AlternateBase, which is the log
+    // table's own rule (UiColors::alternateRowColor, ARCHITECTURE.md §8.3): nothing
+    // obliges a theme to make that role differ from Base, and a theme that leaves the
+    // two equal takes the banding away in silence — which is worse than never having had
+    // it, since the rows then look banded on the developer's desktop and flat on the
+    // user's. alternateRowColor() is a fixed step from Base toward Text and lands on
+    // either theme.
+    for (QListWidget *list : {m_recent, m_remotes}) {
+        QPalette pal = list->palette();
+        pal.setColor(QPalette::AlternateBase, alternateRowColor(list->palette()));
+        list->setPalette(pal);
+    }
 }
 
 bool WelcomeView::eventFilter(QObject *watched, QEvent *event)
@@ -337,10 +420,11 @@ bool WelcomeView::eventFilter(QObject *watched, QEvent *event)
 void WelcomeView::changeEvent(QEvent *event)
 {
     QWidget::changeEvent(event);
-    // The three muted colours were taken from the OLD palette, so they have to be
-    // re-taken or they stay legible only on the theme they were built under.
+    // Every colour here was derived from the OLD palette, so they have to be re-taken
+    // or the muted text stays legible only on the theme it was built under and the zebra
+    // keeps a band mixed from the wrong two ends.
     if (event->type() == QEvent::PaletteChange)
-        applyMutedColours();
+        applyThemeColours();
 }
 
 } // namespace loftail

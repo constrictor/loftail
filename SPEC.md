@@ -73,9 +73,10 @@ loftail is free software under the **GNU General Public License, version 3 or la
 - **Recent logs** lists the same ten remembered logs the *Open Recent* menu does, named by the same rule and carrying the same full-address tooltip — the two are one list rendered twice and cannot disagree. **Clear** beside the heading is *Clear Recent Files* under another name, and is greyed while there is nothing to forget.
 - **Remote hosts** lists the saved hosts, one row per remembered log on each — `prod: /var/log/app.log` — exactly as *File ▸ Remote Hosts* does. A host with no log remembered on it yet is one row reading `staging...`, and opening that row opens the Open Remote dialog filled in for that host rather than guessing at a path. Opening a remembered log carries that host's own poll cadence, tail-start and compression, which is what makes the row equal to the menu entry rather than merely similar.
 - **Either list opens a row by double-click or by Return**, so nothing here needs a mouse.
+- **Each list is a bounded height with its rows banded**, and its button sits beside it rather than under it — so the page is a block of content with room around it rather than two boxes stretched to whatever the window happens to be. A list with more entries than fit scrolls.
 - **A list with nothing in it says which kind of empty it is** — no log has been opened yet, or no host has been saved yet — rather than leaving a blank frame.
 - **On a build without SSH the remote half is not there at all.** That is the opposite of what the File menu does with the same feature, where *Open Remote...* and *Remote Hosts* stay put, greyed, carrying the sentence that explains why (§3 "Remote logs"). The menu is where that explanation belongs; a page somebody is choosing an action from is not improved by a column that can only decline.
-- **The page scrolls on a short window** rather than shrinking its contents away.
+- **The page scrolls on a short window** rather than shrinking its contents away, and sits in the middle of a tall one.
 - If a restored session could not reopen some of its logs, the page names them (§10) until something opens.
 
 ### Live updates
