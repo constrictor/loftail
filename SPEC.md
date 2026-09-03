@@ -66,6 +66,18 @@ loftail is free software under the **GNU General Public License, version 3 or la
 - Opening a large file shows progress and remains responsive; the view populates as scanning proceeds rather than blocking until it finishes.
 - Scanning can be cancelled, leaving whatever was scanned so far usable. The stop button sits **beside the progress bar**, appearing and disappearing with it: the progress bar is the only thing that says a scan is running, and on an ordinary log the whole chance to act is over in well under a second — long enough to press what is already under the eye, not long enough to go looking for it in a menu.
 
+### The welcome screen
+
+**A window with no log open shows what there is to open.** It used to show one sentence — *No file open. Open a log file to begin.* — which is the first thing a new user sees, the thing every user sees after closing their last tab, and which names two menus without being either of them. In its place is a page carrying the two lists loftail already keeps, and the two open commands as buttons.
+
+- **Recent logs** lists the same ten remembered logs the *Open Recent* menu does, named by the same rule and carrying the same full-address tooltip — the two are one list rendered twice and cannot disagree. **Clear** beside the heading is *Clear Recent Files* under another name, and is greyed while there is nothing to forget.
+- **Remote hosts** lists the saved hosts, one row per remembered log on each — `prod: /var/log/app.log` — exactly as *File ▸ Remote Hosts* does. A host with no log remembered on it yet is one row reading `staging...`, and opening that row opens the Open Remote dialog filled in for that host rather than guessing at a path. Opening a remembered log carries that host's own poll cadence, tail-start and compression, which is what makes the row equal to the menu entry rather than merely similar.
+- **Either list opens a row by double-click or by Return**, so nothing here needs a mouse.
+- **A list with nothing in it says which kind of empty it is** — no log has been opened yet, or no host has been saved yet — rather than leaving a blank frame.
+- **On a build without SSH the remote half is not there at all.** That is the opposite of what the File menu does with the same feature, where *Open Remote...* and *Remote Hosts* stay put, greyed, carrying the sentence that explains why (§3 "Remote logs"). The menu is where that explanation belongs; a page somebody is choosing an action from is not improved by a column that can only decline.
+- **The page scrolls on a short window** rather than shrinking its contents away.
+- If a restored session could not reopen some of its logs, the page names them (§10) until something opens.
+
 ### Live updates
 
 - **Every file is opened as if it were live.** loftail cannot know whether a file is complete or still being written, so it always watches the open file and appends new records as they arrive. A file that is never appended to simply never produces any — there is no "post-mortem" versus "live" mode for the user to choose, and none to forget to turn on.
@@ -453,7 +465,7 @@ Time-range filter bounds (§6) are asked for in the terms the column is showing,
   - **Shared** between views of one file: the records themselves, the log format, the timestamp display mode, active filters, active highlighters, and the selected run. Filtering in one view filters both — the panes edit the *file*, not the view.
   - **Private** to each view: scroll position, selection, wrap mode, column layout, follow state, and the Find bar.
 - **A config file opens as a tab too** (§4), beside the logs and telling itself apart by name like any of them. It is the one page in the well that is not a log: the side panes describe the log you were reading and stay on it, and the actions that act on a log — Reload, Follow, the wrap modes, Copy — are unavailable while it is in front. Find, Close Tab and the text zoom apply to whichever page you are looking at.
-- **Closing a tab closes that view.** The file itself closes when its last view does; closing every tab leaves the empty view of §3.
+- **Closing a tab closes that view.** The file itself closes when its last view does; closing every tab leaves the welcome screen of §3.
 - The whole arrangement — which files are open, how many views each has, and the order of the tabs — is part of the remembered session (§10).
 
 ## 6. Filtering
@@ -601,7 +613,7 @@ What a log says about **itself** is not part of the session at all: its format, 
 
 **Multiple instances.** Because instances run independently (§3), two of them can save session state at the same time. Per-file state is kept per file, so instances viewing different logs never conflict. For genuinely global state — window layout, which files to restore on next launch, and the file patterns and defaults (§4) — **the last instance to close wins**.
 
-If a file from the last session is not there, its tab comes back **waiting for it** (§3) — so a log on an unmounted share, or a host that is down for an afternoon, keeps its place and is picked up when it returns rather than being quietly forgotten. Only a file that is actively refused — an address that names no log, an archive without a chosen log inside it — is left out, and those are listed with their reasons in the message strip above the log (§3) rather than raising an error dialog on every launch; the list stays until you dismiss it. If none can be opened, loftail starts with an empty view.
+If a file from the last session is not there, its tab comes back **waiting for it** (§3) — so a log on an unmounted share, or a host that is down for an afternoon, keeps its place and is picked up when it returns rather than being quietly forgotten. Only a file that is actively refused — an address that names no log, an archive without a chosen log inside it — is left out, and those are listed with their reasons in the message strip above the log (§3) rather than raising an error dialog on every launch; the list stays until you dismiss it. If none can be opened, loftail starts on the welcome screen (§3), which additionally names the logs that could not be reopened — the strip above the well is dismissible and this is not, so the reason for an empty window survives being waved away. It is spent the moment anything opens: it describes one launch, not the window from then on.
 
 ## 11. Non-goals
 

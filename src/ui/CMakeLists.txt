@@ -135,6 +135,12 @@ add_library(loftail_ui STATIC
     # A disclosure triangle over a block of controls, for options with a good default
     CollapsibleSection.cpp
     CollapsibleSection.h
+    # What a window with no log open shows: the recent logs and the saved hosts, on the
+    # page and openable from it, rather than one sentence naming two menus. Holds strings
+    # only and answers with an address — the window owns both enumerations, so the two
+    # stores are read on its schedule and once for the menu and this page together.
+    WelcomeView.cpp
+    WelcomeView.h
 )
 
 # The Presets pane, gated as PresetStore is in loftail_core. No compile definition here:

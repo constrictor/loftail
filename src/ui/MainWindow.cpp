@@ -55,6 +55,7 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include "OpenRemoteDialog.h"
+#include "WelcomeView.h"
 #if defined(LOFTAIL_HAVE_PRESETS)
 #include "PresetPane.h"
 #endif
@@ -336,13 +337,30 @@ MainWindow::MainWindow(SessionRestore restore, QWidget *parent)
     connect(m_tabs->tabBar(), &QTabBar::tabMoved, this, &MainWindow::onTabMoved);
 
     // The empty state shares the centre with the tabs, rather than sitting behind an
-    // empty tab frame; updateEmptyState() swaps between them.
-    m_placeholder = new QLabel(tr("No file open. Open a log file to begin."), this);
-    m_placeholder->setAlignment(Qt::AlignCenter);
-    m_placeholder->setWordWrap(true);
+    // empty tab frame; updateEmptyState() swaps between them. It used to be one centred
+    // sentence naming two menus; it is now the two lists themselves (SPEC.md §3).
+    //
+    // Built HERE and never lazily, because restoreSession() runs later in this
+    // constructor — before show() — and calls updateEmptyState() on its ShellOnly early
+    // return, where a null welcome view would be a crash on `loftail app.log`.
+    m_welcome = new WelcomeView(this);
+    // Both open buttons go to the slots the File menu's own items go to, so a gesture
+    // made here and one made from the menu are the same gesture.
+    connect(m_welcome, &WelcomeView::browseRequested, this, &MainWindow::chooseFileToOpen);
+    connect(m_welcome, &WelcomeView::openRemoteRequested, this,
+            &MainWindow::chooseRemoteToOpen);
+    connect(m_welcome, &WelcomeView::recentActivated, this,
+            [this](const QString &address) { openFile(address); });
+    // Through the SAME funnel the Remote Hosts menu goes through, never a second copy of
+    // its body: that is what keeps setSshFetchOptions() on this path, and a host with no
+    // remembered log answering with the dialog preset to it rather than a guessed path.
+    connect(m_welcome, &WelcomeView::remoteActivated, this,
+            &MainWindow::openRemoteBookmark);
+    connect(m_welcome, &WelcomeView::clearRecentRequested, this,
+            &MainWindow::clearRecentFiles);
 
     m_centre = new QStackedWidget(this);
-    m_centre->addWidget(m_placeholder);
+    m_centre->addWidget(m_welcome);
     m_centre->addWidget(m_tabs);
 
     // ABOVE the well, spanning it: what an open that did not happen says for itself
@@ -545,6 +563,13 @@ void MainWindow::buildMenus()
     m_openRemoteAction->setToolTip(noSsh);
     m_remoteHostsMenu->setEnabled(false);
     m_remoteHostsMenu->setToolTip(noSsh);
+    // The welcome screen HIDES its remotes section where these two only grey out, and
+    // the divergence is deliberate. A menu entry that vanishes reads as a feature that
+    // does not exist, which is why both items above stay put and carry the sentence; a
+    // landing page is where somebody is choosing what to do, and an empty disabled
+    // column there is dead space that explains nothing the menu is not already about to
+    // explain. Decided in this one block so the two answers cannot drift apart.
+    m_welcome->setRemotesVisible(false);
 #endif
 
     fileMenu->addSeparator();
@@ -1136,11 +1161,20 @@ QVector<DocumentView *> MainWindow::viewsInTabOrder() const
 
 void MainWindow::updateEmptyState()
 {
-    // Asked of the TAB BAR, not of m_views: the placeholder means "the well is empty",
-    // and a well holding a page of some other kind is not empty even with no log in it.
-    // On m_views this would hide a live page behind the "no file open" notice.
-    m_centre->setCurrentWidget(m_tabs->count() == 0 ? static_cast<QWidget *>(m_placeholder)
-                                                    : static_cast<QWidget *>(m_tabs));
+    // Asked of the TAB BAR, not of m_views: the welcome screen means "the well is
+    // empty", and a well holding a page of some other kind is not empty even with no log
+    // in it. On m_views this would hide a live page behind the welcome screen.
+    const bool empty = m_tabs->count() == 0;
+    m_centre->setCurrentWidget(empty ? static_cast<QWidget *>(m_welcome)
+                                     : static_cast<QWidget *>(m_tabs));
+    // The session restore's "these logs could not be reopened" sentence is spent the
+    // moment anything opens, and this is the one place that knows. It matters more than
+    // it did for the label this replaced: that label was seen once and then covered for
+    // the life of the window, whereas the welcome screen comes back every time the last
+    // tab closes — so a sentence about a restore that happened hours ago would be read
+    // as being about the window as it stands. No store is read to do it.
+    if (!empty && m_welcome)
+        m_welcome->setMessage(QString());
 }
 
 void MainWindow::onViewDestroyed(QObject *obj)
@@ -2090,49 +2124,92 @@ void MainWindow::chooseRemoteToOpen()
 
 void MainWindow::refreshRemoteHostsMenu()
 {
-    if (!m_remoteHostsMenu)
-        return;
-    m_remoteHostsMenu->clear();
-
+    // ONE ENUMERATION, TWO RENDERINGS. The saved-host list is read exactly once here and
+    // handed to the menu and to the welcome screen together, so the two cannot disagree
+    // and hosts.json — which HostBookmarkStore::all() re-reads and re-parses on every
+    // call, being a file and not a cached model — is parsed once per refresh rather than
+    // once per surface. This function is already called at every point the list can move:
+    // the constructor, after the Open Remote dialog has saved or removed a host, and
+    // after a host entry has opened one.
     const HostBookmarkStore store(HostBookmarkStore::defaultDir());
     const QVector<HostBookmark> hosts = store.all();
-    if (hosts.isEmpty()) {
-        QAction *none = m_remoteHostsMenu->addAction(tr("(none saved)"));
-        none->setEnabled(false);
-        return;
+
+    QVector<WelcomeView::Entry> welcome;
+
+    if (m_remoteHostsMenu) {
+        m_remoteHostsMenu->clear();
+        if (hosts.isEmpty()) {
+            QAction *none = m_remoteHostsMenu->addAction(tr("(none saved)"));
+            none->setEnabled(false);
+        }
     }
 
     for (const HostBookmark &host : hosts) {
+        const QString name = host.displayName();
         if (host.paths.isEmpty()) {
             // A host with no remembered log opens the dialog pre-filled rather than
-            // guessing at a path.
-            QAction *action = m_remoteHostsMenu->addAction(
-                QStringLiteral("%1...").arg(host.displayName()));
-            connect(action, &QAction::triggered, this, [this, host] {
-                HostBookmarkStore store(HostBookmarkStore::defaultDir());
-                OpenRemoteDialog dialog(&store, this);
-                dialog.preset(host, QString());
-                if (dialog.exec() == QDialog::Accepted && !dialog.chosenUrl().isEmpty())
-                    openFile(dialog.chosenUrl());
-                refreshRemoteHostsMenu();
-            });
+            // guessing at a path. The trailing "..." is what says so on both surfaces.
+            const QString label = QStringLiteral("%1...").arg(name);
+            if (m_remoteHostsMenu) {
+                QAction *action = m_remoteHostsMenu->addAction(label);
+                connect(action, &QAction::triggered, this,
+                        [this, name] { openRemoteBookmark(name, QString()); });
+            }
+            // An empty `path` is the whole of how a row says it has no log to open.
+            welcome.append({label, tr("No log remembered on %1 yet").arg(name),
+                            QString(), name, QString()});
             continue;
         }
         // One flat entry per remembered log rather than a submenu per host: a host
         // usually has one or two logs worth reopening, and a submenu that deep costs
         // a hover and a second aim for what is a single click's worth of choice.
         for (const QString &path : host.paths) {
-            QAction *action = m_remoteHostsMenu->addAction(
-                QStringLiteral("%1: %2").arg(host.displayName(), path));
-            const QString url = host.locationFor(path).toString();
-            connect(action, &QAction::triggered, this, [this, url, host, path] {
-                // Carry this host's poll cadence and tail-start choice into the
-                // fetcher about to be built for it.
-                setSshFetchOptions(host.locationFor(path), host.fetchOptions());
-                openFile(url);
-            });
+            const QString label = QStringLiteral("%1: %2").arg(name, path);
+            if (m_remoteHostsMenu) {
+                QAction *action = m_remoteHostsMenu->addAction(label);
+                connect(action, &QAction::triggered, this,
+                        [this, name, path] { openRemoteBookmark(name, path); });
+            }
+            welcome.append({label, host.locationFor(path).toString(), QString(),
+                            name, path});
         }
     }
+
+    if (m_welcome)
+        m_welcome->setRemotes(welcome);
+}
+
+void MainWindow::openRemoteBookmark(const QString &hostName, const QString &path)
+{
+    // The bookmark is looked up AT ACTIVATION rather than captured, because the surfaces
+    // that reach here outlive the refresh that built them: the Open Remote dialog may
+    // have edited this very host in between, and a captured copy would then open the log
+    // with the poll cadence and tail-start it had before the edit.
+    HostBookmarkStore store(HostBookmarkStore::defaultDir());
+    const QVector<HostBookmark> hosts = store.all();
+    const int index = HostBookmarkStore::indexOfName(hosts, hostName);
+    if (index < 0) {
+        // The host was removed since the list was built. Nothing to preset and nothing
+        // to open, so rebuild both surfaces and let them say so.
+        refreshRemoteHostsMenu();
+        return;
+    }
+    const HostBookmark &host = hosts.at(index);
+
+    if (path.isEmpty()) {
+        OpenRemoteDialog dialog(&store, this);
+        dialog.preset(host, QString());
+        if (dialog.exec() == QDialog::Accepted && !dialog.chosenUrl().isEmpty())
+            openFile(dialog.chosenUrl());
+        refreshRemoteHostsMenu(); // the dialog may have saved or removed a host
+        return;
+    }
+
+    // BEFORE the open, and load-bearing: this is what carries the host's poll cadence,
+    // tail-start and compression choice into the fetcher about to be built for it.
+    // Without it the log still opens and every one of those is silently the default.
+    setSshFetchOptions(host.locationFor(path), host.fetchOptions());
+    openFile(host.locationFor(path).toString());
 }
 
 void MainWindow::closeAllDocuments(Prompt prompt)
@@ -5003,10 +5080,29 @@ void MainWindow::rememberRecentFile(const QString &path)
 
 void MainWindow::refreshRecentFilesMenu()
 {
+    // ONE ENUMERATION, TWO RENDERINGS, exactly as refreshRemoteHostsMenu() does it: the
+    // list and the labels prefixedLabelsFor() derives from it are computed once and
+    // handed to the menu and to the welcome screen together, so a log can never be named
+    // one thing in the menu and another on the page. This function is already called at
+    // every point the list can move — the constructor, every successful open, and Clear.
+    const QStringList recent = QSettings().value(QLatin1String(kRecentFilesKey)).toStringList();
+    const QStringList labels = recent.isEmpty() ? QStringList() : prefixedLabelsFor(recent);
+
+    if (m_welcome) {
+        QVector<WelcomeView::Entry> welcome;
+        welcome.reserve(recent.size());
+        for (int i = 0; i < recent.size(); ++i) {
+            // The label VERBATIM: the '&' doubling below is a QMenu mnemonic escape and
+            // must not travel, or a log whose name carries an ampersand shows a literal
+            // "&&" on the page — silently, and only for those logs.
+            welcome.append({labels.at(i), recent.at(i), recent.at(i), QString(), QString()});
+        }
+        m_welcome->setRecent(welcome);
+    }
+
     if (!m_recentMenu)
         return;
     m_recentMenu->clear();
-    const QStringList recent = QSettings().value(QLatin1String(kRecentFilesKey)).toStringList();
     if (recent.isEmpty()) {
         QAction *none = m_recentMenu->addAction(tr("(none)"));
         none->setObjectName(QStringLiteral("recentEmptyAction"));
@@ -5023,7 +5119,6 @@ void MainWindow::refreshRecentFilesMenu()
         // This is the PREFIX rule and not the tab's bracket rule, deliberately: an entry
         // is read against the other nine rather than against the logs open beside it, and
         // a path is what a person recognises a remembered file by.
-        const QStringList labels = prefixedLabelsFor(recent);
         for (int i = 0; i < recent.size(); ++i) {
             const QString &path = recent.at(i);
             QString label = labels.at(i);
@@ -5050,14 +5145,18 @@ void MainWindow::refreshRecentFilesMenu()
         m_clearRecentAction = new QAction(tr("Clear Recent Files"), this);
         // findChild, for tests
         m_clearRecentAction->setObjectName(QStringLiteral("clearRecentFilesAction"));
-        connect(m_clearRecentAction, &QAction::triggered, this, [this]() {
-            QSettings().remove(QLatin1String(kRecentFilesKey));
-            refreshRecentFilesMenu();
-        });
+        connect(m_clearRecentAction, &QAction::triggered, this,
+                &MainWindow::clearRecentFiles);
     }
     m_clearRecentAction->setEnabled(!recent.isEmpty());
     m_recentMenu->addSeparator();
     m_recentMenu->addAction(m_clearRecentAction);
+}
+
+void MainWindow::clearRecentFiles()
+{
+    QSettings().remove(QLatin1String(kRecentFilesKey));
+    refreshRecentFilesMenu(); // which repaints the menu and the welcome screen alike
 }
 
 // --- Drag and drop ---------------------------------------------------------
@@ -5460,14 +5559,16 @@ void MainWindow::restoreSession(SessionRestore restore)
         // "Could not be reopened", not "no longer available" — a file that is merely
         // absent now restores as a waiting tab and never reaches this list, so
         // everything in it was actively refused.
-        m_placeholder->setText(QStringLiteral("%1\n%2")
-                                   .arg(anyRemote
-                                            ? tr("These logs could not be reopened:")
-                                            : tr("These files could not be reopened:"),
-                                        shown.join(u'\n')));
+        m_welcome->setMessage(QStringLiteral("%1\n%2")
+                                  .arg(anyRemote
+                                           ? tr("These logs could not be reopened:")
+                                           : tr("These files could not be reopened:"),
+                                       shown.join(u'\n')));
         // No status-bar line beside it: the strip above the well already names every
         // one of them WITH its reason and stays there until dismissed, while this
-        // placeholder is only on screen while nothing else opened at all.
+        // sentence is only on screen while nothing else opened at all. It is cleared by
+        // updateEmptyState() the moment anything does — the welcome screen, unlike the
+        // label this used to write into, is on screen again after every close.
     }
     // The config-file editor pages, put back WHERE THEY SAT. In ascending tab order and
     // inserted rather than appended, which is what reproduces the interleaving exactly:

@@ -662,6 +662,14 @@ target_link_libraries(tst_recentfiles PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_recentfiles COMMAND tst_recentfiles)
 set_tests_properties(tst_recentfiles PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# The welcome screen (SPEC.md §3): what a window with no log open shows. Drives a real
+# MainWindow, because the page is built and refreshed by that window's own two menu
+# funnels and what is under test is what those produce.
+qt_add_executable(tst_welcome tst_welcome.cpp)
+target_link_libraries(tst_welcome PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_welcome COMMAND tst_welcome)
+set_tests_properties(tst_welcome PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 qt_add_executable(tst_openflow tst_openflow.cpp)
 target_link_libraries(tst_openflow PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_openflow COMMAND tst_openflow)

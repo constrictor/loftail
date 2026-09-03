@@ -64,6 +64,7 @@ class PresetPane; // built only under LOFTAIL_HAVE_PRESETS; declaring it always 
 class RunPane;
 class PaneTitleStyle;
 class PreferencesDialog;
+class WelcomeView;
 // Why the log on screen was re-read (LiveController.h). Forward-declared rather than
 // included: it is at namespace scope precisely so this header need not learn about the
 // live controller, which it otherwise knows only by name.
@@ -213,6 +214,13 @@ private slots:
     // the File ▸ Remote Hosts submenu rebuilt from the saved-host store.
     void chooseRemoteToOpen();
     void refreshRemoteHostsMenu();
+    // Open a REMEMBERED log on a saved host, named by that host rather than by its
+    // address. The single funnel the Remote Hosts submenu and the welcome screen both
+    // go through, and it exists because the address alone is not enough: opening such a
+    // log also has to carry the bookmark's poll cadence, tail-start and compression into
+    // the fetcher about to be built. An empty `path` is a host with no remembered log
+    // and opens the dialog preset to it rather than guessing at one.
+    void openRemoteBookmark(const QString &hostName, const QString &path);
     // The settings tree (M20): the defaults, the file patterns and the per-log entries,
     // previewed against whichever log is open. Unlike every other action here it is
     // always available — it is not about the active document, even though it opens on
@@ -337,6 +345,9 @@ private:
     void updateTimeDisplayActions();
     void refreshRecentFilesMenu();
     void rememberRecentFile(const QString &path);
+    // Forget the lot. One body, because both the menu item at the foot of Open Recent
+    // and the welcome screen's Clear button reach it.
+    void clearRecentFiles();
     void updateStatus();
 
     // --- Reporting an open that did not happen (SPEC.md §3) -------------------------
@@ -800,11 +811,11 @@ private:
     // and parented to the window, so it outlives every dock that points at it.
     PaneTitleStyle        *m_paneStyle = nullptr;
 
-    // The centre of the window: the document well. The tabs and the "no file open"
-    // notice take turns in the stack, so the centre is never an empty tab frame.
+    // The centre of the window: the document well. The tabs and the welcome screen take
+    // turns in the stack, so the centre is never an empty tab frame.
     QStackedWidget *m_centre = nullptr;
     QTabWidget     *m_tabs = nullptr;
-    QLabel         *m_placeholder = nullptr;
+    WelcomeView    *m_welcome = nullptr;
 
     // The open-refusal strip, above the well and across its whole width, and what is
     // pending for it (see reportOpenRefusal). Hidden whenever there is nothing to say.
