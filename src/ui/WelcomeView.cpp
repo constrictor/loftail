@@ -30,6 +30,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QStyle>
 #include <QVBoxLayout>
 #include <QVariant>
 
@@ -152,6 +153,14 @@ QLayout *WelcomeView::buildSection(QWidget *parent, const QString &heading,
 
     auto *right = new QVBoxLayout;
     right->setContentsMargins(0, 0, 0, 0);
+    // SET rather than read back: QBoxLayout::spacing() answers the style's metric only
+    // once the layout chain reaches a parent WIDGET to ask, and this one does not until
+    // the caller adds the row it is in — so asking here answers -1, and the offset below
+    // would be measured against a gap seven pixels narrower than the one the layout
+    // actually lays out with. Stating the number binds the measurement and the layout to
+    // one value by construction.
+    right->setSpacing(parent->style()->pixelMetric(QStyle::PM_LayoutVerticalSpacing,
+                                                   nullptr, parent));
 
     auto *headRow = new QHBoxLayout;
     auto *title = new QLabel(heading, parent);

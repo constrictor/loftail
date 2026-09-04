@@ -387,9 +387,13 @@ void TestWelcome::eachActionButtonSitsLevelWithItsListRatherThanItsHeading()
         auto *button = w.findChild<QPushButton *>(QLatin1String(p.button));
         QVERIFY(button);
         QVERIFY(p.list);
-        // A relation with a tolerance of one row, not an equality: a button and a list
-        // frame do not have to begin on the same pixel, only on the same LINE.
-        QVERIFY2(qAbs(topIn(button) - topIn(p.list)) <= button->height(),
+        // AN EQUALITY, and it has to be one: the offset that puts the button there is
+        // the heading row's height plus the section layout's own spacing, so a tolerance
+        // of a button's height passes just as happily when that spacing is measured as
+        // some other number than the one the layout lays out with — which is exactly how
+        // both buttons shipped seven pixels above their lists. It is still a relation and
+        // not a pixel count, so it holds under Fusion, Breeze and Windows alike.
+        QVERIFY2(topIn(button) == topIn(p.list),
                  qPrintable(QStringLiteral("%1 top %2 against list top %3")
                                 .arg(QLatin1String(p.button))
                                 .arg(topIn(button))
