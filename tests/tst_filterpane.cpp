@@ -31,6 +31,7 @@
 #include <QScrollBar>
 #include <QStyle>
 #include <QStyleOptionGroupBox>
+#include <QStyleOptionViewItem>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QFile>
@@ -200,6 +201,7 @@ private slots:
     void aHandEditLeavesTheDiscoveryRuleAlone();
     void theListButtonsCarryTheDiscoveryRule();
     void ctrlClickingAValueShowsOnlyIt();
+    void ctrlClickingTheTickBoxShowsOnlyItToo();
     void theOthersRowIsNotASubsystem();
     void hideLeavesTheRestAloneAndKeepsDiscovering();
     void priorityFloorComesFromTheRecord();
@@ -786,6 +788,75 @@ void TestFilterPane::ctrlClickingAValueShowsOnlyIt()
              qPrintable(doc.lastError()));
     pane.refreshDiscoveredLists();
     QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Checked);
+}
+
+// The same chord landing on the CHECK INDICATOR rather than on the label, which is
+// where anyone editing a list of ticks aims and which was broken for as long as the
+// chord has existed: QStyledItemDelegate::editorEvent() answers a press over the
+// indicator by returning true and toggles on the RELEASE, so eating the press left the
+// release to untick the one row checkOnly() had just ticked — Ctrl+click unticked
+// everything, its own row included. The case above deliberately clicks the far side of
+// the label, which is exactly why it never saw it.
+//
+// The release is sent with NO modifier, because letting go of Ctrl before the button is
+// the ordinary way to finish the gesture and the fix may not depend on re-reading them.
+void TestFilterPane::ctrlClickingTheTickBoxShowsOnlyItToo()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.resize(320, 700);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    QApplication::processEvents();
+
+    QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
+    QVERIFY(list && othersRow(list));
+    QVERIFY(discovers(list));
+
+    const QList<QListWidgetItem *> hits =
+        list->findItems(QStringLiteral("db.pool"), Qt::MatchExactly);
+    QCOMPARE(hits.size(), 1);
+    const QRect rect = list->visualItemRect(hits.first());
+    QVERIFY(rect.isValid());
+
+    // The indicator's own rect, asked of the style rather than written down: it is 13 px
+    // under Fusion and wider under Breeze, and a point guessed from the row's left edge
+    // is a point in the label under one of them.
+    QStyleOptionViewItem opt;
+    opt.initFrom(list);
+    opt.rect = rect;
+    opt.features |= QStyleOptionViewItem::HasCheckIndicator;
+    const QRect check =
+        list->style()->subElementRect(QStyle::SE_ItemViewItemCheckIndicator, &opt, list);
+    QVERIFY(check.isValid());
+
+    // An ordinary click on the same row first, and it is what makes the case bite:
+    // QAbstractItemView hands the release to the delegate only when the index under it
+    // is the one it recorded on the LAST press it saw, so with the chord's own press
+    // eaten the toggle needs a stale pressed index to fire — which is any click the
+    // reader has already made in the list, i.e. every real session. Two clicks, so the
+    // row is back where it started and the assertions below are about the chord alone.
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, check.center());
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, check.center());
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
+
+    QTest::mousePress(list->viewport(), Qt::LeftButton, Qt::ControlModifier, check.center());
+    QTest::mouseRelease(list->viewport(), Qt::LeftButton, Qt::NoModifier, check.center());
+
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
+    QCOMPARE(stateOf(list, QStringLiteral("net.socket")), Qt::Unchecked);
+    QVERIFY(!discovers(list));
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 1);
+
+    // And the plain click on the indicator still toggles, which is the thing the eaten
+    // release must not have taken away.
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, check.center());
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Unchecked);
 }
 
 // The row is a rule, not a value, so its label must never reach the selection —

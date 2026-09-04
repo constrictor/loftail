@@ -1423,6 +1423,23 @@ bool AxisEditor::eventFilter(QObject *watched, QEvent *event)
     const bool press = event->type() == QEvent::MouseButtonPress
                        || event->type() == QEvent::MouseButtonDblClick;
     ValueAxis axis = ValueAxis::Subsystem;
+    // The release that pairs with a press this filter took. A check indicator is
+    // toggled by QStyledItemDelegate::editorEvent() on the RELEASE — a press over it is
+    // answered by returning true and doing nothing — so eating the press alone left the
+    // release to untick the one row checkOnly() had just ticked, and Ctrl+clicking the
+    // tick box of a subsystem unticked every row including its own, which is the axis
+    // showing no records at all. It needed the reader to have clicked in the list
+    // BEFORE, because QAbstractItemView passes a release to the delegate only when the
+    // index under it is the one the last press it saw recorded — so the chord worked
+    // once and then stopped, which is why nothing caught it. Taken on the latch and not
+    // on the modifiers, which are read afresh here and are gone if Ctrl was let go
+    // first.
+    if (event->type() == QEvent::MouseButtonRelease && m_ctrlClickTaken
+        && axisOfViewport(watched, axis)) {
+        m_ctrlClickTaken = false;
+        if (static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton)
+            return true;
+    }
     if (press && axisOfViewport(watched, axis)) {
         auto *me = static_cast<QMouseEvent *>(event);
         // Exactly Ctrl, so Ctrl+Shift and friends are left to the view: this claims one
@@ -1435,6 +1452,7 @@ bool AxisEditor::eventFilter(QObject *watched, QEvent *event)
                 // keyboard has to carry on from where the mouse left off.
                 listFor(axis)->setCurrentItem(item);
                 checkOnly(axis, item);
+                m_ctrlClickTaken = true;
                 return true; // taken: no tick toggled underneath it, no selection swept
             }
         }

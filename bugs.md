@@ -402,6 +402,17 @@ generation's spool file can fail too, and carrying on wrote the new remote file'
 onto the end of the previous generation's spool, which the reader is still indexing by
 offset.
 
+Reported on 2026-09-04 and fixed the same day: **Ctrl+clicking a subsystem's tick box
+deselected every entry including the one clicked**, so the axis showed no records at all.
+The chord takes the mouse press so that the view cannot toggle a tick underneath the
+exclusive edit — but a check indicator is toggled on the RELEASE, so the release went on
+to untick the one row the edit had just ticked. It hid because a release only reaches the
+delegate when the index under it is the one the last press the view *saw* recorded: with
+the chord's press eaten, the toggle needed a stale pressed index, so the chord worked in a
+list nobody had clicked in yet and stopped working after the first ordinary click — which
+is also why the existing regression case, which aims at the far side of the label rather
+than at the tick, passed throughout.
+
 ---
 
 ### 23. The Highlighters pane imposes a ~456 px minimum width on the whole pane dock under Breeze

@@ -417,6 +417,12 @@ private:
     Document *m_document = nullptr;
     Defaults  m_defaults;           // what clearAll() returns the axes to
     bool      m_populating = false; // guards itemChanged storms during (re)population
+    // A Ctrl+click the filter below took, waiting for its own release. The check
+    // indicator is toggled by QStyledItemDelegate::editorEvent on the RELEASE, not on
+    // the press, so eating the press alone left the release to untick the very row
+    // checkOnly() had just made the only ticked one. Latched rather than re-tested,
+    // because Ctrl may be let go before the button is.
+    bool      m_ctrlClickTaken = false;
 
     // What the digits in the time editors are currently written in, so
     // refreshTimeBounds() can recover the instant they denote before re-rendering it:
