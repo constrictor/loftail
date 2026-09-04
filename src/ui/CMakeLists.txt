@@ -141,6 +141,12 @@ add_library(loftail_ui STATIC
     # stores are read on its schedule and once for the menu and this page together.
     WelcomeView.cpp
     WelcomeView.h
+    # The loftail mark, drawn rather than loaded: packaging/linux/loftail.svg is a
+    # freedesktop icon-theme file and not a Qt resource, so QIcon::fromTheme() answers
+    # with it on an installed Linux desktop and with nothing on Windows, on macOS and in
+    # every uninstalled build. SshPromptDialogs' reveal eye, one level up.
+    AppIcon.cpp
+    AppIcon.h
 )
 
 # The Presets pane, gated as PresetStore is in loftail_core. No compile definition here:

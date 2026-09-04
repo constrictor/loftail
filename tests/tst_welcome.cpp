@@ -22,11 +22,13 @@
 #include <QApplication>
 #include <QDir>
 #include <QFontDatabase>
+#include <QImage>
 #include <QPalette>
 #include <QFile>
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
+#include <QSet>
 #include <QSettings>
 #include <QStackedWidget>
 #include <QTabWidget>
@@ -113,6 +115,7 @@ private slots:
     void theContentIsCentredRatherThanFillingTheWindow();
     void aThemeThatSuppliesNoBandStillGetsOne();
     void eachActionButtonSitsLevelWithItsListRatherThanItsHeading();
+    void theNameWearsTheApplicationMarkAndTheTwoAreCentredTogether();
 #if defined(LOFTAIL_HAVE_SSH)
     void aRememberedRemoteLogIsARowAndASavedHostWithNoneIsAnother();
 #else
@@ -323,8 +326,8 @@ void TestWelcome::theContentIsCentredRatherThanFillingTheWindow()
     // The slack has to be SUBSTANTIAL and not merely non-zero, which is the whole of what
     // makes this case discriminating: a stretching layout leaves a layout margin at each
     // end, so "there is a gap" and "the two gaps are equal" are both true of it and prove
-    // nothing. A fifth of the viewport is far below what centring actually leaves (about
-    // two fifths at this size) and far above a margin.
+    // nothing. A fifth of the viewport is far below what centring actually leaves at the
+    // height derived above (about half of it) and far above a margin.
     QVERIFY2(above + below >= view->height() / 5,
              qPrintable(QStringLiteral("above %1, below %2, viewport %3")
                             .arg(above).arg(below).arg(view->height())));
@@ -399,6 +402,62 @@ void TestWelcome::eachActionButtonSitsLevelWithItsListRatherThanItsHeading()
                                 .arg(topIn(button))
                                 .arg(topIn(p.list))));
     }
+}
+
+void TestWelcome::theNameWearsTheApplicationMarkAndTheTwoAreCentredTogether()
+{
+    // The mark beside the name (SPEC.md §3), which is where Kate's welcome page puts its
+    // own. Three separate claims, and the third is the one that would go silently.
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no font database: the mark is sized from the title's metrics");
+
+    MainWindow w;
+    w.resize(1200, 800);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+
+    auto *view = welcome(w);
+    auto *column = w.findChild<QWidget *>(QStringLiteral("welcomeColumn"));
+    auto *title = w.findChild<QLabel *>(QStringLiteral("welcomeTitle"));
+    auto *mark = w.findChild<QWidget *>(QStringLiteral("welcomeIcon"));
+    QVERIFY(view && column && title && mark);
+    QVERIFY(mark->isVisibleTo(view));
+
+    // (1) Square, sized from the title rather than written down, and BESIDE the name
+    // rather than over or under it.
+    QCOMPARE(mark->width(), mark->height());
+    QVERIFY(mark->height() >= title->fontMetrics().height());
+    const QRect markRect(mark->mapTo(view, QPoint(0, 0)), mark->size());
+    const QRect titleRect(title->mapTo(view, QPoint(0, 0)), title->size());
+    QVERIFY2(markRect.right() <= titleRect.left(),
+             qPrintable(QStringLiteral("mark right %1, title left %2")
+                            .arg(markRect.right()).arg(titleRect.left())));
+    // Level with it: the two overlap vertically rather than merely being near each other.
+    QVERIFY(markRect.top() < titleRect.bottom() && titleRect.top() < markRect.bottom());
+
+    // (2) The PAIR is centred, not the name. This is the half a change that simply
+    // prepended the mark to the existing centred label would fail: the title alone would
+    // stay in the middle and the whole heading would sit off to the right of it.
+    const int pairCentre = (markRect.left() + titleRect.right()) / 2;
+    const int columnCentre = column->mapTo(view, QPoint(0, 0)).x() + column->width() / 2;
+    QVERIFY2(qAbs(pairCentre - columnCentre) <= mark->width() / 2,
+             qPrintable(QStringLiteral("pair centre %1, column centre %2")
+                            .arg(pairCentre).arg(columnCentre)));
+
+    // (3) IT INKS, which is the whole of "drawn and never loaded" (AppIcon.h). The SVG in
+    // packaging/ is an icon-theme file and not a Qt resource, so a mark reached through
+    // QIcon::fromTheme() is a picture on an installed Linux desktop and an empty widget
+    // on Windows, on macOS and in every uninstalled build — including this one. Nothing
+    // about the geometry above can see that; only the pixels can.
+    const QImage shot = mark->grab().toImage();
+    QVERIFY(!shot.isNull());
+    QSet<QRgb> colours;
+    for (int y = 0; y < shot.height(); ++y)
+        for (int x = 0; x < shot.width(); ++x)
+            colours.insert(shot.pixel(x, y));
+    QVERIFY2(colours.size() >= 3,
+             qPrintable(QStringLiteral("the mark drew %1 distinct colours")
+                            .arg(colours.size())));
 }
 
 #if defined(LOFTAIL_HAVE_SSH)

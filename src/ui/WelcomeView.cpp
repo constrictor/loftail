@@ -18,6 +18,7 @@
 
 #include "WelcomeView.h"
 
+#include "AppIcon.h"
 #include "MessageLabel.h"
 #include "UiColors.h"
 
@@ -27,6 +28,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
+#include <QPainter>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
@@ -43,6 +45,11 @@ namespace {
 // font all resolve a different base, and a constant is right for exactly one of them.
 constexpr qreal kTitleScale = 1.8;
 
+// The mark beside the name, relative to the TITLE's own line height for the same reason
+// the title is relative to the interface font's: it has to stay level with the word it
+// stands beside at whatever size that word resolves to, which no pixel count does.
+constexpr qreal kMarkScale = 1.5;
+
 // How wide the column of content is allowed to grow, in characters of the interface
 // font. A welcome screen stretched across the whole of a wide window reads as a layout
 // fault rather than as a page; Kate's own is a centred column for the same reason.
@@ -53,9 +60,18 @@ constexpr int kContentChars = 84;
 // width than the column is allowed to use.
 constexpr int kColumnStretch = 10;
 
-// How many rows of either list are on screen before it scrolls. Both take the same
-// number so neither reads as the more important one.
-constexpr int kVisibleRows = 6;
+// How many rows of either list are on screen before it scrolls.
+//
+// TEN, which is `MainWindow`'s own kMaxRecentFiles — so the recent list shows the whole
+// of what is remembered and never scrolls at all, and what the page offers is what the
+// Open Recent menu offers rather than the first six of it. The two numbers are coupled
+// and there is nothing enforcing it: that constant is in MainWindow.cpp's anonymous
+// namespace, so raising the cap without raising this hides the oldest entries behind a
+// scrollbar on the one surface that exists to enumerate them.
+//
+// Both lists take the same number so neither reads as the more important one, even
+// though the remote list has no cap of its own and does scroll past ten.
+constexpr int kVisibleRows = 10;
 
 // Between the empty-state message and the edge of the viewport it is centred in.
 constexpr int kEmptyInset = 8;
@@ -69,6 +85,31 @@ constexpr int kSectionGap = 12;
 constexpr int kAddressRole = Qt::UserRole;
 constexpr int kHostRole    = Qt::UserRole + 1;
 constexpr int kPathRole    = Qt::UserRole + 2;
+
+// The application mark, beside the name (SPEC.md §3).
+//
+// A widget that PAINTS rather than a QLabel holding a pixmap: paintAppMark() draws at
+// whatever size it is asked for, so a widget hands it the device's own painter and a
+// HiDPI screen, a screen change and a zoomed desktop font are all somebody else's
+// problem — where a pixmap would have to be re-rendered at each of them, and would be
+// blurred until it was.
+class AppMark final : public QWidget
+{
+public:
+    AppMark(int side, QWidget *parent) : QWidget(parent)
+    {
+        setFixedSize(side, side);
+        // It says nothing an assistive reader needs and the name is right beside it.
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        paintAppMark(&painter, QRectF(rect()));
+    }
+};
 
 // How tall a row of either list actually is, under this style and this font. MEASURED
 // from a prototype rather than derived from the font's height: an item view spends the
@@ -254,7 +295,28 @@ WelcomeView::WelcomeView(QWidget *parent) : QWidget(parent)
             f.setPixelSize(qRound(f.pixelSize() * kTitleScale));
         m_title->setFont(f);
     }
-    layout->addWidget(m_title);
+    // The mark and the name, side by side and CENTRED AS A PAIR, which is how Kate's own
+    // welcome page carries its icon: the two are one heading, so what is centred is the
+    // heading and not each half of it. Stretches either side rather than an alignment on
+    // the row, because the row is what has to stay put while the title's width moves with
+    // the font.
+    //
+    // The mark is measured from the TITLE and not from the interface font, so that a
+    // desktop with a large font gets a large one; it is built after the font above is set
+    // for exactly that reason.
+    auto *titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    auto *mark = new AppMark(qRound(m_title->fontMetrics().height() * kMarkScale), column);
+    mark->setObjectName(QStringLiteral("welcomeIcon")); // findChild, for tests
+    titleRow->addStretch(1);
+    // Level with the WORD rather than with the label's box: a QLabel is as tall as its
+    // font's line box, which spends its descent on letters "loftail" does not have, so a
+    // mark centred on the box sits low against the letters actually on screen.
+    titleRow->addWidget(mark, 0, Qt::AlignVCenter);
+    titleRow->addSpacing(m_title->fontMetrics().horizontalAdvance(QLatin1Char(' ')) * 2);
+    titleRow->addWidget(m_title, 0, Qt::AlignVCenter);
+    titleRow->addStretch(1);
+    layout->addLayout(titleRow);
 
     m_tagline = new QLabel(tr("A viewer for log4cplus logs."), column);
     m_tagline->setObjectName(QStringLiteral("welcomeTagline")); // findChild, for tests
