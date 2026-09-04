@@ -496,7 +496,7 @@ public:
     // which is exactly FilteredIndex::setVisible()'s contract, the same lever M15's
     // filter context pulled one level down.
     //
-    // It is per-FILE and not per-view, despite what ideas.md #12 assumed: the ordinals
+    // It is per-FILE and not per-view, despite what ideas/ideas.md #12 assumed: the ordinals
     // derive from per-file rules, the per-file index and the per-file run bound, so two
     // views of one log could only ever compute the same list. What is per-view is the
     // widget that renders it.

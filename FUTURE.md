@@ -62,9 +62,9 @@ The prediction this file would have got wrong, had it made one, is where the wor
 
 ~~Show N records either side of each filter match, dimmed, so filtering to ERROR keeps what led to it instead of destroying it.~~
 
-**Shipped in M15**, straight out of `ideas.md` Tier 1 without ever spending time in this file as an open item. The behaviour is in `SPEC.md` §6 and the design in `ARCHITECTURE.md` §7.2.1.
+**Shipped in M15**, straight out of `ideas/ideas.md` Tier 1 without ever spending time in this file as an open item. The behaviour is in `SPEC.md` §6 and the design in `ARCHITECTURE.md` §7.2.1.
 
-The accommodation named in `ideas.md` — "`FilteredIndex::setVisible()` takes any ascending list of source ordinals and rebuilds its own prefix sums, so neighbours are just more ordinals" — **was exactly right**, and it is the first prediction in this project's history that was right about the *hard* part rather than the easy one. Every piece of tested geometry, exact and estimated, ran over the widened subset unchanged; the new state really was one bit per visible row.
+The accommodation named in `ideas/ideas.md` — "`FilteredIndex::setVisible()` takes any ascending list of source ordinals and rebuilds its own prefix sums, so neighbours are just more ordinals" — **was exactly right**, and it is the first prediction in this project's history that was right about the *hard* part rather than the easy one. Every piece of tested geometry, exact and estimated, ran over the widened subset unchanged; the new state really was one bit per visible row.
 
 What it did not anticipate was the live path, and that is where all the work went. Two things fell out of the same property and neither is obvious:
 
@@ -86,4 +86,4 @@ Mark records of interest and jump between them, so a spot found once can be retu
 - `SPEC.md` — what has shipped. When a feature here ships, its user-visible behavior moves into `SPEC.md` and its entry here is struck through, as "Multiple open files" now is.
 - `ARCHITECTURE.md` — the accommodations referenced above are implemented, not deferred.
 - `PLAN.md` — milestone M8 implemented format autodetection, M9 multiple open files (including the move from dock widgets to a document area), M11 remote logs over SSH, M12 compressed and archived logs, M13 logs that are not there, and M15 filter with context. The remaining items here have no scheduled milestone yet and are listed in that file's "Deliberately deferred" section.
-- `ideas.md` — the brainstorm an item is promoted *from*. M15 came straight out of it, which is what that file is for; the rest of its list is not a commitment.
+- `ideas/ideas.md` — the brainstorm an item is promoted *from*. M15 came straight out of it, which is what that file is for; the rest of its list is not a commitment.

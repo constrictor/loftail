@@ -1082,7 +1082,7 @@ Colouring used to be a rule's only effect. It is now one of four — colour, dig
 
 The defaults reproduce the previous behaviour exactly, which is why `tst_logmodel`, `tst_logview`, `tst_filtercontext` and `tst_tail` pass **unaltered** — that, not a comment, is the proof the seam is inert.
 
-**`ideas.md` #12 called the digest per-view state (invariant #7), and that is wrong on the facts.** Its ordinals derive from per-*file* rules over the per-*file* index inside the per-*file* run bound, so two views of one log could only ever compute the same list. What is per-view is the *widget*. So the `FilteredIndex` and the model are per-file and the `LogView` is per-view — invariant #7 applied, not waived. A consequence for the tests: a `DocumentView` now holds **two** `LogView`s, so `findChildren<LogView *>()` stopped counting views, and every counting site names the one it means (`"logView"`).
+**`ideas/ideas.md` #12 called the digest per-view state (invariant #7), and that is wrong on the facts.** Its ordinals derive from per-*file* rules over the per-*file* index inside the per-*file* run bound, so two views of one log could only ever compute the same list. What is per-view is the *widget*. So the `FilteredIndex` and the model are per-file and the `LogView` is per-view — invariant #7 applied, not waived. A consequence for the tests: a `DocumentView` now holds **two** `LogView`s, so `findChildren<LogView *>()` stopped counting views, and every counting site names the one it means (`"logView"`).
 
 #### 7.5.2 The digest
 
