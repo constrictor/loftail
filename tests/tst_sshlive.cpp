@@ -659,6 +659,22 @@ void TestSshLive::connectsAndReadsTheRemoteFile()
                       Encoding::Utf8, QTimeZone::utc()),
              qPrintable(doc.lastError()));
 
+    // THE OPEN DOES NOT WAIT FOR THE FAR END (M17). start() publishes Connecting, spawns
+    // the worker and returns, so the spool is empty on the line after it and the record
+    // arrives on a later tick — which is the whole point of the milestone, a window that
+    // comes up rather than one frozen per log for the length of a connect. This case
+    // asserted the count right here, correctly, until M17 three milestones later; that
+    // it went on saying so is what having no server to run it against costs.
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+    QVERIFY2(waitFor([&] {
+                 live.checkNow();
+                 return model.rowCount() == 1;
+             }),
+             qPrintable(QStringLiteral("the record never arrived — %1")
+                            .arg(doc.waitReason().isEmpty() ? doc.lastError() : doc.waitReason())));
+
     QCOMPARE(doc.index().records.size(), 1);
     QCOMPARE(doc.messageText(doc.index().records.at(0)), QStringLiteral("hello over ssh"));
     // The spool is a local file, so random access survives the round trip.
@@ -675,7 +691,15 @@ void TestSshLive::followsAppendsFromTheRealServer()
     LogModel model(&doc);
     LiveController live(&doc, &model);
     live.start();
-    QCOMPARE(model.rowCount(), 1);
+    // The first record arrives on a tick, not on the open — see the note in
+    // connectsAndReadsTheRemoteFile(). Everything below this line is what the case is
+    // actually about, and it needs the fetch to have landed before it starts.
+    QVERIFY2(waitFor([&] {
+                 live.checkNow();
+                 return model.rowCount() == 1;
+             }),
+             qPrintable(QStringLiteral("the first record never arrived — %1")
+                            .arg(doc.waitReason().isEmpty() ? doc.lastError() : doc.waitReason())));
 
     QVERIFY(remoteShell(
         QStringLiteral("printf '%s' '2026-07-21 00:00:02,000 [t1] WARN  logger.b - second\\n' >> %1")
@@ -700,7 +724,15 @@ void TestSshLive::detectsRealRotation()
     LogModel model(&doc);
     LiveController live(&doc, &model);
     live.start();
-    QCOMPARE(model.rowCount(), 1);
+    // The first record arrives on a tick, not on the open — see the note in
+    // connectsAndReadsTheRemoteFile(). Everything below this line is what the case is
+    // actually about, and it needs the fetch to have landed before it starts.
+    QVERIFY2(waitFor([&] {
+                 live.checkNow();
+                 return model.rowCount() == 1;
+             }),
+             qPrintable(QStringLiteral("the first record never arrived — %1")
+                            .arg(doc.waitReason().isEmpty() ? doc.lastError() : doc.waitReason())));
 
     int rescans = 0;
     connect(&live, &LiveController::rescanned, &live, [&] { ++rescans; });
@@ -722,13 +754,30 @@ void TestSshLive::detectsRealRotation()
 
 void TestSshLive::reportsAnUnreachableHostClearly()
 {
+    // A TRANSPORT REFUSAL KEEPS ITS TAB (M17): after that milestone only what can be
+    // decided with NO I/O still fails an open, and "nothing is listening on port 1" is
+    // not that — a tab that appears and vanishes is worse than one that explains itself.
+    // So the open SUCCEEDS, into a waiting document, and what has to name something a
+    // person can act on is the WAIT REASON rather than lastError(). The claim has not
+    // moved; where the sentence lives has.
     Document doc;
-    QVERIFY(!doc.open(QStringLiteral("ssh://nobody@127.0.0.1:1/tmp/nothing.log"),
-                      QStringLiteral("%m%n"), Encoding::Utf8, QTimeZone::utc()));
-    // A connection failure must reach the status bar as something a person can act
-    // on, not as a bare "cannot open".
-    QVERIFY(!doc.lastError().isEmpty());
-    QVERIFY(doc.lastError().contains(QStringLiteral("127.0.0.1")));
+    QVERIFY2(doc.open(QStringLiteral("ssh://nobody@127.0.0.1:1/tmp/nothing.log"),
+                      QStringLiteral("%m%n"), Encoding::Utf8, QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+    QVERIFY(doc.isWaiting());
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+    // REPUBLISHED, not merely announced: the tab is up before the far end answers, so the
+    // wait begins on "connecting…" and the refusal lands on a later tick.
+    QVERIFY2(waitFor([&] {
+                 live.checkNow();
+                 return doc.waitReason().contains(QStringLiteral("127.0.0.1"));
+             }),
+             qPrintable(QStringLiteral("the refusal never named the host — %1")
+                            .arg(doc.waitReason())));
+    QCOMPARE(model.rowCount(), 0);
 }
 
 void TestSshLive::aRestartScriptRunsOnTheFarEndAndKeepsItsStderr()
