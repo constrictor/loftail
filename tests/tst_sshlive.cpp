@@ -731,9 +731,13 @@ void TestSshLive::followsAppendsFromTheRealServer()
              qPrintable(QStringLiteral("the first record never arrived — %1")
                             .arg(doc.waitReason().isEmpty() ? doc.lastError() : doc.waitReason())));
 
-    QVERIFY(remoteShell(
-        QStringLiteral("printf '%s' '2026-07-21 00:00:02,000 [t1] WARN  logger.b - second\\n' >> %1")
-            .arg(m_remotePath)));
+    // The bytes go over STDIN, exactly as writeRemote() puts the first record there, and
+    // not through `printf '%s' '…\n'`: POSIX printf expands escapes in the FORMAT and
+    // copies a %s argument verbatim, so that spelling appended a literal backslash-n and
+    // the record's message came back as "second\\n". A fixture that writes something
+    // other than what it says is worse than no fixture, and nothing had ever run it.
+    QVERIFY(remoteShell(QStringLiteral("cat >> %1").arg(m_remotePath),
+                        "2026-07-21 00:00:02,000 [t1] WARN  logger.b - second\n"));
 
     // The fetcher notices on its own schedule; checkNow() then ingests what landed.
     QVERIFY2(waitFor([&] {
