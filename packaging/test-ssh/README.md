@@ -24,11 +24,8 @@ fixtures up by shelling out to `ssh`, and reads the exec transport's own command
 through it, so a missing client is fifteen failures about a fixture that was never
 written.
 
-`--keep` leaves the containers and the scratch home up afterwards:
-
-```bash
-HOME=/tmp/tmp.XXXX/home ssh -p 2201 loftail@127.0.0.1
-```
+`--keep` leaves the containers and the scratch home up afterwards, and prints the one
+command that reaches a server with the run's own identity.
 
 ## Three servers, because the interesting code is in the fallbacks
 
@@ -48,6 +45,15 @@ exists and why `theExecFallbackWritesTheSameBytes()` had a second gate on it.
 **The server is stripped at run time, not at build time.** One image is both the SFTP
 and the no-SFTP host, because `LOFTAIL_WITH_SFTP` decides whether the entrypoint writes
 the `Subsystem` line. Bake it in and the pair drift.
+
+**`$HOME` steers loftail and NOT the ssh client.** loftail finds its keys and
+`known_hosts` through `QStandardPaths::HomeLocation`, which reads `$HOME`. OpenSSH takes
+the home directory from the passwd database instead, so `HOME=... ssh` reads the real
+user's `~/.ssh` whatever the environment says (`ssh -G` prints the resolved paths). There
+is no environment variable for ssh's config and the fixture helper inside `tst_sshlive`
+builds its own argv, so a shim earlier on `PATH` is what reaches it — it adds `-F`, and
+affects fixtures only, loftail's transport never running the ssh binary. Absolute paths
+inside that config, never `~`, for the same reason.
 
 **Host keys are generated in the container and read back out with `docker exec`.**
 Not committed (no private key in the repository), not scanned off the port

@@ -143,7 +143,8 @@ cleanup()
     if [ "$keep" -eq 1 ]; then
         echo
         echo "Left behind: containers ${containers[*]}"
-        echo "             scratch home $scratch/home (HOME= it to use the system ssh client)"
+        echo "             scratch home $scratch/home; reach a server with its ssh shim:"
+        echo "               PATH=$scratch/bin:\$PATH ssh -p $sftp_port loftail@127.0.0.1"
     else
         rm -rf "$scratch"
     fi
@@ -158,24 +159,49 @@ trap cleanup EXIT
 # files OpenSSH would try), and the fixture helper shells out to `ssh`, which reads the
 # same home. Pointing HOME at a scratch directory is also what keeps a run off the
 # developer's real ~/.ssh — known_hosts included, which loftail appends to.
-mkdir -p "$scratch/home/.ssh"
+mkdir -p "$scratch/home/.ssh" "$scratch/bin"
 chmod 700 "$scratch/home" "$scratch/home/.ssh"
 ssh-keygen -q -t ed25519 -N '' -C loftail-ssh-test -f "$scratch/home/.ssh/id_ed25519"
 chmod 600 "$scratch/home/.ssh/id_ed25519"
 pubkey=$(cat "$scratch/home/.ssh/id_ed25519.pub")
 : >"$scratch/home/.ssh/known_hosts"
+
+# THE TWO CLIENTS ARE STEERED DIFFERENTLY, AND HOME ONLY REACHES ONE OF THEM.
+# loftail finds its keys and known_hosts through QStandardPaths::HomeLocation, which
+# reads $HOME. OPENSSH DOES NOT: ssh takes the home directory from the passwd database
+# (getpwuid), so `HOME=... ssh` reads the real user's ~/.ssh whatever the environment
+# says — `ssh -G` prints the resolved paths and shows it. Setting HOME alone therefore
+# gave loftail the scratch identity and the fixture helper the developer's, and every
+# server refused every fixture command ("Host key verification failed").
+#
+# There is no environment variable for ssh's config, and the helper inside tst_sshlive
+# builds its own argv, so -F cannot be passed to it. A shim earlier on PATH is what
+# reaches it: QProcess::start("ssh", ...) searches PATH, and the shim adds the -F. It
+# affects fixtures only — loftail's own transport never runs the ssh binary.
+#
+# Absolute paths in that config, not `~`: the tilde would expand to the passwd home for
+# exactly the same reason.
 cat >"$scratch/home/.ssh/config" <<EOF
 Host *
-    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile $scratch/home/.ssh/id_ed25519
     IdentitiesOnly yes
+    UserKnownHostsFile $scratch/home/.ssh/known_hosts
     StrictHostKeyChecking yes
     BatchMode yes
 EOF
 
+real_ssh=$(command -v ssh)
+cat >"$scratch/bin/ssh" <<EOF
+#!/bin/sh
+exec "$real_ssh" -F "$scratch/home/.ssh/config" "\$@"
+EOF
+chmod +x "$scratch/bin/ssh"
+
 # SSH_AUTH_SOCK is unset for every run below: an agent holding the developer's own keys
 # would be offered first by both clients and burn MaxAuthTries against a server that
 # knows one key.
-run_env=(env -u SSH_AUTH_SOCK "HOME=$scratch/home" QT_QPA_PLATFORM=offscreen)
+run_env=(env -u SSH_AUTH_SOCK "HOME=$scratch/home" "PATH=$scratch/bin:$PATH"
+    QT_QPA_PLATFORM=offscreen)
 
 # --- images and servers -------------------------------------------------------------
 
