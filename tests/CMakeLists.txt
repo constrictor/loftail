@@ -368,9 +368,15 @@ endif()
 
 # M11 — the live SSH harness, and the ONLY place libssh2 is exercised beyond linking.
 # Gated twice: it is not built without SSH support, and it QSKIPs unless
-# LOFTAIL_TEST_SSH_URL names a disposable remote path. CI never runs it, so the
-# handshake, host-key and authentication paths are verified by hand — say so plainly
-# rather than letting a green pipeline imply otherwise (PLAN.md M11 risk).
+# LOFTAIL_TEST_SSH_URL names a disposable remote path — so `ctest` alone still runs
+# nothing of it, and that is deliberate: the ordinary suite needs no server.
+#
+# CI DOES RUN IT NOW, in a job of its own: packaging/test-ssh/run-ssh-tests.sh starts
+# three containerised sshd servers (stock, no sftp-server, and busybox with no `stat`),
+# points this binary at each in turn, and NAMES THE FUNCTIONS THAT MUST HAVE PASSED per
+# server, since a QSKIP is a zero exit status. What is still verified only by hand is
+# what no container supplies — password and keyboard-interactive auth, an agent, a
+# host-key prompt, and a real network.
 if(LOFTAIL_HAVE_SSH)
     qt_add_executable(tst_sshlive tst_sshlive.cpp)
     target_link_libraries(tst_sshlive PRIVATE loftail_core Qt6::Test)
