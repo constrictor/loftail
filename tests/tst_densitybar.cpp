@@ -414,6 +414,44 @@ private slots:
         QVERIFY(v->verticalScrollBar()->value() < v->verticalScrollBar()->maximum() / 4);
     }
 
+    // The bar takes the whole left-button sequence itself — the press latches the drag
+    // and puts the slider down, the release clears both — so every other way the sequence
+    // can END has to clear them too. A tab switched away mid-drag never sees the release,
+    // and a bar left latched wears the held-thumb fill and tells QAbstractSlider a drag is
+    // in progress that nobody is holding. LogView::hideEvent() already ends its own drag
+    // for exactly this reason (CLAUDE.md, "taking one event of a gesture means taking its
+    // whole SEQUENCE").
+    void aDragAbandonedByHidingTheBarDoesNotStayDown()
+    {
+        const QString path = m_dir.filePath(QStringLiteral("abandon.log"));
+        writeLog(path, 4000, 3000);
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        openAndSettle(w, path, 4000);
+
+        LogView *v = logView(w);
+        DensityScrollBar *s = bar(w);
+
+        // Press and hold, then hide the bar with the button still down.
+        QTest::mousePress(s, Qt::LeftButton, Qt::NoModifier, QPoint(s->width() / 2, 10));
+        QVERIFY(s->isSliderDown());
+        s->hide();
+        QVERIFY(!s->isSliderDown());
+
+        s->show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        QVERIFY(!s->isSliderDown());
+
+        // And the next click is an ordinary one: it jumps to where it was aimed rather
+        // than continuing a drag nobody is holding.
+        const int lowDown = s->height() - 20;
+        QTest::mouseClick(s, Qt::LeftButton, Qt::NoModifier, QPoint(s->width() / 2, lowDown));
+        QVERIFY(!s->isSliderDown());
+        QVERIFY(v->verticalScrollBar()->value() > v->verticalScrollBar()->maximum() / 2);
+    }
+
     // A background tab must not scan: ten open logs would otherwise be ten scans, and
     // nine of them for marks nobody can see.
     void aBackgroundTabDoesNotScan()

@@ -38,6 +38,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QStyle>
 #include <QStyleOptionViewItem>
 #include <QSystemTrayIcon>
 #include <QTableWidget>
@@ -281,11 +282,46 @@ private:
         return false;
     }
 
+    // The three below are tst_filterpane's, copied rather than shared: the two files
+    // already keep their own small helpers, and the point of the case that uses them is
+    // that this pane is a SECOND host of the same widget.
+    //
+    // A row's check indicator, asked of the style rather than written down — 13 px under
+    // Fusion, wider under Breeze, so a guessed point lands in the label under one of them.
+    static QRect tickBoxOf(QListWidget *list, QListWidgetItem *item)
+    {
+        QStyleOptionViewItem opt;
+        opt.initFrom(list);
+        opt.rect = list->visualItemRect(item);
+        opt.features |= QStyleOptionViewItem::HasCheckIndicator;
+        return list->style()->subElementRect(QStyle::SE_ItemViewItemCheckIndicator, &opt,
+                                             list);
+    }
+
+    // An ordinary click first, twice so the row ends where it started: QAbstractItemView
+    // hands a release to the delegate only when the index under it is the one recorded by
+    // the last press it SAW, so with the chord's press taken by the pane the delegate's
+    // stray toggle needs a pressed index an earlier click left behind. Without this the
+    // case passes against the broken code (CLAUDE.md, "exercise the SECOND invocation").
+    static void warmPressedIndex(QListWidget *list, const QRect &at)
+    {
+        QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, at.center());
+        QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, at.center());
+    }
+
+    // Released after Ctrl is let go, which is how the gesture ordinarily ends.
+    static void ctrlClick(QListWidget *list, const QPoint &at)
+    {
+        QTest::mousePress(list->viewport(), Qt::LeftButton, Qt::ControlModifier, at);
+        QTest::mouseRelease(list->viewport(), Qt::LeftButton, Qt::NoModifier, at);
+    }
+
 private slots:
     void everyAxisIsOfferedAndOptIn();
     void aTimeBoundIsTypedInTheColumnsOwnUnits();
     void typingARegexReachesTheDocument();
     void switchingRulesShowsThatRulesSelection();
+    void theSubsystemChordWritesIntoTheSelectedRule();
     void invalidRegexIsFlagged();
     void addedRuleIsInertUntilConfigured();
     void newCopiesTheSelectedRule();
@@ -473,6 +509,56 @@ void TestHighlighterPane::switchingRulesShowsThatRulesSelection()
     // Rule 1 still has its own.
     QCOMPARE(doc.highlighters().rules.at(1).match.loggerNames,
              QStringList{QStringLiteral("db.pool")});
+}
+
+// The Ctrl+click chord in its OTHER host. It is the same AxisEditor, but what its
+// changed() reaches here is the selected highlight RULE rather than the document's
+// filters — a second consumer, a second axis-enable path, and a rule list that rebuilds
+// itself around the edit. The chord aims at the tick box, and only an ordinary click
+// beforehand puts the view in the state the defect needed (CLAUDE.md, "test a gesture
+// where it is AIMED", "exercise the SECOND invocation").
+void TestHighlighterPane::theSubsystemChordWritesIntoTheSelectedRule()
+{
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY(openLog(doc, file));
+
+    HighlighterPane pane;
+    pane.setDocument(&doc);
+    pane.resize(420, 820);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    QApplication::processEvents();
+
+    QPushButton *add = button(pane, QStringLiteral("ruleNew"));
+    add->click();
+    add->click();
+    QCOMPARE(doc.highlighters().rules.size(), 2);
+    selectRule(pane, 1);
+
+    // The axis on first, so the chord moves ticks and nothing else: switching a group box
+    // on rebuilds the rows, which invalidates the pressed index the stray toggle rides on
+    // and would mask exactly what this case is here to catch.
+    axis(pane, "subsystemGroup")->setChecked(true);
+    QApplication::processEvents();
+
+    QListWidget *loggers = listContaining(pane, QStringLiteral("db.pool"));
+    QVERIFY(loggers);
+    const QList<QListWidgetItem *> hits =
+        loggers->findItems(QStringLiteral("db.pool"), Qt::MatchExactly);
+    QCOMPARE(hits.size(), 1);
+    const QRect box = tickBoxOf(loggers, hits.first());
+    QVERIFY(box.isValid());
+    warmPressedIndex(loggers, box);
+
+    ctrlClick(loggers, box.center());
+
+    QCOMPARE(doc.highlighters().rules.at(1).match.loggerNames,
+             QStringList{QStringLiteral("db.pool")});
+    QVERIFY(isChecked(loggers, QStringLiteral("db.pool")));
+    QVERIFY(!isChecked(loggers, QStringLiteral("net.socket")));
+    // The rule beside it is not the one on screen and must not have moved.
+    QVERIFY(doc.highlighters().rules.at(0).match.loggerNames.isEmpty());
 }
 
 void TestHighlighterPane::invalidRegexIsFlagged()

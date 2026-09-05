@@ -204,6 +204,17 @@ void DensityScrollBar::hideEvent(QHideEvent *event)
 {
     QScrollBar::hideEvent(event);
     m_scanTimer->stop();
+    // A bar hidden mid-drag — its tab switched away, its window closed — never sees the
+    // release, and this widget takes the whole left-button sequence itself: the press
+    // latches m_dragging and puts the slider down, and only the release clears them. So
+    // the drag ends here, exactly as LogView::hideEvent() ends its own for the same
+    // reason. Left latched, the thumb keeps the darker fill it wears while it is being
+    // held and QAbstractSlider goes on being told a drag is in progress that nobody is
+    // holding.
+    if (m_dragging) {
+        m_dragging = false;
+        setSliderDown(false);
+    }
 }
 
 bool DensityScrollBar::findArmed() const

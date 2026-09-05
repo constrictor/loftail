@@ -146,6 +146,51 @@ private:
         "2026-07-21 12:00:00,000 [main] INFO  net.socket - a\n"
         "2026-07-21 12:00:01,000 [main] WARN  db.pool - b\n";
 
+    // One record per thread, for the cases that are about the thread list rather than the
+    // subsystem one. The two lists are the same widget over a different source, so what
+    // earns a case of its own is exactly what is wired per axis.
+    static constexpr auto kTwoThreads =
+        "2026-07-21 12:00:00,000 [main] INFO  net.socket - a\n"
+        "2026-07-21 12:00:01,000 [worker] WARN  net.socket - b\n";
+
+    // A row's CHECK INDICATOR, asked of the style rather than written down: it is 13 px
+    // wide under Fusion and wider under Breeze, so a point guessed from the row's left
+    // edge lands in the label under one of them — and the label is precisely where the
+    // chord already worked while the tick box was broken.
+    static QRect tickBoxOf(QListWidget *list, QListWidgetItem *item)
+    {
+        QStyleOptionViewItem opt;
+        opt.initFrom(list);
+        opt.rect = list->visualItemRect(item);
+        opt.features |= QStyleOptionViewItem::HasCheckIndicator;
+        return list->style()->subElementRect(QStyle::SE_ItemViewItemCheckIndicator, &opt,
+                                             list);
+    }
+
+    // An ordinary click on the same point, twice, so the row ends where it started.
+    //
+    // Every case below that aims at a tick box has to do this first, and it is the whole
+    // reason the defect lived three weeks: QAbstractItemView hands a release to the
+    // delegate only when the index under it is the one recorded by the last press it SAW,
+    // so with the chord's own press taken by the pane the delegate's toggle needs a stale
+    // pressed index — which any earlier click in the list leaves behind, i.e. every real
+    // session and no fresh test. Drop this and the cases pass against the broken code
+    // (CLAUDE.md, "exercise the SECOND invocation").
+    static void warmPressedIndex(QListWidget *list, const QRect &at)
+    {
+        QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, at.center());
+        QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, at.center());
+    }
+
+    // The chord, with the button released after Ctrl has been let go — the ordinary way to
+    // finish it, and why the release is claimed on a latch rather than by re-reading the
+    // modifiers, which are gone by then.
+    static void ctrlClick(QListWidget *list, const QPoint &at)
+    {
+        QTest::mousePress(list->viewport(), Qt::LeftButton, Qt::ControlModifier, at);
+        QTest::mouseRelease(list->viewport(), Qt::LeftButton, Qt::NoModifier, at);
+    }
+
     // "The scan continues and finds another subsystem" — appending and re-indexing is
     // how these cases reproduce discovery without a live watcher.
     static bool appendAndReindex(Document &doc, QTemporaryFile &file, const char *line)
@@ -202,6 +247,9 @@ private slots:
     void theListButtonsCarryTheDiscoveryRule();
     void ctrlClickingAValueShowsOnlyIt();
     void ctrlClickingTheTickBoxShowsOnlyItToo();
+    void ctrlClickingTheOthersTickBoxIsStillTheOthersRule();
+    void theChordWorksOnTheThreadListsTickBoxToo();
+    void theEatenReleaseIsPairedWithItsOwnPressAndNoOther();
     void theOthersRowIsNotASubsystem();
     void hideLeavesTheRestAloneAndKeepsDiscovering();
     void priorityFloorComesFromTheRecord();
@@ -796,10 +844,9 @@ void TestFilterPane::ctrlClickingAValueShowsOnlyIt()
 // indicator by returning true and toggles on the RELEASE, so eating the press left the
 // release to untick the one row checkOnly() had just ticked — Ctrl+click unticked
 // everything, its own row included. The case above deliberately clicks the far side of
-// the label, which is exactly why it never saw it.
-//
-// The release is sent with NO modifier, because letting go of Ctrl before the button is
-// the ordinary way to finish the gesture and the fix may not depend on re-reading them.
+// the label, and saying so is what should have given it away: the label is the part of the
+// row the widget itself has nothing to do with (CLAUDE.md, "test a gesture where it is
+// AIMED and where the thing it overrides lives").
 void TestFilterPane::ctrlClickingTheTickBoxShowsOnlyItToo()
 {
     QTemporaryFile file;
@@ -820,32 +867,13 @@ void TestFilterPane::ctrlClickingTheTickBoxShowsOnlyItToo()
     const QList<QListWidgetItem *> hits =
         list->findItems(QStringLiteral("db.pool"), Qt::MatchExactly);
     QCOMPARE(hits.size(), 1);
-    const QRect rect = list->visualItemRect(hits.first());
-    QVERIFY(rect.isValid());
+    const QRect box = tickBoxOf(list, hits.first());
+    QVERIFY(box.isValid());
 
-    // The indicator's own rect, asked of the style rather than written down: it is 13 px
-    // under Fusion and wider under Breeze, and a point guessed from the row's left edge
-    // is a point in the label under one of them.
-    QStyleOptionViewItem opt;
-    opt.initFrom(list);
-    opt.rect = rect;
-    opt.features |= QStyleOptionViewItem::HasCheckIndicator;
-    const QRect check =
-        list->style()->subElementRect(QStyle::SE_ItemViewItemCheckIndicator, &opt, list);
-    QVERIFY(check.isValid());
-
-    // An ordinary click on the same row first, and it is what makes the case bite:
-    // QAbstractItemView hands the release to the delegate only when the index under it
-    // is the one it recorded on the LAST press it saw, so with the chord's own press
-    // eaten the toggle needs a stale pressed index to fire — which is any click the
-    // reader has already made in the list, i.e. every real session. Two clicks, so the
-    // row is back where it started and the assertions below are about the chord alone.
-    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, check.center());
-    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, check.center());
+    warmPressedIndex(list, box);
     QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
 
-    QTest::mousePress(list->viewport(), Qt::LeftButton, Qt::ControlModifier, check.center());
-    QTest::mouseRelease(list->viewport(), Qt::LeftButton, Qt::NoModifier, check.center());
+    ctrlClick(list, box.center());
 
     QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
     QCOMPARE(stateOf(list, QStringLiteral("net.socket")), Qt::Unchecked);
@@ -855,8 +883,169 @@ void TestFilterPane::ctrlClickingTheTickBoxShowsOnlyItToo()
 
     // And the plain click on the indicator still toggles, which is the thing the eaten
     // release must not have taken away.
-    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, check.center());
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, box.center());
     QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Unchecked);
+}
+
+// The "Others" row's own tick box, which is the other target checkOnly() takes and a
+// DIFFERENT wrong answer under the same defect: the chord ticks the rule and unticks every
+// value, so a stray release unticking the rule leaves a RESTRICTION over an empty
+// selection — an axis showing no records at all, asked for "only what the scan has not
+// found yet".
+void TestFilterPane::ctrlClickingTheOthersTickBoxIsStillTheOthersRule()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.resize(320, 700);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    QApplication::processEvents();
+
+    QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
+    QVERIFY(list && othersRow(list));
+
+    const QRect box = tickBoxOf(list, othersRow(list));
+    QVERIFY(box.isValid());
+    warmPressedIndex(list, box);
+    QVERIFY(discovers(list));
+
+    ctrlClick(list, box.center());
+
+    QVERIFY(discovers(list));
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Unchecked);
+    QCOMPARE(stateOf(list, QStringLiteral("net.socket")), Qt::Unchecked);
+    // The rule is what it says it is: a subsystem the scan turns up afterwards arrives
+    // ticked, which is the whole difference from "nothing selected".
+    QVERIFY2(appendAndReindex(doc, file,
+                              "2026-07-21 12:00:02,000 [main] INFO  ui.window - c\n"),
+             qPrintable(doc.lastError()));
+    pane.refreshDiscoveredLists();
+    QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Checked);
+}
+
+// The thread list: its own viewport, its own axisOfViewport() branch, its own group box —
+// a second set of wires that can be got wrong on its own.
+//
+// THE ORDER OF THE TWO HALVES IS LOAD-BEARING and was got wrong first. The chord with the
+// axis already ON is the half that discriminates; the half that turns the axis on cannot,
+// because switching a group box on provokes a repopulation that rebuilds the rows, which
+// invalidates the pressed index the delegate's stray toggle needs and so MASKS the defect
+// — written that way round, this case passed against the broken code. Do not "simplify"
+// the two chords into one.
+void TestFilterPane::theChordWorksOnTheThreadListsTickBoxToo()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoThreads), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.resize(320, 700);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    QApplication::processEvents();
+
+    QGroupBox *enable = pane.findChild<QGroupBox *>(QStringLiteral("threadGroup"));
+    QVERIFY(enable);
+    QVERIFY2(!enable->isChecked(), "the thread axis ships off (SPEC.md 6)");
+
+    QListWidget *list = loggerList(pane, QStringLiteral("worker"));
+    QVERIFY2(list, "the thread list is the one holding the thread names");
+    QVERIFY(othersRow(list));
+
+    // Half one: the axis already on, so the chord moves nothing but the ticks and the
+    // stray release has a live pressed index to fire on.
+    enable->setChecked(true);
+    QApplication::processEvents();
+    const QList<QListWidgetItem *> hits =
+        list->findItems(QStringLiteral("worker"), Qt::MatchExactly);
+    QCOMPARE(hits.size(), 1);
+    const QRect box = tickBoxOf(list, hits.first());
+    QVERIFY(box.isValid());
+    warmPressedIndex(list, box);
+
+    ctrlClick(list, box.center());
+
+    QCOMPARE(stateOf(list, QStringLiteral("worker")), Qt::Checked);
+    QCOMPARE(stateOf(list, QStringLiteral("main")), Qt::Unchecked);
+    QVERIFY(!discovers(list));
+    doc.applyFilters();
+    QCOMPARE(doc.filtered().recordCount(), 1);
+
+    // Half two, on a pane of its own: the chord switches the axis on, which is what makes
+    // it a statement rather than a tick nobody is reading.
+    Document second;
+    QTemporaryFile secondFile;
+    QVERIFY2(openLog(second, secondFile, kTwoThreads), qPrintable(second.lastError()));
+    FilterPane fresh;
+    fresh.setDocument(&second);
+    fresh.resize(320, 700);
+    fresh.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&fresh));
+    QApplication::processEvents();
+
+    QGroupBox *freshEnable = fresh.findChild<QGroupBox *>(QStringLiteral("threadGroup"));
+    QListWidget *freshList = loggerList(fresh, QStringLiteral("worker"));
+    QVERIFY(freshEnable && freshList && !freshEnable->isChecked());
+    const QList<QListWidgetItem *> freshHits =
+        freshList->findItems(QStringLiteral("worker"), Qt::MatchExactly);
+    QCOMPARE(freshHits.size(), 1);
+    ctrlClick(freshList, tickBoxOf(freshList, freshHits.first()).center());
+    QVERIFY(freshEnable->isChecked());
+    QCOMPARE(stateOf(freshList, QStringLiteral("worker")), Qt::Checked);
+}
+
+// The latch that pairs a taken release with its own press is consumed exactly once, and
+// both ways of getting that wrong are silent. Never cleared, and the next ordinary click
+// on a tick box stops toggling — the chord would be eating the release of a gesture it
+// never took. Set on a Ctrl press the filter did NOT take — one on the empty space below
+// the rows, which is left to the view on purpose — and the same thing happens one gesture
+// later instead.
+void TestFilterPane::theEatenReleaseIsPairedWithItsOwnPressAndNoOther()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane pane;
+    pane.setDocument(&doc);
+    pane.resize(320, 700);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    QApplication::processEvents();
+
+    QListWidget *list = loggerList(pane, QStringLiteral("db.pool"));
+    QVERIFY(list);
+    const QList<QListWidgetItem *> hits =
+        list->findItems(QStringLiteral("db.pool"), Qt::MatchExactly);
+    QCOMPARE(hits.size(), 1);
+    const QRect box = tickBoxOf(list, hits.first());
+    QVERIFY(box.isValid());
+    warmPressedIndex(list, box);
+
+    // Chord, plain toggle, chord, plain toggle: each gesture answers for itself.
+    ctrlClick(list, box.center());
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, box.center());
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Unchecked);
+    ctrlClick(list, box.center());
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, box.center());
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Unchecked);
+
+    // A Ctrl+click on empty list space hits no row, so the filter leaves the whole gesture
+    // alone — press and release alike — and the tick box goes on toggling.
+    const QListWidgetItem *last = list->item(list->count() - 1);
+    const QPoint empty(box.center().x(), list->visualItemRect(last).bottom() + 8);
+    QVERIFY2(empty.y() < list->viewport()->height(), "the list needs room below its rows");
+    QVERIFY(!list->itemAt(empty));
+    ctrlClick(list, empty);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, box.center());
+    QCOMPARE(stateOf(list, QStringLiteral("db.pool")), Qt::Checked);
 }
 
 // The row is a rule, not a value, so its label must never reach the selection —
