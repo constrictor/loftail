@@ -130,6 +130,12 @@ cleanup()
     if [ -n "$log_dir" ]; then
         mkdir -p "$log_dir"
         cp "$scratch"/*.log "$log_dir/" 2>/dev/null || true
+        # loftail's own diagnostic log, which is on by default and lands under the
+        # scratch HOME (QStandardPaths::AppLocalDataLocation). It is the only account of
+        # what the FETCHER did — the test output says what the document ended up
+        # showing, which is a different question from where the fetch stopped.
+        find "$scratch/home/.local/share" -name loftail.log -exec cp {} "$log_dir/loftail-diag.log" \; \
+            2>/dev/null || true
         for name in "${containers[@]}"; do
             "$docker" logs "$name" >"$log_dir/$name.sshd.log" 2>&1 || true
         done

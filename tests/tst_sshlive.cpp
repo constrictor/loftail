@@ -141,6 +141,11 @@ private:
 
     // Wait until `predicate` holds or the timeout expires — the fetcher polls on its
     // own thread, so a remote change arrives after a delay, not instantly.
+    // Longer than kSshWorkerConnectTimeoutMs (20 s), for the waits that are waiting on a
+    // FETCH: a connect that goes wrong takes the whole budget to say so, and a wait that
+    // expires first reports "connecting…" — which says nothing about what went wrong.
+    static constexpr int kFetchWaitMs = 30000;
+
     static bool waitFor(const std::function<bool()> &predicate, int timeoutMs = 15000)
     {
         QElapsedTimer timer;
@@ -671,7 +676,8 @@ void TestSshLive::connectsAndReadsTheRemoteFile()
     QVERIFY2(waitFor([&] {
                  live.checkNow();
                  return model.rowCount() == 1;
-             }),
+             },
+                      kFetchWaitMs),
              qPrintable(QStringLiteral("the record never arrived — %1")
                             .arg(doc.waitReason().isEmpty() ? doc.lastError() : doc.waitReason())));
 
@@ -697,7 +703,8 @@ void TestSshLive::followsAppendsFromTheRealServer()
     QVERIFY2(waitFor([&] {
                  live.checkNow();
                  return model.rowCount() == 1;
-             }),
+             },
+                      kFetchWaitMs),
              qPrintable(QStringLiteral("the first record never arrived — %1")
                             .arg(doc.waitReason().isEmpty() ? doc.lastError() : doc.waitReason())));
 
@@ -730,7 +737,8 @@ void TestSshLive::detectsRealRotation()
     QVERIFY2(waitFor([&] {
                  live.checkNow();
                  return model.rowCount() == 1;
-             }),
+             },
+                      kFetchWaitMs),
              qPrintable(QStringLiteral("the first record never arrived — %1")
                             .arg(doc.waitReason().isEmpty() ? doc.lastError() : doc.waitReason())));
 
