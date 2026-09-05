@@ -1,0 +1,44 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# The ordinary server: a stock Ubuntu sshd with a working sftp-server behind it. This is
+# the reference-distribution half of the pair — the userland tst_sshlive's exec commands
+# were written against, and the one whose `stat`, `ls` and `head` are GNU coreutils.
+#
+# Also serves as the no-SFTP host: the Subsystem line is written by the entrypoint, so
+# LOFTAIL_WITH_SFTP=no makes the same image the server the exec fallback exists for.
+FROM ubuntu:24.04
+
+# The `sed` on /etc/shadow: a `!` there is a LOCKED account, which some sshd builds
+# refuse before they ever look at authorized_keys. `*` is "no password will ever
+# match", which is what a key-only account wants. (The comment is out here rather than
+# inside the RUN: a comment line in a `\` continuation is stripped by the Dockerfile
+# parser, but it reads as a shell comment that swallows the rest of the command if it
+# is ever not.)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-server \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /bin/bash loftail \
+    && sed -i 's/^loftail:[^:]*:/loftail:*:/' /etc/shadow \
+    && mkdir -p /run/sshd
+
+COPY entrypoint.sh /usr/local/bin/loftail-sshd-entrypoint
+RUN chmod +x /usr/local/bin/loftail-sshd-entrypoint
+
+EXPOSE 22
+ENTRYPOINT ["/usr/local/bin/loftail-sshd-entrypoint"]

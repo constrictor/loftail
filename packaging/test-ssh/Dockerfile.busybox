@@ -1,0 +1,37 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# The other userland. Alpine's `ls`, `wc` and `head` are busybox applets, not coreutils,
+# and ExecSizeProbe's rungs are parsed out of their OUTPUT — which is the one thing about
+# the exec transport that varies by machine and the one thing no fake can vary
+# (ARCHITECTURE.md §6.3.1). Run with LOFTAIL_WITH_STAT=no it is the stripped-down image
+# the ladder below `stat` was written for, and it keeps its sftp-server so that
+# theExecFallbackSizesWithoutStat() still has an SFTP size to check the rungs against.
+FROM alpine:3.20
+
+# The `sed` on /etc/shadow unlocks the key-only account; see Dockerfile.ubuntu.
+RUN apk add --no-cache openssh-server openssh-keygen openssh-sftp-server \
+    && adduser -D -s /bin/sh loftail \
+    && sed -i 's/^loftail:[^:]*:/loftail:*:/' /etc/shadow \
+    && mkdir -p /run/sshd /var/empty
+
+COPY entrypoint.sh /usr/local/bin/loftail-sshd-entrypoint
+RUN chmod +x /usr/local/bin/loftail-sshd-entrypoint
+
+EXPOSE 22
+ENTRYPOINT ["/usr/local/bin/loftail-sshd-entrypoint"]

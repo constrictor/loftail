@@ -52,10 +52,16 @@ using namespace loftail;
 // sftp-server's FSTAT follows the handle (which is what stands in for an inode when
 // detecting a rotation).
 //
-// CI NEVER RUNS THIS. It is skipped unless LOFTAIL_TEST_SSH_URL names a writable
-// remote path, e.g.
+// IT IS SKIPPED unless LOFTAIL_TEST_SSH_URL names a writable remote path, e.g.
 //
 //   LOFTAIL_TEST_SSH_URL=ssh://me@host/tmp/loftail-test.log ./build/tests/tst_sshlive
+//
+// packaging/test-ssh/run-ssh-tests.sh is what supplies one without a spare machine: three
+// containerised sshd servers — stock, no sftp-server, and busybox with no `stat` — run
+// identically on a dev box and in the `ssh-live` CI job, since which cases are reachable
+// at all is decided by what the server offers. A SKIP is a zero exit status, so that
+// harness names the functions that must have PASSED per server; do not add a case here
+// that only the author's machine can reach without teaching it which server reaches it.
 //
 // The file is created and overwritten by the test, so point it somewhere disposable.
 // Authentication must be non-interactive (agent or key): there is no prompter here,

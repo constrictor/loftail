@@ -236,6 +236,65 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1
         run: ctest --test-dir build-asan --output-on-failure
 
+  ssh-live:
+    # THE ONLY JOB THAT EXECUTES THE LIBSSH2 TRANSPORT. Everything above RemoteFetcher is
+    # covered without a network by tst_spooledsource, tst_remotetail and tst_remoteopen;
+    # the handshake, host-key verification, the auth ladder, whether a real sftp-server's
+    # FSTAT follows the handle, the exec fallback, the size ladder, the config write and
+    # the restart script are covered here or nowhere. Before this job they were nowhere —
+    # tst_sshlive skipped for want of a server, which is why several paragraphs of
+    # CLAUDE.md say of code that ships that it has "never been executed, only compiled".
+    #
+    # A job of its own rather than a step on `linux`, for the sanitizer job's reason: it
+    # needs a docker daemon and three servers, and when it has something to say the useful
+    # signal is WHICH server refused — which a step wedged into the four-configuration
+    # linux job would bury.
+    #
+    # It GATES. The whole content of the harness is that a QSKIP no longer passes for a
+    # run, so a red here is a real answer about the transport, not a flaky fixture — and
+    # a non-blocking job over code nothing else touches is a job nobody reads.
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain + system Qt 6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake \
+            qt6-base-dev libgl1-mesa-dev \
+            libssh2-1-dev openssh-client
+
+      - name: Configure + build tst_sshlive
+        # Archives and the keychain are off deliberately: neither is reachable from this
+        # test, and this way the job builds loftail_core and one test binary rather than
+        # the whole suite twice over. SSH is auto-detected, so its absence would leave
+        # the test binary unbuilt and the harness would fail on a missing file — checked
+        # here anyway, where the message says what actually went wrong.
+        run: |
+          cmake -S . -B build-ssh -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DLOFTAIL_WITH_ARCHIVE=OFF -DLOFTAIL_WITH_KEYCHAIN=OFF 2>&1 | tee configure-ssh.log
+          grep -q "SSH remote sources: ENABLED" configure-ssh.log \
+            || { echo "::error::libssh2 was not detected; there is nothing to test here"; exit 1; }
+          cmake --build build-ssh --target tst_sshlive
+
+      - name: Run tst_sshlive against three containerised sshd servers
+        # Ubuntu runners have a docker daemon already; the client half (ssh, ssh-keygen)
+        # is what tst_sshlive sets its fixtures up with and is installed above.
+        run: packaging/test-ssh/run-ssh-tests.sh --build build-ssh --logs ssh-test-logs
+
+      - name: Upload the run logs and the servers' own
+        # Always: a failure here is most often the SERVER's story — a refused key, a
+        # missing sftp-server binary — and that is only in its sshd log, which the
+        # harness copies out before the containers are removed.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ssh-live-logs
+          path: ssh-test-logs
+          if-no-files-found: warn
+
   clang-tidy:
     # Static analysis over src/ (.clang-tidy at the repo root holds the check list
     # and the reasoning behind every exclusion).
