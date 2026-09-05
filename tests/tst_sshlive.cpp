@@ -29,6 +29,7 @@
 #include "LiveController.h"
 #include "LogModel.h"
 #include "LogSource.h"
+#include "ManualFormatProvider.h"
 #include "RemoteLocation.h"
 #include "SshExecCommands.h"
 #include "SshFetcher.h"
@@ -137,6 +138,26 @@ private:
         if (!ssh.waitForFinished(30000))
             return false;
         return ssh.exitStatus() == QProcess::NormalExit && ssh.exitCode() == 0;
+    }
+
+    // THE OWNER'S HALF OF THE RESUME HANDSHAKE, as tst_waiting and tst_waitingremote do
+    // it and as MainWindow does: core has no pattern to build a provider from, so this
+    // is where one comes from (invariant #3). WITHOUT IT A WAITING DOCUMENT WAITS FOR
+    // EVER, which is what these cases did the first time a real server ran them — the
+    // fetcher connected, primed and published Live with the right remote size, and
+    // loftail's own log said "looked ready but resuming it declined" three hundred times
+    // over, because nothing was listening. This file is M11 and the handshake is M13;
+    // before it there was no waiting state to hand back from.
+    static void wireResume(LiveController &live, Document &doc, LogModel &model,
+                           const QString &pattern)
+    {
+        QObject::connect(&live, &LiveController::resumeRequested, &live,
+                         [&doc, &model, pattern] {
+                             ManualFormatProvider provider(pattern);
+                             model.beginFilterReset();
+                             doc.resume(provider);
+                             model.endFilterReset();
+                         });
     }
 
     // Wait until `predicate` holds or the timeout expires — the fetcher polls on its
@@ -672,6 +693,7 @@ void TestSshLive::connectsAndReadsTheRemoteFile()
     // it went on saying so is what having no server to run it against costs.
     LogModel model(&doc);
     LiveController live(&doc, &model);
+    wireResume(live, doc, model, QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"));
     live.start();
     QVERIFY2(waitFor([&] {
                  live.checkNow();
@@ -696,6 +718,7 @@ void TestSshLive::followsAppendsFromTheRealServer()
                      Encoding::Utf8, QTimeZone::utc()));
     LogModel model(&doc);
     LiveController live(&doc, &model);
+    wireResume(live, doc, model, QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"));
     live.start();
     // The first record arrives on a tick, not on the open — see the note in
     // connectsAndReadsTheRemoteFile(). Everything below this line is what the case is
@@ -730,6 +753,7 @@ void TestSshLive::detectsRealRotation()
                      Encoding::Utf8, QTimeZone::utc()));
     LogModel model(&doc);
     LiveController live(&doc, &model);
+    wireResume(live, doc, model, QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"));
     live.start();
     // The first record arrives on a tick, not on the open — see the note in
     // connectsAndReadsTheRemoteFile(). Everything below this line is what the case is
@@ -776,6 +800,9 @@ void TestSshLive::reportsAnUnreachableHostClearly()
 
     LogModel model(&doc);
     LiveController live(&doc, &model);
+    // Wired here too, although nothing may resume: a wait that survives a WORKING
+    // handshake is the claim, not a wait that survives nobody listening.
+    wireResume(live, doc, model, QStringLiteral("%m%n"));
     live.start();
     // REPUBLISHED, not merely announced: the tab is up before the far end answers, so the
     // wait begins on "connecting…" and the refusal lands on a later tick.
