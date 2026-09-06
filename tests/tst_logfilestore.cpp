@@ -113,6 +113,14 @@ private slots:
     // --- The sweep -------------------------------------------------------------------
     void aPatternTaughtWhatItsLogsSaidLeavesThemNothingToSay();
     void theSweepSparesARecordThatStillDiffers();
+
+    // --- the one-time drain of the old files[] level ----------------------------------
+    void everyLegacyNodeWorthARecordGetsOneAndTheRestGetNothing();
+    void theLegacyDrainLeavesARecordThatIsAlreadyThere();
+    void withMoreLegacyNodesThanSlotsItIsTheTailThatSurvives();
+
+    // --- a store a newer version wrote -------------------------------------------------
+    void aStoreWrittenByANewerVersionServesNothingAndChangesNothing();
 };
 
 // ---------------------------------------------------------------------------
@@ -755,6 +763,170 @@ void TstLogFileStore::theSweepSparesARecordThatStillDiffers()
     QVERIFY(back.saysSomething());
     QVERIFY(!back.profile.has_value());
     QCOMPARE(back.filters, narrowingFilters());
+}
+
+// ---------------------------------------------------------------------------
+// The one-time drain of M20's files[] array
+// ---------------------------------------------------------------------------
+
+// adoptLegacy() runs once, on the first launch after the upgrade that moved the file
+// level out of logsettings.json. Each node goes through save(), so the redundancy rule
+// fires on the way in exactly as it does for a log the user configures by hand: a node
+// that only ever said what its pattern now says is not worth a slot, and one of 500
+// slots is what it would cost.
+void TstLogFileStore::everyLegacyNodeWorthARecordGetsOneAndTheRestGetNothing()
+{
+    QTemporaryDir dir;
+    LogFileStore store(dir.path());
+    store.load();
+
+    LogSettingsTree tree;
+    LogPatternNode pat;
+    pat.match = QStringLiteral("*.log");
+    pat.profile = profileWith(QStringLiteral("HOUSE"));
+    tree.addPattern(pat);
+
+    const QString odd = abs(QStringLiteral("var/log/odd.log"));
+    const QString same = abs(QStringLiteral("var/log/same.log"));
+
+    QVector<LegacyFileNode> nodes;
+    nodes.push_back(LegacyFileNode{odd, profileWith(QStringLiteral("ODD"))});
+    nodes.push_back(LegacyFileNode{same, pat.profile}); // says what the pattern says
+    nodes.push_back(LegacyFileNode{QString(), profileWith(QStringLiteral("NAMELESS"))});
+
+    QCOMPARE(store.adoptLegacy(nodes, tree), 1);
+    QCOMPARE(store.addresses(), QStringList{logSettingsKey(odd)});
+    QCOMPARE(store.read(odd).profile->format.pattern, QStringLiteral("ODD"));
+    QVERIFY(!store.read(same).saysSomething());
+
+    // And it survives the process that ran it: the drain is one write, not a memo.
+    LogFileStore reopened(dir.path());
+    reopened.load();
+    QCOMPARE(reopened.read(odd).profile->format.pattern, QStringLiteral("ODD"));
+}
+
+// The drain reads a file nothing writes any more, so a record in the pool is newer than
+// any node by construction — a user who downgraded, ran a build that still wrote files[],
+// and upgraded again must not have the newer record rolled back over.
+void TstLogFileStore::theLegacyDrainLeavesARecordThatIsAlreadyThere()
+{
+    QTemporaryDir dir;
+    LogFileStore store(dir.path());
+    store.load();
+
+    const QString path = abs(QStringLiteral("var/log/app.log"));
+    LogFileSettings s;
+    s.address = path;
+    s.profile = profileWith(QStringLiteral("NEWER"));
+    s.filters = narrowingFilters();
+    QVERIFY(store.save(s, LogProfile::builtIn()));
+
+    QVector<LegacyFileNode> nodes;
+    nodes.push_back(LegacyFileNode{path, profileWith(QStringLiteral("OLDER"))});
+    QCOMPARE(store.adoptLegacy(nodes, LogSettingsTree{}), 0);
+
+    const LogFileSettings back = store.read(path);
+    QCOMPARE(back.profile->format.pattern, QStringLiteral("NEWER"));
+    QCOMPARE(back.filters, narrowingFilters()); // and its other sections are untouched
+}
+
+// The old array is insertion order, which is the nearest thing to an MRU it carries, so
+// with more nodes than the pool holds it is the TAIL that is kept — and the drop is
+// silent, a dialog on the first launch after an upgrade being worse than losing settings
+// nobody can see. The relation, not the number: the last kSlots nodes are what survives.
+void TstLogFileStore::withMoreLegacyNodesThanSlotsItIsTheTailThatSurvives()
+{
+    QTemporaryDir dir;
+    LogFileStore store(dir.path());
+    store.load();
+
+    const int over = 2;
+    QVector<LegacyFileNode> nodes;
+    for (int i = 0; i < LogFileStore::kSlots + over; ++i) {
+        nodes.push_back(LegacyFileNode{abs(QStringLiteral("var/log/a%1.log").arg(i)),
+                                       profileWith(QStringLiteral("p%1").arg(i))});
+    }
+
+    QCOMPARE(store.adoptLegacy(nodes, LogSettingsTree{}), LogFileStore::kSlots);
+    QCOMPARE(store.addresses().size(), LogFileStore::kSlots);
+
+    // The head fell off; the tail is all there, each with its own profile.
+    for (int i = 0; i < over; ++i)
+        QVERIFY(!store.read(nodes.at(i).path).saysSomething());
+    for (int i = over; i < nodes.size(); ++i) {
+        QCOMPARE(store.read(nodes.at(i).path).profile->format.pattern,
+                 QStringLiteral("p%1").arg(i));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A store a newer version wrote
+// ---------------------------------------------------------------------------
+
+// Running an older build for one session must cost a newer one nothing, so a pool whose
+// map carries a schema this build does not know is read-only in every direction — it
+// serves no record (serving one would be answering with fields it cannot see), it writes
+// none, it removes none, and the sweep passes over it. The refusal to save says why,
+// because that is the one of the four a caller reports.
+void TstLogFileStore::aStoreWrittenByANewerVersionServesNothingAndChangesNothing()
+{
+    QTemporaryDir dir;
+    const QString pool = QDir(dir.path()).filePath(QStringLiteral("fileSettings"));
+    const QString path = abs(QStringLiteral("var/log/app.log"));
+
+    // A record this build wrote, and then a map a later one did.
+    {
+        LogFileStore store(dir.path());
+        store.load();
+        LogFileSettings s;
+        s.address = path;
+        s.profile = profileWith(QStringLiteral("STORED"));
+        QVERIFY(store.save(s, LogProfile::builtIn()));
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("schemaVersion"), LogFileStore::kSchemaVersion + 1);
+    root.insert(QStringLiteral("entries"), QJsonArray{});
+    QFile map(QDir(pool).filePath(QStringLiteral("map")));
+    QVERIFY(map.open(QIODevice::WriteOnly));
+    const QByteArray written = QJsonDocument(root).toJson();
+    map.write(written);
+    map.close();
+
+    LogFileStore store(dir.path());
+    store.load();
+    QVERIFY(store.readOnly());
+
+    QVERIFY(!store.read(path).saysSomething());
+    QVERIFY(!store.remove(path));
+
+    LogSettingsTree tree;
+    LogPatternNode pat;
+    pat.match = QStringLiteral("*.log");
+    pat.profile = profileWith(QStringLiteral("HOUSE"));
+    tree.addPattern(pat);
+    QCOMPARE(store.pruneAgainst(tree), 0);
+
+    QString error;
+    LogFileSettings s;
+    s.address = path;
+    s.profile = profileWith(QStringLiteral("REFUSED"));
+    QVERIFY(!store.save(s, LogProfile::builtIn(), &error));
+    QVERIFY(!error.isEmpty());
+
+    // The one-time drain declines too: it is a write of several records, and the
+    // upgrade it belongs to is the next launch of the build that can make it.
+    QVector<LegacyFileNode> nodes;
+    nodes.push_back(LegacyFileNode{abs(QStringLiteral("var/log/legacy.log")),
+                                   profileWith(QStringLiteral("LEGACY"))});
+    QCOMPARE(store.adoptLegacy(nodes, tree), 0);
+
+    // Nothing on disk moved: the newer version's map, and the record it did not write.
+    QFile check(QDir(pool).filePath(QStringLiteral("map")));
+    QVERIFY(check.open(QIODevice::ReadOnly));
+    QCOMPARE(check.readAll(), written);
+    LogFileStore rebuilt(dir.path());
+    rebuilt.load();
+    QVERIFY(rebuilt.readOnly());
 }
 
 QTEST_APPLESS_MAIN(TstLogFileStore)

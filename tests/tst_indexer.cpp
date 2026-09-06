@@ -73,6 +73,7 @@ private slots:
     void recordIsThirtyTwoBytes();
     void severityOrder();
     void singleLineRecords();
+    void aSourceThatStopsDeliveringEndsThePassWhereItGotTo();
     void multiLineContinuation();
     void unparsedLeadingLines();
     void internsLoggersAndThreads();
@@ -111,6 +112,57 @@ void TestIndexer::singleLineRecords()
     QCOMPARE(idx.records.at(1).priorityEnum(), Priority::Warn);
     QCOMPARE(idx.records.at(0).lineCount, quint16(1));
     QCOMPARE(idx.records.at(0).offset, qint64(0));
+}
+
+// The scan is bounded by the size the source last reported, and a log is not
+// obliged to still be that long when the bytes are asked for: it may have been
+// rotated or truncated between the size query and the read, which is the ordinary
+// state of a file somebody else is writing (invariant #5). A read that hands back
+// nothing therefore ends the pass at what was read, and must not spin asking again
+// for bytes that will never come — the pass runs on the index worker, so a loop
+// there is a thread burning a core for the life of the tab with nothing on screen
+// to say so.
+void TestIndexer::aSourceThatStopsDeliveringEndsThePassWhereItGotTo()
+{
+    // A source that claims a page more than it can deliver.
+    class ShrinkingSource final : public loftail::LogSource
+    {
+    public:
+        explicit ShrinkingSource(QByteArray data) : m_data(std::move(data)) {}
+        QByteArrayView bytes(qint64 offset, qint64 length, QByteArray &into) override
+        {
+            Q_UNUSED(into);
+            if (offset < 0 || length <= 0 || offset >= m_data.size())
+                return {};
+            return QByteArrayView(m_data.constData() + offset,
+                                  qMin<qint64>(length, m_data.size() - offset));
+        }
+        qint64 size() const override { return m_data.size() + 4096; }
+        qint64 refreshSize() override { return size(); }
+        bool isRandomAccess() const override { return true; }
+        quint64 identity() const override { return 1; }
+        bool wasTruncated() const override { return false; }
+        qint64 realSize() const { return m_data.size(); }
+
+    private:
+        QByteArray m_data;
+    };
+
+    const QByteArray log =
+        "2026-07-21 14:32:05,123 [main] INFO  net.socket - Connection opened\n"
+        "2026-07-21 14:32:06,000 [worker] WARN  db.pool - Pool exhausted\n";
+    ShrinkingSource src(log);
+    QVERIFY(src.size() > src.realSize());
+
+    const LogFormat f = fmt();
+    Decoder dec = Decoder::detect(src.bytesCopy(0, src.realSize()), Encoding::Utf8);
+    Indexer indexer(f, dec, QTimeZone::utc());
+    const RecordIndex idx = indexer.index(src);
+
+    // Everything that was actually there, and nothing invented for the bytes that
+    // were not.
+    QCOMPARE(idx.records.size(), 2);
+    QCOMPARE(idx.records.at(1).offset + idx.records.at(1).length, qint64(log.size()));
 }
 
 void TestIndexer::multiLineContinuation()

@@ -52,6 +52,8 @@ private slots:
     void detectsBom();
 
     void detectsUtf16NoBom();
+    void aBomIsSkippedUnderAForcedEncodingAsWell_data();
+    void aBomIsSkippedUnderAForcedEncodingAsWell();
 
     void aSampleCutInsideACharacterIsStillUtf8_data();
     void aSampleCutInsideACharacterIsStillUtf8();
@@ -65,6 +67,10 @@ private slots:
     void stripsCrlf();
 
     void sameLinesAcrossEncodings();
+
+    void textIsWrittenBackInTheEncodingItWasReadIn_data();
+    void textIsWrittenBackInTheEncodingItWasReadIn();
+    void encodingAddsNoByteOrderMarkOfItsOwn();
 };
 
 void TestDecoder::detectsBom_data()
@@ -104,6 +110,53 @@ void TestDecoder::detectsUtf16NoBom()
     const QByteArray be = utf16(QStringLiteral("2026-07-21 INFO hello\nnext line here\n"), true);
     const Decoder dbe = Decoder::detect(be, Encoding::Auto);
     QCOMPARE(dbe.resolvedEncoding(), Encoding::Utf16BE);
+}
+
+// A forced encoding skips detection, but a file that carries the byte-order mark
+// of that very encoding still has one, and the content starts after it (SPEC.md
+// §4: "UTF-8, BOM tolerated and skipped"). The mark must MATCH what was forced —
+// the two bytes of a UTF-16BE mark are ordinary content to a reader that was told
+// the file is little-endian — and the system codepage has no mark at all, so a
+// file forced to it keeps every byte it has.
+void TestDecoder::aBomIsSkippedUnderAForcedEncodingAsWell_data()
+{
+    QTest::addColumn<QByteArray>("bytes");
+    QTest::addColumn<int>("forced");
+    QTest::addColumn<int>("bomLength");
+
+    const QByteArray u8Bom("\xEF\xBB\xBF", 3);
+    const QByteArray leBom("\xFF\xFE", 2);
+    const QByteArray beBom("\xFE\xFF", 2);
+
+    QTest::newRow("utf8, its own mark")     << u8Bom + "hello" << int(Encoding::Utf8)    << 3;
+    QTest::newRow("utf8, no mark")          << QByteArray("hello") << int(Encoding::Utf8) << 0;
+    QTest::newRow("utf16le, its own mark")  << leBom + QByteArray("h\x00", 2) << int(Encoding::Utf16LE) << 2;
+    QTest::newRow("utf16le, no mark")       << QByteArray("h\x00", 2) << int(Encoding::Utf16LE) << 0;
+    QTest::newRow("utf16be, its own mark")  << beBom + QByteArray("\x00h", 2) << int(Encoding::Utf16BE) << 2;
+    QTest::newRow("utf16be, no mark")       << QByteArray("\x00h", 2) << int(Encoding::Utf16BE) << 0;
+    // The other byte order's mark is content, not a mark.
+    QTest::newRow("utf16le over a be mark") << beBom + QByteArray("\x00h", 2) << int(Encoding::Utf16LE) << 0;
+    QTest::newRow("utf16be over a le mark") << leBom + QByteArray("h\x00", 2) << int(Encoding::Utf16BE) << 0;
+    // The system codepage has no mark of its own, so nothing is skipped even where
+    // the file opens with bytes that would be one under UTF-8.
+    QTest::newRow("system over a utf8 mark") << u8Bom + "hello" << int(Encoding::System) << 0;
+    QTest::newRow("system, plain")           << QByteArray("hello") << int(Encoding::System) << 0;
+}
+
+void TestDecoder::aBomIsSkippedUnderAForcedEncodingAsWell()
+{
+    QFETCH(QByteArray, bytes);
+    QFETCH(int, forced);
+    QFETCH(int, bomLength);
+
+    const Decoder d = Decoder::detect(bytes, Encoding(forced));
+    // Forced means forced: detection never gets a say, whatever the bytes look like.
+    QCOMPARE(int(d.resolvedEncoding()), forced);
+    QCOMPARE(int(d.requestedEncoding()), forced);
+    QCOMPARE(d.bomLength(), qint64(bomLength));
+    // The mark is measured in bytes and the content that follows it is code-unit
+    // aligned, which is the relation the indexer reads both of these for.
+    QCOMPARE(d.bomLength() % d.unitSize(), qint64(0));
 }
 
 // bugs.md 36. The detection sample is the first ~64 KB of the file, cut at an
@@ -159,6 +212,18 @@ void TestDecoder::anInvalidByteInTheMiddleOfTheSampleStillAnswersSystem()
     // character either: 0x80 alone is a stranded continuation byte.
     QByteArray stray("plain ascii and then\x80", 21);
     QCOMPARE(int(Decoder::detect(stray, Encoding::Auto).resolvedEncoding()), int(Encoding::System));
+
+    // Nor is a byte that could never lead any sequence at all — 0xFE and 0xFF are
+    // not UTF-8 in any position. The walk-back has to say so rather than treat the
+    // tail as an incomplete character and trim it away, which would hand back a
+    // prefix that validates and call a file UTF-8 on the strength of the bytes it
+    // dropped.
+    for (const char bad : {char(0xF8), char(0xFE), char(0xFF)}) {
+        QByteArray tail("plain ascii and then");
+        tail.append(bad);
+        QCOMPARE(int(Decoder::detect(tail, Encoding::Auto).resolvedEncoding()),
+                 int(Encoding::System));
+    }
 }
 
 // The trim is step 3's alone: step 2's NUL-parity count runs before it and is a
@@ -284,6 +349,72 @@ void TestDecoder::sameLinesAcrossEncodings()
     QCOMPARE(linesOf(u8, Decoder::detect(u8, Encoding::Utf8)), expect);
     QCOMPARE(linesOf(le, Decoder::detect(le, Encoding::Utf16LE)), expect);
     QCOMPARE(linesOf(be, Decoder::detect(be, Encoding::Utf16BE)), expect);
+}
+
+// Decoder::encode() is the reverse direction on the same object, which is what
+// stops the config-file editor writing a UTF-16 file back as UTF-8 (§6.8): one
+// class owns both directions, so the two cannot disagree about what the file is.
+// The claim here is a relation and not a byte table — whatever decode() reads,
+// encode() writes back, and reading that again gives the text unchanged.
+void TestDecoder::textIsWrittenBackInTheEncodingItWasReadIn_data()
+{
+    QTest::addColumn<QByteArray>("sample"); // what the file opened with
+    QTest::addColumn<int>("resolved");
+
+    QTest::newRow("utf8")    << QByteArray("2026-08-27 INFO app - hello")   << int(Encoding::Utf8);
+    QTest::newRow("utf16le") << utf16(QStringLiteral("2026-08-27 INFO hello\nmore\n"), false)
+                             << int(Encoding::Utf16LE);
+    QTest::newRow("utf16be") << utf16(QStringLiteral("2026-08-27 INFO hello\nmore\n"), true)
+                             << int(Encoding::Utf16BE);
+    // Latin-1 in the middle of the sample is not UTF-8, so §6.1 step 3 answers the
+    // system codepage — the one resolution whose bytes belong to the machine.
+    QTest::newRow("system")  << QByteArray("2026-08-27 INFO app - caf\xE9 here")
+                             << int(Encoding::System);
+}
+
+void TestDecoder::textIsWrittenBackInTheEncodingItWasReadIn()
+{
+    QFETCH(QByteArray, sample);
+    QFETCH(int, resolved);
+
+    const Decoder d = Decoder::detect(sample, Encoding::Auto);
+    QCOMPARE(int(d.resolvedEncoding()), resolved);
+
+    // ASCII only, so the round trip means the same thing under a system codepage
+    // this machine may have set to anything at all.
+    const QString text = QStringLiteral("2026-08-27 10:15:01 INFO  app - re-written");
+    const QByteArray written = d.encode(text);
+    QCOMPARE(d.decode(written), text);
+    // And the encoding is the RESOLVED one, not UTF-8 with a different label: a
+    // two-byte encoding spends two bytes on every one of those ASCII characters.
+    QCOMPARE(written.size(), qsizetype(text.size()) * d.unitSize());
+}
+
+// The BOM is the CALLER's to replay, which is what bomLength() is read for: adding
+// one here would grow a mark onto a file that never had one, and would put a
+// second one on a file that did.
+void TestDecoder::encodingAddsNoByteOrderMarkOfItsOwn()
+{
+    const QString text = QStringLiteral("hello");
+    for (const Encoding e : {Encoding::Utf8, Encoding::Utf16LE, Encoding::Utf16BE,
+                             Encoding::System}) {
+        // A sample that DOES carry a mark, so a decoder that copied one would have
+        // one to copy.
+        QByteArray sample;
+        if (e == Encoding::Utf8)
+            sample = QByteArray("\xEF\xBB\xBF", 3);
+        else if (e == Encoding::Utf16LE)
+            sample = QByteArray("\xFF\xFE", 2);
+        else if (e == Encoding::Utf16BE)
+            sample = QByteArray("\xFE\xFF", 2);
+        sample += (e == Encoding::Utf16LE || e == Encoding::Utf16BE) ? utf16(text, e == Encoding::Utf16BE)
+                                                                     : text.toUtf8();
+
+        const Decoder d = Decoder::detect(sample, e);
+        const QByteArray written = d.encode(text);
+        QCOMPARE(written.size(), qsizetype(text.size()) * d.unitSize());
+        QCOMPARE(written, sample.sliced(d.bomLength()));
+    }
 }
 
 QTEST_APPLESS_MAIN(TestDecoder)

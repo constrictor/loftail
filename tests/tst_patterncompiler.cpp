@@ -233,6 +233,30 @@ void TestPatternCompiler::dateTranslation_data()
     QTest::newRow("composites") << "%F %T" << "2026-08-27 10:15:01" << "yyyy-MM-dd HH:mm:ss" << false;
     QTest::newRow("offset")    << "%Y-%m-%dT%H:%M:%S%z" << "2026-08-27T10:15:01+0200" << "yyyy-MM-dd'T'HH:mm:sst" << false;
     QTest::newRow("frac ms")   << "%H:%M:%S.%Q" << "10:15:01.123.456" << "HH:mm:ss.zzz" << true;
+
+    // The rest of the composites. Each is expanded rather than hand-written, which
+    // is what makes %R and "%H:%M" provably the same thing — so what these rows
+    // pin is which codes each one stands for.
+    QTest::newRow("%R is the hour and minute")
+        << "%Y-%m-%d %R" << "2026-08-27 10:15" << "yyyy-MM-dd HH:mm" << false;
+    QTest::newRow("%x and %X are the C locale's date and time")
+        << "%x %X" << "08/27/26 10:15:01" << "MM/dd/yy HH:mm:ss" << false;
+
+    // The lower-case and space-padded spellings of the clock. %P is the one code
+    // whose text differs only in case from %p, and a regex that accepted either
+    // would let a log written one way be read as the other.
+    QTest::newRow("%P is the lower-case meridiem")
+        << "%I:%M %P" << "02:32 pm" << "hh:mm ap" << false;
+    QTest::newRow("%l is the space-padded 12-hour clock")
+        << "%Y-%m-%d %l:%M %p" << "2026-08-27  1:15 PM" << "yyyy-MM-dd h:mm AP" << false;
+
+    // A weekday number names nothing a reader can filter on and is not the
+    // calendar date either, so it is matched and dropped: one digit consumed, and
+    // nothing added to what the Time column shows.
+    QTest::newRow("%u is matched and dropped")
+        << "%Y-%m-%d %u" << "2026-08-27 4" << "yyyy-MM-dd " << false;
+    QTest::newRow("%w is matched and dropped")
+        << "%Y-%m-%d %w" << "2026-08-27 4" << "yyyy-MM-dd " << false;
 }
 
 void TestPatternCompiler::dateTranslation()
@@ -360,6 +384,14 @@ void TestPatternCompiler::errors_data()
         << "%d{%H:%M%n} %m" << int(CompileError::Code::UnsupportedDateCode) << 8;
     QTest::newRow("dangling percent in date")
         << "%d{%H:%M:%} %m" << int(CompileError::Code::DanglingPercentInDate) << 9;
+    // Every specifier that takes a braced argument has to REFUSE an unclosed one
+    // rather than read the rest of the pattern as the argument: %c{2} changes no
+    // regex, so a "{2" swallowed in silence would compile a format whose literal
+    // text the log lines do not contain, and every line would then start no record.
+    QTest::newRow("unterminated brace after %c")
+        << "%p %c{2 %m" << int(CompileError::Code::UnterminatedBrace) << 5;
+    QTest::newRow("unterminated brace after %E")
+        << "%p %E{HOME %m" << int(CompileError::Code::UnterminatedBrace) << 5;
 }
 
 // Every remaining log4cplus conversion specifier, one row each: the specifier is
@@ -386,6 +418,10 @@ void TestPatternCompiler::contextSpecifiers_data()
     QTest::newRow("%X{key} one MDC entry")
         << "[%X{user}] %m" << "[bob] hello" << "bob"
         << int(FieldRole::Mdc) << "MDC[user]";
+    // With no variable named, the column falls back to the role's own name.
+    QTest::newRow("%E with no variable named")
+        << "[%E] %m" << "[/home/bob] hello" << "/home/bob"
+        << int(FieldRole::EnvVar) << "Env";
     QTest::newRow("%E{VAR} environment variable")
         << "[%E{HOME}] %m" << "[/home/bob] hello" << "/home/bob"
         << int(FieldRole::EnvVar) << "Env[HOME]";
