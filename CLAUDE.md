@@ -320,6 +320,7 @@ When a change alters user-visible behavior, update `SPEC.md`. When it alters an 
 - **Presets** are behind `-DLOFTAIL_WITH_PRESETS`, **OFF by default** (M5's feature, gated later). Configure prints `Presets: ENABLED/DISABLED`. It is the one gate that is a *feature* switch rather than a dependency probe — there is nothing to auto-detect, so unlike the three options above it defaults off and `LOFTAIL_HAVE_PRESETS` merely mirrors `LOFTAIL_WITH_PRESETS`. **No CI leg builds it**, so `PresetPane.cpp` and `tst_presetstore.cpp` will rot: build and test `-DLOFTAIL_WITH_PRESETS=ON` by hand before committing anything that touches `FilterPane`/`HighlighterPane` state serialisation
 - **Qt Linguist tools**, optional and auto-detected, only to produce `.ts` files. Configure prints `Translation tooling: ENABLED/DISABLED`, and when found adds a `loftail_lupdate` target that nothing depends on. No catalogue ships and `translations/` is git-ignored — see `ARCHITECTURE.md` §9.1
 - **clang-tidy**, optional, **OFF by default**, for static analysis. Configure prints `clang-tidy: ENABLED/DISABLED`; `-DLOFTAIL_CLANG_TIDY=ON` lints `src/` on the compile line, `-DLOFTAIL_CLANG_TIDY_EXE=` names the binary (the versions genuinely disagree — CI pins 18, the dev machine has 21). Independently of that option, `CMAKE_EXPORT_COMPILE_COMMANDS` is now **always on** and the `clang_tidy` / `clang_tidy_all` targets sweep the resulting `compile_commands.json`, which is the cheaper route and the one the commands below use. Checks and their rationale are in `.clang-tidy` at the repo root. The `clang-tidy` CI job is **non-blocking** (`continue-on-error` on the job): the tree has a standing baseline nobody has cleared, and a job that is always red is a job people scroll past
+- **Coverage**, optional, **OFF by default**, gcov through `-DLOFTAIL_COVERAGE=ON`. Configure prints `Coverage instrumentation: ENABLED/DISABLED`, and where lcov and genhtml are both on `PATH` it adds a `coverage` target that runs the suite and writes an lcov HTML report over `src/`. It is global like the sanitizer flags and for the same reason — every TU linked into a binary must agree — and it sits below every `FetchContent` block for the `-Werror` block's reason. The `coverage` CI job is **non-blocking** (`continue-on-error` on the job) and reports into the run's step summary: there is no agreed baseline, and this is an instrument rather than a gate. It exists because this tree has repeatedly shipped code that had never been executed, only compiled — the optional dependencies and the platform branches are where that code lives
 - **Warnings as errors**, ON by default on GCC and Clang: every build gets `-Wall -Wextra`, and `-Werror` with them unless `-DLOFTAIL_WERROR=OFF`. Configure prints `Warnings as errors: ENABLED/DISABLED`. **MSVC defaults to OFF** — the reference Qt 6.4 under a modern MSVC already needs a workaround pragma, and Windows CI is the only cross-platform check, so a warning nobody here can reproduce would gate every Windows build; `-DLOFTAIL_WERROR=ON` adds `/WX` there for anyone who wants it. The flags are applied **below every `FetchContent` block** in the root `CMakeLists.txt`, which is the only thing keeping a fetched libssh2 or QtKeychain out of a `-Werror` build — see `ARCHITECTURE.md` §14
 - **Qt Test** for unit tests
 - **Reference build environment is Ubuntu 24.04 LTS**: the project must build with the stock toolchain (GCC 13, CMake 3.28, Ninja, Qt 6.4.2) using no separately-installed Qt. This is why the Qt minimum is 6.4, not 6.5 LTS — see `ARCHITECTURE.md` §1.
@@ -381,6 +382,16 @@ cmake --build build-tidy --target clang_tidy_all # src/ and tests/
 cmake -S . -B build-tidy-inline -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_CXX_COMPILER=clang++ -DLOFTAIL_CLANG_TIDY=ON
 cmake --build build-tidy-inline --target loftail
+
+# Line and function coverage over src/. A build directory of its own again, and
+# gcov's -O0 rather than the sanitizers' RelWithDebInfo: an optimiser that folds or
+# inlines a line hands its counter to somewhere else. The target zeroes the counters,
+# runs the whole suite, prunes /usr, Qt, _deps, *_autogen and tests/ out of the
+# capture, and writes build-coverage/coverage-html/index.html; it needs lcov and
+# genhtml on PATH, and says so at configure time when they are missing.
+cmake -S . -B build-coverage -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLOFTAIL_COVERAGE=ON
+cmake --build build-coverage
+QT_QPA_PLATFORM=offscreen cmake --build build-coverage --target coverage
 ```
 
 On Windows and macOS, `CMAKE_PREFIX_PATH` must point at the Qt installation.

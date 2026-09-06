@@ -595,6 +595,142 @@ else()
                    "(-DLOFTAIL_WERROR=ON to fail the build on a warning)")
 endif()
 
+# ---------------------------------------------------------------------------
+# Code coverage. Off by default; a build directory of its own, like the
+# sanitizers and clang-tidy, never a flag you flip on the one you develop in.
+#
+#   -DLOFTAIL_COVERAGE=ON   instrument for gcov, and add a `coverage` target
+#
+# WHY this is worth its build: several paragraphs of CLAUDE.md say of code that
+# ships that it "shipped never having been executed, only compiled" — M22's
+# libssh2 config write, M23's remote restart runner, six SSH latency fixes.
+# Every one of those was noticed by a person, milestones after the fact.
+# Coverage is the instrument that says it mechanically, and it says it loudest
+# about exactly where the dark code is: the optional dependencies (libssh2,
+# libarchive, QtKeychain) and the platform branches, which compile in a
+# configuration nothing here runs.
+#
+# It IS global — add_compile_options/add_link_options at the top level rather
+# than a property on loftail_core/loftail_ui/loftail — for the sanitizer
+# block's reason and not clang-tidy's. clang-tidy reads one translation unit at
+# a time and needs no agreement between them, so it is set per target; gcov,
+# like a sanitizer, instruments objects and links a runtime, so every TU linked
+# into a binary must agree. A test binary built from instrumented core objects
+# and an uninstrumented test would still link and would still run, and would
+# report about half a tree.
+#
+# And it sits BELOW every FetchContent block above it, for the reason the
+# -Werror block directly above gives: add_compile_options only reaches
+# directories added AFTER the call, which is the one thing keeping a fetched
+# libssh2 or QtKeychain — third-party sources this project neither writes nor
+# reports on — out of the instrumented build and out of the report.
+option(LOFTAIL_COVERAGE "Instrument for gcov coverage and add a `coverage` target" OFF)
+
+if(LOFTAIL_COVERAGE)
+    if(MSVC)
+        # MSVC has no gcov. Its own instrumentation is a different tool with a
+        # different report format; say so rather than emitting flags cl.exe rejects.
+        message(FATAL_ERROR
+            "LOFTAIL_COVERAGE is not supported with MSVC; use the Linux or macOS build")
+    endif()
+    # --coverage is the documented spelling for both halves on GCC and Clang:
+    # -fprofile-arcs -ftest-coverage when compiling, -lgcov when linking.
+    add_compile_options(--coverage)
+    add_link_options(--coverage)
+    # A coverage build is read for which lines RAN, never for speed, and an
+    # optimiser that folds, inlines or clones a line makes its counter belong to
+    # somewhere else. -O0 and line tables are what keep the report about the
+    # source as written; they are set here rather than left to CMAKE_BUILD_TYPE
+    # so that a RelWithDebInfo coverage build cannot quietly lie.
+    add_compile_options(-O0 -g)
+    message(STATUS "Coverage instrumentation: ENABLED "
+                   "(build, then `cmake --build <dir> --target coverage`)")
+else()
+    message(STATUS "Coverage instrumentation: DISABLED "
+                   "(-DLOFTAIL_COVERAGE=ON to enable)")
+endif()
+
+# The report. Declared only with the option on and only where lcov and genhtml
+# are both on PATH, so that `--target coverage` either does the whole job or
+# does not exist — a target that runs the suite and then fails at the last step
+# for want of a tool has spent the expensive part for nothing.
+if(LOFTAIL_COVERAGE)
+    find_program(LOFTAIL_LCOV_BIN NAMES lcov NO_CACHE)
+    find_program(LOFTAIL_GENHTML_BIN NAMES genhtml NO_CACHE)
+    # One ignore list for every step, because lcov applies it per invocation and a
+    # capture that tolerates a category the prune step does not fails halfway, after
+    # the suite has already run. Every entry is a category this tree genuinely
+    # produces, not a blanket silencer: `mismatch` and `inconsistent` are GCC's line
+    # and function tables disagreeing over a lambda or an exception edge, `negative`
+    # is a counter wrapping under a stress test's millions of iterations
+    # (tst_gatestress), and `unused`/`empty`/`source` are files the build compiled
+    # and no test reached —
+    # which is the very thing being measured here, so it must not be an error.
+    #
+    # Branch coverage is deliberately OFF (no --rc branch_coverage=1): what is being
+    # asked is which lines and functions RAN, and gcov's branch data over Qt's
+    # macro-heavy headers is mostly noise about edges no source line spells.
+    # Every name here exists in lcov 2.0, the version Ubuntu 24.04 ships and the CI
+    # job installs: an ignore category lcov does not know is a usage ERROR, so a
+    # longer list is not the safer one.
+    set(loftail_lcov_ignore "mismatch,negative,unused,empty,source,inconsistent")
+
+    if(LOFTAIL_LCOV_BIN AND LOFTAIL_GENHTML_BIN)
+        add_custom_target(coverage
+            # Zero first: .gcda files ACCUMULATE across runs, so a report taken
+            # after two `ctest`s counts both, and one taken after a build that
+            # only relinked counts the run before it. Starting from zero is what
+            # makes the number mean "this run".
+            COMMAND "${LOFTAIL_LCOV_BIN}" --quiet --zerocounters
+                    --directory "${CMAKE_BINARY_DIR}"
+            # The suite, through a script that swallows its exit status — a red
+            # test still produced coverage data, and add_custom_target runs no
+            # shell, so `|| true` is not available here. cmake/CoverageRunSuite.cmake
+            # says why at length.
+            COMMAND "${CMAKE_COMMAND}"
+                    -D "LOFTAIL_CTEST=${CMAKE_CTEST_COMMAND}"
+                    -D "LOFTAIL_BUILD_DIR=${CMAKE_BINARY_DIR}"
+                    -P "${CMAKE_SOURCE_DIR}/cmake/CoverageRunSuite.cmake"
+            COMMAND "${LOFTAIL_LCOV_BIN}" --quiet --capture
+                    --directory "${CMAKE_BINARY_DIR}"
+                    --base-directory "${CMAKE_SOURCE_DIR}"
+                    --output-file "${CMAKE_BINARY_DIR}/coverage.info"
+                    --ignore-errors "${loftail_lcov_ignore}"
+            # src/ ONLY. What is excluded, and why each one:
+            #   /usr/*            the system, including Qt's own headers
+            #   */_deps/*         a fetched libssh2 or QtKeychain, per the block above
+            #   *_autogen/*       AUTOMOC/AUTOUIC output, machine-written and
+            #                     #included by the real sources, so its lines would
+            #                     otherwise be counted against nobody's file
+            #   */tests/*         a test's own coverage says only that the test ran
+            COMMAND "${LOFTAIL_LCOV_BIN}" --quiet --remove
+                    "${CMAKE_BINARY_DIR}/coverage.info"
+                    "/usr/*" "*/_deps/*" "*_autogen/*" "${CMAKE_SOURCE_DIR}/tests/*"
+                    --output-file "${CMAKE_BINARY_DIR}/coverage-src.info"
+                    --ignore-errors "${loftail_lcov_ignore}"
+            COMMAND "${LOFTAIL_GENHTML_BIN}" --quiet
+                    "${CMAKE_BINARY_DIR}/coverage-src.info"
+                    --output-directory "${CMAKE_BINARY_DIR}/coverage-html"
+                    --legend --title "loftail coverage"
+                    --ignore-errors "${loftail_lcov_ignore}"
+            COMMAND "${LOFTAIL_LCOV_BIN}" --list "${CMAKE_BINARY_DIR}/coverage-src.info"
+                    --ignore-errors "${loftail_lcov_ignore}"
+            COMMAND "${CMAKE_COMMAND}" -E echo
+                    "Report: ${CMAKE_BINARY_DIR}/coverage-html/index.html"
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+            COMMENT "Running the suite and writing an lcov HTML report over src/"
+            USES_TERMINAL
+            VERBATIM)
+    else()
+        # Say so at configure time rather than leaving `--target coverage` to fail
+        # as "no rule to make target", which reads as a broken build rather than a
+        # missing tool.
+        message(STATUS "Coverage report target: unavailable "
+                       "(lcov and genhtml must both be on PATH for the `coverage` target; "
+                       "the build is still instrumented and gcov reads it directly)")
+    endif()
+endif()
+
 enable_testing()
 
 add_subdirectory(src)

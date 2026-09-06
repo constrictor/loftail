@@ -496,6 +496,136 @@ jobs:
           path: clang-tidy.log
           if-no-files-found: error
 
+  coverage:
+    # Line and function coverage over src/, from a gcov build of the whole suite.
+    #
+    # WHY it is here. Several paragraphs of CLAUDE.md say of code that ships that it
+    # "shipped never having been executed, only compiled" — M22's libssh2 config
+    # write, M23's remote restart runner, six SSH latency fixes. Every one of those
+    # was found by a person, milestones later. This job is the mechanical version of
+    # that reading, and it is pointed at exactly where the dark code lives: the
+    # optional dependencies and the platform branches, which compile in a
+    # configuration nothing here runs.
+    #
+    # A job of its own for the sanitizer job's reason: it is a separate,
+    # differently-instrumented build of everything, and the useful signal is a
+    # number and a list of files, which the `linux` job's four configurations would
+    # bury.
+    #
+    # It COMPLEMENTS clang-tidy the way the sanitizers do, from the other side.
+    # clang-tidy reads every translation unit whether or not a test drives it;
+    # coverage reads only what a test drove, and reports the difference — which is
+    # the thing nobody had a number for.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # NON-BLOCKING, and for the clang-tidy job's reason one line at a time. There is
+    # no baseline yet, so any threshold would be a number invented on the day it
+    # landed; and a check that is red for reasons nobody has agreed to is a check
+    # people learn to scroll past.
+    #
+    # It goes on the JOB, not on a step. At job level the WORKFLOW's own conclusion
+    # stays `success`, which is what release.yml's promote guard tests when it
+    # refuses to publish anything but a green run. On a step the job itself would go
+    # red and take the workflow's conclusion with it, quietly breaking releases.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain + system Qt 6 + lcov
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake \
+            qt6-base-dev libgl1-mesa-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev \
+            lcov
+
+      - name: Configure + build instrumented
+        run: |
+          cmake -S . -B build-coverage -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DLOFTAIL_COVERAGE=ON 2>&1 | tee configure-coverage.log
+          # The option is the whole point of the job; a typo that silently produced
+          # an ordinary build would go green and report zeros, or nothing at all.
+          grep -q "Coverage instrumentation: ENABLED" configure-coverage.log \
+            || { echo "::error::-DLOFTAIL_COVERAGE=ON did not take effect"; exit 1; }
+          # lcov comes from the install step above, so a miss here means that step
+          # changed. Worth asserting because the `coverage` target would simply not
+          # EXIST, and `--target coverage` would fail as "no rule to make target" —
+          # which, in a job that does not gate, reads as nothing at all.
+          if grep -q "Coverage report target: unavailable" configure-coverage.log; then
+            echo "::error::lcov/genhtml were not found; the coverage target does not exist"
+            exit 1
+          fi
+          # The optional dependencies, for the same reason as in every other job —
+          # and here it is the reason the job exists at all: auto-detection failing
+          # silently would leave the libssh2, libarchive and keychain layers out of
+          # the build, and the report would say nothing about the very code this is
+          # meant to be measuring.
+          for want in "SSH remote sources: ENABLED" "Archived log sources: ENABLED" \
+                      "OS keychain for passwords: ENABLED"; do
+            grep -q "$want" configure-coverage.log \
+              || { echo "::error::the coverage build reported '$want' missing"; exit 1; }
+          done
+          cmake --build build-coverage
+
+      - name: Run the suite and write the report
+        env:
+          QT_QPA_PLATFORM: offscreen
+        # The target zeroes the counters, runs ctest, captures, prunes to src/ and
+        # writes the HTML. It swallows ctest's exit status on purpose
+        # (cmake/CoverageRunSuite.cmake says why), so a red test still yields a
+        # report — which in a non-gating job is the only thing worth having.
+        run: cmake --build build-coverage --target coverage
+
+      - name: Summarise into the job summary
+        # A summary rather than the artifact alone, because the number is the point
+        # and downloading a directory of HTML to read one percentage is what makes a
+        # report nobody looks at.
+        run: |
+          info=build-coverage/coverage-src.info
+          {
+            echo "### Coverage over \`src/\` (gcov, whole suite)"
+            echo
+            echo '```'
+            # The same ignore list the target uses (root CMakeLists.txt says what
+            # each category is); lcov 2.x treats an inconsistency as an ERROR, and
+            # a summary that refuses to print is the one thing this step is for.
+            lcov --summary "$info" \
+              --ignore-errors mismatch,negative,unused,empty,source,inconsistent \
+              2>&1 | grep -Ev '^Reading|^lcov: WARNING|^\s+\(use ' || true
+            echo '```'
+            echo
+            echo "The twenty least-covered files. A file at 0% is one nothing in the"
+            echo "suite executes — the shape CLAUDE.md describes as \"shipped never"
+            echo "having been executed, only compiled\"."
+            echo
+            echo '| covered | lines | file |'
+            echo '| ------: | ----: | ---- |'
+            # Straight off the .info rather than out of `lcov --list`, whose column
+            # layout differs between lcov 1.x and 2.x. DA:<line>,<hits> per line,
+            # one SF: record per file. LC_ALL=C on the sort, because a locale whose
+            # decimal separator is a comma parses "78.2" as 78 and shuffles the list.
+            awk '
+              /^SF:/   { f = substr($0, 4); t = 0; h = 0; next }
+              /^DA:/   { split(substr($0, 4), a, ","); t++; if (a[2] > 0) h++; next }
+              /^end_of_record/ { if (t > 0) printf "%.1f\t%d\t%s\n", 100 * h / t, t, f }
+            ' "$info" | LC_ALL=C sort -g -k1,1 -k2,2nr | head -20 \
+              | awk -F'\t' '{ sub(".*/src/", "src/", $3); printf "| %s%% | %s | `%s` |\n", $1, $2, $3 }'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the HTML report
+        # Always, not only on failure: the job does not fail (continue-on-error), so
+        # the per-line detail — which branch of which file went unrun — survives
+        # nowhere else.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: |
+            build-coverage/coverage-html
+            build-coverage/coverage-src.info
+          if-no-files-found: error
+
   deb:
     # Ubuntu packages, one per release. NOT one package built once: 24.04 has
     # Qt 6.4.2 and 26.04 a much newer Qt with different sonames, so a single .deb
