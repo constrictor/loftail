@@ -1492,6 +1492,13 @@ void TestPreferences::theTwoPanesKeepAGapBetweenThem()
     }
 }
 
+// PreferencesDialog::applyInitialSplit()'s own cap on the tree pane, mirrored here so a
+// case can widen the dialog until the cap stops being what binds it. The slack past it
+// covers the pane's frame, its scrollbar and the gap to the right panel, which the split
+// spends before the label gets any.
+static constexpr double kTreeMaxShare = 0.4;
+static constexpr int kCapSlack = 400;
+
 // What a row needs to be readable in full: one indentation per level, plus one more for
 // the branch decoration the root rows also get, plus the label itself. The same sum
 // applyInitialSplit() derives the pane's width from, and the offset the delegate elides
@@ -1537,7 +1544,6 @@ void TestPreferences::theTreePaneOpensWideEnoughForItsLongestRow()
     for (const double scale : {1.0, 1.5}) {
         PreferencesDialog dlg(wide, QStringLiteral("app.log"), sample());
         openOn(dlg, logPath(QStringLiteral("app.log")));
-        dlg.resize(1500, 700);
         QFont font = dlg.font();
         if (font.pointSizeF() > 0)
             font.setPointSizeF(font.pointSizeF() * scale);
@@ -1547,6 +1553,19 @@ void TestPreferences::theTreePaneOpensWideEnoughForItsLongestRow()
 
         QTreeWidget *tree = treeOf(dlg);
         QVERIFY(tree);
+
+        // The width the cap has to clear, MEASURED rather than written down. A fixed
+        // 1500 px is a dialog size plus an assumption about the advance the labels are
+        // drawn at: it leaves ~600 px of tree, which is enough for this pattern under a
+        // desktop font and is not enough under a wider one -- and the case then fails on
+        // the cap, which the comment above says is a different test's subject. So the
+        // dialog is opened wide enough that 40% of it exceeds the longest row, whatever
+        // that row measures here, which is the relation the claim actually rests on.
+        int widest = 0;
+        for (QTreeWidgetItemIterator it(tree); *it; ++it)
+            widest = qMax(widest, rowWidthNeeded(tree, *it));
+        dlg.resize(qMax(1500, int(widest / kTreeMaxShare) + kCapSlack), 700);
+
         dlg.show();
         QCoreApplication::processEvents();
 

@@ -62,6 +62,35 @@
 
 using namespace loftail;
 
+namespace {
+
+// Whether a REAL font resolves here, which is what every case below that measures a
+// glyph is bounded by.
+//
+// The obvious spelling is QFontDatabase::families().isEmpty(), and it is the SYMPTOM of
+// one platform rather than the question: the offscreen plugin on Windows uses Qt's own
+// font database, which looks in $QTDIR/lib/fonts, and Qt ships none -- so the family
+// list comes back empty there. Point FONTCONFIG_FILE at a config naming an empty
+// directory and Linux reaches the same last-resort box engine by the other road, where
+// fontconfig still reports Monospace/Sans Serif/Serif and the family list is NOT empty.
+// That environment is strictly harsher than the Windows one, so every guard written for
+// Windows has to be written in terms of what it actually needs or it silently stops
+// firing exactly where it is needed most.
+//
+// What both cases have in common is that nothing resolved: QFontInfo reports the font
+// actually in use, and its family is the empty string for the box engine. Which is also
+// the whole of why the cases guarded on this cannot run -- the box engine draws every
+// glyph as a filled rectangle the full height of the line, so "fixed pitch" is not
+// reported and a glyph cannot be told from a mark by how deep it inks its line box.
+bool aRealFontResolves()
+{
+    if (QFontDatabase::families().isEmpty())
+        return false;
+    return !QFontInfo(monospaceFont()).family().isEmpty();
+}
+
+} // namespace
+
 // LogView coverage that does not need a shown window: the pure line<->record
 // geometry mapping (exact mode, wrap off and selected-record-only), the
 // copy-as-columns text builders, and the QHeaderView column hide/reorder state
@@ -507,14 +536,13 @@ void TestLogView::columnStateRoundTrips()
 // what makes columns line up vertically.
 void TestLogView::everyColumnRendersFixedPitch()
 {
-    // Nothing can resolve as fixed-pitch where nothing resolves at all. The
-    // offscreen plugin on Windows uses Qt's own font database, which looks in
-    // $QTDIR/lib/fonts -- and Qt no longer ships fonts, so the family list comes
-    // back EMPTY and every font is the same non-font. (Offscreen on Linux has
-    // fontconfig, so the assertions below do run there, and on any real desktop.)
-    // Skip rather than assert: this says nothing about monospaceFont(), and
-    // weakening the assertions would drop a real SPEC.md §5 requirement.
-    if (QFontDatabase::families().isEmpty())
+    // Nothing can resolve as fixed-pitch where nothing resolves at all, and there are
+    // two roads to that -- a platform plugin with no font database, and a fontconfig
+    // naming an empty directory -- of which only the first empties the family list.
+    // aRealFontResolves() asks the question rather than either symptom. Skip rather
+    // than assert: this says nothing about monospaceFont(), and weakening the
+    // assertions would drop a real SPEC.md §5 requirement.
+    if (!aRealFontResolves())
         QSKIP("no fonts available to this platform plugin; cannot test font resolution");
 
     QTemporaryFile file;
@@ -2631,6 +2659,14 @@ QImage renderViewport(LogView &view)
 // height. A mark FILLS its run with the colour the text is otherwise drawn IN, so what
 // tells the two apart is coverage down the line box rather than the colour itself: a
 // glyph inks part of the height, a mark inks all of it but for the glyphs it inverts.
+//
+// "A glyph inks part of the height" is a premise about the FONT, and Qt's last-resort
+// box engine breaks it: every glyph there is a filled rectangle the full height of the
+// line, so an ordinary unmarked run reads as a mark and this function cannot tell the
+// two apart at all. Every case below that calls it therefore guards on
+// aRealFontResolves() -- including the ones whose assertions are all positive and so
+// survive the over-counting, since a case that passes because everything looks marked
+// is not evidence that anything was.
 int TestLogView::markedColumns(const QImage &img, const QRect &band, const QColor &c,
                                double minShare)
 {
@@ -2651,7 +2687,7 @@ int TestLogView::markedColumns(const QImage &img, const QRect &band, const QColo
 
 void TestLogView::whatFindMatchedIsMarkedInsideTheRecordsOnScreen()
 {
-    if (QFontDatabase::families().isEmpty())
+    if (!aRealFontResolves())
         QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
 
     QTemporaryFile file;
@@ -2742,7 +2778,7 @@ void TestLogView::whatFindMatchedIsMarkedInsideTheRecordsOnScreen()
 
 void TestLogView::aRuleColouredRecordShowsItsColourAndTheMarkTogether()
 {
-    if (QFontDatabase::families().isEmpty())
+    if (!aRealFontResolves())
         QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
 
     QTemporaryFile file;
@@ -2801,7 +2837,7 @@ void TestLogView::aRuleColouredRecordShowsItsColourAndTheMarkTogether()
 
 void TestLogView::aMatchStraddlingAWrappedLineIsMarkedOnBothOfThem()
 {
-    if (QFontDatabase::families().isEmpty())
+    if (!aRealFontResolves())
         QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
 
     // Two passes, because the crafted message has to be positioned against a column
@@ -4233,7 +4269,7 @@ void TestLogView::aMarkedCellIsRedrawnOncePerCellAndNotOncePerMatch()
 // visible in any value the widget holds, so this reads the marks off the pixels.
 void TestLogView::everyMatchOfAWrappedCellIsMarkedWhenTheyAreBatched()
 {
-    if (QFontDatabase::families().isEmpty())
+    if (!aRealFontResolves())
         QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
 
     constexpr int kChars = 3000;
@@ -4291,7 +4327,7 @@ void TestLogView::everyMatchOfAWrappedCellIsMarkedWhenTheyAreBatched()
 // default wrap-off mode as well as every metadata column in both modes.
 void TestLogView::anElidedMarkSitsOverTheGlyphsOfTheRunAndNotOverALogicalPrefix()
 {
-    if (QFontDatabase::families().isEmpty())
+    if (!aRealFontResolves())
         QSKIP("no fonts resolve on this platform; where a character landed is unanswerable");
 
     const QString message = QString::fromUtf8("log مرحبا بالعالم end");

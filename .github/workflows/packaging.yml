@@ -64,7 +64,8 @@ jobs:
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
             libssh2-1-dev libarchive-dev qtkeychain-qt6-dev \
-            libfuse2 file desktop-file-utils
+            libfuse2 file desktop-file-utils \
+            fontconfig
 
       - name: Configure + build (Debug) and test
         run: |
@@ -85,6 +86,82 @@ jobs:
             || { echo "::error::QtKeychain was not detected; remembered passwords fall back to plain text"; exit 1; }
           cmake --build build
           QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+
+      # The same build, re-run under a style that is NOT Fusion.
+      #
+      # An offscreen CI run resolves Fusion; the reference KDE desktop resolves Breeze,
+      # and the two disagree about every metric a widget test is likely to measure —
+      # PM_HeaderMargin is 2 against 6, PM_ScrollBarExtent 14 against 21,
+      # PM_DefaultFrameWidth 1 against 0. So a test that measures a viewport, an inset or
+      # a remaining width against a written-down number, or against a sibling widget
+      # whose scrollbar state may differ, is green by luck rather than by being right —
+      # and two shipped that way (tst_highlighterpane::theAxesSitWhereTheFiltersPanesDo
+      # pinned an inset PAIR when the claim was about one member of it;
+      # tst_logview::theSeedKeepsTheMessageColumnOnScreenWhereTheNamesAreLong asserted a
+      # viewport was narrower than a widget it had sized, which is true only while the
+      # frame steals a pixel a side). One of them was a PRODUCTION defect of the same
+      # shape: the Priority column opened 68 px wide with 56 px of label for a 58 px
+      # caption and the header painted "Priori…" at every point size, for nine
+      # milestones, because the only style that shows it is the one nothing tested under.
+      #
+      # Which style, decided here rather than written down: Ubuntu 24.04's
+      # kde-style-breeze is Plasma 5 and ships a Qt5 plugin only, so naming Breeze on
+      # this runner would fall back to Fusion and the leg would go green having tested
+      # nothing at all. Windows is built into qtbase, is always present, and moves all
+      # three metrics off Fusion (4 / 16 / 2), so it is the floor; a runner image that
+      # grows a Qt6 Breeze is picked up automatically and gets the harsher numbers.
+      # Refusing to run under Fusion is what keeps the leg from silently becoming a
+      # second copy of the step above.
+      - name: Test under a second widget style
+        run: |
+          STYLE=Windows
+          if ls /usr/lib/*/qt6/plugins/styles/breeze6.so >/dev/null 2>&1; then
+            STYLE=Breeze
+          fi
+          echo "re-running the suite under the $STYLE style"
+          [ "$STYLE" != "Fusion" ] \
+            || { echo "::error::the second-style leg resolved Fusion; it tests nothing"; exit 1; }
+          QT_QPA_PLATFORM=offscreen QT_STYLE_OVERRIDE=$STYLE \
+            ctest --test-dir build --output-on-failure
+
+      # The same build again, with fontconfig pointed at an empty directory.
+      #
+      # This is the Windows font situation reproduced on Linux. The offscreen plugin on
+      # Windows uses Qt's own font database, which looks in $QTDIR/lib/fonts, and Qt
+      # ships none — so nothing resolves and every glyph is Qt's last-resort box engine,
+      # a filled rectangle the height of the line, with every column width coming from
+      # charWidth()'s 8 px floor. That is the geometry the Windows leg actually fails on,
+      # and it is otherwise reachable only by pushing to CI and reading a Windows
+      # diagnostic dump.
+      #
+      # It is strictly HARSHER than Windows, never laxer, and that is the point: here
+      # fontconfig still reports Monospace/Sans Serif/Serif, so QFontDatabase::families()
+      # is NOT empty and a guard written as families().isEmpty() — the Windows symptom
+      # rather than the question — does not fire. A red test under this leg means the
+      # Windows leg is red too unless the test carries such a guard, and a guard that
+      # only fires on Windows is one nobody here can see stop working.
+      - name: Test with no fonts resolvable
+        run: |
+          mkdir -p "$RUNNER_TEMP/nofonts" "$RUNNER_TEMP/nofonts-cache"
+          cat > "$RUNNER_TEMP/nofonts.conf" <<'EOF'
+          <?xml version="1.0"?>
+          <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+          <fontconfig>
+            <dir>NOFONTS_DIR</dir>
+            <cachedir>NOFONTS_CACHE</cachedir>
+          </fontconfig>
+          EOF
+          sed -i "s|NOFONTS_DIR|$RUNNER_TEMP/nofonts|; s|NOFONTS_CACHE|$RUNNER_TEMP/nofonts-cache|" \
+            "$RUNNER_TEMP/nofonts.conf"
+          # Prove it bites before trusting a green run: a config that silently fell back
+          # to the system fonts would make this leg an expensive duplicate of the first.
+          # fc-list reads the same FONTCONFIG_FILE Qt does, so an empty listing is the
+          # whole claim.
+          FOUND=$(FONTCONFIG_FILE="$RUNNER_TEMP/nofonts.conf" fc-list | wc -l)
+          [ "$FOUND" -eq 0 ] \
+            || { echo "::error::the empty fontconfig still sees $FOUND fonts; this leg tests nothing"; exit 1; }
+          QT_QPA_PLATFORM=offscreen FONTCONFIG_FILE="$RUNNER_TEMP/nofonts.conf" \
+            ctest --test-dir build --output-on-failure
 
       # The no-SSH configuration is a supported build, not a theoretical one
       # (ARCHITECTURE.md §1: the reference build installs nothing extra). Prove it
