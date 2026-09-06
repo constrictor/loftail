@@ -843,3 +843,45 @@ foreach(target IN LISTS loftail_test_targets)
         )
     endif()
 endforeach()
+
+# --- GUARDS.md: the rule-to-guard index, checked mechanically ---------------
+#
+# CLAUDE.md names on the order of two hundred load-bearing decisions and usually
+# names the test case that pins each one. Nothing checked that mapping, so a case
+# could be renamed, deleted or weakened and the prose went quietly stale — the
+# failure CLAUDE.md itself records for everyColumnStartsWideEnoughForItsOwnHeading
+# and severalPickedMembersOpenAsSeveralTabs, both of which guarded nothing while
+# appearing to. tests/GUARDS.md is that index; this is what keeps it honest.
+#
+# Python rather than shell because ctest runs this on the Windows leg too, where
+# there is no bash — and the parsing is a table walk plus one `-functions` exec
+# per binary, which is a script rather than a program.
+#
+# A binary the current configuration did not build (the SSH, archive, keychain
+# and presets gates, and the two POSIX-only tail tests) is SKIPPED rather than
+# failed, decided by whether tests/tst_<x>.cpp exists — so a genuine typo in
+# GUARDS.md still fails loudly, and the no-optional-deps leg stays green.
+#
+# Which binaries THIS configuration defined is read off the directory's own test
+# list rather than off the filesystem: a binary left behind by an earlier
+# configuration (a presets build, say) is still on disk, and taking that for
+# "built here" would fail an entry the current build cannot see.
+get_property(loftail_guard_tests DIRECTORY PROPERTY TESTS)
+string(REPLACE ";" "\n" loftail_guard_test_lines "${loftail_guard_tests}")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/guards_defined_tests.txt
+     "${loftail_guard_test_lines}\n")
+
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME guards_index
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/check_guards.py
+                --guards ${CMAKE_CURRENT_SOURCE_DIR}/GUARDS.md
+                --source-dir ${CMAKE_CURRENT_SOURCE_DIR}
+                --binary-dir ${CMAKE_CURRENT_BINARY_DIR}
+                --defined-tests ${CMAKE_CURRENT_BINARY_DIR}/guards_defined_tests.txt)
+    set_tests_properties(guards_index PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    message(STATUS "GUARDS.md guard index check: ENABLED")
+else()
+    message(STATUS "GUARDS.md guard index check: DISABLED (no Python 3 interpreter)")
+endif()

@@ -1,0 +1,41 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "Six M19 rules that are easy to undo by accident"):
+#   `HighlightRule::fromJson` tests `contains("actions")`, NEVER the array's
+#   emptiness. An empty array is "matches and does nothing"; absent is a rule
+#   written before actions existed, which means {Color}.
+#
+# GUARD: tst_highlight::anEmptyActionsArrayIsNotColour
+#
+# SILENT WHEN BROKEN: every parked rule silently re-colours on the next launch,
+# and the setting simply will not stick.
+
+diff --git a/src/core/Highlight.cpp b/src/core/Highlight.cpp
+index bee8c24..eda2f17 100644
+--- a/src/core/Highlight.cpp
++++ b/src/core/Highlight.cpp
+@@ -141,7 +141,7 @@ HighlightRule HighlightRule::fromJson(const QJsonObject &o)
+     // re-colour every parked rule on the next launch, invisibly until someone wondered
+     // why the setting would not stick — the same trap LogSettingsStore's
+     // contains("pattern") records for an empty saved pattern.
+-    if (o.contains(QStringLiteral("actions")))
++    if (!o.value(QStringLiteral("actions")).toArray().isEmpty())
+         r.actions = actionsFromJson(o.value(QStringLiteral("actions")).toArray());
+ 
+     // Clamp a corrupt index back to the default sentinel rather than out of range.

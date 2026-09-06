@@ -1,0 +1,42 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "The view's line pitch must be the number QT LAYS TEXT OUT AT"):
+#   `lineHeight()` is `qCeil(QFontMetricsF(...).height())`, never
+#   `QFontMetrics::height()`, which rounds ascent and descent separately and so
+#   comes out a pixel short at 15 of the 27 point sizes the zoom offers.
+#
+# GUARD: tst_logview::everyWrappedLineOfARecordIsDrawnInsideTheRowItWasGiven
+#
+# SILENT WHEN BROKEN: one pixel of every wrapped line is clipped and past about
+# thirteen lines the last line is not drawn at all — with no ellipsis and no
+# tooltip, because a wrapped message deliberately offers neither.
+
+diff --git a/src/ui/LogView.cpp b/src/ui/LogView.cpp
+index 9f327fb..2b23ce3 100644
+--- a/src/ui/LogView.cpp
++++ b/src/ui/LogView.cpp
+@@ -586,7 +586,7 @@ LogView::~LogView() = default;
+ // entirely. qCeil(QFontMetricsF::height()) is that number at every size measured.
+ int LogView::lineHeight() const
+ {
+-    return qMax(1, qCeil(QFontMetricsF(fontMetrics()).height()));
++    return qMax(1, fontMetrics().height());
+ }
+ int LogView::visibleLines() const { return qMax(1, viewport()->height() / lineHeight()); }
+ // Both go through the MODEL, not the document (M19, ARCHITECTURE.md §7.5): which

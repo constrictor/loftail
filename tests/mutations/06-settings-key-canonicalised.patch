@@ -1,0 +1,43 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "ONE LOG, ONE SPELLING, and the spelling is the name as OPENED"):
+#   `logSettingsKey()` is `absoluteFilePath()` and never `canonicalFilePath()`:
+#   a pattern is tested through `logMatchTarget()`, which resolves no symbolic
+#   link, so a canonical key asks one question about a log and answers another.
+#
+# GUARD: tst_openflow::aSymlinkedLogIsStoredUnderTheNameItWasOpenedBy
+#
+# SILENT WHEN BROKEN: merely opening `latest.log` leaves a record behind under
+# the target's name, shadowing the pattern for ever and burning a slot out of
+# the pool of 500 every day on a daily rotation.
+
+diff --git a/src/core/RemoteLocation.cpp b/src/core/RemoteLocation.cpp
+index 4738fb3..40a0a88 100644
+--- a/src/core/RemoteLocation.cpp
++++ b/src/core/RemoteLocation.cpp
+@@ -341,7 +341,8 @@ QString logSettingsKey(const QString &path)
+     // absoluteFilePath() cleans `.` and `..` and resolves nothing, so it is stable
+     // against the working directory (which is what the key is for) without being stable
+     // against the file's own identity (which it deliberately no longer claims).
+-    return QFileInfo(path).absoluteFilePath();
++    const QString canonical = QFileInfo(path).canonicalFilePath();
++    return canonical.isEmpty() ? QFileInfo(path).absoluteFilePath() : canonical;
+ }
+ 
+ QString legacyLogSettingsKey(const QString &path)

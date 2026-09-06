@@ -1,0 +1,42 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "Presence-not-emptiness is now FOUR stores deep"):
+#   A stored highlighter list that is EMPTY is the user having deleted every
+#   rule and must stay deleted; only its ABSENCE seeds HighlighterSet::defaults().
+#   M21 re-expressed the presence test as a std::optional, which is exactly when
+#   it is easiest to lose.
+#
+# GUARD: tst_sessiongui::aDeletedDefaultRuleStaysDeletedAcrossARelaunch
+#
+# SILENT WHEN BROKEN: the three level colours come back on every launch, which
+# is the shape of a bug nobody can get rid of.
+
+diff --git a/src/ui/MainWindow.cpp b/src/ui/MainWindow.cpp
+index 2193ae6..09d64aa 100644
+--- a/src/ui/MainWindow.cpp
++++ b/src/ui/MainWindow.cpp
+@@ -2791,7 +2791,7 @@ DocumentContext *MainWindow::prepareContext(const SessionDocument &d, QString *e
+     //
+     // The log's own record answers first; the session's copy is the one-time migration
+     // (see the filters above), and asks the same question of the key it used to own.
+-    if (ctx->fileSettings.highlighters)
++    if (ctx->fileSettings.highlighters && !ctx->fileSettings.highlighters->isEmpty())
+         ctx->doc->highlighters() = HighlighterSet::fromJson(*ctx->fileSettings.highlighters);
+     else if (d.highlighters.contains(QStringLiteral("rules")))
+         ctx->doc->highlighters() =

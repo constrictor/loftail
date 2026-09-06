@@ -1,0 +1,43 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "One expression computes the wrap width, and its floor is in
+# CHARACTERS"):
+#   `messageWrapWidth()` is floored at `minWrapWidth()` — kMinWrapCols
+#   characters — and not at a pixel. At 1 px the estimated count has no bound
+#   below (bugs.md 11).
+#
+# GUARD: tst_logview::theFlooredWrapWidthHoldsEveryColumnItIsFlooredAt
+#
+# SILENT WHEN BROKEN: it needs a message origin at or past the right edge,
+# which the intern-table seed produces when the scan finishes — so a view that
+# rendered normally while indexing fills with one 100-line record afterwards.
+
+diff --git a/src/ui/LogView.cpp b/src/ui/LogView.cpp
+index 9f327fb..d89663f 100644
+--- a/src/ui/LogView.cpp
++++ b/src/ui/LogView.cpp
+@@ -771,7 +771,7 @@ int LogView::messageWrapWidth() const
+     if (msgCol >= 0 && !messageIsLastVisibleColumn())
+         return qMax(minWrapWidth(), m_header->sectionSize(msgCol));
+     const int x = msgCol >= 0 ? m_header->sectionViewportPosition(msgCol) : 0;
+-    return qMax(minWrapWidth(), viewport()->width() - x);
++    return qMax(1, viewport()->width() - x);
+ }
+ 
+ void LogView::ensureEstimatorBound()

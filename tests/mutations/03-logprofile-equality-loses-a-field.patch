@@ -1,0 +1,42 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "Six M22 rules that are easy to undo by accident"):
+#   `LogProfile::operator==` must gain a clause for every field. A field the
+#   comparison does not look at is one two profiles can never differ in, so
+#   `LogFileSettings::reduce()` deletes the per-log entry that states it.
+#
+# GUARD: tst_logsettings::aProfileDiffersWhenAnyOneFieldOfItDoes
+#
+# SILENT WHEN BROKEN: the setting is accepted, applied for the session, and
+# gone at the next write — silent DATA LOSS rather than a missing feature.
+
+diff --git a/src/core/LogProfile.h b/src/core/LogProfile.h
+index 7cc8104..49a76b1 100644
+--- a/src/core/LogProfile.h
++++ b/src/core/LogProfile.h
+@@ -87,8 +87,7 @@ struct LogProfile
+     // by tst_logsettings::aProfileDiffersWhenAnyOneFieldOfItDoes.
+     bool operator==(const LogProfile &o) const
+     {
+-        return format == o.format && wrapMode == o.wrapMode && configPath == o.configPath
+-            && restartScript == o.restartScript;
++        return format == o.format && wrapMode == o.wrapMode && configPath == o.configPath;
+     }
+     bool operator!=(const LogProfile &o) const { return !(*this == o); }
+ };

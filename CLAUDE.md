@@ -392,6 +392,19 @@ cmake --build build-tidy-inline --target loftail
 cmake -S . -B build-coverage -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLOFTAIL_COVERAGE=ON
 cmake --build build-coverage
 QT_QPA_PLATFORM=offscreen cmake --build build-coverage --target coverage
+
+# The mutation harness. BY HAND — not a CI gate, exactly like the TSan recipe
+# above, and for the same shape of reason: it rebuilds the tree once per patch
+# (minutes each) and it edits tracked files, so it can neither be run in
+# parallel nor be trusted to leave a runner's checkout alone. It refuses a dirty
+# working tree, applies one patch at a time, builds, runs ONLY the guard case
+# that patch names, requires it to go RED, and reverts (on ^C too).
+#
+# Each patch inverts one decision CLAUDE.md flags as SILENT when broken, and
+# names in its own header the rule and the guard. This is the other half of
+# tests/GUARDS.md: the index says a guard exists, this says it bites.
+tests/mutations/run-mutations.sh --build build
+tests/mutations/run-mutations.sh tests/mutations/05-line-pitch-from-qfontmetrics-height.patch
 ```
 
 On Windows and macOS, `CMAKE_PREFIX_PATH` must point at the Qt installation.
@@ -433,6 +446,7 @@ These ten constraints are cheap to honor from the start and expensive to retrofi
 - **Taking one event of a gesture means taking its whole SEQUENCE, and which event a framework acts on is read, never guessed.** A press, its moves and its release are one gesture, and a widget keeps press-time bookkeeping across them — `QAbstractItemView::pressedIndex`, a drag origin, an autoscroll anchor. An event filter or an override that consumes one member and leaves the rest leaves that bookkeeping half-built, and what fires afterwards is the framework acting on a gesture it saw only part of. Before returning `true` on any pointer event, name every event of the gesture and decide for each; a latch set on the taken press and consumed by the taken release is the shape that keeps a taken sequence paired with itself, so an ordinary gesture's release still reaches the widget (`AxisEditor::m_ctrlClickTaken`). And do not reason from an event's NAME about where the behaviour being overridden lives: `QAbstractItemView` acts on the press, `QStyledItemDelegate::editorEvent()` toggles a check indicator on the RELEASE, and no amount of care about the press can discover that — it cost `AxisEditor`'s Ctrl+click chord three weeks of unticking the very row it had just ticked. A widget that owns its whole sequence (`LogView`, `DensityScrollBar`) is the safe shape; a filter over somebody else's viewport is the one to audit.
 - **Test a gesture where it is AIMED and where the thing it overrides lives, not where the claim is easiest to state.** A claim quantified over a region — "anywhere on the row", "either theme", "any of the 27 point sizes" — has parts the code underneath treats differently, and the case belongs on each of them. The tell is a test comment explaining why it avoids a spot: `tst_filterpane`'s original chord case said "Deliberately NOT on the check indicator", which is exactly where the widget's own handling lives and exactly where the chord was broken, so the case guarded nothing about the one thing the chord had to override. **And exercise the SECOND invocation**, because a fresh widget has an empty state machine and is the weakest state event handling can be tested in: this defect needed one ordinary click in the list first, so it worked once per session and then stopped, which is why every test passed and every user saw it.
 - **Break the code and watch the test go red, at the granularity of the DECISION and not of the feature.** Reverting the fix and re-running is the check that a regression case is testing what it claims; apply it when the feature ships too, not only when a bug is found. But mutating the whole feature is not enough — deleting `AxisEditor`'s event filter entirely would have reddened the case that shipped with it. The decision that was wrong was *which events are taken*, one of several, and no test separated the alternatives. When a decision is "which of N", the case has to fail under the other N−1.
+- **A rule named in this file that names its guard is indexed in `tests/GUARDS.md`, and `ctest` checks the mapping.** The `guards_index` case parses that table and asserts every named `tst_binary::caseName` still exists and is still reported by its binary — a binary this configuration did not build is skipped, a name with no `tests/tst_<x>.cpp` behind it fails as a typo. Add a rule to CLAUDE.md that names a case, add the row. The file's second table is the rules that name NO test, which is the more interesting half of it: 469 of 614 at the time it was written. `tests/mutations/` is the complement — an index says a guard exists, a mutation says it bites — and it does not gate, see the Commands section.
 - Prefer `QStringView`/`QByteArrayView` on parse paths; avoid allocating per record.
 - No hardcoded paths — `QStandardPaths::AppConfigLocation` for settings and presets.
 - Open log files in binary mode and handle CRLF explicitly rather than relying on platform text-mode translation.

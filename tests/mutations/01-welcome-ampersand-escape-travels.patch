@@ -1,0 +1,42 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A WINDOW WITH NO LOG OPEN IS A WELCOME SCREEN NOW"):
+#   The `&&` mnemonic escape must not travel from the menu build to the list
+#   build, or a log whose name carries an `&` wears a literal `&&` on the page.
+#
+# GUARD: tst_welcome::anAmpersandInANameIsNotDoubledOnAListRow
+#
+# SILENT WHEN BROKEN: only logs whose name contains an ampersand are affected,
+# and the menu beside the page goes on reading correctly.
+
+diff --git a/src/ui/MainWindow.cpp b/src/ui/MainWindow.cpp
+index 2193ae6..a969bca 100644
+--- a/src/ui/MainWindow.cpp
++++ b/src/ui/MainWindow.cpp
+@@ -5095,7 +5095,9 @@ void MainWindow::refreshRecentFilesMenu()
+             // The label VERBATIM: the '&' doubling below is a QMenu mnemonic escape and
+             // must not travel, or a log whose name carries an ampersand shows a literal
+             // "&&" on the page — silently, and only for those logs.
+-            welcome.append({labels.at(i), recent.at(i), recent.at(i), QString(), QString()});
++            QString mutated = labels.at(i);
++            mutated.replace(u'&', QLatin1String("&&"));
++            welcome.append({mutated, recent.at(i), recent.at(i), QString(), QString()});
+         }
+         m_welcome->setRecent(welcome);
+     }
