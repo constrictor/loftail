@@ -77,6 +77,7 @@ private:
 private slots:
     void streamsEveryRecord();
     void insertsAreContiguousBatches();
+    void noRowsAppearUntilTheScanFinishes();
     void indexerCancelSeamIsDeterministic();
     void controllerCancelStaysConsistent();
 };
@@ -147,6 +148,53 @@ void TestIndexController::insertsAreContiguousBatches()
     QVERIFY(batches >= 1);
     QCOMPARE(lastRowCount, 60000);
     QCOMPARE(model.rowCount(), 60000);
+}
+
+// The scan holds every record until it ends and then publishes them in ONE insert
+// (ARCHITECTURE.md §7.2). A view follows the tail by default, so a batch per 4 MB chunk
+// had an ordinary open scrolling for the length of the scan, reading as a log being
+// written live — and onIndexFinished() scrolls to the end regardless, so the churn
+// bought nothing.
+//
+// The multi-chunk fixture is what makes this say anything: on a log the Indexer covers
+// in one chunk there is only ever one batch, so the case passes against the streaming
+// code it exists to forbid.
+void TestIndexController::noRowsAppearUntilTheScanFinishes()
+{
+    const QByteArray log = makeLog(100000); // ~7 MB => at least two 4 MB chunks
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, log));
+
+    Document doc;
+    QVERIFY(doc.prepare(file.fileName(), QString::fromLatin1(kPattern), Encoding::Utf8,
+                        QTimeZone::utc()));
+    QVERIFY(doc.source()->size() > Indexer::kChunkBytes); // guarantees >1 chunk
+
+    LogModel model(&doc);
+    IndexController controller(&doc, &model);
+
+    int inserts = 0;
+    connect(&model, &QAbstractItemModel::rowsInserted, &model,
+            [&](const QModelIndex &, int, int) { ++inserts; });
+
+    // Every progress report is a chunk boundary — the moment a streaming scan would
+    // have published — so the view must still be empty at each of them.
+    int reports = 0;
+    bool stayedEmpty = true;
+    connect(&controller, &IndexController::progress, &controller, [&](qint64, qint64) {
+        ++reports;
+        if (model.rowCount() != 0)
+            stayedEmpty = false;
+    });
+
+    QSignalSpy finishedSpy(&controller, &IndexController::finished);
+    controller.start();
+    QVERIFY(finishedSpy.wait(30000));
+
+    QVERIFY2(reports > 1, "the fixture did not span several chunks");
+    QVERIFY2(stayedEmpty, "records reached the model while the scan was still running");
+    QCOMPARE(inserts, 1); // the whole scan, in one go
+    QCOMPARE(model.rowCount(), 100000);
 }
 
 void TestIndexController::indexerCancelSeamIsDeterministic()

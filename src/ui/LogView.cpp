@@ -1346,10 +1346,13 @@ void LogView::paintEvent(QPaintEvent *event)
         // (SPEC.md §3). Drawn here rather than as a swapped-in widget because the tab
         // is a real, live view throughout: it keeps its filters, its column layout and
         // its place in the session, and gains rows the moment the log turns up.
-        if (!m_placeholderText.isEmpty()) {
+        // The wait reason first: a log that is not there has more to say than a scan
+        // that is about to finish over nothing.
+        const QString &message = m_placeholderText.isEmpty() ? m_scanNotice
+                                                             : m_placeholderText;
+        if (!message.isEmpty()) {
             p.setPen(mutedColor(palette()));
-            p.drawText(viewport()->rect(), Qt::AlignCenter | Qt::TextWordWrap,
-                       m_placeholderText);
+            p.drawText(viewport()->rect(), Qt::AlignCenter | Qt::TextWordWrap, message);
         }
         return;
     }
@@ -2335,6 +2338,16 @@ void LogView::setPlaceholderText(const QString &text)
     if (m_placeholderText == text)
         return;
     m_placeholderText = text;
+    viewport()->update();
+}
+
+void LogView::setScanNotice(const QString &text)
+{
+    if (m_scanNotice == text)
+        return;
+    m_scanNotice = text;
+    // Only ever visible over an empty view, so a change while records are on screen
+    // costs nothing beyond this repaint request.
     viewport()->update();
 }
 

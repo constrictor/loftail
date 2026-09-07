@@ -85,6 +85,7 @@ private slots:
     void theStopButtonSitsInTheStatusBarAndIsHiddenWithNoFile();
     void theScanIndicatorGoesWhenTheScanDoes();
     void pressingStopEndsTheScanShort();
+    void theViewSaysItIsIndexingAndHoldsItsRecordsUntilItIsDone();
 };
 
 void TestScanProgress::init()
@@ -191,6 +192,54 @@ void TestScanProgress::pressingStopEndsTheScanShort()
     QVERIFY(model);
     QVERIFY(model->rowCount() > 0);
     QVERIFY2(model->rowCount() < kRecords, "the whole file was scanned: stop did nothing");
+    w.close();
+}
+
+// While the scan runs the view holds NO records and says why (SPEC.md §3). An open used
+// to stream a batch per 4 MB chunk into a view that follows the tail, so the log visibly
+// scrolled for the length of the scan as if it were being written live.
+//
+// Polled with a 1 ms slice for pressingStopEndsTheScanShort()'s reason: QTRY's 50 ms step
+// is long enough for a Release build to finish the whole file, and this case has to
+// observe the window while it is open rather than after it.
+void TestScanProgress::theViewSaysItIsIndexingAndHoldsItsRecordsUntilItIsDone()
+{
+    MainWindow w;
+    w.resize(900, 600);
+    w.show();
+
+    w.openFile(m_large);
+    QWidget *box = progressBox(w);
+    QVERIFY(box);
+
+    LogView *view = nullptr;
+    bool     sawNotice = false;
+    bool     stayedEmpty = true;
+    QElapsedTimer waited;
+    waited.start();
+    while (waited.elapsed() < 30000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+        const QList<LogView *> views = w.findChildren<LogView *>(QStringLiteral("logView"));
+        if (views.isEmpty())
+            continue;
+        view = views.at(0);
+        if (!box->isVisible())
+            break; // the scan is over
+        // Mid-scan: the view says what is happening and has nothing in it.
+        if (!view->scanNotice().isEmpty())
+            sawNotice = true;
+        if (LogModel *m = modelOf(view); m && m->rowCount() != 0)
+            stayedEmpty = false;
+    }
+
+    QVERIFY(view);
+    QVERIFY2(sawNotice, "the view said nothing while its log was being scanned");
+    QVERIFY2(stayedEmpty, "records appeared in the view while the scan was still running");
+
+    // And once it is done: the notice goes and the whole log is there at once.
+    QTRY_VERIFY_WITH_TIMEOUT(!box->isVisible(), 30000);
+    QTRY_COMPARE_WITH_TIMEOUT(modelOf(view)->rowCount(), int(kRecords), 30000);
+    QVERIFY(view->scanNotice().isEmpty());
     w.close();
 }
 

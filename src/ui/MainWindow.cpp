@@ -2655,6 +2655,10 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
     // waitingChanged signal it would otherwise learn from has already fired.
     if (ctx->doc->isWaiting())
         logView->setPlaceholderText(ctx->doc->waitReason());
+    // And a view made for a document whose scan is ALREADY running — a second view onto
+    // a large log, or the first one, which is made after buildIndexController().
+    if (ctx->indexing)
+        refreshScanNotice(ctx); // one wording, in one place — the view is already in ctx->views
     // And the same for a view made for a document that is already DISCONNECTED: the
     // staleChanged signal that would otherwise raise the strip fired before this view
     // existed. A second view onto a log whose host went an hour ago is the ordinary way
@@ -2864,6 +2868,18 @@ void MainWindow::buildContext(DocumentContext *ctx)
 // The scanning half of buildContext(), on its own because a RELOAD rebuilds exactly this
 // and nothing else: the model and the digest model are what the live views hold, so they
 // must survive, while the controller is destroyed by stopWorkers() and has to come back.
+void MainWindow::refreshScanNotice(DocumentContext *ctx)
+{
+    // Empty while nothing is scanning, which is what CLEARS it: the view falls back to
+    // its own placeholder (a wait reason, or nothing at all for an ordinary empty log).
+    const QString notice = ctx->indexing
+        ? tr("Indexing %1 — %2%").arg(logSourceDisplayName(ctx->doc->path()))
+                                 .arg(ctx->progressPercent)
+        : QString();
+    for (DocumentView *v : std::as_const(ctx->views))
+        v->logView()->setScanNotice(notice);
+}
+
 void MainWindow::buildIndexController(DocumentContext *ctx)
 {
     ctx->controller = new IndexController(ctx->doc.get(), ctx->model);
@@ -2874,6 +2890,9 @@ void MainWindow::buildIndexController(DocumentContext *ctx)
     ctx->indexing = true;
     ctx->progressPercent = 0;
     m_progressBar->setRange(0, 100);
+    // A reload has views already; a fresh open makes them below, and createView() asks
+    // for the notice itself.
+    refreshScanNotice(ctx);
 }
 
 void MainWindow::buildViewAndIndex(DocumentContext *ctx)
@@ -3459,6 +3478,7 @@ void MainWindow::onIndexProgress(DocumentContext *ctx, qint64 done, qint64 total
     if (total > 0)
         ctx->progressPercent = int((done * 100) / total);
     updateTabTitles(ctx);
+    refreshScanNotice(ctx);
     // Guarded the way isBeingRead() is, and for the same reason: activeContext() is
     // null when no tab is current, and a bare `ctx == activeContext()` then reads as
     // true for a null ctx — which cannot happen (the handler is a lambda holding the
@@ -3474,6 +3494,7 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
     Document *doc = ctx->doc.get();
     ctx->indexing = false;
     updateTabTitles(ctx);
+    refreshScanNotice(ctx); // the scan is over: every view drops the notice
     const bool isActive = ctx == activeContext();
     if (isActive)
         m_progressBox->setVisible(false);
@@ -4609,7 +4630,16 @@ void MainWindow::updateStatus()
     // Filtered/total counts (SPEC.md §5, §6): show the shown-vs-total pair only
     // when a filter narrows the view, otherwise a plain record count.
     QString text;
-    if (doc->filters().anyActive()) {
+    const DocumentContext *active = activeContext();
+    if (active && active->indexing) {
+        // The scan holds its records until it ends (§7.2), so `total` is a standing
+        // zero here and "0 records" would read as an empty log. Say what is actually
+        // happening — and fall through to the source/format notes below, so an
+        // archive still reports that it is expanding.
+        text = tr("%1  |  indexing %2%")
+                   .arg(logSourceDisplayName(doc->path()))
+                   .arg(active->progressPercent);
+    } else if (doc->filters().anyActive()) {
         text = tr("%1  |  %2 of %3 records shown")
                    .arg(logSourceDisplayName(doc->path()))
                    .arg(doc->filtered().recordCount())

@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 189 rules
+## Guarded — 192 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -253,6 +253,9 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | A repaint measures each block ONCE, so a scroll, a tail tick and a tab switch re-decode nothing | Block measured in part (L179) | tst_logview::aRepaintMeasuresNothingItHasAlreadyMeasuredAndATailMeasuresWhatGrew |
 | `WrapMetrics::setFont()` DROPS the memo, every entry in it being that font's | Log text zooms (L177) | tst_wrapmetrics::aFontChangeDropsTheMemoAndPaysForTheAsciiTableAgain |
 | The `perf` label is the wall clock and gates nothing; every cost contract that can be stated exactly is COUNTED | perf label (tests/CMakeLists.txt) | tst_wrapmetrics<br>tst_estimatedgeometry<br>tst_densitybar<br>tst_densitymap<br>tst_filter |
+| The scan HOLDS its records and tells the model once, at the end — a view follows the tail, so a batch per chunk read as a log being written live | Scan holds its records (L91) | tst_indexcontroller::noRowsAppearUntilTheScanFinishes<br>tst_scanprogress::theViewSaysItIsIndexingAndHoldsItsRecordsUntilItIsDone |
+| The publish runs on the CANCELLED path too — "whatever was scanned so far stays usable" is a promise about exactly those records | Scan holds its records (L91) | tst_scanprogress::pressingStopEndsTheScanShort |
+| An empty view says it is indexing through `setScanNotice()`, a second string, never the waiting machinery's `m_placeholderText` | Scan holds its records (L91) | tst_scanprogress::theViewSaysItIsIndexingAndHoldsItsRecordsUntilItIsDone |
 
 ## Unguarded — 450 rules
 

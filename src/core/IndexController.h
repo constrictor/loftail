@@ -88,11 +88,19 @@ private:
     std::atomic<bool> m_cancel{false};
 };
 
-// GUI-thread orchestrator: spins up an IndexWorker on a QThread, receives batches,
-// and applies them to the LogModel with begin/endInsertRows around each append so
-// the view populates during the scan (§7.2). Progress and cancellation are wired
-// through. Nothing here touches per-file state except through the Document it was
-// given (invariant #7).
+// GUI-thread orchestrator: spins up an IndexWorker on a QThread, receives batches, and
+// HOLDS them until the scan ends, then appends the lot to the LogModel in one insert
+// (§7.2). Progress and cancellation are wired through. Nothing here touches per-file
+// state except through the Document it was given (invariant #7).
+//
+// The hold is what stops an ordinary open reading as a live log: a view follows the
+// tail by default, so a batch per 4 MB chunk had it scrolling for the length of the
+// scan — and onIndexFinished() scrolls to the end regardless, so the churn bought
+// nothing about where the reader lands (SPEC.md §3). It lives HERE, with no flag to
+// consult, precisely because this class runs the initial scan and the reload and
+// nothing else: a log that is genuinely growing is LiveController's and is untouched.
+// It costs no memory — the worker's Indexer already holds a complete RecordIndex, and
+// the pending buffer replaces the growth of the document's index one for one.
 class IndexController : public QObject
 {
     Q_OBJECT
@@ -124,6 +132,9 @@ private:
     QThread     *m_thread = nullptr;
     IndexWorker *m_worker = nullptr;
     bool         m_running = false;
+
+    // Scanned records not yet handed to the model. Published once, by onFinished().
+    QVector<Record> m_pending;
 };
 
 } // namespace loftail

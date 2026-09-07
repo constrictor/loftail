@@ -137,6 +137,16 @@ public:
     void setPlaceholderText(const QString &text);
     const QString &placeholderText() const { return m_placeholderText; }
 
+    // What an empty view says while its log is being SCANNED — "Indexing app.log —
+    // 62%" (SPEC.md §3). A second string rather than a second user of the placeholder
+    // above, because that one is owned by the waiting machinery and set and cleared
+    // from four MainWindow sites: one string shared between the two states is how they
+    // come to erase each other. The wait reason outranks it in the paint, so a document
+    // that is waiting — which finishes its scan instantly, having no source — cannot
+    // flash the wrong sentence.
+    void setScanNotice(const QString &text);
+    const QString &scanNotice() const { return m_scanNotice; }
+
     // How many records are IN VIEW — the filtered subset when a filter is active, the
     // whole index otherwise (invariant #6). Public so a caller can tell an empty view
     // from a populated one without reaching through to the model.
@@ -685,6 +695,7 @@ private:
 
     WrapMode m_wrapMode = WrapMode::Off;
     QString  m_placeholderText; // drawn centred when there are no records at all
+    QString  m_scanNotice;      // ditto, while the initial scan is running
     int      m_current = -1;   // focused record (drives keyboard nav + wrap)
     int      m_anchor = -1;    // range-selection anchor
     int      m_selWrapCache = -1; // memoized selWrapLines() for the current width

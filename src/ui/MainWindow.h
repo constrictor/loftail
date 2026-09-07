@@ -493,6 +493,12 @@ private:
     // controller, while the model and the digest model are what the live views hold and
     // must therefore survive.
     void buildIndexController(DocumentContext *ctx);
+    // What every view of `ctx` says while it is empty because its log is being SCANNED
+    // (SPEC.md §3). One funnel for the four moments it can move — the controller being
+    // built, a view being made under a scan already running, each progress report, and
+    // the finish — because it is cleared by saying the scan is over, and a site that
+    // forgets leaves "Indexing…" over a log that is on screen.
+    void refreshScanNotice(DocumentContext *ctx);
     // Arm the live watch over `ctx`. Reached from the end of a successful scan, and again
     // from a reload, which destroyed the previous one along with the index worker.
     void startWatching(DocumentContext *ctx);

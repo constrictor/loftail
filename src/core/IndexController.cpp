@@ -149,18 +149,34 @@ void IndexController::onBatch(const IndexBatch &batch)
     for (const QString &name : batch.newThreads)
         idx.threads.intern(name);
 
-    if (!batch.records.isEmpty()) {
-        m_model->beginAppendRows(int(batch.records.size()));
-        idx.records.append(batch.records);
-        idx.rebuildBlockSums(); // one linear pass; cheap enough per batch (§7.2, §11)
-        m_model->endAppendRows();
-    }
+    // The NAMES go in now and the RECORDS do not. Interning immediately is what keeps
+    // the GUI-side ids identical to the worker's, which the held records already
+    // reference; a name is not a row, so nothing on screen moves for it.
+    m_pending.append(batch.records);
 }
 
+// Hand the whole scan to the model at once, BEFORE the signal: MainWindow::
+// onIndexFinished() detects runs, applies filters, seeds the columns from the complete
+// intern tables and scrolls to the end, all of which read the index this publishes.
+//
+// It runs on the CANCELLED path too, and must: the worker flushes a final batch when it
+// stops, and "scanning can be cancelled, leaving whatever was scanned so far usable" is
+// SPEC.md §3's promise about exactly these records.
 void IndexController::onFinished(bool cancelled)
 {
     m_running = false;
     m_worker = nullptr; // deleteLater is wired on thread finish
+
+    if (!m_pending.isEmpty()) {
+        RecordIndex &idx = m_document->index();
+        m_model->beginAppendRows(int(m_pending.size()));
+        idx.records.append(m_pending);
+        idx.rebuildBlockSums(); // one linear pass, once per scan (§7.2, §11)
+        m_model->endAppendRows();
+        m_pending.clear();
+        m_pending.squeeze();
+    }
+
     emit finished(cancelled);
 }
 
