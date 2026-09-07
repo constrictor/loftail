@@ -448,15 +448,18 @@ that viewport gets small in the first place.
 
 ---
 
-A third pass, on 2026-09-07, raised entries 42 to 46. Different method from the two
+A third pass, on 2026-09-07, raised entries 42 to 47. Different method from the two
 before it: no agent drove the UI at all. These came out of building test
 infrastructure — a coverage measurement, five libFuzzer targets over the parsers
 and a mutation harness — and every one of them was found by a machine rather than
-by somebody looking. Three are the fuzzer's, one came out of reading the lines a
+by somebody looking. Four are the fuzzer's, one came out of reading the lines a
 coverage report said had never executed, and one out of a test whose first draft
 asserted the wrong thing and was right to. Each was recorded with the ruling it
-needs, because four of the five have two defensible answers and the choice is the
-user's; three of them have since been taken and fixed.
+needs, because four of them have two defensible answers and the choice is the
+user's; three of them have since been taken and fixed. Entry 47 is the last of
+them and arrived after the others: taking entry 44's fix meant asserting its
+property whole, and the fuzzer answered with a second address that is not a fixed
+point of its own normal form, for a reason that has nothing to do with the first.
 
 Entry 42 has gone: a literal `.` spelled after `%b`, `%a` or `%Z` inside `%d{...}`
 was claimed by two halves at once. The name run tolerates a trailing dot because
@@ -571,6 +574,33 @@ the latch, which costs nothing and makes the class enforce its own contract, or
 make the pair atomic, or write down that the discipline is the caller's and leave
 it — but the current state, where the comment claims a guarantee one line below
 where it stops holding, is the one that should not stand.
+
+---
+
+### 47. `QDir::cleanPath()` is not idempotent, so an archive container has two spellings
+
+Found by the address fuzz target within five minutes of entry 44's property being
+asserted, and it is entry 44's defect by a different route: `normalizeLogPath()`
+is not a fixed point for an archive address whose container path holds a leading
+`/.` in front of a `//`. `ArchiveLocation::toString()` cleans its container, and
+`QDir::cleanPath("/.//a.zip")` answers `//a.zip` — Qt keeping a leading double
+slash, which is a POSIX double-slash root — which cleans again to `/a.zip`. So
+`normalize(normalize(s))` is not `normalize(s)`, and the cost is exactly entry
+44's: every entry point normalizes and `Document::prepare()` normalizes again, so
+such a log has two settings keys, a second slot out of the pool of 500, and
+settings written under one name and read back under the other.
+
+It is narrower than entry 44 in reach — it needs a `/.` immediately before a `//`,
+which no shell completion produces — and wider in that it is not about a character
+at all: any path shaped that way, remote or local, that also names an archive.
+
+The ruling is a genuine question and is why this is recorded rather than fixed.
+Cleaning twice inside `ArchiveLocation::toString()` is one answer and is a
+one-liner; refusing the address is the other and is what entry 44 took, but a
+double slash names a real file where a noncharacter does not, so a refusal here
+would decline to open a log that exists. `tests/fuzz/corpus/address/a033_dot_slash_before_a_container`
+is the input, and `fuzz_address`'s idempotence property is narrowed around it with
+that name in the comment.
 
 ---
 

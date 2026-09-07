@@ -477,6 +477,10 @@ void TestRemoteLocation::normalizingAnAddressTwiceIsNormalizingItOnce()
 
     // And the same for the funnel every entry point actually calls, which adds the
     // archive branch on top — a030 is an archive-shaped address as well as a remote one.
+    // (Not asserted for a LOCAL archive path: QDir::cleanPath(), which
+    // ArchiveLocation::toString() runs on its container, is not idempotent when a
+    // leading `/.` collapses into a `//` — `/.//a.zip` cleans to `//a.zip` and then to
+    // `/a.zip`. Reported rather than fixed here; bugs.md 47.)
     const QString onceLog = normalizeLogPath(address);
     QCOMPARE(normalizeLogPath(onceLog), onceLog);
 
