@@ -1,0 +1,62 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (ARCHITECTURE.md §6.3.2; bugs.md 46):
+#   KeychainSecretStore's thread guard sits ABOVE the probe latch as well as
+#   above the probe, so all four of its methods enforce the same contract:
+#   asked off the application thread they refuse, available() answering the
+#   bool spelling — false — of the NoBackend the other three return.
+#
+# GUARD: tst_keychainlive::everyOperationRefusesToRunOffTheApplicationThread
+#
+# HARNESS: needs a real Secret Service. Every case in tst_keychainlive is gated
+#   on a backend answering and a QSKIP exits 0, so this driver — which runs the
+#   binary with no keyring and no LOFTAIL_TEST_KEYCHAIN — would report the
+#   mutation SURVIVED when it was never executed. Kill it by hand, or in the
+#   keychain-live CI job's environment:
+#     packaging/test-keychain/run-keychain-tests.sh --build build
+#   Verified red there, on the two assertions the fix exists for.
+#
+# SILENT WHEN BROKEN: a store that has already probed answers its latch from any
+# thread, which is an unsynchronised read of a plain bool pair another thread
+# wrote — the only race in the class, in its only method that did not enforce
+# its own contract. Nothing in the shipped application can see it, because every
+# route reaches this object through secretStore(), which marshals; what it costs
+# is that the guarantee is a call-site discipline rather than the class's, and a
+# later caller that reaches the store directly gets a keychain answer computed
+# on a thread with no event loop and no prompter to show an unlock dialog to.
+
+diff --git a/src/core/KeychainSecretStore.cpp b/src/core/KeychainSecretStore.cpp
+--- a/src/core/KeychainSecretStore.cpp
++++ b/src/core/KeychainSecretStore.cpp
+@@ -233,12 +233,12 @@
+     // it is the bool spelling of the NoBackend the other three refuse with, and no
+     // production caller can see it, every route reaching this object through
+     // secretStore(), which marshals to the application thread.
+-    if (!onTheRightThread())
+-        return false;
+-
+     if (m_probed)
+         return m_available;
+ 
++    if (!onTheRightThread())
++        return false;
++
+     m_probed = true;
+ 
+     // The cheap negative first — but ONLY as a negative. QKeychain::isAvailable() answers

@@ -218,20 +218,26 @@ bool onTheRightThread()
 
 bool KeychainSecretStore::available()
 {
-    if (m_probed)
-        return m_available;
-
-    // BEFORE m_probed is latched, and that ordering is the whole of it. Latching first
-    // meant a single off-thread call — a marshalling wrapper that forgot to route this
-    // one method, or a test — turned the keychain off for the rest of the process, and
-    // M14's remembered passwords then stopped working with every test above this seam
-    // still green. Which is exactly how the two M14 wires broke the first time.
+    // ABOVE THE LATCH AS WELL AS ABOVE THE PROBE, and both orderings are load-bearing.
     //
-    // Not reachable through secretStore(), which marshals; kept as the structural
-    // assertion it has always been, so a later caller cannot quietly reintroduce a
-    // keychain read on a fetcher thread.
+    // Above the probe, because latching first meant a single off-thread call — a
+    // marshalling wrapper that forgot to route this one method, or a test — turned the
+    // keychain off for the rest of the process, and M14's remembered passwords then
+    // stopped working with every test above this seam still green. Which is exactly how
+    // the two M14 wires broke the first time.
+    //
+    // Above the latch, because a `m_probed` read sitting over the guard is an
+    // unsynchronised read of a plain bool pair another thread wrote — so the one method
+    // of this class that did not enforce its own contract was also the only one that
+    // raced (bugs.md 46). Answering false rather than the latched value costs nothing:
+    // it is the bool spelling of the NoBackend the other three refuse with, and no
+    // production caller can see it, every route reaching this object through
+    // secretStore(), which marshals to the application thread.
     if (!onTheRightThread())
         return false;
+
+    if (m_probed)
+        return m_available;
 
     m_probed = true;
 

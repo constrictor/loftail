@@ -70,6 +70,13 @@
 # to become unwritable between the open and the commit, which is not something a
 # single-threaded test can arrange.
 #
+# ONE PATCH IS MARKED `# HARNESS:` AND IS SKIPPED HERE. Its guard is a case in
+# tst_keychainlive, which needs a real Secret Service: every case there is gated
+# on a backend answering, and a QSKIP exits 0 — so running it in this driver's
+# environment would report SURVIVED about a mutation that was never executed,
+# which is worse than reporting nothing. Such a patch names in its own header
+# what the guard needs and that it was verified red there by hand.
+#
 #   tests/mutations/run-mutations.sh [--build DIR] [PATCH...]
 
 set -u
@@ -126,6 +133,19 @@ for patch in "${PATCHES[@]}"; do
     echo "=== $name"
     echo "    guard: $guard"
 
+    # A guard this driver cannot execute. Not an escape hatch: a patch carrying
+    # the line says in its own header what the guard needs and that it was
+    # verified red there by hand. Skipping it beats running it, because every
+    # case in a gated binary QSKIPs and a QSKIP exits 0 — so the run would
+    # report SURVIVED about a mutation nothing had looked at, which is the one
+    # answer worse than no answer.
+    harness=$(sed -n 's/^# HARNESS: *//p' "$patch" | head -1)
+    if [ -n "$harness" ]; then
+        echo "    not runnable here: $harness"
+        RESULTS+=("BY HAND    $name  ($guard)")
+        continue
+    fi
+
     if ! git apply --check "$patch" 2>/dev/null; then
         echo "    patch does not apply to this tree"
         RESULTS+=("STALE      $name  ($guard)")
@@ -166,5 +186,5 @@ cmake --build "$BUILD" >/dev/null 2>&1
 echo
 echo "--- mutation results ---"
 for r in "${RESULTS[@]}"; do echo "$r"; done
-[ $status -eq 0 ] && echo "every mutation was killed by its named guard"
+[ $status -eq 0 ] && echo "every mutation the harness can run was killed by its named guard"
 exit $status

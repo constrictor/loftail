@@ -22,6 +22,10 @@
 #include "RemoteLocation.h"
 #include "SecretStore.h"
 
+#include <QThread>
+
+#include <thread>
+
 using namespace loftail;
 
 // M14 — the seam a remembered password goes through, and the consent rule built on it
@@ -46,7 +50,31 @@ private slots:
     void aRefusedKeychainIsNeverDowngradedToAFile();
     void aRejectedPasswordIsErasedFromTheKeychain();
     void forgettingDoesNothingWithNoKeychain();
+    void everyCallReachesTheStoreOnTheApplicationThread();
 };
+
+namespace {
+
+// A store that records nothing but WHICH THREAD each call arrived on. That is the whole
+// subject of the case at the bottom of this file, and a FakeSecretStore cannot answer it:
+// it is a QHash, and a QHash does not mind who asks.
+class ThreadRecordingStore final : public SecretStore
+{
+public:
+    bool available() override { note(); return true; }
+    QString backendName() override { note(); return QStringLiteral("Test Keychain"); }
+    Result read(const QString &, QString *, QString *) override { note(); return Result::NotFound; }
+    Result store(const QString &, const QString &, QString *) override { note(); return Result::Ok; }
+    Result erase(const QString &, QString *) override { note(); return Result::Ok; }
+
+    QList<QThread *> threads;
+    int calls() const { return int(threads.size()); }
+
+private:
+    void note() { threads.append(QThread::currentThread()); }
+};
+
+} // namespace
 
 // Unlike sshPrompter(), which may be null because null IS a policy there ("never
 // prompt"), secretStore() always answers. "No keychain" is a property the store states
@@ -242,5 +270,49 @@ void TestSecretStore::forgettingDoesNothingWithNoKeychain()
     QCOMPARE(fake.eraseCount(), 0);
 }
 
-QTEST_APPLESS_MAIN(TestSecretStore)
+// The discipline that makes KeychainSecretStore's thread guard unreachable in the shipped
+// application, asserted with no keychain in the build (bugs.md 46).
+//
+// Every route to a store goes through secretStore(), which is deliberately NOT the
+// installed object but a view that marshals each call to the application thread through
+// GuiCallGate. That is why a keychain store may answer an off-thread available() with a
+// flat false — which is the bool spelling of the NoBackend its read, store and erase
+// refuse with — without any caller ever seeing it: rememberSshPassword() would read that
+// false as UseFileFallback and write the password into hosts.json in plain text, so what
+// keeps the consent rule true is that the concrete store is never asked from anywhere
+// else. Stated here rather than only in tst_keychainlive, which needs a real keyring.
+void TestSecretStore::everyCallReachesTheStoreOnTheApplicationThread()
+{
+    ThreadRecordingStore recorder;
+    InstalledSecretStore installed(&recorder);
+
+    QThread *const appThread = QCoreApplication::instance()->thread();
+
+    // std::thread and not QThread: QThread::wait() joins through a QWaitCondition whose
+    // TSan annotations live in a libQt6Core that is not built under TSan (CLAUDE.md,
+    // src/core's mutex ban), so a test whose own worker needs joining uses the standard
+    // one — tst_gatestress and tst_archivemembers set the precedent.
+    std::thread worker([] {
+        QString secret;
+        secretStore()->available();
+        secretStore()->backendName();
+        secretStore()->read(QStringLiteral("ssh/deploy@web1:22"), &secret);
+        secretStore()->store(QStringLiteral("ssh/deploy@web1:22"), QStringLiteral("hunter2"));
+        secretStore()->erase(QStringLiteral("ssh/deploy@web1:22"));
+    });
+
+    // The gate posts to the application thread and waits, so this thread has to keep
+    // turning its event loop or the worker parks for ever.
+    QTRY_COMPARE_WITH_TIMEOUT(recorder.calls(), 5, 10000);
+    worker.join();
+
+    for (QThread *thread : recorder.threads)
+        QCOMPARE(thread, appThread);
+}
+
+// GUILESS, not APPLESS: the case above needs an application thread for GuiCallGate to
+// marshal TO, and with no QCoreApplication at all the gate runs every call inline on
+// whichever thread asked (rule 5), which is the one configuration in which the claim
+// cannot be made.
+QTEST_GUILESS_MAIN(TestSecretStore)
 #include "tst_secretstore.moc"

@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 180 rules
+## Guarded — 182 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -141,6 +141,8 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | Storing the same key twice REPLACES rather than adding a second item under it | Real Secret Service in CI (L131) | tst_keychainlive::storingTwiceReplacesTheSecretRatherThanAddingOne |
 | A secret survives being long and not ASCII across the backend | Real Secret Service in CI (L131) | tst_keychainlive::aSecretSurvivesBeingLongAndNotAscii |
 | A keychain is consulted only on the thread that opened the log, and `available()` does not LATCH off it | Real Secret Service in CI (L131) | tst_keychainlive::everyOperationRefusesToRunOffTheApplicationThread |
+| The thread guard sits ABOVE the probe latch, so a store that has probed refuses off-thread as well | Three M14 rules (L127) | tst_keychainlive::everyOperationRefusesToRunOffTheApplicationThread |
+| Every route reaches a store through `secretStore()`, which marshals, so no caller can see that refusal | Three M14 rules (L127) | tst_secretstore::everyCallReachesTheStoreOnTheApplicationThread |
 | Erasing what is not there succeeds, `forgetSshPassword()` running on every rejected stored password | Real Secret Service in CI (L131) | tst_keychainlive::erasingWhatIsNotThereSucceeds |
 | The context spinners are capped with `setMaximumWidth` and nothing else | Two load-bearing widths (L143) | tst_filterpane::theContextRowLaysOutWithoutOverlapOrClipping |
 | `QSizePolicy::Ignored` must NOT be added to the context spinners — the combination lays the row on top of itself | Two load-bearing widths (L143) | tst_filterpane::theContextRowLaysOutWithoutOverlapOrClipping |

@@ -184,17 +184,23 @@ void TestKeychainLive::everyOperationRefusesToRunOffTheApplicationThread()
     // being no keychain, which is the one thing this case must not be able to pass on.
     QVERIFY(store.available());
 
-    // A SECOND store, deliberately unprobed. available() answers its latch before it
-    // asks anything, so a probed store says true from any thread — the rule is about the
-    // LATCH, and the only way to reach the guard is with a store that has not taken one.
+    // A SECOND store, deliberately unprobed. Both are asked, because the two halves of
+    // the guard's placement fail in different ways: an unprobed store reaches the probe,
+    // a probed one reaches the LATCH, and until bugs.md 46 the latch read sat above the
+    // guard — so a probed store answered true from any thread, out of an unsynchronised
+    // read of a plain bool pair another thread had written.
     KeychainSecretStore unprobed;
 
     SecretStore::Result readResult{}, storeResult{}, eraseResult{};
     QString readError, storeError, eraseError, secret;
     bool availableOffThread = true;
+    bool probedAvailableOffThread = true;
+    QString backendNameOffThread = QStringLiteral("something");
 
     std::thread worker([&] {
         availableOffThread = unprobed.available();
+        probedAvailableOffThread = store.available();
+        backendNameOffThread = store.backendName();
         readResult = store.read(key(), &secret, &readError);
         storeResult = store.store(key(), QStringLiteral("hunter2"), &storeError);
         eraseResult = store.erase(key(), &eraseError);
@@ -214,6 +220,18 @@ void TestKeychainLive::everyOperationRefusesToRunOffTheApplicationThread()
     // the same store, asked again from the right thread, still finds the keychain.
     QVERIFY(!availableOffThread);
     QVERIFY(unprobed.available());
+
+    // And the probed store answers false there too, which is the half that could not be
+    // written before the guard moved above the latch. It is the bool spelling of the
+    // NoBackend the three operations refuse with — the same answer, so a caller reading
+    // one of the four off-thread reads all four the same way.
+    QVERIFY(!probedAvailableOffThread);
+    QVERIFY(backendNameOffThread.isEmpty());
+
+    // The refusal is not a latch of its own: the store that found a keychain still finds
+    // it, so an off-thread call cannot turn the keychain off for the rest of the process.
+    QVERIFY(store.available());
+    QVERIFY(!store.backendName().isEmpty());
 
     // Each refusal says why. These sentences reach the status bar through
     // Document::lastError(), so an empty one is a failure with nothing on screen.

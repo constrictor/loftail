@@ -456,8 +456,8 @@ by somebody looking. Four are the fuzzer's, one came out of reading the lines a
 coverage report said had never executed, and one out of a test whose first draft
 asserted the wrong thing and was right to. Each was recorded with the ruling it
 needs, because four of them have two defensible answers and the choice is the
-user's; four of them have since been taken and fixed. Entry 47 is the last of
-them and arrived after the others: taking entry 44's fix meant asserting its
+user's; five of them have since been taken and fixed, and only entry 47 is still
+open. That one arrived after the others: taking entry 44's fix meant asserting its
 property whole, and the fuzzer answered with a second address that is not a fixed
 point of its own normal form, for a reason that has nothing to do with the first.
 
@@ -549,32 +549,30 @@ refused there rather than repaired in the store — repairing it would silently 
 a different host from the one the file names. The fuzz target's port property is
 the whole range now, where it was `>= 0` with the gap written out in a comment.
 
----
-
-### 46. `KeychainSecretStore::available()`'s probe latch is read from any thread without synchronisation
-
-`available()` opens with `if (m_probed) return m_available;`, and that line sits
-**above** the check that refuses to run off the application thread. So a store that
-has already probed answers from any thread, and the answer is an unsynchronised
-read of a plain `bool` pair written by another one.
-
-The `.cpp` says the path is unreachable, and it is right about the route it means:
-everything above it goes through `secretStore()`, which marshals through
-`GuiCallGate`, so no second thread reaches this object in the shipped
-application. That is why this is recorded rather than fixed — it is a latent race
-in code that, until 2026-09-07, had **never been executed at all** (0.0% of 105
-lines, the only file in the tree at a flat zero), and the guard that makes it
-unreachable is a call-site discipline rather than anything the class enforces.
-
-It surfaced from the other side: the first draft of
-`tst_keychainlive::everyOperationRefusesToRunOffTheApplicationThread` asserted
-that `available()` refuses off-thread, and it does not. The case now drives a
-second, unprobed store, which is the first execution of the thread guard that
-`ARCHITECTURE.md` §6.3.2 describes. The ruling: either move the thread check above
-the latch, which costs nothing and makes the class enforce its own contract, or
-make the pair atomic, or write down that the discipline is the caller's and leave
-it — but the current state, where the comment claims a guarantee one line below
-where it stops holding, is the one that should not stand.
+Entry 46 has gone last, and it is the smallest of the five: the thread guard in
+`KeychainSecretStore::available()` sits above the probe LATCH now, not merely above
+the probe. It read `m_probed` first, so a store that had already probed answered
+from any thread — an unsynchronised read of a plain bool pair another thread wrote,
+in the one method of that class that did not enforce the contract its other three
+do. The ruling taken was the reorder rather than an atomic pair or a written-down
+call-site discipline: it costs nothing, it removes the cross-thread read by removing
+the read, and it makes the guard the class's own. Off the application thread
+`available()` now answers a flat false, which is the bool spelling of the
+`NoBackend` that `read`, `store` and `erase` already refuse with, so a caller
+reading one of the four off-thread reads all four the same way. Nothing in the
+shipped application can see that answer, and the reason is worth pinning rather
+than asserting: every route reaches a store through `secretStore()`, which is not
+the installed object but a view marshalling each call to the application thread —
+which matters because `rememberSshPassword()` would read a false as
+`UseFileFallback` and write the password into `hosts.json` in plain text, which is
+bugs.md 31's ending by a different road. `tst_secretstore::everyCallReachesTheStoreOnTheApplicationThread`
+states that half with no keychain in the build at all; the guard proper is
+`tst_keychainlive::everyOperationRefusesToRunOffTheApplicationThread`, whose second
+store — probed, and asked from the worker — is the assertion that was impossible to
+write while the latch sat on top. Its mutation patch carries a `# HARNESS:` line
+saying so, and `run-mutations.sh` skips such a patch rather than reporting SURVIVED
+about a binary that QSKIPped: every case in that file needs a real Secret Service,
+and a QSKIP exits 0.
 
 ---
 
