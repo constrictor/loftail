@@ -296,11 +296,18 @@ void TestConfigEditor::savingWritesTheBytesAndPreservesPermissions()
     const QFile::Permissions restricted =
         QFile::ReadOwner | QFile::WriteOwner | QFile::ReadGroup;
     QVERIFY(QFile::setPermissions(config, restricted));
+#ifndef Q_OS_WIN
     // Read back rather than reused: QFile::permissions() answers with the Owner AND the
     // User spelling of the same three Unix bits, so the mode to compare against later is
     // the one the filesystem reports, never the one that was asked for.
+    //
+    // POSIX-only, and so is the comparison at the end that reads it. Windows has no
+    // mode: Qt synthesizes the nine bits from an NTFS ACL and setPermissions() cannot
+    // clear the ones for everyone else, so this reads back 0x6 there with nothing wrong
+    // — which is what it did, on the one platform nobody here can run.
     const QFile::Permissions modeBefore = QFile::permissions(config);
     QCOMPARE(modeBefore & (QFile::ReadOther | QFile::WriteOther), QFile::Permissions());
+#endif
 
     std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("p.properties")));
     w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
