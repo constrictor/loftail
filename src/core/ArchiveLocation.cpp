@@ -68,14 +68,14 @@ bool endsWithAny(QStringView name, const char *const *suffixes, size_t count)
 // total: a typed `/logs/app.log.gz/app.log` reduces to `/logs/app.log.gz` rather than
 // becoming a second spelling of one log. Which table matched decides what the address
 // MEANS — isSingleStream() — but not where it splits.
-qsizetype archiveCut(const QString &path)
+qsizetype archiveCut(QStringView path)
 {
     qsizetype start = 0;
     while (start <= path.size()) {
         qsizetype end = path.indexOf(u'/', start);
         if (end < 0)
             end = path.size();
-        const QStringView comp = QStringView(path).mid(start, end - start);
+        const QStringView comp = path.mid(start, end - start);
         if (endsWithAny(comp, kContainerSuffixes, std::size(kContainerSuffixes))
             || endsWithAny(comp, kSingleStreamSuffixes, std::size(kSingleStreamSuffixes))) {
             return end;
@@ -85,6 +85,18 @@ qsizetype archiveCut(const QString &path)
         start = end + 1;
     }
     return -1;
+}
+
+// Where the path begins inside a remote address: the offset of the '/' that closes the
+// authority, or -1 when the address spells no path at all. Hand-cut rather than asked of
+// QUrl because the answer has to be an offset into the STRING THE USER TYPED — see
+// split(), which takes the member out of it verbatim.
+qsizetype remotePathStart(const QString &s)
+{
+    const qsizetype scheme = s.indexOf(QLatin1String("://"));
+    if (scheme < 0)
+        return -1;
+    return s.indexOf(u'/', scheme + 3);
 }
 
 } // namespace
@@ -133,17 +145,52 @@ std::optional<ArchiveLocation> ArchiveLocation::split(const QString &path)
     // Rules 1 and 2, over whichever path string the address actually contains. Both
     // rules are one cut: which table matched decides the meaning, not the boundary.
     if (remote) {
+        // THE MEMBER IS OPAQUE AND THE CONTAINER IS A URL, which is the whole of the
+        // remote branch and the one thing it used to get wrong. It cut the URL's
+        // DECODED path and appended the member back verbatim, so a member holding a
+        // percent sign lost one layer of encoding per normalize —
+        // `ssh://h/u.tar/b%2520c` answered `ssh://h:22/u.tar/b%20c` and then
+        // `ssh://h:22/u.tar/b c`, three spellings of one log against a funnel every
+        // entry point runs and Document::prepare() runs AGAIN (bugs.md 49). The member
+        // is now taken off the RAW string, exactly as the local branch below already
+        // takes it, so it is never encoded and never decoded in either direction and
+        // the two branches agree about what a member is.
+        //
+        // The whole address is still parsed first, and only to be JUDGED: a
+        // noncharacter anywhere in it, a port out of range, a missing host are
+        // refusals belonging to the address rather than to its container half
+        // (bugs.md 44, 45), and taking the member raw must not smuggle one past them.
         const auto url = RemoteLocation::parse(path);
         if (!url)
             return std::nullopt;
-        const qsizetype cut = archiveCut(url->path);
+        // THE CUT IS TAKEN IN THE STRING THE MEMBER COMES OUT OF, never transplanted
+        // from the decoded path, whose lengths are a different arithmetic: the raw path
+        // is cut, and the container is re-parsed from the raw address to its left, so
+        // one offset serves both halves. The only shapes that answer differently are
+        // those spelling a container suffix in percent-encoded form (`u%2Etar`), which
+        // are no longer read as archives — RemoteLocation::normalize() decodes them on
+        // the way past, so such an address reaches the same normal form regardless.
+        const qsizetype pathStart = remotePathStart(path);
+        if (pathStart < 0)
+            return std::nullopt;
+        const QStringView rawPath = QStringView(path).mid(pathStart);
+        const qsizetype cut = archiveCut(rawPath);
         if (cut < 0)
             return std::nullopt;
-        RemoteLocation containerUrl = *url;
-        containerUrl.path = url->path.left(cut);
+        const auto containerUrl = RemoteLocation::parse(path.left(pathStart + cut));
+        if (!containerUrl)
+            return std::nullopt;
+        // The cut was found in the RAW path and the container is what the URL makes of
+        // it, so the two are asked to agree before the split stands: a `#` or a `%2F`
+        // inside the component that carried the extension leaves a container the URL no
+        // longer reads as an archive, and returning one would make `ssh://h/u#a.tar/m` a
+        // bare compressed stream called `u`. Where they disagree this is no archive
+        // address at all, which is the answer the decoded cut used to give for free.
+        if (!isContainerName(containerUrl->path) && !isSingleStreamName(containerUrl->path))
+            return std::nullopt;
         ArchiveLocation loc;
-        loc.container = containerUrl.toString();
-        loc.member = url->path.mid(cut + 1);
+        loc.container = containerUrl->toString();
+        loc.member = rawPath.mid(cut + 1).toString();
         return loc;
     }
 

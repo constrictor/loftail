@@ -168,26 +168,22 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
     // the fuzzer's `:////../` and `:/../a.zst` both pass —
     // corpus/address/a036_resource_path_cleaned_below_its_root.
     //
-    // THE ONE NARROWING LEFT IS A REMOTE ARCHIVE MEMBER HOLDING A PERCENT SIGN, and it
-    // is a FINDING kept rather than fixed. ArchiveLocation::split() takes a remote
-    // member out of the URL's DECODED path and toString() appends it verbatim while
-    // re-encoding only the container, so one decode happens per normalize:
-    // `ssh://h/u.tar/b%2520c` answers `ssh://h:22/u.tar/b%20c` and then
-    // `ssh://h:22/u.tar/b c`, which is a third spelling again. It is neither 47's nor
-    // 48's — nothing local is involved and no cleaner runs — and it needs a ruling about
-    // whether an archive member inside a remote address is an encoded part of that
-    // address or an opaque string (bugs.md 49). Reported, not fixed.
-    // corpus/address/a037_percent_in_a_remote_archive_member is the input.
-    const auto archived = ArchiveLocation::split(address);
-    const bool remoteMemberCarriesAPercent = archived && !archived->member.isEmpty()
-        && RemoteLocation::isRemote(archived->container) && archived->member.contains(u'%');
-    if (!remoteMemberCarriesAPercent) {
-        const QString logNormal = normalizeLogPath(address);
-        FUZZ_CHECK(normalizeLogPath(logNormal) == logNormal, "normalizeLogPath is idempotent");
+    // UNCONDITIONAL OVER A REMOTE ARCHIVE MEMBER SINCE bugs.md 49 WAS TAKEN, where this
+    // was narrowed to a member holding no percent sign. ArchiveLocation::split() cut the
+    // URL's DECODED path and toString() appended the member back verbatim, so one decode
+    // happened per normalize and none of them was undone: `ssh://h/u.tar/b%2520c`
+    // answered `ssh://h:22/u.tar/b%20c` and then `ssh://h:22/u.tar/b c`, a fixed point
+    // only three spellings later. It was neither 47's defect nor 48's — nothing local is
+    // involved and no cleaner runs — and the ruling was that the MEMBER IS OPAQUE: it is
+    // taken off the raw address now, exactly as the local branch always took it, so it
+    // is neither encoded nor decoded in either direction and the two branches agree.
+    // corpus/address/a037_percent_in_a_remote_archive_member is the input, and it now
+    // passes by normalizing to one spelling.
+    const QString logNormal = normalizeLogPath(address);
+    FUZZ_CHECK(normalizeLogPath(logNormal) == logNormal, "normalizeLogPath is idempotent");
 
-        const QString key = logSettingsKey(address);
-        FUZZ_CHECK(logSettingsKey(key) == key, "logSettingsKey is idempotent");
-    }
+    const QString key = logSettingsKey(address);
+    FUZZ_CHECK(logSettingsKey(key) == key, "logSettingsKey is idempotent");
 
     const QString stripped = RemoteLocation::withoutPassword(address);
     checkNoPassword(stripped, password, "withoutPassword() drops the password");

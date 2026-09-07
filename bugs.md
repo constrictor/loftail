@@ -456,8 +456,8 @@ by somebody looking. Four are the fuzzer's, one came out of reading the lines a
 coverage report said had never executed, and one out of a test whose first draft
 asserted the wrong thing and was right to. Each was recorded with the ruling it
 needs, because five of them have two defensible answers and the choice is the
-user's; seven have since been taken and fixed, and the one still open is entry 49,
-which the last of those fixes raised on its way out. The last five arrived in a chain,
+user's; all eight have since been taken and fixed, each one's ruling the user's own.
+The last five arrived in a chain,
 each one the previous one's fix asserting a property whole and the fuzzer answering
 with another address that is not a fixed point of its own normal form, for a reason
 that has nothing to do with the one before it.
@@ -610,7 +610,7 @@ address. `tests/fuzz/corpus/address/a033_dot_slash_before_a_container` is the in
 that found it; the fuzz target's fixed-point property is unconditional again, as
 entry 44's was, and is now stated over `logSettingsKey()` as well.
 
-Entry 48 has gone last, and it is the chain's fourth link: an address that is not a fixed
+Entry 48 has gone next, and it is the chain's fourth link: an address that is not a fixed
 point of its own normal form for a fourth unrelated reason, found by the fuzz target
 within two minutes of entry 47's property being asserted whole. `QFileInfo` treats a
 path with an embedded NUL as a broken filename, and `absoluteFilePath()` then answers a
@@ -642,8 +642,8 @@ file dialog can produce one, so the ways in were a hand-edited session file or
 `logsettings.json` (JSON spells `\u0000` happily) and a drag whose URL was built by
 something else. `tests/fuzz/corpus/address/a034_nul_and_dotdot_in_a_relative_path` and
 `a035_nul_and_dotdot_before_a_container` are the inputs, and the fuzz target's
-idempotence property was stated for every address again — until entry 49 below, which
-that very run turned up, narrowed it once more one level up.
+idempotence property was stated for every address again — until entry 49, which that
+very run turned up, narrowed it once more one level up.
 
 A sibling turned up in the same run and was answered by entry 47's own fix, which is
 worth recording because it is that entry's root reached from the other side. A Qt
@@ -660,48 +660,50 @@ down. That is a guard against a regression rather than a repair of anything — 
 that was never absolute to begin with is still a key that means a different file from a
 different working directory, which is what the refusal above is for.
 
----
+Entry 49 has gone last, and it is the chain's fifth link and the first with nothing
+local in it: a remote archive address whose two halves disagreed about what a member
+is. `ArchiveLocation::split()` parsed the container as a URL and took the member out of
+its DECODED path, while `toString()` re-encoded the container and appended the member
+VERBATIM — so one decode happened per normalize and none of them was ever undone.
+`ssh://h/u.tar/b%2520c` answered `ssh://h:22/u.tar/b%20c`, which answered
+`ssh://h:22/u.tar/b c`, a fixed point three spellings later. Neither 47's loop nor 48's
+refusal could reach it: no cleaner runs on that path and no `QFileInfo` is asked
+anything. The reach was narrow — a member whose real name inside the archive holds a
+percent followed by two hex digits, `report%20final.log`, the shape a name that was once
+a URL comes back as, on a host, inside a container — and its cost was this class's usual
+one: two slots out of the pool of 500, filters, rules and format written under one name
+and read back under another, two spools and two tab labels.
 
-### 49. A percent sign in a remote archive member is decoded once per normalize
+Refusing was not available, `report%20final.log` naming a file that really is in the
+archive exactly as `//a.zip` named one, so the ruling was which half is authoritative,
+and the user took the second of the two: THE MEMBER IS OPAQUE. It is cut out of the raw
+address now — exactly as the local branch has taken its member since M12, so the two
+branches agree at last — and is neither percent-encoded on the way out nor decoded on
+the way in, while the container half goes on being normalized as a URL and keeps every
+refusal that lives there. The alternative, encoding the member on the way out so that
+the address is a URL all the way through, was rejected for what it costs outside the
+defect: it respells every stored member, wanting the legacy-key migration
+`logSettingsKey()` got, and it moves what `logMatchTarget()` shows a file pattern, so a
+pattern could silently stop matching. This answer has no stored-state consequence at all,
+and it makes `decodedAddress()`'s standing comment — "the member is stored verbatim and
+was never encoded" — true, which it had not been for the remote branch since M12.
 
-Found by the address fuzz target within five minutes of entry 48's property being
-asserted whole, which makes it the chain's fifth link and the fourth found this way. A
-remote archived address is split by `ArchiveLocation::split()`, which parses the
-container as a URL and takes the member out of its **decoded** path — and
-`ArchiveLocation::toString()` then re-encodes the container while appending the member
-**verbatim**. So one decode happens per normalize and none of them is undone:
-`ssh://h/u.tar/b%2520c` answers `ssh://h:22/u.tar/b%20c`, which answers
-`ssh://h:22/u.tar/b c`, which is finally a fixed point three spellings later.
-
-It is neither entry 47's nor entry 48's. Nothing local is involved, no cleaner runs and
-no `QFileInfo` is asked anything — the whole of it is that the two halves of an archive
-address disagree about whether the member is part of the URL. A local container is
-unaffected, `split()` taking its member straight off the string; a remote member with no
-percent sign in it is unaffected, there being nothing to decode.
-
-The cost is this class's usual one, and the reach is larger than entry 48's without
-being large: the member has to be a file whose real name inside the archive contains a
-`%` followed by two hex digits — `report%20final.log`, the shape a name that was once a
-URL comes back as — on a host, inside a container, which is a narrow enough intersection
-that nobody has hit it. What it costs when somebody does is two spellings of one log: a
-second slot out of the pool of 500, filters, rules and format written under one name and
-read back under another, two spool entries and two tab labels.
-
-The ruling is a genuine question and is why this is recorded rather than fixed, and it
-is not either of the two the pass has already taken. Refusing the address is wrong here
-— the member names a file that is really in the archive, exactly as `//a.zip` named one
-— so the answer is a repair, and the question is **which half is authoritative**: encode
-the member on the way out, so that a remote archive address is a URL all the way through
-and `split()` decodes what `toString()` wrote, or leave the member opaque and take it off
-the **raw** string rather than the decoded path, so that it is never encoded or decoded
-at all. The first keeps the address round-trippable through `QUrl` and changes what
-`logMatchTarget()` shows a file pattern; the second keeps every existing spelling and
-makes a remote archive address something less than a URL. Either is a change to the
-stored spelling of such a log, so whichever is taken wants the same migration thought
-that `logSettingsKey()`'s legacy fallback got.
-`tests/fuzz/corpus/address/a037_percent_in_a_remote_archive_member` is the input, and
-the fuzz target's idempotence property is narrowed to exclude a remote container whose
-member holds a percent sign, with that name in the comment.
+Two things about the cut are worth keeping. It is taken in the string the member comes
+out of and never transplanted from the decoded path, whose offsets are a different
+arithmetic: the RAW path is cut and the container is re-parsed from the raw address to
+its left, so one offset serves both halves. And the two are then asked to AGREE — a
+container the URL no longer reads as an archive means this was no archive address, which
+is what the decoded cut used to answer for free and what stops `ssh://h/u#a.tar/m`
+becoming a bare compressed stream called `u`. The one shape that answers differently is
+an address spelling a container suffix in percent-encoded form (`u%2Etar`), which is no
+longer read as an archive — `RemoteLocation::normalize()` decodes it on the way past, so
+such an address reaches the same normal form regardless. A `#` or a `?` inside a member
+is strictly better off: `QUrl` read them as a fragment and a query, so
+`ssh://h/u.tar/a#b.log` used to normalize to `.../a`, naming a member that is not the one
+asked for. `tests/fuzz/corpus/address/a037_percent_in_a_remote_archive_member` is the
+input, and the fuzz target's idempotence property is unconditional again — and stayed
+unconditional through seventeen minutes and eleven million further addresses, which is
+the first run of this pass to find nothing.
 
 ## Seen but not confirmed
 

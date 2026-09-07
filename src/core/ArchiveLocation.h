@@ -50,6 +50,13 @@ struct ArchiveLocation
     // The path inside it. EMPTY has two very different meanings, distinguished by
     // isSingleStream(): a `.gz` has exactly one member and never names it, while a
     // `.zip` with no member named is an address that is not yet openable.
+    //
+    // OPAQUE, in both branches: it is taken off the address AS WRITTEN and appended as
+    // written, never percent-encoded on the way out and never decoded on the way in,
+    // where the container half IS a URL and is normalized as one. Cut the URL's decoded
+    // path instead — which the remote branch did until bugs.md 49 — and a member holding
+    // a percent sign loses one layer of encoding per normalize, so one log has as many
+    // spellings as it has layers.
     QString member;
 
     // --- Classification. Pure string work: no I/O, no content sniffing, so it gives

@@ -53,6 +53,7 @@ private slots:
     void normalizeIsIdempotentAndWorkingDirectoryIndependent();
     void theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled_data();
     void theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled();
+    void theContainerIsNormalizedAsAUrlAndTheMemberIsNot();
     void anExistingRegularFileIsNeverSplit();
     void aRemoteContainerSplitsAndKeepsItsAddress();
     void displayNamesReadLikeALog();
@@ -240,6 +241,39 @@ void TestArchiveLocation::theSecondNormalizeMovesNothingHoweverTheContainerIsSpe
     QTest::newRow("nul inside a member")
         << (QDir::rootPath() + QStringLiteral("srv/b.zip/a") + QChar(u'\0')
             + QStringLiteral(".log"));
+
+    // A PERCENT SIGN IN A REMOTE MEMBER, which is the fourth route to two spellings and
+    // the first that has nothing local in it: split() cut the URL's DECODED path while
+    // toString() appended the member verbatim, so one decode happened per normalize and
+    // none was undone — `b%2520c`, `b%20c`, `b c`, three spellings and a fixed point
+    // only at the third (bugs.md 49). The member is taken off the RAW string now, as the
+    // local branch always has, so it is neither encoded nor decoded in either direction.
+    QTest::newRow("a037 percent in a remote archive member")
+        << QStringLiteral("ssh://h/u.tar/b%2520c");
+    QTest::newRow("percent in a remote single-stream member")
+        << QStringLiteral("ssh://h/b.tar.gz/logs/b%2520c.log");
+
+    // THE SHAPES THAT WERE ALREADY FIXED POINTS, so that the repair cannot be made by
+    // moving the defect: a remote member with nothing to decode, one already decoded
+    // (whose address QUrl refuses outright, a raw space being no URL), and the local
+    // branch, which has taken its member off the raw string since M12.
+    QTest::newRow("remote member spelled plainly") << QStringLiteral("ssh://h/u.tar/plain.log");
+    QTest::newRow("remote member with a literal space") << QStringLiteral("ssh://h/u.tar/b c.log");
+    QTest::newRow("local member with a percent")
+        << (QDir::rootPath() + QStringLiteral("srv/u.tar/b%2520c"));
+
+    // A `#` and a `?` inside a member, which QUrl reads as a fragment and a query and
+    // which the old cut therefore threw away — `ssh://h/u.tar/a#b.log` normalized to
+    // `.../a`, naming a member that is not the one asked for. Taken off the raw string
+    // they survive, and both spellings are fixed points either way.
+    QTest::newRow("hash inside a member") << QStringLiteral("ssh://h/u.tar/a#b.log");
+    QTest::newRow("question mark inside a member") << QStringLiteral("ssh://h/u.tar/a?b.log");
+    // The same two characters inside the component that carries the extension, where
+    // the raw cut and the URL disagree about whether there is a container at all.
+    QTest::newRow("hash inside the container component") << QStringLiteral("ssh://h/u#a.tar/m");
+    QTest::newRow("query after the container") << QStringLiteral("ssh://h/u.tar?q/m");
+    QTest::newRow("encoded separator in the container")
+        << QStringLiteral("ssh://h/a%2Fb.tar/m");
 }
 
 void TestArchiveLocation::theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled()
@@ -259,6 +293,35 @@ void TestArchiveLocation::theSecondNormalizeMovesNothingHoweverTheContainerIsSpe
     // surface the two spellings cost a slot on.
     const QString key = logSettingsKey(address);
     QCOMPARE(logSettingsKey(key), key);
+}
+
+void TestArchiveLocation::theContainerIsNormalizedAsAUrlAndTheMemberIsNot()
+{
+    // THE SHAPE OF THE RULING (bugs.md 49): the two halves of a remote archive address
+    // are not the same kind of string. The container is a URL and goes on being one —
+    // it grows its `:22`, and the refusals that live on that path stand — while the
+    // member is OPAQUE, taken off the address as written and appended as written, so
+    // that it is never percent-encoded on the way out or percent-decoded on the way in.
+    // Either half alone reads as arbitrary; together they are what makes one log have
+    // one spelling.
+    const auto loc = ArchiveLocation::split(QStringLiteral("ssh://h/u.tar/b%2520c"));
+    QVERIFY(loc.has_value());
+    QCOMPARE(loc->container, QStringLiteral("ssh://h:22/u.tar")); // normalized: the port
+    QCOMPARE(loc->member, QStringLiteral("b%2520c"));             // untouched: verbatim
+    QCOMPARE(loc->toString(), QStringLiteral("ssh://h:22/u.tar/b%2520c"));
+
+    // A member that a URL would encode is left alone in the same way, which is what
+    // keeps logMatchTarget() showing a file pattern the name the member really has.
+    const auto hashed = ArchiveLocation::split(QStringLiteral("ssh://h/u.tar/a#b.log"));
+    QVERIFY(hashed.has_value());
+    QCOMPARE(hashed->member, QStringLiteral("a#b.log"));
+
+    // And the container's own refusals are still the address's: a port out of range and
+    // a Unicode noncharacter are decided with no I/O at RemoteLocation::parse(), so an
+    // address carrying one is no archive address either (bugs.md 44, 45).
+    QVERIFY(!ArchiveLocation::split(QStringLiteral("ssh://h:0/u.tar/m")).has_value());
+    QVERIFY(!ArchiveLocation::split(QStringLiteral("ssh://h/u.tar/m") + QChar(0xFFFF))
+                 .has_value());
 }
 
 void TestArchiveLocation::anExistingRegularFileIsNeverSplit()
