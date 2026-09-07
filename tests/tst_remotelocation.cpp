@@ -59,6 +59,7 @@ private slots:
     void anAddressHoldingANoncharacterIsRefusedRatherThanRespelled();
     void normalizingAnAddressTwiceIsNormalizingItOnce();
     void normalizingAnAddressTwiceIsNormalizingItOnce_data();
+    void aPortOutsideTheTcpRangeIsARefusedAddressAndNotAFailedConnect();
     void availabilityIsOptimisticForRemote();
     void presenceTellsAnAbsentLogFromAnUnreadableOne();
     void settingsKeyIsWorkingDirectoryIndependent();
@@ -437,6 +438,69 @@ void TestRemoteLocation::anAddressHoldingANoncharacterIsRefusedRatherThanRespell
     QVERIFY2(error.contains(QStringLiteral("deploy")), qPrintable(error)); // which login
 }
 
+// bugs.md 45. A PORT IS RANGE-CHECKED WHERE EVERY OTHER PART OF AN ADDRESS IS — at
+// parse(), with no I/O, so the open fails and names the address (M17). QUrl::port(22)
+// substitutes the default only where the address spells NO port, so an explicit `:0`
+// used to be taken at face value: target() answered `user@host:0`, SshSessionCache
+// keyed on it, and connectTo() handed it to a socket, which reported it as though the
+// host had refused the connection.
+//
+// WHICH LAYER REFUSES WHAT: the lower bound is loftail's, the upper bound is Qt's as
+// well as loftail's. `ssh://h:65536/p` and `ssh://h:-1/p` are already invalid URLs
+// (measured on Qt 6.10), so the upper half of the check is unreachable today — it is
+// written out all the same, so that the set of addresses loftail accepts is not a
+// function of the Qt build. Either way, this case asserts the refusal and not who
+// performed it.
+void TestRemoteLocation::aPortOutsideTheTcpRangeIsARefusedAddressAndNotAFailedConnect()
+{
+    // Refused. `:0` is the fuzzer's input (corpus/address/a027_explicit_port_zero);
+    // `:00` is the same value spelled so that QUrl still reads a port; the last two are
+    // out of range at the top and below zero, which Qt refuses first.
+    for (const QString &bad : {QStringLiteral("ssh://h:0/p"),
+                               QStringLiteral("ssh://h:00/p"),
+                               QStringLiteral("ssh://u@h:0/var/log/app.log"),
+                               QStringLiteral("sftp://h:0/p"),
+                               QStringLiteral("ssh://h:65536/p"),
+                               QStringLiteral("ssh://h:-1/p")}) {
+        QVERIFY2(!RemoteLocation::parse(bad).has_value(), qPrintable(bad));
+        // And so it names no log: a refusal that fails the open, never a tab waiting
+        // for a machine that cannot be reached on a port that is not one.
+        QVERIFY2(!logPathIsWellFormed(bad), qPrintable(bad));
+        // A refused address normalizes to itself, so it is still a fixed point.
+        QCOMPARE(RemoteLocation::normalize(bad), bad);
+    }
+
+    // The boundary sits at 1 and at 65535, and both ends are ACCEPTED.
+    const auto lowest = RemoteLocation::parse(QStringLiteral("ssh://h:1/p"));
+    QVERIFY(lowest.has_value());
+    QCOMPARE(lowest->port, 1);
+    const auto highest = RemoteLocation::parse(QStringLiteral("ssh://h:65535/p"));
+    QVERIFY(highest.has_value());
+    QCOMPARE(highest->port, 65535);
+    QCOMPARE(highest->toString(), QStringLiteral("ssh://h:65535/p"));
+
+    // An address that spells no port at all is untouched: that is the one case
+    // QUrl::port(default) was always answering, and it still defaults to 22 — as does
+    // an empty `:`, which spells no port either.
+    const auto none = RemoteLocation::parse(QStringLiteral("ssh://h/p"));
+    QVERIFY(none.has_value());
+    QCOMPARE(none->port, RemoteLocation::kDefaultPort);
+    const auto colon = RemoteLocation::parse(QStringLiteral("ssh://h:/p"));
+    QVERIFY(colon.has_value());
+    QCOMPARE(colon->port, RemoteLocation::kDefaultPort);
+
+    // What the user is told, and the rule the refusal path carries: the address is
+    // quoted VERBATIM, because parse() refused it and so never dropped its password —
+    // so the reason goes through withoutPassword() like every other unparseable one.
+    QString error;
+    const QString withSecret = QStringLiteral("ssh://deploy:hunter2@web1:0/var/log/app.log");
+    QVERIFY(!openLogSource(withSecret, OpenPolicy::Interactive, &error));
+    QVERIFY2(!error.isEmpty(), qPrintable(error));
+    QVERIFY2(!error.contains(QStringLiteral("hunter2")), qPrintable(error));
+    QVERIFY2(error.contains(QStringLiteral("web1")), qPrintable(error));
+    QVERIFY2(error.contains(QStringLiteral("deploy")), qPrintable(error)); // which login
+}
+
 void TestRemoteLocation::normalizingAnAddressTwiceIsNormalizingItOnce_data()
 {
     QTest::addColumn<QString>("address");
@@ -460,6 +524,8 @@ void TestRemoteLocation::normalizingAnAddressTwiceIsNormalizingItOnce_data()
     QTest::newRow("a030 noncharacter in user") << QStringLiteral("ssh://￿u:p@os/togs/sbn.zip/");
     QTest::newRow("noncharacter FDD0") << QStringLiteral("ssh://h/x﷐y");
     QTest::newRow("noncharacter astral") << QString::fromUcs4(U"ssh://h/x\U0001FFFEy");
+    QTest::newRow("a027 explicit port zero") << QStringLiteral("sftp://hoh:0/");
+    QTest::newRow("port out of range") << QStringLiteral("ssh://h:65536/p");
 }
 
 // THE INVARIANT ITSELF, which is stronger than asserting the refusal: normalize() is

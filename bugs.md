@@ -456,7 +456,7 @@ by somebody looking. Four are the fuzzer's, one came out of reading the lines a
 coverage report said had never executed, and one out of a test whose first draft
 asserted the wrong thing and was right to. Each was recorded with the ruling it
 needs, because four of them have two defensible answers and the choice is the
-user's; three of them have since been taken and fixed. Entry 47 is the last of
+user's; four of them have since been taken and fixed. Entry 47 is the last of
 them and arrived after the others: taking entry 44's fix meant asserting its
 property whole, and the fuzzer answered with a second address that is not a fixed
 point of its own normal form, for a reason that has nothing to do with the first.
@@ -530,23 +530,24 @@ property tautological — and that property, now asserted for every address rath
 than with the two noncharacter inputs excused, is the thing that would find a
 second class of character if one ever appeared.
 
----
-
-### 45. `ssh://host:0/path` parses, and port 0 survives into the connect
-
-`QUrl::port(default)` substitutes the default only when the address spells **no**
-port. An explicit `:0` is a port the address spells, so it is taken at face value:
-`RemoteLocation::parse()` accepts it, `target()` answers `user@host:0`, the
-session cache keys on that, and `connectTo()` is handed it. Port 0 is not a port —
-a connect to it fails, and what the user gets is a transport error rather than the
-address error it is.
-
-The cost is small and the fix is smaller: it is here because it is the shape of a
-class rather than because it hurts. Every other range check on that address is
-done at parse time and reported as a malformed address, which keeps the tab and
-names the reason; this one is deferred to the far end and reported as though the
-host had refused. Found by the address fuzz target;
-`tests/fuzz/corpus/address/a027_explicit_port_zero`.
+Entry 45 has gone with it, and it is the same shape one field over: a port outside
+1..65535 is a malformed address now, refused at `RemoteLocation::parse()` where
+every other part of an address is judged. `QUrl::port(default)` substitutes the
+default only where the address spells NO port, so an explicit `:0` was a port the
+address spelled and was taken at face value — `target()` answered `user@host:0`,
+`SshSessionCache` keyed on that, `connectTo()` handed it to a socket, and what the
+user was shown was a transport error against a machine that was up. The refusal is
+decided with no I/O, so per M17 it fails the open and names the address over
+`withoutPassword()`, which is the reply every unparseable address already gets. The
+lower bound is loftail's alone; the upper is Qt's as well — `ssh://h:65536/p` and
+`ssh://h:-1/p` are already invalid URLs — and it is written out all the same, so
+that the set of addresses loftail accepts is not a function of the Qt build, which
+is entry 44's own argument. Nothing else carries a port past that check: the Open
+Remote dialog's spin box is 1..65535, and a hand-edited `hosts.json` reaches an
+open only through `locationFor().toString()` and back through `parse()`, so it is
+refused there rather than repaired in the store — repairing it would silently open
+a different host from the one the file names. The fuzz target's port property is
+the whole range now, where it was `>= 0` with the gap written out in a comment.
 
 ---
 

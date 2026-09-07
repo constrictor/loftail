@@ -58,6 +58,11 @@ struct RemoteLocation
     // two spellings. Refused rather than repaired, and refused HERE, because it is
     // decidable with no I/O — see the .cpp for why the rule is the sixty-six code
     // points and not a round trip.
+    //
+    // And nullopt for a port outside 1..65535. `QUrl::port(default)` substitutes the
+    // default only where the address spells no port at all, so an explicit `:0` is
+    // taken at face value and 0 is not a port — it would reach target(), the session
+    // cache key and the connect, and be reported as though the host had refused.
     static std::optional<RemoteLocation> parse(const QString &s);
 
     // `s` in normal form, or `s` unchanged when it is not a remote URL. Every entry

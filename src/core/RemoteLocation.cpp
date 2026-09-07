@@ -148,6 +148,23 @@ std::optional<RemoteLocation> RemoteLocation::parse(const QString &s)
         || holdsNoncharacter(loc.path)) {
         return std::nullopt;
     }
+    // A PORT OUT OF RANGE IS A MALFORMED ADDRESS AND IS REFUSED HERE, for the reason
+    // every other range check on an address already is: it is decidable with no I/O
+    // (M17), so it fails the open and names the address, where a port carried through
+    // is reported by the far end as though the host had refused the connection.
+    //
+    // QUrl::port(default) substitutes the default only where the address spells NO port
+    // — `ssh://h/p` and `ssh://h:/p` both answer 22 — so an explicit `:0` is a port the
+    // address spells and comes back as 0, which is not a port: target() answers
+    // `user@host:0`, SshSessionCache keys on it and connectTo() hands it to a socket.
+    //
+    // The lower half is this check's alone. The upper half is Qt's today — `ssh://h:65536/p`
+    // and `ssh://h:-1/p` are already invalid URLs, measured on 6.10 — and it is written
+    // out all the same, because the set of addresses loftail accepts must not be a
+    // function of the Qt build (entry 44's argument, same file): a session file written
+    // against one Qt would otherwise be refused against another. One comparison.
+    if (loc.port < 1 || loc.port > 65535)
+        return std::nullopt;
     return loc;
 }
 

@@ -73,6 +73,7 @@ private slots:
     void findComparesTheUserAsWrittenAndNotTheOneAConnectWouldFillIn();
     void bookmarkBuildsItsLocationAndOptions();
     void theCompressionChoiceSurvivesAndReadsBackFromAnOlderFile();
+    void aHandEditedPortOfZeroIsRefusedWhereTheAddressIsParsed();
     void credentialCacheAsksOncePerHost();
     void aPasswordNeverLeaksIntoAPathString();
     // M14 — the keychain, and what it does and does not change about the file above.
@@ -439,6 +440,52 @@ void TestHostBookmarks::theCompressionChoiceSurvivesAndReadsBackFromAnOlderFile(
     QCOMPARE(back.size(), 1); // read, not refused
     QCOMPARE(back.at(0).host, QStringLiteral("web1.example.com"));
     QVERIFY2(!back.at(0).compress, "an absent key is the default, not a rejected file");
+}
+
+// bugs.md 45. THE STORE DOES NOT RANGE-CHECK A PORT AND DELIBERATELY DOES NOT NEED TO.
+// Nothing loftail writes can put one out of range there — the Open Remote dialog's spin
+// box is 1..65535 and a bookmark is only ever built from its fields — so the only way a
+// hosts.json holds `"port": 0` is a hand edit or a file from somewhere else. Every route
+// from a bookmark to an open goes through locationFor().toString() and back through
+// RemoteLocation::parse() (MainWindow::openRemoteBookmark), which is where the refusal
+// lives: the address is reported as malformed, which is what it is, instead of being
+// carried into a connect that the far end fails.
+//
+// Repairing it in the store was the alternative and was not taken: it would silently
+// open a different host from the one the file names, and the entry keeps whatever a
+// person put in it until they open the dialog, whose spin box clamps it on sight.
+void TestHostBookmarks::aHandEditedPortOfZeroIsRefusedWhereTheAddressIsParsed()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    HostBookmarkStore store(dir.path());
+    QVERIFY(store.save(sample()));
+
+    QFile f(store.filePath());
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+    f.close();
+    QJsonArray hosts = root.value(QStringLiteral("hosts")).toArray();
+    QCOMPARE(hosts.size(), 1);
+    QJsonObject only = hosts.at(0).toObject();
+    only.insert(QStringLiteral("port"), 0);
+    hosts.replace(0, only);
+    root.insert(QStringLiteral("hosts"), hosts);
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    f.write(QJsonDocument(root).toJson());
+    f.close();
+
+    const QVector<HostBookmark> back = store.all();
+    QCOMPARE(back.size(), 1); // read, not refused — the file is still well-formed JSON
+    QCOMPARE(back.at(0).port, 0);
+
+    // And the address it builds is refused where every address is judged, so the open
+    // fails with a reason rather than reaching a socket.
+    const QString address =
+        back.at(0).locationFor(QStringLiteral("/var/log/app.log")).toString();
+    QCOMPARE(address, QStringLiteral("ssh://deploy@web1.example.com:0/var/log/app.log"));
+    QVERIFY(!RemoteLocation::parse(address).has_value());
+    QCOMPARE(RemoteLocation::normalize(address), address); // unchanged, still a fixed point
 }
 
 void TestHostBookmarks::credentialCacheAsksOncePerHost()

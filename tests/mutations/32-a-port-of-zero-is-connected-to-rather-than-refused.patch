@@ -1,0 +1,62 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (SPEC.md §3 / M17's no-I/O refusals; bugs.md 45):
+#   A port outside 1..65535 is a MALFORMED ADDRESS and is refused at
+#   RemoteLocation::parse(), where every other part of an address is judged, and
+#   not carried into a connect. QUrl::port(default) substitutes the default only
+#   where the address spells NO port, so an explicit `:0` is a port the address
+#   spells and comes back as 0
+#
+# GUARD: tst_remotelocation::aPortOutsideTheTcpRangeIsARefusedAddressAndNotAFailedConnect
+#
+# SILENT WHEN BROKEN: `ssh://host:0/path` opens a tab, target() answers
+# `user@host:0`, SshSessionCache keys on that string and connectTo() hands the 0
+# to a socket. What the user is then shown is a transport error against a machine
+# that is up and reachable — the address error reported as though the host had
+# refused the connection — with nothing anywhere naming the port as the thing
+# that is wrong, and with the M17 refusal that would have named it never reached
+# because logPathIsWellFormed() answered true.
+
+diff --git a/src/core/RemoteLocation.cpp b/src/core/RemoteLocation.cpp
+--- a/src/core/RemoteLocation.cpp
++++ b/src/core/RemoteLocation.cpp
+@@ -148,23 +148,6 @@
+         || holdsNoncharacter(loc.path)) {
+         return std::nullopt;
+     }
+-    // A PORT OUT OF RANGE IS A MALFORMED ADDRESS AND IS REFUSED HERE, for the reason
+-    // every other range check on an address already is: it is decidable with no I/O
+-    // (M17), so it fails the open and names the address, where a port carried through
+-    // is reported by the far end as though the host had refused the connection.
+-    //
+-    // QUrl::port(default) substitutes the default only where the address spells NO port
+-    // — `ssh://h/p` and `ssh://h:/p` both answer 22 — so an explicit `:0` is a port the
+-    // address spells and comes back as 0, which is not a port: target() answers
+-    // `user@host:0`, SshSessionCache keys on it and connectTo() hands it to a socket.
+-    //
+-    // The lower half is this check's alone. The upper half is Qt's today — `ssh://h:65536/p`
+-    // and `ssh://h:-1/p` are already invalid URLs, measured on 6.10 — and it is written
+-    // out all the same, because the set of addresses loftail accepts must not be a
+-    // function of the Qt build (entry 44's argument, same file): a session file written
+-    // against one Qt would otherwise be refused against another. One comparison.
+-    if (loc.port < 1 || loc.port > 65535)
+-        return std::nullopt;
+     return loc;
+ }
+ 

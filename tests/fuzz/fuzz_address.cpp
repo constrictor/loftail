@@ -148,14 +148,16 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
 
     if (auto loc = RemoteLocation::parse(address)) {
         FUZZ_CHECK(!loc->host.isEmpty(), "a parsed address has a host");
-        // >= 0 and not > 0, and the difference is a FINDING kept rather than
-        // fixed: `ssh://host:0/path` parses, because QUrl's port(default) fills
-        // the default in only for an address that spells NO port, and an explicit
-        // 0 is a port it spells. So the address survives into target() as
-        // `user@host:0` and would be connected to. Reported, not fixed — it is a
-        // product call whether an explicit port 0 is a refusal or a silent
-        // substitution. corpus/address/a027_explicit_port_zero is the input.
-        FUZZ_CHECK(loc->port >= 0, "a parsed address has a port");
+        // THE WHOLE TCP RANGE SINCE bugs.md 45 WAS TAKEN, where this was `>= 0`
+        // with the gap written out as a finding: `ssh://host:0/path` parsed,
+        // because QUrl's port(default) fills the default in only for an address
+        // that spells NO port, and an explicit 0 is a port it spells — so it
+        // survived into target(), the session-cache key and the connect, and was
+        // reported as though the host had refused. parse() refuses it now, which
+        // is what lets the property be the range itself.
+        // corpus/address/a027_explicit_port_zero is the input, and it passes by
+        // being refused.
+        FUZZ_CHECK(loc->port >= 1 && loc->port <= 65535, "a parsed address has a real port");
 
         checkNoPassword(remoteNormal, password, "the remote normal form carries no password");
 
