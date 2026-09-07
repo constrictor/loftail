@@ -171,7 +171,13 @@ QString ArchiveLocation::toString() const
 
     QString base = RemoteLocation::isRemote(container)
         ? RemoteLocation::normalize(container)
-        : QFileInfo(QDir::fromNativeSeparators(container)).absoluteFilePath();
+        // Cleaned to a FIXED POINT and not merely cleaned: absoluteFilePath() cleans
+        // once, and QDir::cleanPath() is not idempotent, so `/.//a.zip` would answer
+        // `//a.zip` here and `/a.zip` the next time this address was normalized — one
+        // log with two spellings, which is what every entry point normalizing and
+        // Document::prepare() normalizing AGAIN cannot survive (bugs.md 47).
+        : cleanedToFixedPoint(
+              QFileInfo(QDir::fromNativeSeparators(container)).absoluteFilePath());
 
     // The collapse rule: a bare compressed stream keeps its plain path and never grows
     // a member, so `/logs/app.log.gz` has exactly one spelling.

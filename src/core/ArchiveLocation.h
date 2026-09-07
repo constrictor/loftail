@@ -83,6 +83,12 @@ struct ArchiveLocation
     // `path` in normal form, or `path` unchanged when it addresses no archive. Every
     // entry point normalizes before the string becomes a Document path — see
     // normalizeLogPath(), which is the function call sites actually use.
+    //
+    // IT IS IDEMPOTENT: normalize(normalize(s)) == normalize(s) for every string, which
+    // is what those call sites rest on, Document::prepare() normalizing a SECOND time
+    // after the open path already has. The local branch of toString() cleans the
+    // container, and QDir::cleanPath() is not itself idempotent — see the .cpp, and do
+    // not simplify the loop there back to one call (bugs.md 47).
     static QString normalize(const QString &path);
 
     // Exactly one member, never named: the container is a bare compressed stream.

@@ -1,0 +1,71 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "ONE LOG, ONE SPELLING"; bugs.md 47):
+#   normalizeLogPath() and logSettingsKey() are IDEMPOTENT, and the whole settings
+#   tree turns on it — every entry point normalizes before the string becomes a
+#   Document::path() and Document::prepare() normalizes AGAIN, while
+#   LogFileStore::save() re-keys an address its caller has already keyed. Both
+#   clean a local path, and QDir::cleanPath() is NOT ITSELF IDEMPOTENT: dropping a
+#   `.` component leaves a separator behind at a position the collapse pass has
+#   already walked past, so `/.//a.zip` cleans to `//a.zip` and only a second pass
+#   reaches `/a.zip`. Both funnels run cleanedToFixedPoint() over what their own
+#   single clean answered, rather than taking that answer for clean
+#
+#   THE MUTATION IS THAT HELPER MADE THE IDENTITY, which is exactly the code as it
+#   shipped: the caller cleans once and believes the result. Cutting the LOOP down
+#   to a fixed count is deliberately not the mutation and is worth not
+#   re-attempting — swept over every string of up to nine characters drawn from
+#   `/`, `.` and `a`, one further pass settles every input there is, so no case a
+#   test could name separates one extra clean from the loop. The loop is the
+#   argument that a fixed count is wrong the day Qt's cleaner acquires another
+#   such wrinkle, which is about a future Qt rather than about an input that
+#   exists now, and a mutation nothing can kill would read as the rule being inert
+#   when it is merely forward-looking
+#
+# GUARD: tst_archivelocation::theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled
+#
+# SILENT WHEN BROKEN: an archived or local log spelled with a root-anchored `/.`
+# opens perfectly and has two spellings — the one the open path cleaned to and the
+# one Document::prepare() cleaned that into. Nothing reports it: the tab is right,
+# the records are right, and what is wrong is that the log burns a second slot out
+# of the pool of 500 and has its filters, highlight rules and format written under
+# one name and read back under the other, so every setting it is given is
+# forgotten on the next open. The address fuzz target sees it as a fixed-point
+# violation; a person sees a log that will not remember anything.
+
+diff --git a/src/core/RemoteLocation.cpp b/src/core/RemoteLocation.cpp
+--- a/src/core/RemoteLocation.cpp
++++ b/src/core/RemoteLocation.cpp
+@@ -409,15 +409,7 @@
+ // still moves is at least a DETERMINISTIC one, which is all any caller needs.
+ QString cleanedToFixedPoint(const QString &path)
+ {
+-    constexpr int kMaxCleanPasses = 4;
+-    QString cleaned = path;
+-    for (int pass = 0; pass < kMaxCleanPasses; ++pass) {
+-        const QString again = QDir::cleanPath(cleaned);
+-        if (again == cleaned)
+-            break;
+-        cleaned = again;
+-    }
+-    return (QDir::isAbsolutePath(path) && !QDir::isAbsolutePath(cleaned)) ? path : cleaned;
++    return path;
+ }
+ 
+ QString normalizeLogPath(const QString &s)

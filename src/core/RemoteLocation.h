@@ -149,6 +149,20 @@ struct RemoteLocation
 // needed them, and are archive-aware through ArchiveLocation (implemented in the .cpp
 // so this header stays the small value type it was).
 
+// A path cleaned until cleaning it again moves nothing.
+//
+// QDIR::CLEANPATH() IS NOT IDEMPOTENT, so its result is not necessarily clean, and both
+// of the functions below cleaned exactly once: `/.//a.zip` cleaned to `//a.zip` and only
+// a second pass reached `/a.zip`. That made normalizeLogPath() and logSettingsKey()
+// non-idempotent for such a path — which the tree cannot afford, every entry point
+// normalizing while Document::prepare() normalizes again, and LogFileStore::save()
+// re-keying an address its caller has already keyed (bugs.md 47). Both call it now; a
+// third site cleaning a path that a caller may hand back in should call it too. It
+// never makes a path LESS absolute — Qt hands a `:`-prefixed resource path back
+// unchanged and cleaning that can drop the prefix — and the .cpp carries that guard,
+// the termination argument and the bound.
+QString cleanedToFixedPoint(const QString &path);
+
 // Reduce a raw path to the ONE spelling that may become a Document::path(): a remote
 // URL to its normal form, an archived path to its container's normal form plus the
 // member, a plain path unchanged. Every entry point (open, drop, command line, recent

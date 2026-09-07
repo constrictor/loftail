@@ -448,7 +448,7 @@ that viewport gets small in the first place.
 
 ---
 
-A third pass, on 2026-09-07, raised entries 42 to 47. Different method from the two
+A third pass, on 2026-09-07, raised entries 42 to 48. Different method from the two
 before it: no agent drove the UI at all. These came out of building test
 infrastructure — a coverage measurement, five libFuzzer targets over the parsers
 and a mutation harness — and every one of them was found by a machine rather than
@@ -456,10 +456,11 @@ by somebody looking. Four are the fuzzer's, one came out of reading the lines a
 coverage report said had never executed, and one out of a test whose first draft
 asserted the wrong thing and was right to. Each was recorded with the ruling it
 needs, because four of them have two defensible answers and the choice is the
-user's; five of them have since been taken and fixed, and only entry 47 is still
-open. That one arrived after the others: taking entry 44's fix meant asserting its
-property whole, and the fuzzer answered with a second address that is not a fixed
-point of its own normal form, for a reason that has nothing to do with the first.
+user's; six have since been taken and fixed, and the one still open is entry 48, which
+the pass raised on its way out. The last three arrived in a chain, each one the
+previous one's fix asserting a property whole and the fuzzer answering with another
+address that is not a fixed point of its own normal form, for a reason that has
+nothing to do with the one before it.
 
 Entry 42 has gone: a literal `.` spelled after `%b`, `%a` or `%Z` inside `%d{...}`
 was claimed by two halves at once. The name run tolerates a trailing dot because
@@ -549,7 +550,7 @@ refused there rather than repaired in the store — repairing it would silently 
 a different host from the one the file names. The fuzz target's port property is
 the whole range now, where it was `>= 0` with the gap written out in a comment.
 
-Entry 46 has gone last, and it is the smallest of the five: the thread guard in
+Entry 46 went next, and it is the smallest of the six: the thread guard in
 `KeychainSecretStore::available()` sits above the probe LATCH now, not merely above
 the probe. It read `m_probed` first, so a store that had already probed answered
 from any thread — an unsynchronised read of a plain bool pair another thread wrote,
@@ -574,32 +575,92 @@ saying so, and `run-mutations.sh` skips such a patch rather than reporting SURVI
 about a binary that QSKIPped: every case in that file needs a real Secret Service,
 and a QSKIP exits 0.
 
----
-
-### 47. `QDir::cleanPath()` is not idempotent, so an archive container has two spellings
-
-Found by the address fuzz target within five minutes of entry 44's property being
-asserted, and it is entry 44's defect by a different route: `normalizeLogPath()`
-is not a fixed point for an archive address whose container path holds a leading
-`/.` in front of a `//`. `ArchiveLocation::toString()` cleans its container, and
-`QDir::cleanPath("/.//a.zip")` answers `//a.zip` — Qt keeping a leading double
-slash, which is a POSIX double-slash root — which cleans again to `/a.zip`. So
-`normalize(normalize(s))` is not `normalize(s)`, and the cost is exactly entry
-44's: every entry point normalizes and `Document::prepare()` normalizes again, so
-such a log has two settings keys, a second slot out of the pool of 500, and
+Entry 47 has gone last, and it is entry 44's defect by a road that has nothing to
+do with any character: `QDir::cleanPath()` is not idempotent, so its result is not
+necessarily clean. Dropping a `.` component leaves a separator behind at a position
+the collapse pass has already walked past, and `/.//a.zip` therefore cleans to
+`//a.zip` — a string Qt's own cleaner would never produce out of a clean input —
+which cleans again to `/a.zip`. It is not the POSIX double-slash root, which was the
+first reading and is wrong: Qt collapses a leading `//` the input SPELLS, so
+`//a.zip` and `///a.zip` were fixed points all along. And it is root-anchored rather
+than positional — any prefix that vanishes entirely leaves the leading pair, so
+`/a/.//..//b` does it too, while `/tmp/.//b.tar.gz` never did. Both funnels cleaned
+exactly once: `ArchiveLocation::toString()`'s LOCAL branch, through
+`absoluteFilePath()`, which is why a remote container was never affected —
+`RemoteLocation::normalize()` cleans no path component at all — and, found by the
+regression table rather than by the fuzzer, `logSettingsKey()`'s local branch, which
+is the same call over a plain log and which `LogFileStore::save()` re-applies to an
+address `MainWindow` has already keyed. The cost is exactly entry 44's, and for
+exactly its reason: every entry point normalizes and `Document::prepare()` normalizes
+again, so such a log had two spellings — a second slot out of the pool of 500, and
 settings written under one name and read back under the other.
 
-It is narrower than entry 44 in reach — it needs a `/.` immediately before a `//`,
-which no shell completion produces — and wider in that it is not about a character
-at all: any path shaped that way, remote or local, that also names an archive.
+The ruling was the user's and it is the opposite of entry 44's: a repair rather than
+a refusal, because `//a.zip` names a file that is really there where a noncharacter
+does not, and refusing it would decline to open a log that exists. `cleanedToFixedPoint()`
+is that repair and it is a LOOP rather than a second call — the defect is a property
+of Qt's cleaner and not of ours, so a fixed x2 is silently wrong the day that cleaner
+acquires another such wrinkle, and silence is the whole cost of this class of bug. It
+terminates by a written-down bound of four passes and not by an argument about
+`cleanPath`, which is Qt's property to keep rather than ours: swept over every string
+of up to nine characters drawn from `/`, `.` and `a`, the worst input needs two, and
+hitting the bound falls out with the last value, an address that still moves being at
+least a deterministic one. It costs 15 ns on a 1,360 ns normalize of an archive
+address. `tests/fuzz/corpus/address/a033_dot_slash_before_a_container` is the input
+that found it; the fuzz target's fixed-point property is unconditional again, as
+entry 44's was, and is now stated over `logSettingsKey()` as well.
 
-The ruling is a genuine question and is why this is recorded rather than fixed.
-Cleaning twice inside `ArchiveLocation::toString()` is one answer and is a
-one-liner; refusing the address is the other and is what entry 44 took, but a
-double slash names a real file where a noncharacter does not, so a refusal here
-would decline to open a log that exists. `tests/fuzz/corpus/address/a033_dot_slash_before_a_container`
-is the input, and `fuzz_address`'s idempotence property is narrowed around it with
-that name in the comment.
+---
+
+### 48. A path holding a NUL gets a settings key that is not absolute
+
+Found by the address fuzz target within two minutes of entry 47's property being
+asserted, and it is the third address in this pass that is not a fixed point of its
+own normal form — by a route that entry 47's loop cannot touch. `QFileInfo` treats a
+path with an embedded NUL as a broken filename, and `absoluteFilePath()` then answers
+a string that is still **relative**: `a\0/../b` answers `b`, and `a\0/..` answers
+`.`. So `logSettingsKey()`, whose whole job is a spelling that does not move with the
+working directory, hands back one that does — and applying it a second time resolves
+that relative answer against the cwd, which is how the fuzzer sees it. The archive
+funnel has the same shape one level up: `a\0/../b.tar.gz/m` normalizes through
+`ArchiveLocation::toString()`, whose local branch is the same call.
+
+It is not entry 47's defect and cleaning to a fixed point does not help, because the
+second pass is correct arithmetic over a first answer that was already wrong. Nor is
+it a `QDir::cleanPath()` question at all: the answer is relative before anything
+cleans it.
+
+A sibling turned up in the same run and IS answered, which is worth recording because
+it is the same root reached from the other side. A Qt **resource** path is the other
+thing `absoluteFilePath()` hands back unchanged rather than made absolute, and
+cleaning that answer throws away the prefix that gave it a meaning — `:/..` cleans to
+`.`. So entry 47's own fix would have traded one non-idempotent spelling for another
+had it cleaned unconditionally — and it did, twice, the fuzzer producing the plain-key
+shape and the archive shape within seven minutes of each other. `cleanedToFixedPoint()`
+therefore never makes a path LESS absolute: where the clean would, the uncleaned string
+stands, which is what both callers have always answered there. The guard is in the
+helper and not at either call site, so a third one cannot forget it. That is a guard
+against a regression and not a repair of this entry: a key that was never absolute is
+still a key that means a different file from a different working directory, and
+`tests/fuzz/corpus/address/a036_resource_path_cleaned_below_its_root` is what holds
+the guard down.
+
+The reach is the smallest of the pass by a wide margin. No filesystem can hold a NUL
+in a name, no `argv` can carry one, and no file dialog can produce one — the ways in
+are a hand-edited session file or `logsettings.json` (JSON spells `\u0000` happily)
+and a drag whose URL was built by something else. What it costs if one gets in is
+the ordinary cost of two spellings: a second slot out of the pool of 500, and
+settings written under one name and read back under another, plus a key that means a
+different file depending on where loftail was started from.
+
+The ruling is a genuine question and is why this is recorded rather than fixed. It is
+entry 44's shape — a character that does not survive the round trip — so refusing an
+address that holds a NUL at the entry points, decided with no I/O, is one answer and
+the consistent one; making `logSettingsKey()` re-absolutize its own answer is
+another, and is a repair of a symptom rather than of the address. `tests/fuzz/corpus/address/a034_nul_and_dotdot_in_a_relative_path`
+and `a035_nul_and_dotdot_before_a_container` are the inputs, and the fuzz target's
+idempotence property is narrowed to an address carrying no NUL with both names in the
+comment.
 
 ---
 

@@ -21,6 +21,7 @@
 #include "ArchiveLocation.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QFileInfo>
 #include <QLatin1String>
 #include <QStandardPaths>
@@ -370,6 +371,55 @@ LogPresence plainPresence(const QString &path)
 
 } // namespace
 
+// A path cleaned until cleaning it again moves nothing.
+//
+// QDIR::CLEANPATH() IS NOT IDEMPOTENT, so its result is not necessarily clean: dropping
+// a `.` component can leave a separator behind at a position the collapse pass has
+// already walked past, and `/.//a.zip` therefore cleans to `//a.zip` — a string Qt's own
+// cleaner would never produce out of a clean input — which cleans again to `/a.zip`. It
+// is root-anchored rather than positional: any prefix that vanishes entirely leaves the
+// leading pair, so `/a/.//..//b` does it too. Every entry point normalizes an address
+// and Document::prepare() normalizes it AGAIN, so a container spelled that way had two
+// spellings — a second settings slot out of the pool of 500, settings written under one
+// name and read back under the other, two spool entries and two tab labels (ONE LOG,
+// ONE SPELLING; bugs.md 47).
+//
+// A LOOP AND NOT A SECOND CALL: the defect is a property of Qt's cleaner rather than of
+// ours, so a fixed x2 is silently wrong the day that cleaner acquires another such
+// wrinkle, and silence is the whole cost of this class of bug. And a repair rather than
+// the refusal bugs.md 44 took for a noncharacter, because `//a.zip` names a file that is
+// really there: refusing it would decline to open a log that exists.
+//
+// IT NEVER MAKES A PATH LESS ABSOLUTE, which is the guard the fuzzer asked for within
+// seven minutes of the fix. absoluteFilePath() hands a Qt RESOURCE path back unchanged
+// rather than made absolute, and cleaning that answer throws away the prefix that gave
+// it a meaning: `:/..` cleans to `.`, which then resolves against the working directory
+// on its next application — one non-idempotent spelling traded for another. Where the
+// clean would do that the uncleaned string stands, which is what both callers have
+// always answered there. A key that was never absolute to begin with is a separate
+// finding and is NOT repaired here (bugs.md 48).
+//
+// IT TERMINATES BY THE BOUND, NOT BY THE ARGUMENT. cleanPath only ever deletes, so a
+// pass that moves the string shortens it and the walk is bounded by the string's own
+// length — but that is Qt's property to keep, not ours, so the count is written down as
+// well: this runs on the open path and on Document::prepare(), where a hang would be
+// worse than the bug. Swept over every string of up to nine characters drawn from `/`,
+// `.` and `a` (29,523 of them) the worst input needs TWO passes, so four is headroom
+// rather than a guess. Hitting the bound falls out with the last value — an address that
+// still moves is at least a DETERMINISTIC one, which is all any caller needs.
+QString cleanedToFixedPoint(const QString &path)
+{
+    constexpr int kMaxCleanPasses = 4;
+    QString cleaned = path;
+    for (int pass = 0; pass < kMaxCleanPasses; ++pass) {
+        const QString again = QDir::cleanPath(cleaned);
+        if (again == cleaned)
+            break;
+        cleaned = again;
+    }
+    return (QDir::isAbsolutePath(path) && !QDir::isAbsolutePath(cleaned)) ? path : cleaned;
+}
+
 QString normalizeLogPath(const QString &s)
 {
     // Archive first: its normal form contains a remote address when the container is
@@ -419,7 +469,11 @@ QString logSettingsKey(const QString &path)
     // absoluteFilePath() cleans `.` and `..` and resolves nothing, so it is stable
     // against the working directory (which is what the key is for) without being stable
     // against the file's own identity (which it deliberately no longer claims).
-    return QFileInfo(path).absoluteFilePath();
+    // Cleaned to a FIXED POINT, absoluteFilePath() cleaning only once and
+    // QDir::cleanPath() not being idempotent — LogFileStore::save() re-keys an address
+    // its caller has already keyed, so a spelling that moved on the second pass was
+    // written under one name and read back under another (bugs.md 47).
+    return cleanedToFixedPoint(QFileInfo(path).absoluteFilePath());
 }
 
 QString legacyLogSettingsKey(const QString &path)

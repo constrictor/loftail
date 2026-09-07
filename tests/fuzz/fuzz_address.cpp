@@ -34,7 +34,11 @@
 // claim that the second pass moves nothing. It held for every address but one
 // class — the sixty-six Unicode noncharacters, which toString() percent-encodes
 // and QUrl declines to give back — and those are refused at parse() now
-// (bugs.md 44), so the property is asserted whole.
+// (bugs.md 44), so the property is asserted whole. It then failed a second way
+// within five minutes, one level up: QDir::cleanPath() is not idempotent either,
+// so a container spelled `/.//a.zip` had two spellings for the same reason and at
+// the same cost. Both halves clean to a FIXED POINT now (bugs.md 47), and the
+// property is stated over normalizeLogPath() and logSettingsKey() as well.
 //
 // The password is recovered independently, with QUrl, so the check does not read
 // the answer off the very code under test. Two narrowings keep it a property
@@ -128,19 +132,46 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
     FUZZ_CHECK(RemoteLocation::normalize(remoteNormal) == remoteNormal,
                "normalize is idempotent");
 
-    // The same claim one level up, over the funnel the entry points actually
-    // call — and NARROWED to a path that names no archive, which is a FINDING
-    // kept rather than fixed. QDir::cleanPath() is not idempotent for a path
-    // whose leading `/.` collapses INTO a `//`: `/.//a.zip` cleans to `//a.zip`,
-    // which Qt keeps (a POSIX double-slash root) and cleans again to `/a.zip`.
-    // ArchiveLocation::toString() cleans its container, so such an address has
-    // two spellings for exactly bugs.md 44's reason and with exactly its cost —
-    // reported separately because the ruling is a different one, cleaning twice
-    // being one answer and refusing being another.
-    // corpus/address/a033_dot_slash_before_a_container is the input.
-    if (!ArchiveLocation::isArchivePath(address)) {
+    // The same claim one level up, over the two funnels the entry points actually
+    // call — normalizeLogPath(), which adds the archive branch on top, and
+    // logSettingsKey(), which is what a log's settings record is filed under and
+    // which LogFileStore::save() re-applies to an address MainWindow has already
+    // keyed.
+    //
+    // UNCONDITIONAL OVER THE ARCHIVE BRANCH SINCE bugs.md 47 WAS TAKEN, and the
+    // unconditionality is the point, exactly as it is for the noncharacter
+    // carve-out one assertion up. This was narrowed to a path naming no archive,
+    // which is where the finding lived: QDir::cleanPath() is NOT idempotent —
+    // dropping a `.` component leaves a separator behind at a position the collapse
+    // pass has already walked past, so `/.//a.zip` cleans to `//a.zip` and only a
+    // second pass reaches `/a.zip` — and both funnels cleaned exactly once. The fix
+    // is a loop to a fixed point rather than a second call, so the property is
+    // asserted over every address that carries no NUL, and the fuzzer rather than a
+    // written-down list of shapes is what would find a third route to two spellings.
+    // corpus/address/a033_dot_slash_before_a_container is that input, and it now
+    // passes by normalizing to one spelling.
+    //
+    // THE NUL IS THE ONE NARROWING LEFT, and it is a FINDING kept rather than fixed.
+    // QFileInfo treats a path with an embedded NUL as a broken filename and answers
+    // absoluteFilePath() with a string that is still RELATIVE — `a\0/../b` answers
+    // `b` — so the key is not absolute at all, means a different file in a different
+    // working directory, and resolves against that directory on the second
+    // application. It is a different defect from 47's and the loop cannot touch it:
+    // the second pass is correct arithmetic over a first answer that was already
+    // wrong. Reported, not fixed (bugs.md 48): it needs a ruling about what an
+    // address holding a NUL should do, and no filesystem, command line or file
+    // dialog can produce one. corpus/address/a034_nul_and_dotdot_in_a_relative_path
+    // is the input for the key and a035_nul_and_dotdot_before_a_container for the
+    // archive funnel above it. A Qt RESOURCE path is the same root from the other
+    // side and needs no narrowing: cleanedToFixedPoint() never makes a path less
+    // absolute, `:/..` cleaning to `.`, so the fuzzer's `:////../` and `:/../a.zst`
+    // both pass — corpus/address/a036_resource_path_cleaned_below_its_root.
+    if (!address.contains(QChar(u'\0'))) {
         const QString logNormal = normalizeLogPath(address);
         FUZZ_CHECK(normalizeLogPath(logNormal) == logNormal, "normalizeLogPath is idempotent");
+
+        const QString key = logSettingsKey(address);
+        FUZZ_CHECK(logSettingsKey(key) == key, "logSettingsKey is idempotent");
     }
 
     const QString stripped = RemoteLocation::withoutPassword(address);

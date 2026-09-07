@@ -51,6 +51,8 @@ private slots:
     void aContainerWithNoMemberIsNotOpenable();
     void collapsesASingleStreamBackToItsPlainPath();
     void normalizeIsIdempotentAndWorkingDirectoryIndependent();
+    void theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled_data();
+    void theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled();
     void anExistingRegularFileIsNeverSplit();
     void aRemoteContainerSplitsAndKeepsItsAddress();
     void displayNamesReadLikeALog();
@@ -175,6 +177,72 @@ void TestArchiveLocation::normalizeIsIdempotentAndWorkingDirectoryIndependent()
     const QString relative = normalizeLogPath(QStringLiteral("b.tgz/app.log"));
     QVERIFY(QDir::setCurrent(previous));
     QCOMPARE(relative, once);
+}
+
+void TestArchiveLocation::theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled_data()
+{
+    QTest::addColumn<QString>("address");
+
+    // THE ONES THAT WERE BROKEN. QDir::cleanPath() is not idempotent: dropping a `.`
+    // component leaves a separator behind at a position the collapse pass has already
+    // walked past, so `/.//a.zip` cleans to `//a.zip` and only a SECOND pass reaches
+    // `/a.zip`. ArchiveLocation::toString() cleans its container, so such an address
+    // had two spellings — and every entry point normalizes while Document::prepare()
+    // normalizes again, which is the whole of "one log, one spelling" (bugs.md 47).
+    QTest::newRow("dot slash before a container") << QStringLiteral("/.//a.zip/app.log");
+    QTest::newRow("no member picked") << QStringLiteral("/.//a.zip");
+    QTest::newRow("two dots in a row") << QStringLiteral("/././/a.zip/app.log");
+    // Not positional but ROOT-ANCHORED: any prefix that vanishes entirely leaves the
+    // leading pair behind, whether or not the `/.` is at the front.
+    QTest::newRow("a prefix that vanishes") << QStringLiteral("/.//x/..//a.zip/app.log");
+    QTest::newRow("single stream") << QStringLiteral("/.//app.log.gz");
+
+    // THE ONES THAT WERE ALREADY FIXED POINTS, listed so that a later simplification
+    // cannot mend one half by breaking the other. A `//` the input SPELLS is collapsed
+    // by the first pass; a `/.` that is not root-anchored leaves nothing behind; a
+    // remote container never reaches Qt's cleaner at all, RemoteLocation::normalize()
+    // touching no path component.
+    QTest::newRow("leading double slash") << QStringLiteral("//a.zip/app.log");
+    QTest::newRow("leading triple slash") << QStringLiteral("///a.zip/app.log");
+    QTest::newRow("interior dot") << QStringLiteral("/tmp/.//b.tar.gz/x/y.log");
+    QTest::newRow("plain dot") << QStringLiteral("/./a.zip/app.log");
+    QTest::newRow("remote container") << QStringLiteral("ssh://h/.//a.zip/app.log");
+    QTest::newRow("ordinary") << QStringLiteral("/var/log/bundle.tar.gz/var/log/app.log");
+
+    // A PLAIN LOG, which normalizeLogPath() passes through untouched and which is here
+    // for the key alone: logSettingsKey()'s local branch is absoluteFilePath(), which
+    // cleans once, and LogFileStore::save() re-keys an address MainWindow has already
+    // keyed — so this spelling was written under one name and read back under another.
+    QTest::newRow("not an archive at all") << QStringLiteral("/.//app.log");
+
+    // A Qt RESOURCE path, which is here for the key's other half: absoluteFilePath()
+    // answers a `:`-prefixed path unchanged and cleaning that answer can drop the very
+    // prefix that gave it a meaning (`:/..` cleans to `.`), so the clean is kept only
+    // while it is still absolute. Without that the fix would have traded one
+    // non-idempotent spelling for another — the address fuzz target found this one
+    // within seven minutes of the first.
+    QTest::newRow("resource path") << QStringLiteral(":////../");
+    QTest::newRow("resource path with a member") << QStringLiteral(":/a/../b.zip/app.log");
+    QTest::newRow("resource path below its root") << QStringLiteral(":/../a.zst");
+}
+
+void TestArchiveLocation::theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled()
+{
+    // THE PROPERTY AND NOT AN OUTPUT STRING. What the tree rests on is that the second
+    // pass moves nothing — normalizeLogPath() is run by every entry point and AGAIN by
+    // Document::prepare(), and logSettingsKey(), the tab labels, the recent-files menu,
+    // the spool registry and the session all key on the result. Which spelling wins is
+    // not the contract and differs by platform anyway ("/a.zip" carries a drive letter
+    // on Windows), so asserting one would pin the wrong thing twice over.
+    QFETCH(QString, address);
+
+    const QString once = normalizeLogPath(address);
+    QCOMPARE(normalizeLogPath(once), once);
+
+    // And through the key the settings pool actually files a log under, which is the
+    // surface the two spellings cost a slot on.
+    const QString key = logSettingsKey(address);
+    QCOMPARE(logSettingsKey(key), key);
 }
 
 void TestArchiveLocation::anExistingRegularFileIsNeverSplit()
