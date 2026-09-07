@@ -53,6 +53,8 @@
 #include "FilterPane.h"
 #include "Highlight.h"
 #include "LiveController.h"
+#include "LogFileSettings.h"
+#include "LogFileStore.h"
 #include "LogFormat.h"
 #include "LogModel.h"
 #include "Fonts.h"
@@ -62,6 +64,7 @@
 
 #include "FakeFetcher.h"
 #include "MatchCriteria.h"
+#include "RemoteLocation.h"
 
 using namespace loftail;
 
@@ -101,6 +104,25 @@ private:
             f.write(QStringLiteral("2026-07-21 10:00:%1,000 [main] INFO  %2 - line %3\n")
                         .arg(i % 60, 2, 10, QLatin1Char('0'))
                         .arg(QLatin1String(subsystem))
+                        .arg(i)
+                        .toUtf8());
+        }
+        f.close();
+    }
+
+    // A log with TWO subsystems, alternating line by line. Every fixture above logs
+    // under one name, so its Subsystem axis has nothing to exclude and every state of
+    // that axis narrows nothing — which is precisely the state the two persistence
+    // cases below have to tell apart from a selection the user made.
+    static void writeTwoSubsystemLog(const QString &path, const char *first,
+                                     const char *second, int lines)
+    {
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        for (int i = 0; i < lines; ++i) {
+            f.write(QStringLiteral("2026-07-21 10:00:%1,000 [main] INFO  %2 - line %3\n")
+                        .arg(i % 60, 2, 10, QLatin1Char('0'))
+                        .arg(QLatin1String((i % 2) == 0 ? first : second))
                         .arg(i)
                         .toUtf8());
         }
@@ -239,6 +261,25 @@ private slots:
     void everyTabKeepsItsRecordsWhenTheOpensRunTogether();
     void aSecondLogOpenedByHandLeavesTheFirstItsRecords();
     void anEmptySelectionTheUserChoseSurvivesATabSwitchAndARelaunch();
+
+    // And the OTHER direction of the same seam, which is a loss rather than a
+    // widening (SPEC.md §6, §10). Hydrating a pane runs applyNow(), which reaches
+    // persistFileSettings() — while the log is still being SCANNED, so the index
+    // names no subsystems yet and setCriteria() carries only the ticked names
+    // forward. The axis then reads back as covering everything, filterStateSaysNothing()
+    // agrees that it narrows nothing, and LogFileStore::save() deletes the log's whole
+    // record and frees its slot. The scan then discovers the excluded name through
+    // ListRule::Discover, which ticks it, so the view is unfiltered too — the store and
+    // the table are wrong together, and neither of them contradicts the other.
+    //
+    // Two cases, because the two halves are separately observable. The first is what
+    // the user sees: a selection made by hand, gone on the next open. The second is
+    // about the STORE alone, on a log that is EMPTY at the second open — there are no
+    // names on screen to enforce a selection over, so nothing but the record can say
+    // whether the selection survived, and a third window on the restored log is what
+    // proves the record was the thing that mattered.
+    void aSubsystemSelectionSurvivesClosingAndReopeningTheLog();
+    void aSelectionSurvivesARestartOnWhichTheLogIsEmpty();
 
     // Tab labels (SPEC.md §3). What a log is called depends on which OTHER logs are
     // open, so the claims are about the set: two app.logs say which is which, closing
@@ -1401,6 +1442,29 @@ LogModel *modelOfTab(const MainWindow &w, int index)
         return nullptr;
     return modelOf(t->widget(index)->findChild<LogView *>(QStringLiteral("logView")));
 }
+
+// One log's stored record, read the way production reads it. The map has to be load()ed
+// first: LogFileStore::read() on a freshly constructed store answers an empty record
+// whatever the slot files hold, which is a map nobody has read rather than a log with no
+// settings — and taking that for the second would make the assertions below pass against
+// a store that still had the record.
+LogFileSettings storedRecord(const QString &path)
+{
+    LogFileStore store(LogFileStore::defaultDir());
+    store.load();
+    return store.read(logSettingsKey(path));
+}
+
+// The one ticked value's own name, so a selection is asserted by WHICH subsystem
+// survived and not merely by how many did.
+QStringList tickedNames(const QListWidget *list)
+{
+    QStringList names;
+    for (int i = AxisEditor::kFirstValueRow; i < list->count(); ++i)
+        if (list->item(i)->checkState() == Qt::Checked)
+            names << list->item(i)->text();
+    return names;
+}
 } // namespace
 
 void TestMultiDoc::everyTabKeepsItsRecordsWhenTheOpensRunTogether()
@@ -1542,6 +1606,134 @@ void TestMultiDoc::anEmptySelectionTheUserChoseSurvivesATabSwitchAndARelaunch()
     t->setCurrentIndex(1);
     QCOMPARE(modelOfTab(w, 1)->rowCount(), 20);
     w.close();
+}
+
+void TestMultiDoc::aSubsystemSelectionSurvivesClosingAndReopeningTheLog()
+{
+    const QString log = m_dir.filePath(QStringLiteral("keepsel-a.log"));
+    writeTwoSubsystemLog(log, "net.io", "db.pool", 30);
+
+    QString kept;
+    {
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(w.openFile(log));
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+        waitUntilIndexed(w);
+
+        QListWidget *loggers = valueList(w, "subsystemList");
+        QVERIFY(loggers);
+        QCOMPARE(valueCount(loggers), 2);
+        QCOMPARE(tickedValues(loggers), 2);
+
+        // One value unticked by hand — the ordinary gesture, and the only one in this
+        // pane that leaves an axis narrowing something without emptying it.
+        loggers->item(AxisEditor::kFirstValueRow)->setCheckState(Qt::Unchecked);
+        kept = loggers->item(AxisEditor::kFirstValueRow + 1)->text();
+        QTRY_COMPARE(modelOfTab(w, 0)->rowCount(), 15);
+
+        // The pane's write is debounced, so the record does not exist until the
+        // debounce has run. Asserted rather than assumed: everything below is about
+        // the record SURVIVING, and a case that never wrote one would pass the same
+        // way for the opposite reason.
+        QTest::qWait(1200);
+        QVERIFY2(!storedRecord(log).filters.isEmpty(),
+                 "the selection was never written for the log at all");
+
+        // Closed by hand, so the session remembers no tab and the window below opens
+        // the log rather than restoring it — which is the gesture the user makes, and
+        // the one that goes through hydratePanes() against a scan still running.
+        trigger(w, "closeTabAction");
+        QTRY_COMPARE(tabCount(w), 0);
+        w.close();
+    }
+
+    MainWindow w2;
+    w2.resize(900, 600);
+    w2.show();
+    QVERIFY(w2.openFile(log));
+    QTRY_COMPARE(w2.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    waitUntilIndexed(w2);
+
+    QListWidget *loggers = valueList(w2, "subsystemList");
+    QVERIFY(loggers);
+    QCOMPARE(valueCount(loggers), 2);
+    QCOMPARE(tickedNames(loggers), QStringList({kept}));
+    // And the table agrees with the pane: half the log, not all of it.
+    QCOMPARE(modelOfTab(w2, 0)->rowCount(), 15);
+    w2.close();
+}
+
+void TestMultiDoc::aSelectionSurvivesARestartOnWhichTheLogIsEmpty()
+{
+    const QString log = m_dir.filePath(QStringLiteral("keepsel-b.log"));
+    writeTwoSubsystemLog(log, "net.io", "db.pool", 30);
+
+    QString kept;
+    {
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(w.openFile(log));
+        QTRY_COMPARE(w.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+        waitUntilIndexed(w);
+
+        QListWidget *loggers = valueList(w, "subsystemList");
+        QVERIFY(loggers);
+        QCOMPARE(valueCount(loggers), 2);
+        loggers->item(AxisEditor::kFirstValueRow)->setCheckState(Qt::Unchecked);
+        kept = loggers->item(AxisEditor::kFirstValueRow + 1)->text();
+        QTRY_COMPARE(modelOfTab(w, 0)->rowCount(), 15);
+        QTest::qWait(1200);
+        QVERIFY2(!storedRecord(log).filters.isEmpty(),
+                 "the selection was never written for the log at all");
+
+        trigger(w, "closeTabAction");
+        QTRY_COMPARE(tabCount(w), 0);
+        w.close();
+    }
+
+    // The log a service has just been restarted behind: the same path, truncated to
+    // nothing. There is no subsystem on screen for a selection to be enforced over, so
+    // the only thing that can be wrong here is the STORE — and a window that deletes
+    // the record while showing an empty table shows nothing at all for it.
+    {
+        QFile f(log);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.close();
+        QCOMPARE(QFileInfo(log).size(), qint64(0));
+    }
+
+    {
+        MainWindow w2;
+        w2.resize(900, 600);
+        w2.show();
+        QVERIFY(w2.openFile(log));
+        QTRY_COMPARE(w2.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+        waitUntilIndexed(w2);
+        QTest::qWait(1200);
+        QVERIFY2(!storedRecord(log).filters.isEmpty(),
+                 "opening the log while it was empty deleted its whole record");
+        w2.close();
+    }
+    QVERIFY2(!storedRecord(log).filters.isEmpty(),
+             "closing the window on the empty log deleted its whole record");
+
+    // And the record is what mattered: with the log's content back, the selection is
+    // in force again with nothing else having been done to restore it.
+    writeTwoSubsystemLog(log, "net.io", "db.pool", 30);
+    MainWindow w3;
+    w3.resize(900, 600);
+    w3.show();
+    QVERIFY(w3.openFile(log));
+    QTRY_COMPARE(w3.findChildren<LogView *>(QStringLiteral("logView")).size(), 1);
+    waitUntilIndexed(w3);
+    QListWidget *loggers = valueList(w3, "subsystemList");
+    QVERIFY(loggers);
+    QCOMPARE(tickedNames(loggers), QStringList({kept}));
+    QCOMPARE(modelOfTab(w3, 0)->rowCount(), 15);
+    w3.close();
 }
 
 void TestMultiDoc::theCommandLineTakesEveryFileNamedAndOnePatternForThemAll()

@@ -43,6 +43,7 @@
 #include "FakeFetcher.h"
 #include "FilterPane.h"
 #include "Filter.h"
+#include "LogFileSettings.h"
 #include "LogFormat.h"
 #include "LiveController.h"
 #include "LogModel.h"
@@ -255,6 +256,14 @@ private slots:
     void priorityFloorComesFromTheRecord();
     void timeBoundKeepsTheRangeNonEmpty();
     void restrictionSurvivesASavedState();
+    // The unit-level half of the loss tst_multidoc pins through a window: a pane is
+    // hydrated on a tab switch and on an open, both of which can run while the log is
+    // still being SCANNED, so the index names no values yet and there is nothing on
+    // screen for the stored selection to be enforced over. Whatever the pane reads
+    // back then is what LogFileStore::save() reduces the record against — so a
+    // selection that comes back as covering everything is not merely a picture that
+    // will be corrected by the scan, it is the record deleted.
+    void aSelectionHydratedOverAnUnscannedLogStillNarrowsSomething();
 
     // M15 — filter context. The spinners are the pane's own controls, so what has to
     // hold is that they behave like every other control on it: one notification per
@@ -1185,6 +1194,32 @@ void TestFilterPane::restrictionSurvivesASavedState()
     QCOMPARE(stateOf(list, QStringLiteral("ui.window")), Qt::Unchecked);
     doc.applyFilters();
     QCOMPARE(doc.filtered().recordCount(), 1);
+}
+
+void TestFilterPane::aSelectionHydratedOverAnUnscannedLogStillNarrowsSomething()
+{
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kTwoLoggers), qPrintable(doc.lastError()));
+
+    FilterPane source;
+    source.setDocument(&doc);
+    source.showOnlyValue(ValueAxis::Subsystem, QStringLiteral("db.pool"));
+    const QJsonObject state = source.saveState();
+    QVERIFY(!filterStateSaysNothing(state));
+
+    // A log whose index names nothing — which is what a log being scanned looks like
+    // to a pane, and what an empty one goes on looking like.
+    QTemporaryFile unscannedFile;
+    Document unscanned;
+    QVERIFY2(openLog(unscanned, unscannedFile, ""), qPrintable(unscanned.lastError()));
+    QCOMPARE(unscanned.index().records.size(), qsizetype(0));
+
+    FilterPane restored;
+    restored.setDocument(&unscanned);
+    restored.restoreState(state);
+    QVERIFY2(!filterStateSaysNothing(restored.saveState()),
+             "a selection hydrated over an unscanned log read back as narrowing nothing");
 }
 
 void TestFilterPane::contextLivesInsideTheMessageAxis()
