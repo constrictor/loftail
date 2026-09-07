@@ -30,8 +30,10 @@
 #include <QSettings>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 
 #include "ConfigReset.h"
+#include "DensityMap.h"
 #include "DensityScrollBar.h"
 #include "Document.h"
 #include "DocumentContext.h"
@@ -239,6 +241,71 @@ private slots:
         // case after it, and this suite would pass or fail on the order QtTest ran them
         // in. The same trap ConfigReset.h exists for, one store over.
         QSettings().remove(QStringLiteral("densityStrip"));
+    }
+
+    // --- what the scan COSTS, counted (ARCHITECTURE.md §7.1.7) --------------
+    //
+    // The marks are never sampled: every row is asked, which is the whole point of a
+    // FATAL among ten million records. What makes that affordable is stated as a budget
+    // — 4 ms every 20 ms — and a budget in milliseconds is not something to assert on a
+    // shared runner. What CAN be asserted exactly is the bookkeeping the budget rests
+    // on: the scan is sliced and RESUMES rather than restarting, so it converges and
+    // asks about each row exactly once; and it does not run at all while the bar is off
+    // screen, which is what keeps ten open logs from being ten scans.
+    //
+    // Rows scanned is the counted quantity, and DensityMap::scanned() only ever counts
+    // rows a probe was actually run for.
+    void aHiddenBarScansNothingAndAVisibleOneConvergesWithoutRescanningARow()
+    {
+        const QString path = m_dir.filePath(QStringLiteral("cost.log"));
+        constexpr int kRecords = 4000;
+        writeLog(path, kRecords, 3000);
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        openAndSettle(w, path, kRecords);
+
+        DensityScrollBar *s = bar(w);
+        QVERIFY(s);
+        const DensityMap &map = s->map();
+        QCOMPARE(map.rows(), kRecords);
+
+        // Off screen, with a lane that has everything still to do: the timer is stopped
+        // by the hide, so nothing is scanned however long the event loop runs.
+        w.hide();
+        QVERIFY(!s->isVisible());
+        s->invalidateRules();
+        QCOMPARE(map.scanned(DensityMap::Lane::Rules), 0);
+        for (int turn = 0; turn < 20; ++turn)
+            QTest::qWait(20);
+        QCOMPARE(map.scanned(DensityMap::Lane::Rules), 0);
+
+        // Back on screen it picks the scan up and finishes it in slices, each one
+        // resuming where the last stopped: scanned() is monotonic and lands exactly on
+        // the row count, which is every row asked about once and no row asked twice.
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        int last = 0;
+        bool sliced = false;
+        for (int turn = 0; turn < 400 && !map.complete(DensityMap::Lane::Rules); ++turn) {
+            QTest::qWait(10);
+            const int now = map.scanned(DensityMap::Lane::Rules);
+            QVERIFY2(now >= last, "the scan went backwards: a slice restarted it");
+            if (now > 0 && now < map.rows())
+                sliced = true; // caught mid-flight, which is what "in slices" means
+            last = now;
+        }
+        QVERIFY2(map.complete(DensityMap::Lane::Rules), "the sliced scan never converged");
+        QCOMPARE(map.scanned(DensityMap::Lane::Rules), map.rows());
+        Q_UNUSED(sliced) // a fast machine may finish a 4000-row lane in one slice
+        QVERIFY(map.anyMark(DensityMap::Lane::Rules)); // and it found the FATAL
+
+        // A finished scan stops paying for itself: the slice timer is not left running.
+        QTest::qWait(60);
+        const auto timers = s->findChildren<QTimer *>();
+        for (QTimer *t : timers)
+            QVERIFY2(!t->isActive(), "the slice timer is still running with nothing to scan");
     }
 
     // The marks are IN the scrollbar, so there is one control and not two: the view's

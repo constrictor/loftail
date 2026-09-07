@@ -1,0 +1,50 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A wrapped record's height is MEASURED, glyph by glyph"):
+#   The (advance, ink overhang) pair is memoized per CODEPOINT — an eagerly filled
+#   128-entry ASCII table, then a direct-mapped 4096-slot cache, then a QHash — so a
+#   record costs the characters it INTRODUCES and never the characters it has. Measured
+#   per 4096-record block: 0.34 ms on ASCII and 0.70 ms on Han, against the ~1.4 ms that
+#   block already spends decoding.
+#
+# GUARD: tst_wrapmetrics::theMemoMeasuresEachCodepointOnceHoweverOftenItOccurs
+#
+# SILENT WHEN BROKEN: every height is still exactly right and every record is drawn
+# where it should be — the walk is a pure function of (font, codepoint), so losing the
+# memo changes no answer anywhere. Only the bill moves: 3,200,000 QFontMetricsF queries
+# where 40 were owed, on the path a scroll, a zoom and every ingest tick all run.
+
+diff --git a/src/ui/WrapMetrics.cpp b/src/ui/WrapMetrics.cpp
+--- a/src/ui/WrapMetrics.cpp
++++ b/src/ui/WrapMetrics.cpp
+@@ -119,13 +119,7 @@
+ // on a path that runs per character of every record of every newly visited block.
+ WrapMetrics::Metric WrapMetrics::wideMetric(char32_t cp) const
+ {
+-    Slot &slot = m_slots[cp & (kSlots - 1)];
+-    if (slot.cp == cp)
+-        return slot.m;
+-    const auto it = m_wide.constFind(cp);
+-    const Metric m = it != m_wide.cend() ? it.value() : *m_wide.insert(cp, measure(cp));
+-    slot = Slot{cp, m};
+-    return m;
++    return measure(cp);
+ }
+ 
+ int WrapMetrics::linesForParagraph(QStringView paragraph, int width) const

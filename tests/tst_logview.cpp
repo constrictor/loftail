@@ -345,6 +345,7 @@ private slots:
 
     // --- marking a cell costs one redraw of it, not one per match (bugs.md 12) ---
     void aMarkedCellIsRedrawnOncePerCellAndNotOncePerMatch();
+    void aRepaintMeasuresNothingItHasAlreadyMeasuredAndATailMeasuresWhatGrew();
     void everyMatchOfAWrappedCellIsMarkedWhenTheyAreBatched();
     void anElidedMarkSitsOverTheGlyphsOfTheRunAndNotOverALogicalPrefix();
 
@@ -4216,6 +4217,77 @@ int prepareWrappedMarkView(LogView &view, int chars)
 }
 
 } // namespace
+
+// --- what a repaint MEASURES, counted (ARCHITECTURE.md §7.1.1) --------------
+//
+// Under AlwaysOn a record's height is worked out by decoding its message and walking it
+// (WrapMetrics::recordLines), so a paint that re-measured what it already knew would put
+// a decode of every visible block on every frame — scroll, tail tick, tab switch and all.
+// §7.1.1 states the two halves as costs rather than behaviour: a measured block is
+// measured ONCE ("the whole thing is cached, so subsequent frames measure nothing"), and
+// after a tail sync `measureBlock()` starts at `measuredRecordsInBlock()` so a live log
+// re-measures the record that grew "and not the other 4095".
+//
+// Neither is observable in any value the view holds — the geometry is right either way,
+// only the bill differs — and a millisecond is not a thing to assert on a shared runner.
+// So the measurements themselves are counted, on WrapMetrics' own cold path, which is
+// one decoded message and one width walk each.
+void TestLogView::aRepaintMeasuresNothingItHasAlreadyMeasuredAndATailMeasuresWhatGrew()
+{
+    constexpr int kRecords = 1000; // one block, and a hundredfold over what a tail owes
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openLog(doc, file, kRecords), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(700, 400);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+
+    const WrapMetrics &metrics = view.wrapMetrics();
+    auto paint = [&view]() {
+        QPixmap pm(view.viewport()->size());
+        view.viewport()->render(&pm); // invokes LogView::paintEvent synchronously
+    };
+
+    // The first paint measures the block it lands in — every record of it, the block
+    // being the unit, and not merely the twenty rows on screen.
+    metrics.resetCosts();
+    paint();
+    QCOMPARE(metrics.costs().records, kRecords);
+
+    // Every frame after it measures nothing at all, however many there are.
+    metrics.resetCosts();
+    for (int frame = 0; frame < 5; ++frame)
+        paint();
+    QCOMPARE(metrics.costs().records, 0);
+
+    // A record arrives. The old trailing record may have grown in place and the new one
+    // is unmeasured, so two records are owed — and the other 999 are not re-decoded.
+    LiveController live(&doc, &model);
+    {
+        QFile f(file.fileName());
+        QVERIFY(f.open(QIODevice::Append));
+        f.write(makeLog(1));
+        f.close();
+    }
+    metrics.resetCosts();
+    live.checkNow();
+    paint();
+    QCOMPARE(view.recordCount(), kRecords + 1);
+    QVERIFY2(metrics.costs().records > 0, "the appended record was never measured at all");
+    QVERIFY2(metrics.costs().records <= 2,
+             qPrintable(QStringLiteral("a one-record append re-measured %1 records of a "
+                                       "block of %2: the trailing block was dropped rather "
+                                       "than topped up")
+                            .arg(metrics.costs().records)
+                            .arg(kRecords)));
+
+    // And the frame after the tick is free again, exactly as before it.
+    metrics.resetCosts();
+    paint();
+    QCOMPARE(metrics.costs().records, 0);
+}
 
 void TestLogView::aMarkedCellIsRedrawnOncePerCellAndNotOncePerMatch()
 {

@@ -1,0 +1,42 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A measured block is measured only up to a RECORD COUNT"):
+#   syncTail() truncates the trailing block's cache back to the OLD trailing record —
+#   the first that can have moved (invariant #9) — rather than dropping the block:
+#   "drop the block instead and a tailed log re-decodes 4096 messages on every paint".
+#
+# GUARD: tst_estimatedgeometry::anAppendReMeasuresOnlyTheRecordsTheGrowthCouldHaveTouched
+#
+# SILENT WHEN BROKEN: nothing on screen changes at all. The block is simply re-measured
+# from its first record on the next paint, so every height is right, the scrollbar is
+# right, and the only difference is 4096 message decodes per ingest tick of every live
+# log — which no assertion about geometry can see.
+
+diff --git a/src/core/EstimatedGeometry.cpp b/src/core/EstimatedGeometry.cpp
+--- a/src/core/EstimatedGeometry.cpp
++++ b/src/core/EstimatedGeometry.cpp
+@@ -286,7 +286,7 @@
+         m_blockPhysical[b] = m_idx->firstLineOfRecord(end) - m_idx->firstLineOfRecord(start);
+     }
+ 
+-    truncateBlockMeasurement(firstBlock, firstDirty - firstBlock * RecordIndex::kBlockSize);
++    truncateBlockMeasurement(firstBlock, 0);
+     refreshTotals();
+     return true;
+ }

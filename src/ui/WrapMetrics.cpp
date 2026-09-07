@@ -65,6 +65,7 @@ void WrapMetrics::setFont(const QFont &font)
 // face's wider advance.
 WrapMetrics::Metric WrapMetrics::measure(char32_t cp) const
 {
+    ++m_costs.glyphs;
     QString s;
     if (QChar::requiresSurrogates(cp)) {
         s.append(QChar(QChar::highSurrogate(cp)));
@@ -161,6 +162,7 @@ int WrapMetrics::linesForParagraph(QStringView paragraph, int width) const
 
 int WrapMetrics::recordLines(const QString &text, int width, int cap) const
 {
+    ++m_costs.records;
     int lines = 0;
     qsizetype from = 0;
     while (true) {

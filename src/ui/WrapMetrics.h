@@ -73,6 +73,28 @@ public:
     // 80 px tab stop where the paint drew one character (§7.1.1).
     int linesForParagraph(QStringView paragraph, int width) const;
 
+    // --- what the cold paths cost (tests) ---------------------------------
+    //
+    // Two counters, and both sit on a path that is ALREADY doing something orders of
+    // magnitude dearer than an increment: one tick per record measured (the caller
+    // decoded that record's message to get here) and one per codepoint actually handed
+    // to QFontMetricsF, which is the memo's MISS path and the 128-entry eager fill.
+    // Nothing on the per-character walk is counted — a counter there would be the very
+    // cost this class exists to avoid.
+    //
+    // They are here because two of §7.1.1's cost contracts are observable in no value
+    // the view or the geometry holds — "the memo is per CODEPOINT, never per record",
+    // and the truncate-don't-drop rule that keeps a tailed log from re-measuring 4096
+    // messages a tick — and because a wall clock on a shared runner is not a thing to
+    // assert on (tst_wrapmetrics, tst_logview).
+    struct Costs
+    {
+        qint64 records = 0; // recordLines() calls: one decoded message each, caller-side
+        qint64 glyphs = 0;  // measure() calls: one to three QFontMetricsF queries each
+    };
+    Costs costs() const { return m_costs; }
+    void resetCosts() const { m_costs = Costs{}; }
+
     // The same for a whole record's message text at `width`, clamped to `cap` (the shared
     // 100-line display cap). The record's own newlines are paragraph breaks: a record is
     // not a line (invariant #2), and the split is of the DECODED string (invariant #8).
@@ -114,6 +136,7 @@ private:
     // neighbour's own advance, so the difference is that codepoint's advance in a CJK run.
     QString m_wideBase;
     qreal m_wideBaseAdvance = 0;
+    mutable Costs m_costs;
 };
 
 } // namespace loftail

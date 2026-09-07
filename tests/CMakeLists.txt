@@ -581,6 +581,15 @@ qt_add_executable(tst_densitybar tst_densitybar.cpp)
 target_link_libraries(tst_densitybar PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_densitybar COMMAND tst_densitybar)
 
+# The wrapped-height memo's COST, counted: ASCII filled eagerly, everything else
+# measured once per CODEPOINT however many records carry it, and the whole memo dropped
+# by a font change. Links the UI layer (WrapMetrics is font state, so it lives in the
+# view) and runs offscreen; it needs a QApplication for QFontMetricsF and nothing else.
+qt_add_executable(tst_wrapmetrics tst_wrapmetrics.cpp)
+target_link_libraries(tst_wrapmetrics PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_wrapmetrics COMMAND tst_wrapmetrics)
+set_tests_properties(tst_wrapmetrics PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 qt_add_executable(tst_logview tst_logview.cpp)
 target_link_libraries(tst_logview PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_logview COMMAND tst_logview)
@@ -830,6 +839,35 @@ foreach(t IN LISTS loftail_threading_tests)
         set_property(TEST ${t} APPEND PROPERTY LABELS threading)
     endif()
 endforeach()
+
+# --- The `perf` label: the wall clock, and the one thing that is NOT counted --
+#
+# src/bench/bench_index has existed since M2a and was in no CTest case and no CI job, so
+# the §11 cost targets it measures were checked exactly as often as somebody remembered
+# to run it by hand. `--selftest` writes its own log, runs the same measurements and
+# fails on ceilings an ORDER OF MAGNITUDE off those targets — 10 MB/s against 100,
+# 166 ms/frame against 16.6 — so what trips one is a complexity regression and not a
+# busy machine.
+#
+# It is DISABLED by default and gates nothing, which is deliberate and is the whole
+# reason the counted cases beside it exist. A wall-clock threshold on a shared runner is
+# a flake generator: CLAUDE.md records tst_asyncconnect going red at 543 ms with the code
+# correct, and that budget is a loose SECOND for exactly that reason. Every cost contract
+# that can be stated exactly is stated as a COUNT somewhere in tests/ instead —
+# tst_wrapmetrics (glyph measurements per codepoint), tst_estimatedgeometry and
+# tst_logview (records re-measured per tick and per frame), tst_densitymap and
+# tst_densitybar (rows scanned per slice), tst_filter (rows asked per tally) — and those
+# do gate, because a count is exact and fails by an order of magnitude.
+#
+#   cmake -S . -B build -DLOFTAIL_PERF_TESTS=ON && ctest --test-dir build -L perf
+option(LOFTAIL_PERF_TESTS "Run the wall-clock bench_index self-test as a CTest case" OFF)
+if(TARGET bench_index)
+    add_test(NAME bench_index_selftest COMMAND bench_index --selftest)
+    set_tests_properties(bench_index_selftest PROPERTIES LABELS perf)
+    if(NOT LOFTAIL_PERF_TESTS)
+        set_tests_properties(bench_index_selftest PROPERTIES DISABLED TRUE)
+    endif()
+endif()
 
 # --- Console subsystem on Windows ------------------------------------------
 #

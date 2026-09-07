@@ -38,7 +38,15 @@ The mutation harness in `tests/mutations/` is the other half of this: an index
 says a guard exists, and a mutation says it bites. See
 `tests/mutations/run-mutations.sh`.
 
-## Guarded — 152 rules
+A COST contract is guarded the same way and never with a wall clock: the guard
+counts the operations the contract is about — glyph measurements per codepoint,
+records re-measured per ingest tick and per frame, rows scanned per slice, rows
+asked per Find tally — because a count is exact, is reproducible on a shared
+runner, and fails by an order of magnitude when the contract goes. The one
+wall-clock check in the tree is `bench_index --selftest`, which is labelled
+`perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
+
+## Guarded — 164 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -194,8 +202,20 @@ says a guard exists, and a mutation says it bites. See
 | `replaced` is tested BEFORE the shrink, or nearly every real rotation is called a truncation | Rotation announced (L119) | tst_remotetail::aRotationOntoASmallerLogIsAnnouncedAsReplacedAndNeverAsTruncated |
 | `reloaded` is emitted BEFORE `rescanned()`, which must stay the last statement of `doRescan()` | Rotation announced (L119) | tst_tail::theReloadCauseIsAnnouncedBeforeTheRescanThatCarriesIt |
 | `publishDigest()` dedupes by ordinal and THEN reorders by timestamp; a record with no timestamp keeps its slot and never reaches the comparator | Digest captioned and ordered (L235) | tst_digest::anUnplaceableRecordInTheMiddleKeepsItsSlotRatherThanSortingToTheTop |
+| The density marks are NEVER sampled: every row is asked | Density map (L93) | tst_densitymap::aScanIsBoundedByTheBudgetAndResumesWhereItStopped |
+| The scan is bounded per SLICE and not in total, on a wall clock rather than a row count | Density map (L93) | tst_densitymap::aScanIsBoundedByTheBudgetAndResumesWhereItStopped<br>tst_densitybar::aHiddenBarScansNothingAndAVisibleOneConvergesWithoutRescanningARow |
+| The scan timer runs only while the bar is visible | Density map (L93) | tst_densitybar::aHiddenBarScansNothingAndAVisibleOneConvergesWithoutRescanningARow |
+| Buckets hold a fixed ROW COUNT, never a fraction of the view, which is what makes an append free | Density map (L93) | tst_densitymap::growingTheViewNeverRescansWhatWasAlreadyScanned |
+| ASCII is filled eagerly and everything else goes through a direct-mapped 4096-slot cache | Wrapped height measured (L157) | tst_wrapmetrics::theMemoMeasuresEachCodepointOnceHoweverOftenItOccurs |
+| The wrap memo is per CODEPOINT, never per record | Wrapped height measured (L157) | tst_wrapmetrics::theMemoMeasuresEachCodepointOnceHoweverOftenItOccurs<br>tst_wrapmetrics::aFontChangeDropsTheMemoAndPaysForTheAsciiTableAgain |
+| `syncTail()` compares BOTH the record count and the trailing record's display-line count | Block measured in part (L179) | tst_estimatedgeometry::anAppendReMeasuresOnlyTheRecordsTheGrowthCouldHaveTouched |
+| A block is measurable in PART — the trailing block's cache is truncated to the old trailing record, never dropped | Block measured in part (L179) | tst_estimatedgeometry::anAppendReMeasuresOnlyTheRecordsTheGrowthCouldHaveTouched<br>tst_logview::aRepaintMeasuresNothingItHasAlreadyMeasuredAndATailMeasuresWhatGrew |
+| The Find count is `Find::tally()`, bounded by rows and by wall clock, because counting decodes every visible record on every keystroke | Find reports match of how many (L263) | tst_filter::theMatchTallyCountsWithinItsBoundAndSaysWhenItStoppedShort |
+| A repaint measures each block ONCE, so a scroll, a tail tick and a tab switch re-decode nothing | Block measured in part (L179) | tst_logview::aRepaintMeasuresNothingItHasAlreadyMeasuredAndATailMeasuresWhatGrew |
+| `WrapMetrics::setFont()` DROPS the memo, every entry in it being that font's | Log text zooms (L177) | tst_wrapmetrics::aFontChangeDropsTheMemoAndPaysForTheAsciiTableAgain |
+| The `perf` label is the wall clock and gates nothing; every cost contract that can be stated exactly is COUNTED | perf label (tests/CMakeLists.txt) | tst_wrapmetrics<br>tst_estimatedgeometry<br>tst_densitybar<br>tst_densitymap<br>tst_filter |
 
-## Unguarded — 462 rules
+## Unguarded — 453 rules
 
 CLAUDE.md states these as load-bearing and names no test for them. This table is
 a deliverable in its own right: it is the list of decisions that would go quietly
@@ -356,10 +376,6 @@ to fill it in with a plausible-looking case rather than a real one.
 | That funnel deliberately neither raises the page nor takes the focus, and keeps a refusal on the strip | Session v4 (L89) |
 | An editor entry stores the CONFIG address, never the log it came from | Session v4 (L89) |
 | `windowState` is taken for `version >= 3`, not `== kSchemaVersion` | Session v4 (L89) |
-| The density marks are NEVER sampled: every row is asked | Density map (L93) |
-| The scan is bounded per SLICE and not in total, on a wall clock rather than a row count | Density map (L93) |
-| The scan timer runs only while the bar is visible | Density map (L93) |
-| Buckets hold a fixed ROW COUNT, never a fraction of the view, which is what makes an append free | Density map (L93) |
 | A shrink clears only the last surviving bucket and rewinds the scan to its first row | Density map (L93) |
 | A row whose content moves is rewound the same way, both lanes together, and it must stay a rewind not a `clear(Lane)` | Density map (L93) |
 | The denominator is `spanLines()`, in one place | Six density rules (L95) |
@@ -473,8 +489,6 @@ to fill it in with a plausible-looking case rather than a real one.
 | A BMP codepoint's overhang comes from `QFontMetricsF::rightBearing()`, never from the bounding rectangle | Wrapped height measured (L157) |
 | A zero-advance codepoint contributes nothing, Qt's unset `glyph_metrics_t` reporting x=100000 | Wrapped height measured (L157) |
 | A Common/Inherited-script codepoint is measured beside a wide base too and the wider answer kept | Wrapped height measured (L157) |
-| ASCII is filled eagerly and everything else goes through a direct-mapped 4096-slot cache | Wrapped height measured (L157) |
-| The wrap memo is per CODEPOINT, never per record | Wrapped height measured (L157) |
 | `QFontMetricsF::inFont()` cannot detect a fallback face and must not be used as a screen | Wrapped height measured (L157) |
 | Paint and tooltip ask `elidedText` of the SAME width, the section's | Elide and tooltip (L161) |
 | The tooltip is not the model's `Qt::ToolTipRole`, which `QHeaderView` shows unconditionally | Elide and tooltip (L161) |
@@ -506,8 +520,6 @@ to fill it in with a plausible-looking case rather than a real one.
 | `invalidateMeasurements()` runs AFTER the re-seed and unconditionally | Log text zooms (L177) |
 | The font re-anchor is the TOP RECORD via `applyDebouncedResize()`'s precedent, not the filter bracket | Log text zooms (L177) |
 | `Ctrl`+wheel is REPORTED (`zoomStepRequested`), never acted on by the view; the remainder accumulates | Log text zooms (L177) |
-| `syncTail()` compares BOTH the record count and the trailing record's display-line count | Block measured in part (L179) |
-| A block is measurable in PART — the trailing block's cache is truncated to the old trailing record, never dropped | Block measured in part (L179) |
 | The three mapping functions bounds-check the cached prefix and reach it through `constFind` | Block measured in part (L179) |
 | `m_selWrapCache` is re-measured by ALL THREE live handlers through `measureSelectionWrap()` | Block measured in part (L179) |
 | That re-measure goes BEFORE `updateScrollBars()`, and flooring `recordHeightLines()` is not the fix | Block measured in part (L179) |
@@ -619,7 +631,6 @@ to fill it in with a plausible-looking case rather than a real one.
 | `updateRunsAfterAppend()` deliberately does not retarget; the move is `MainWindow::followLastRunIfMoved()`'s, once per tick | Runs pane opens on Last run (L261) |
 | The session saves the follow mode by saving no offset at all, so no schema version moves | Runs pane opens on Last run (L261) |
 | No runs means the whole file, not an empty view — the mode is inert until a marker turns up | Runs pane opens on Last run (L261) |
-| The Find count is `Find::tally()`, bounded by rows and by wall clock, because counting decodes every visible record on every keystroke | Find reports match of how many (L263) |
 | `Tally::complete` false must render as `47+`, never as `47` | Find reports match of how many (L263) |
 | `Tally::index` 0 means the scan never reached the hit, so the bar says the count alone and never infers a position from `total` | Find reports match of how many (L263) |
 | The wrap is derived from `from`, captured BEFORE `setCurrentRecord(hit)`, or every search reports itself as a wrap | Find reports match of how many (L263) |

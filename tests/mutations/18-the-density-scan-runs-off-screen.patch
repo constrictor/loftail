@@ -1,0 +1,41 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "Six more rules that are easy to undo by accident"):
+#   The density scan's slice timer runs only while the bar is VISIBLE — "or ten open logs
+#   are ten scans, nine of them for marks nobody can see". isVisible() is false for a
+#   widget in a tab that is not current, which is exactly the case being guarded.
+#
+# GUARD: tst_densitybar::aHiddenBarScansNothingAndAVisibleOneConvergesWithoutRescanningARow
+#
+# SILENT WHEN BROKEN: every bar draws exactly what it drew before, because the scan is
+# correct either way — it is being paid for on tabs nobody is looking at, which shows up
+# as a slow window with ten logs open and as nothing at all with one.
+
+diff --git a/src/ui/DensityScrollBar.cpp b/src/ui/DensityScrollBar.cpp
+--- a/src/ui/DensityScrollBar.cpp
++++ b/src/ui/DensityScrollBar.cpp
+@@ -185,8 +185,6 @@
+     // Only while the bar is on screen. isVisible() is false for a widget in a tab that
+     // is not current, which is exactly the case this is guarding: ten open logs must not
+     // be ten scans.
+-    if (!isVisible())
+-        return;
+     if (!m_scanTimer->isActive())
+         m_scanTimer->start();
+ }

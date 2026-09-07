@@ -1,0 +1,48 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A measured block is measured only up to a RECORD COUNT"):
+#   LogView::measureBlock() starts at measuredRecordsInBlock(), which is the view half of
+#   the truncate-don't-drop rule: after a tail sync a measured block is short by only the
+#   records the growth touched, "typically one — and re-decoding the other 4095 on every
+#   ingest tick is the cost that made keeping a partial measurement worth the machinery".
+#
+# GUARD: tst_logview::aRepaintMeasuresNothingItHasAlreadyMeasuredAndATailMeasuresWhatGrew
+#
+# SILENT WHEN BROKEN: the heights the paint then folds in are the same heights it had, so
+# there is nothing to see — a one-record append re-decodes and re-walks 1001 messages
+# where two were owed, per tick, per live log.
+#
+# NOTE ON THE OTHER HALF of that case: "a second frame measures nothing" is guarded twice
+# over in src/ (measureVisibleBlocks() tests isBlockMeasured() before calling, and
+# measureBlock() tests it again), so defeating it is not a one-decision mutation and is
+# deliberately not attempted here. Removing BOTH tests plus this line takes that
+# assertion from 0 to 5000 records measured over five frames.
+
+diff --git a/src/ui/LogView.cpp b/src/ui/LogView.cpp
+--- a/src/ui/LogView.cpp
++++ b/src/ui/LogView.cpp
+@@ -812,7 +812,7 @@
+     // tail sync a measured block is short by only the records the growth touched —
+     // typically one — and re-decoding the other 4095 on every ingest tick is the
+     // cost that made keeping a partial measurement worth the machinery.
+-    const int first = start + m_estimated.measuredRecordsInBlock(block);
++    const int first = start;
+ 
+     QVector<quint16> lines;
+     lines.reserve(qMax(0, end - first));

@@ -25,6 +25,16 @@
 //     cells via LogModel::data() (target: 60 fps => < 16.6 ms/frame)
 //
 // Usage: bench_index <file> "<pattern>"
+//        bench_index --selftest        (writes its own log and checks LOOSE ceilings)
+//
+// --selftest is what the `perf`-labelled CTest case runs. It is deliberately NOT the
+// targets above: those are wall-clock numbers taken on one machine, and a threshold near
+// them on a shared runner is a flake generator (CLAUDE.md records tst_asyncconnect going
+// red at 543 ms with the code correct, which is why its budget is a loose second). The
+// ceilings here are an ORDER OF MAGNITUDE off the targets, so what fails them is a
+// complexity regression — a per-record allocation, an O(n) pass on the paint path, a
+// dropped prefix sum — and not a busy runner. Everything exact about a cost contract is
+// asserted by COUNTING somewhere in tests/, never here.
 #include "Decoder.h"
 #include "Document.h"
 #include "Filter.h"
@@ -35,6 +45,8 @@
 #include "RecordIndex.h"
 
 #include <QCoreApplication>
+#include <QFile>
+#include <QTemporaryDir>
 #include <QElapsedTimer>
 #include <QRandomGenerator>
 #include <QTextStream>
@@ -49,10 +61,46 @@ int main(int argc, char *argv[])
     QTextStream out(stdout);
 
     if (argc < 2) {
-        out << "usage: bench_index <file> [pattern]\n";
+        out << "usage: bench_index <file> [pattern] | bench_index --selftest\n";
         return 2;
     }
-    const QString path = QString::fromLocal8Bit(argv[1]);
+    const bool selftest = QString::fromLocal8Bit(argv[1]) == QLatin1String("--selftest");
+
+    // The self-test's own log: big enough for the measurements to mean something and
+    // small enough that a CI run pays a second for it, written here rather than
+    // committed (tests/ArchiveFixtures.h's rule — nothing binary in the tree).
+    QTemporaryDir scratch;
+    QString path = QString::fromLocal8Bit(argv[1]);
+    if (selftest) {
+        if (!scratch.isValid()) {
+            out << "selftest: no writable temporary directory\n";
+            return 2;
+        }
+        path = scratch.filePath(QStringLiteral("bench.log"));
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly)) {
+            out << "selftest: cannot write " << path << "\n";
+            return 2;
+        }
+        QByteArray bytes;
+        for (int i = 0; i < 120000; ++i) {
+            bytes += "2026-08-25 10:00:";
+            bytes += QByteArray::number(i % 60).rightJustified(2, '0');
+            bytes += ",000 [worker-";
+            bytes += QByteArray::number(i % 8);
+            bytes += "] ";
+            bytes += (i % 97 == 0) ? "WARN " : "INFO ";
+            bytes += " app.svc.module";
+            bytes += QByteArray::number(i % 20);
+            bytes += " - request ";
+            bytes += QByteArray::number(i);
+            bytes += ((i % 31) == 0) ? " timeout after 30s\n" : " completed\n";
+            if (i % 200 == 0)
+                bytes += "    at a continuation line of the record above\n";
+        }
+        f.write(bytes);
+        f.close();
+    }
     const QString pattern = argc >= 3
         ? QString::fromLocal8Bit(argv[2])
         : QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n");
@@ -99,7 +147,9 @@ int main(int argc, char *argv[])
 
     // --- line -> record lookups ----------------------------------------------
     const qint64 lines = idx.totalLines();
-    const int lookups = 2'000'000;
+    // The self-test runs the same code over fewer samples: it is looking for an order
+    // of magnitude, not a stable mean, and a CTest case may not cost half a minute.
+    const int lookups = selftest ? 20'000 : 2'000'000;
     auto *rng = QRandomGenerator::global();
     timer.restart();
     quint64 sink = 0;
@@ -115,7 +165,7 @@ int main(int argc, char *argv[])
     LogModel model(&doc);
     const int columns = model.columnCount();
     const int rowsPerFrame = 50;
-    const int frames = 2000;
+    const int frames = selftest ? 200 : 2000;
     timer.restart();
     quint64 charSink = 0;
     for (int fr = 0; fr < frames; ++fr) {
@@ -137,6 +187,7 @@ int main(int argc, char *argv[])
     // The recompute is the whole cost of a toggle: the visible vector + the compact
     // index's prefix-sum rebuild. Integer axes have a fast path; the message-text
     // axis has none (it decodes per surviving record), so it is measured explicitly.
+    double worstFilterMs = 0;
     auto timeFilter = [&](const char *label, const std::function<void(FilterSet &)> &cfg) {
         doc.filters() = FilterSet{};
         cfg(doc.filters());
@@ -144,6 +195,7 @@ int main(int argc, char *argv[])
         t.start();
         doc.applyFilters();
         const double ms = double(t.nsecsElapsed()) / 1e6;
+        worstFilterMs = qMax(worstFilterMs, ms * 1e6 / double(qMax(1, records)));
         out << label << " : " << ms << " ms  -> " << doc.filtered().recordCount()
             << " / " << records << " visible   (target < 100)\n";
     };
@@ -188,5 +240,28 @@ int main(int argc, char *argv[])
 
     Q_UNUSED(sink);
     Q_UNUSED(charSink);
-    return 0;
+
+    if (!selftest)
+        return 0;
+
+    // The ceilings, each a tenth of the corresponding §11 target (a hundredth for the
+    // prefix rebuild, which is pure integer work and the cheapest thing here). A number
+    // that fails one of these is not a slow machine, it is a different algorithm.
+    int failures = 0;
+    const auto check = [&out, &failures](const char *what, double value, double ceiling,
+                                         bool lowerIsBetter, const char *unit) {
+        const bool ok = lowerIsBetter ? value <= ceiling : value >= ceiling;
+        if (!ok)
+            ++failures;
+        out << (ok ? "ok   : " : "FAIL : ") << what << " = " << value << " " << unit
+            << (lowerIsBetter ? "  (ceiling " : "  (floor ") << ceiling << ")\n";
+    };
+    out << "----\n";
+    check("indexing throughput", mbPerSec, 10.0, /*lowerIsBetter=*/false, "MB/s");
+    check("prefix rebuild", rebuildMsPerM, 200.0, true, "ms / 1M records");
+    check("paint frame", msPerFrame, 166.0, true, "ms");
+    check("filter apply", worstFilterMs, 1000.0, true, "ms / 1M records");
+    out << (failures == 0 ? "bench_index --selftest: PASS\n"
+                          : "bench_index --selftest: FAILED\n");
+    return failures == 0 ? 0 : 1;
 }

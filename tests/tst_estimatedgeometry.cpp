@@ -66,18 +66,22 @@ private:
     // Measure a block exactly the way LogView would, but from that model so the test
     // needs no decoder and no font: record r has `displayLines(r)` physical lines, each
     // `charsPerLine` characters wide.
+    // `first` is the offset into the block the run starts at, exactly as
+    // LogView::measureBlock() takes it from measuredRecordsInBlock(): a block whose
+    // tail alone was truncated is topped up rather than measured again.
     static void measureBlockSynthetic(EstimatedGeometry &g, const RecordIndex &idx,
-                                      int block, int charsPerLine)
+                                      int block, int charsPerLine, int first = 0)
     {
-        const int start = block * RecordIndex::kBlockSize;
-        const int end = qMin(start + RecordIndex::kBlockSize, int(idx.records.size()));
+        const int start = block * RecordIndex::kBlockSize + first;
+        const int end = qMin(block * RecordIndex::kBlockSize + RecordIndex::kBlockSize,
+                             int(idx.records.size()));
         QVector<quint16> lines;
         lines.reserve(end - start);
         for (int r = start; r < end; ++r) {
             const int phys = RecordIndex::displayLines(idx.records.at(r));
             lines.append(quint16(syntheticLines(phys, charsPerLine, g.wrapWidth())));
         }
-        g.measureBlock(block, lines);
+        g.measureBlock(block, lines, first);
     }
 
     // The exact total display-line height at `width`, computed directly from the
@@ -95,6 +99,7 @@ private slots:
     void refinementConvergesToExactTotal();
     void mappingRoundTripsWhenFullyMeasured();
     void estimatedMappingIsMonotonicAndInBounds();
+    void anAppendReMeasuresOnlyTheRecordsTheGrowthCouldHaveTouched();
 };
 
 // The cache is keyed by the WRAP WIDTH: measuring at one width and then changing
@@ -218,6 +223,76 @@ void TestEstimatedGeometry::estimatedMappingIsMonotonicAndInBounds()
     // Out-of-range lines clamp to the ends.
     QCOMPARE(g.recordAtLine(-5), 0);
     QCOMPARE(g.recordAtLine(g.totalLines() + 100), n - 1);
+}
+
+// --- an append costs the records that moved, not the block (§7.1.1) ----------
+//
+// The bound index is append-only and live, so a measured block's record count grows
+// under it and its trailing record grows continuation lines in place. syncTail()
+// TRUNCATES that block's cache back to the old trailing record rather than dropping it,
+// and CLAUDE.md says what dropping costs: LogView::measureBlock() decodes and measures
+// every record of a block that is not fully measured, so a tailed log would re-decode
+// 4096 messages on every ingest tick — invisible in every value the view holds, and
+// catastrophic.
+//
+// Counted, because that is the only exact statement of it: what the view will re-measure
+// is recordsInBlock() - measuredRecordsInBlock(), and the claim is that an append leaves
+// that at the two records the growth could have touched, whatever the block holds.
+void TestEstimatedGeometry::anAppendReMeasuresOnlyTheRecordsTheGrowthCouldHaveTouched()
+{
+    // TWO FULL BLOCKS, which is what makes the claim visible: the growth lands in a
+    // block of 4096 measured records, and the question is how many of them survive it.
+    RecordIndex idx = makeIndex(2 * RecordIndex::kBlockSize);
+    EstimatedGeometry g;
+    g.reset(&idx, 80);
+    measureBlockSynthetic(g, idx, 0, 200);
+    measureBlockSynthetic(g, idx, 1, 200);
+    QVERIFY(g.isBlockMeasured(0));
+    QVERIFY(g.isBlockMeasured(1));
+
+    // What LogView::measureBlock() would decode and measure for one block: it starts at
+    // measuredRecordsInBlock() and runs to the end of the block.
+    const auto owed = [&g](int block) {
+        return g.recordsInBlock(block) - g.measuredRecordsInBlock(block);
+    };
+    QCOMPARE(owed(0) + owed(1), 0);
+
+    // The trailing record grows continuation lines in place — no record count moves at
+    // all, which is why syncTail() compares the tail's height as well as the count.
+    Record grown = idx.records.last();
+    grown.lineCount = quint16(grown.lineCount + 4);
+    idx.records.last() = grown;
+    idx.extendBlockSums(int(idx.records.size()) - 1);
+    QVERIFY(g.syncTail());
+
+    QCOMPARE(owed(1), 1); // the record that grew, and none of the other 4095
+    QCOMPARE(owed(0), 0); // the block in front of it was not touched
+    QVERIFY2(owed(1) < RecordIndex::kBlockSize / 100,
+             "the tick cost a whole block's measurement: the trailing block was dropped "
+             "rather than truncated back to the record the growth could have touched");
+
+    // ... and then a record is appended, which is the same claim with the new block's
+    // one record added to it.
+    measureBlockSynthetic(g, idx, 1, 200, /*first=*/RecordIndex::kBlockSize - 1);
+    QCOMPARE(owed(1), 0);
+    const int before = int(idx.records.size());
+    Record fresh{};
+    fresh.lineCount = 2;
+    idx.records.append(fresh);
+    idx.extendBlockSums(before);
+    QVERIFY(g.syncTail());
+
+    QCOMPARE(owed(0), 0);
+    QCOMPARE(owed(1), 1); // the old trailing record, reconsidered
+    QCOMPARE(owed(2), 1); // and the one that arrived
+    QVERIFY2(owed(0) + owed(1) + owed(2) < RecordIndex::kBlockSize / 100,
+             "an append cost a whole block's measurement");
+
+    // Nothing about the ANSWERS moved: what is still cached is still exact, and the
+    // block in front of the tail is still a measured block rather than an estimated one.
+    QVERIFY(g.isBlockMeasured(0));
+    QCOMPARE(g.recordHeightLines(0), syntheticLines(RecordIndex::displayLines(idx.records.at(0)),
+                                                    200, g.wrapWidth()));
 }
 
 QTEST_APPLESS_MAIN(TestEstimatedGeometry)
