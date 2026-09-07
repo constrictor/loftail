@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 177 rules
+## Guarded — 179 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -79,6 +79,8 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The fallback must stay a SEGMENT and never a path, or `prefixedLabelsFor()` stops grouping | Display name (L19) | tst_remotelocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath |
 | `logSourceBareName()` is the name with the bracket off and is `tabLabelsFor()`'s grouping key, so it may not hold a path | Display name (L19) | tst_remotelocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath |
 | `RemoteLocation::withoutPassword()` is the one filter the name half, `logSourceDisplayPath()` and `LogSourceFactory` all ask | Display name (L19) | tst_hostbookmarks::aPasswordNeverLeaksIntoAPathString<br>tst_remotelocation::anAddressThatDoesNotParseStillLosesItsPassword |
+| `RemoteLocation::normalize()` is IDEMPOTENT, which is what every entry point normalizing and `Document::prepare()` normalizing again rests on | One log, one spelling (L223) | tst_remotelocation::normalizingAnAddressTwiceIsNormalizingItOnce |
+| An address holding a Unicode noncharacter is REFUSED at `parse()` — all three components — rather than respelled into a second spelling | One log, one spelling (L223) | tst_remotelocation::anAddressHoldingANoncharacterIsRefusedRatherThanRespelled |
 | A name run gives up its optional trailing dot exactly where the format spells a literal one, in the regex and in `readWord()` together | Date format (L21) | tst_timestampparser::aFullStopTheFormatSpellsBelongsToTheFormatAndNotToTheNameBeforeIt |
 | The regression test must reject any modal dialog that is not the picker, or it hangs rather than failing | Nested member (L33) | tst_archiveopen |
 | Every multi-member case counts records PER TAB via `recordsInTab()`, not just the tab count | Nested member (L33) | tst_archiveopen::severalPickedMembersOpenAsSeveralTabs |

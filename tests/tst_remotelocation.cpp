@@ -24,6 +24,7 @@
 #include <QTemporaryDir>
 
 #include "LogFileStore.h"
+#include "LogSource.h"
 #include "LogSettings.h"
 #include "RemoteLocation.h"
 
@@ -55,6 +56,9 @@ private slots:
     void everyAddressGetsANonEmptyNameAndNoNameIsAPath();
     void everyAddressGetsANonEmptyNameAndNoNameIsAPath_data();
     void anAddressThatDoesNotParseStillLosesItsPassword();
+    void anAddressHoldingANoncharacterIsRefusedRatherThanRespelled();
+    void normalizingAnAddressTwiceIsNormalizingItOnce();
+    void normalizingAnAddressTwiceIsNormalizingItOnce_data();
     void availabilityIsOptimisticForRemote();
     void presenceTellsAnAbsentLogFromAnUnreadableOne();
     void settingsKeyIsWorkingDirectoryIndependent();
@@ -364,6 +368,121 @@ void TestRemoteLocation::anAddressThatDoesNotParseStillLosesItsPassword()
                                  QStringLiteral("ssh://")}) {
         QCOMPARE(RemoteLocation::withoutPassword(plain), plain);
     }
+}
+
+// bugs.md 44. THE SIXTY-SIX UNICODE NONCHARACTERS ARE THE ONE CLASS OF CHARACTER THAT
+// DOES NOT SURVIVE ITS OWN NORMAL FORM. toString() percent-encodes one and QUrl
+// declines to give it back, answering U+FFFD per byte — so `ssh://h/x<U+FFFF>y`
+// normalizes to `ssh://h:22/x%EF%BF%BFy` and re-parses to a path holding three
+// replacement characters. Every entry point normalizes and Document::prepare()
+// normalizes AGAIN, so such a log had two spellings: two settings slots out of the
+// pool of 500, settings written under one name and read under the other.
+//
+// The ruling is a REFUSAL at parse() rather than an agreement between toString() and
+// parse() about a character neither of them wants. It is decided with no I/O, so per
+// M17 it fails the open outright and names the reason instead of putting up a tab.
+void TestRemoteLocation::anAddressHoldingANoncharacterIsRefusedRatherThanRespelled()
+{
+    // In the path (corpus/address/a029_noncharacter_in_path), in the account
+    // (a030_noncharacter_in_user), in a plane above the BMP — sixteen of the sixty-six
+    // are surrogate pairs, and neither half of a pair is a noncharacter on its own —
+    // and in the U+FDD0..U+FDEF block, which is the half that is not `& 0xFFFE`.
+    const QStringList refused = {
+        QStringLiteral("ssh://h/x￿y"),
+        QStringLiteral("sftp://J/~]￿"),
+        QStringLiteral("ssh://￿u@os/togs/app.log"),
+        QStringLiteral("ssh://h/x￾y"),
+        QStringLiteral("ssh://h/x﷐y"),
+        QStringLiteral("ssh://h/x﷯y"),
+        QString::fromUcs4(U"ssh://h/x\U0001FFFEy"),
+        QString::fromUcs4(U"ssh://h/x\U0010FFFFy"),
+        QString::fromUcs4(U"ssh://u\U0001FFFFa@h/p"),
+    };
+    for (const QString &address : refused) {
+        QVERIFY2(!RemoteLocation::parse(address).has_value(), qPrintable(address));
+        // And therefore it names no log at all, which is what keeps it a refusal
+        // rather than a tab waiting for something that cannot turn up.
+        QVERIFY2(!logPathIsWellFormed(address), qPrintable(address));
+    }
+
+    // A noncharacter in the HOST is refused too, though QUrl's own hostname rules get
+    // there first — the check covers the component for the shape's sake, not because
+    // anything today reaches it.
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("ssh://h￿x/p")).has_value());
+
+    // Nothing else moved. Percent-encoding, spaces, non-ASCII that is not a
+    // noncharacter, tildes and the replacement character ITSELF — which is an ordinary
+    // character and survives its own normal form perfectly — all still parse.
+    for (const QString &kept : {QStringLiteral("ssh://web1/var/log/app.log"),
+                                QStringLiteral("ssh://deploy@web1:2222/var/log/app.log"),
+                                QStringLiteral("ssh://h/logs/журнал.log"),
+                                QStringLiteral("ssh://h/my%20app.log"),
+                                QStringLiteral("ssh://h/~/app.log"),
+                                QStringLiteral("ssh://h/x�y"),
+                                QString::fromUcs4(U"ssh://h/x\U0001F600y")}) {
+        QVERIFY2(RemoteLocation::parse(kept).has_value(), qPrintable(kept));
+        QVERIFY2(logPathIsWellFormed(kept), qPrintable(kept));
+    }
+
+    // What the user is told. It is the refusal every unparseable address already gets,
+    // so nothing new reaches the screen — and it goes through withoutPassword(), which
+    // is what keeps this from becoming a fresh route for a credential: the address is
+    // quoted VERBATIM because parse() refused it and so never dropped its password.
+    QString error;
+    const QString withSecret = QStringLiteral("ssh://deploy:hunter2@web1/var/log/x￿y");
+    QVERIFY(!openLogSource(withSecret, OpenPolicy::Interactive, &error));
+    QVERIFY2(!error.isEmpty(), qPrintable(error));
+    QVERIFY2(!error.contains(QStringLiteral("hunter2")), qPrintable(error));
+    QVERIFY2(error.contains(QStringLiteral("web1")), qPrintable(error));
+    QVERIFY2(error.contains(QStringLiteral("deploy")), qPrintable(error)); // which login
+}
+
+void TestRemoteLocation::normalizingAnAddressTwiceIsNormalizingItOnce_data()
+{
+    QTest::addColumn<QString>("address");
+
+    QTest::newRow("plain remote") << QStringLiteral("ssh://web1/var/log/app.log");
+    QTest::newRow("user and port") << QStringLiteral("ssh://deploy@web1:2222/a.log");
+    QTest::newRow("sftp") << QStringLiteral("sftp://web1/a.log");
+    QTest::newRow("already normal") << QStringLiteral("ssh://web1:22/a.log");
+    QTest::newRow("space") << QStringLiteral("ssh://h/my app.log");
+    QTest::newRow("encoded space") << QStringLiteral("ssh://h/my%20app.log");
+    QTest::newRow("cyrillic") << QStringLiteral("ssh://h/logs/журнал.log");
+    QTest::newRow("astral") << QString::fromUcs4(U"ssh://h/x\U0001F600y");
+    QTest::newRow("replacement char") << QStringLiteral("ssh://h/x�y");
+    QTest::newRow("tilde") << QStringLiteral("ssh://h/~/a.log");
+    QTest::newRow("password") << QStringLiteral("ssh://u:pw@h/a.log");
+    QTest::newRow("local") << QStringLiteral("/var/log/app.log");
+    QTest::newRow("not an address") << QStringLiteral("ssh://");
+    QTest::newRow("empty") << QString();
+    // The two the fuzzer produced, which is what this case exists for.
+    QTest::newRow("a029 noncharacter in path") << QStringLiteral("sftp://J/~]￿");
+    QTest::newRow("a030 noncharacter in user") << QStringLiteral("ssh://￿u:p@os/togs/sbn.zip/");
+    QTest::newRow("noncharacter FDD0") << QStringLiteral("ssh://h/x﷐y");
+    QTest::newRow("noncharacter astral") << QString::fromUcs4(U"ssh://h/x\U0001FFFEy");
+}
+
+// THE INVARIANT ITSELF, which is stronger than asserting the refusal: normalize() is
+// what every entry point runs a path through before it becomes a Document::path(), and
+// Document::prepare() runs it a SECOND time — so the whole tree's "one log, one
+// spelling" rests on the result being a fixed point. A refused address falls through
+// normalize() unchanged, which is itself a fixed point, so the property holds for the
+// characters this cannot spell as well as for the ones it can.
+void TestRemoteLocation::normalizingAnAddressTwiceIsNormalizingItOnce()
+{
+    QFETCH(QString, address);
+
+    const QString once = RemoteLocation::normalize(address);
+    QCOMPARE(RemoteLocation::normalize(once), once);
+
+    // And the same for the funnel every entry point actually calls, which adds the
+    // archive branch on top — a030 is an archive-shaped address as well as a remote one.
+    const QString onceLog = normalizeLogPath(address);
+    QCOMPARE(normalizeLogPath(onceLog), onceLog);
+
+    // The settings key is the thing that would be spelled two ways, so it is asserted
+    // where the damage would be rather than only where the cause is.
+    QCOMPARE(logSettingsKey(onceLog), logSettingsKey(normalizeLogPath(onceLog)));
 }
 
 void TestRemoteLocation::availabilityIsOptimisticForRemote()

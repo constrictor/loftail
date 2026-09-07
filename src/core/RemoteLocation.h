@@ -50,12 +50,24 @@ struct RemoteLocation
     // Parse an ssh:// or sftp:// URL. Returns nullopt for a local path, a malformed
     // URL, or one with no host. A password embedded in the URL (`ssh://u:pw@h/p`) is
     // DELIBERATELY DISCARDED rather than honored — see toString().
+    //
+    // Also nullopt for an address whose user, host or path holds a Unicode
+    // NONCHARACTER, which is the one class of character that does not survive its own
+    // normal form: toString() percent-encodes it and QUrl answers the sequence with
+    // U+FFFD per byte, so normalize() would not be idempotent and one log would have
+    // two spellings. Refused rather than repaired, and refused HERE, because it is
+    // decidable with no I/O — see the .cpp for why the rule is the sixty-six code
+    // points and not a round trip.
     static std::optional<RemoteLocation> parse(const QString &s);
 
     // `s` in normal form, or `s` unchanged when it is not a remote URL. Every entry
     // point (open, drop, command line, recent files, session restore) normalizes
     // before the string becomes a Document path, so that two spellings of one remote
     // file compare equal in viewOfPath(), the recent-files dedupe and the format cache.
+    //
+    // IT IS IDEMPOTENT: normalize(normalize(s)) == normalize(s) for every string. That
+    // is what those three comparisons rest on, and it is why parse() refuses an address
+    // holding a noncharacter rather than normalizing it into a different one.
     static QString normalize(const QString &s);
 
     bool isValid() const { return !host.isEmpty() && !path.isEmpty(); }

@@ -456,7 +456,7 @@ by somebody looking. Three are the fuzzer's, one came out of reading the lines a
 coverage report said had never executed, and one out of a test whose first draft
 asserted the wrong thing and was right to. Each was recorded with the ruling it
 needs, because four of the five have two defensible answers and the choice is the
-user's; two of them have since been taken and fixed.
+user's; three of them have since been taken and fixed.
 
 Entry 42 has gone: a literal `.` spelled after `%b`, `%a` or `%Z` inside `%d{...}`
 was claimed by two halves at once. The name run tolerates a trailing dot because
@@ -508,34 +508,24 @@ way a decoded line could begin with one at all. `corpus/decoder/utf8_two_marks_i
 is that input, and it is the one that reddens when the fix is reverted; the minimised one
 is kept as the shape of the report rather than as the guard.
 
----
-
-### 44. A Unicode noncharacter in a remote path or account makes `normalize()` non-idempotent
-
-`RemoteLocation::toString()` percent-encodes a noncharacter, and re-parsing the
-result yields not the character but three U+FFFD — so `normalize(normalize(s))`
-is not `normalize(s)`. `ssh://h/x<U+FFFF>y` becomes `ssh://h:22/x%EF%BF%BFy`
-becomes a path with the replacement character in it, and the string is not a fixed
-point of the function every entry point runs it through.
-
-The whole tree turns on that fixed point. `logSettingsKey()` is documented as one
-log, one spelling; `Document::prepare()` normalizes a **second** time after the
-open path already has; the tab-label rule, the recent-files menu, the spool
-registry and the session all key on the result. A log whose path contains one of
-these characters therefore has two spellings, which is the exact condition
-`ONE LOG, ONE SPELLING` exists to prevent — a second slot burned out of the pool
-of 500, settings written under one name and read under the other.
-
-The extent is known exactly rather than estimated: the fuzz target's finding was
-swept against all 1,114,112 code points, and it is **the 66 Unicode
-noncharacters** and nothing else. Inputs
-`tests/fuzz/corpus/address/a029_noncharacter_in_path` and `a030_noncharacter_in_user`.
-
-Whether it is worth fixing is a genuine question — no ordinary path contains
-U+FFFF — but the cheap answer is available: refuse such an address at
-`RemoteLocation::parse()`, which is a no-I/O refusal and so keeps its tab and says
-why, rather than making `toString()` and `parse()` agree about a character neither
-of them wants.
+Entry 44 has gone too, and its ruling was the user's: a Unicode noncharacter in a
+remote path or account made `normalize()` non-idempotent. `toString()`
+percent-encodes one and `QUrl` declines to give it back, answering U+FFFD per
+byte — so `ssh://h/x<U+FFFF>y` normalized to `ssh://h:22/x%EF%BF%BFy` and
+re-parsed to a path holding three replacement characters. Every entry point
+normalizes and `Document::prepare()` normalizes again, so such a log had two
+spellings: a second slot out of the pool of 500, and settings written under one
+name and read back under the other. `RemoteLocation::parse()` refuses such an
+address now, in all three of the user, host and path — a refusal decided with no
+I/O, so it fails the open and is reported through the message every unparseable
+address already gets, over `withoutPassword()`. The rule is the sixty-six code
+points and not "whatever the round trip does not preserve", which was the
+alternative: re-parsing the normal form inside `parse()` costs 860 ns on top of a
+355 ns parse where the scan costs 23, it would make the addresses loftail accepts
+a function of the Qt build, and it would make the fuzz target's fixed-point
+property tautological — and that property, now asserted for every address rather
+than with the two noncharacter inputs excused, is the thing that would find a
+second class of character if one ever appeared.
 
 ---
 

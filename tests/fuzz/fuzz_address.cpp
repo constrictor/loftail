@@ -28,6 +28,14 @@
 // why every name-shaped and path-shaped answer is checked here rather than only
 // the one the bug was reported against.
 //
+// A SECOND PROPERTY JOINED IT: normalize() is idempotent. Every entry point runs
+// a path through it before the string becomes a Document::path() and
+// Document::prepare() runs it again, so "one log, one spelling" is exactly the
+// claim that the second pass moves nothing. It held for every address but one
+// class — the sixty-six Unicode noncharacters, which toString() percent-encodes
+// and QUrl declines to give back — and those are refused at parse() now
+// (bugs.md 44), so the property is asserted whole.
+//
 // The password is recovered independently, with QUrl, so the check does not read
 // the answer off the very code under test. Two narrowings keep it a property
 // rather than a coincidence generator, and the fuzzer produced the input for each
@@ -60,24 +68,6 @@ void checkNoPassword(const QString &produced, const QString &password, const cha
     if (password.size() < 4)
         return;
     FUZZ_CHECK(!produced.contains(QLatin1Char(':') + password), what);
-}
-
-// A Unicode NONCHARACTER (U+FDD0..U+FDEF and the two at the top of every plane).
-// QUrl refuses to produce one from a percent-encoded sequence and answers
-// U+FFFD per byte instead, so an address whose path holds one does not survive
-// its own normal form — see the fixed-point check below, and the finding it
-// records. Sixty-six code points, and no other character in Unicode behaves this
-// way (swept, all 1.1 million).
-bool containsNoncharacter(const QString &s)
-{
-    // Over CODE POINTS and not QChars: U+1FFFE and its sixteen siblings are
-    // surrogate pairs, and neither half of a pair matches the test below, so a
-    // UTF-16 walk would miss every non-BMP noncharacter — which is most of them.
-    for (const char32_t u : s.toUcs4()) {
-        if ((u >= 0xFDD0 && u <= 0xFDEF) || (u & 0xFFFE) == 0xFFFE)
-            return true;
-    }
-    return false;
 }
 
 } // namespace
@@ -126,9 +116,22 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
     }
 
     (void)RemoteLocation::isRemote(address);
-    (void)normalizeLogPath(address);
+
+    // NORMALIZING IS IDEMPOTENT, for every string and not only for one that
+    // parses: every entry point runs a path through this before it becomes a
+    // Document::path(), and Document::prepare() runs it AGAIN, so the whole
+    // tree's "one log, one spelling" rests on the second pass moving nothing.
+    // An address the parse refuses falls through unchanged, which satisfies it
+    // as surely as one that normalizes does. bugs.md 44 is the finding that put
+    // it here; it is stated over normalizeLogPath() as well, that being the
+    // funnel the entry points actually call and the one that adds the archive
+    // branch on top.
+    const QString logNormal = normalizeLogPath(address);
+    FUZZ_CHECK(normalizeLogPath(logNormal) == logNormal, "normalizeLogPath is idempotent");
 
     const QString remoteNormal = RemoteLocation::normalize(address);
+    FUZZ_CHECK(RemoteLocation::normalize(remoteNormal) == remoteNormal,
+               "normalize is idempotent");
 
     const QString stripped = RemoteLocation::withoutPassword(address);
     checkNoPassword(stripped, password, "withoutPassword() drops the password");
@@ -156,26 +159,29 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
         // The normal form is what a Document::path() holds, so it must itself be
         // an address: two spellings of one remote log have to compare equal in
         // viewOfPath(), the recent-files dedupe and the settings key.
-        // The fixed-point half is skipped for a path holding a noncharacter, and
-        // that is a FINDING kept rather than fixed: `ssh://h/x\uFFFFy` normalizes
-        // to `ssh://h:22/x%EF%BF%BFy`, which parses back with the noncharacter
-        // replaced by three U+FFFD — so normalize() is not idempotent there,
-        // and every entry point normalizes while Document::prepare() normalizes
-        // AGAIN, which is exactly the "two spellings of one log" the contract
-        // exists to prevent. Reported, not fixed: it needs a product call about
-        // what an address holding one should do, and the practical population is
-        // a remote log whose file name contains U+FFFF. It reaches the ACCOUNT
-        // by the same route (`ssh://\uFFFFu:p@host/p`), which is the second input
-        // the fuzzer produced, so both components are excused here.
+        //
+        // UNCONDITIONAL SINCE bugs.md 44 WAS TAKEN, and the unconditionality is
+        // the point. This block used to be skipped for a path or an account
+        // holding a Unicode noncharacter, which is the one class of character
+        // that did not survive its own normal form — `ssh://h/x\uFFFFy`
+        // normalized to `ssh://h:22/x%EF%BF%BFy` and parsed back with three
+        // U+FFFD in it, so normalize() was not idempotent and one log had two
+        // spellings. parse() now REFUSES such an address, which is why the
+        // carve-out could go rather than merely being narrowed: this branch is
+        // never entered for one. Keeping the property whole is what makes the
+        // fuzzer, and not the sixty-six-code-point list in RemoteLocation.cpp,
+        // the thing that would find a second class of character behaving that
+        // way — the reason parse() checks a table instead of re-parsing its own
+        // output, which would have made this assertion tautological.
         // corpus/address/a029_noncharacter_in_path and a030_noncharacter_in_user
-        // are the two inputs.
-        if (loc->isValid() && !containsNoncharacter(loc->path)
-            && !containsNoncharacter(loc->user)) {
+        // are the two inputs, and both now pass by being refused.
+        if (loc->isValid()) {
             FUZZ_CHECK(RemoteLocation::isRemote(normal), "the normal form is still remote");
             auto again = RemoteLocation::parse(normal);
             FUZZ_CHECK(again.has_value(), "the normal form parses");
             FUZZ_CHECK(again->host == loc->host, "the normal form keeps the host");
             FUZZ_CHECK(again->path == loc->path, "the normal form keeps the path");
+            FUZZ_CHECK(again->user == loc->user, "the normal form keeps the user");
             FUZZ_CHECK(again->port == loc->port, "the normal form keeps the port");
             FUZZ_CHECK(again->toString() == normal, "the normal form is a fixed point");
         }

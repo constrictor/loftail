@@ -60,6 +60,44 @@ QString pathToUrl(const QString &remotePath)
     return u'/' + remotePath;
 }
 
+// The 66 Unicode NONCHARACTERS: U+FDD0..U+FDEF, plus U+FFFE and U+FFFF at the top of
+// each of the seventeen planes.
+bool isNoncharacter(char32_t u)
+{
+    return (u >= 0xFDD0 && u <= 0xFDEF) || (u & 0xFFFE) == 0xFFFE;
+}
+
+// Whether any component of an address holds one, which is what parse() refuses on.
+//
+// THE RULE IS THE SIXTY-SIX AND NOT "whatever the round trip does not preserve", and
+// the alternative was measured rather than guessed. Re-parsing the normal form inside
+// parse() would be self-verifying and would need no table — but it costs 860 ns on top
+// of a 355 ns parse, on the open path and on Document::prepare()'s second normalize,
+// where this scan costs 23 ns; it would make the set of addresses loftail accepts a
+// function of the Qt build, so a session file written on one machine could be refused
+// on another; and it would make the address fuzz target's fixed-point property
+// TAUTOLOGICAL, which is exactly the assertion that would catch a second class of
+// character if one ever appeared. The list is fixed by the Unicode stability policy
+// and cannot go stale.
+//
+// Walked over CODE POINTS: sixteen of the sixty-six are surrogate pairs, and neither
+// half of a pair matches the test above, so a bare QChar walk would miss most of them.
+bool holdsNoncharacter(const QString &s)
+{
+    for (qsizetype i = 0; i < s.size(); ++i) {
+        const char16_t unit = s.at(i).unicode();
+        if (QChar::isHighSurrogate(unit) && i + 1 < s.size()
+            && QChar::isLowSurrogate(s.at(i + 1).unicode())) {
+            if (isNoncharacter(QChar::surrogateToUcs4(unit, s.at(++i).unicode())))
+                return true;
+            continue;
+        }
+        if (isNoncharacter(unit))
+            return true;
+    }
+    return false;
+}
+
 } // namespace
 
 bool RemoteLocation::isRemote(const QString &s)
@@ -87,6 +125,29 @@ std::optional<RemoteLocation> RemoteLocation::parse(const QString &s)
     // moment the URL became a Document path; the user is prompted instead.
     if (!loc.isValid())
         return std::nullopt;
+    // AN ADDRESS THAT IS NOT A FIXED POINT OF ITS OWN NORMAL FORM IS REFUSED HERE, and
+    // a noncharacter is the whole of what "not a fixed point" means. toString()
+    // percent-encodes one, and QUrl declines to give it back out of that sequence,
+    // answering U+FFFD PER BYTE — so `ssh://h/x\uFFFFy` normalizes to
+    // `ssh://h:22/x%EF%BF%BFy` and re-parses to a path holding three replacement
+    // characters. normalize() is then not idempotent, and every entry point normalizes
+    // while Document::prepare() normalizes AGAIN: one log with two spellings, which is
+    // a second slot out of the pool of 500 and settings written under one name and read
+    // under the other (ONE LOG, ONE SPELLING, LogFileStore.h).
+    //
+    // All three components, because all three reach toString(): the fuzzer produced the
+    // path shape and the account shape independently, and the host is spared only by
+    // QUrl's own hostname rules rather than by anything here.
+    //
+    // A refusal and not a repair, because it is decidable with NO I/O (M17): the caller
+    // reports "Not a valid remote log address: %1" over withoutPassword(), so nothing
+    // new reaches the screen and no credential rides along, and logPathIsWellFormed()
+    // answers false for free — such an address names no log, and no amount of waiting
+    // will make it name one.
+    if (holdsNoncharacter(loc.user) || holdsNoncharacter(loc.host)
+        || holdsNoncharacter(loc.path)) {
+        return std::nullopt;
+    }
     return loc;
 }
 
