@@ -163,6 +163,19 @@ struct RemoteLocation
 // the termination argument and the bound.
 QString cleanedToFixedPoint(const QString &path);
 
+// A LOCAL address made absolute and then cleaned to a fixed point — the one composite
+// both of the funnels below answer a plain path with, and the one a third site that
+// needs an absolute local address should call rather than spelling out again.
+//
+// A path holding a NUL is handed back UNTOUCHED. Such an address is refused by
+// logPathIsWellFormed() and names no log, and QFileInfo treats it as a broken filename:
+// absoluteFilePath() answers a string that is still RELATIVE, which the clean then
+// shortens further, so the key moved with the working directory and resolved against it
+// on its second application — one log with two spellings (bugs.md 48). Leaving it alone
+// is the same fall-through an unparseable remote address takes through normalize(), and
+// it is what keeps both funnels idempotent for every string rather than for most.
+QString absoluteLocalPath(const QString &path);
+
 // Reduce a raw path to the ONE spelling that may become a Document::path(): a remote
 // URL to its normal form, an archived path to its container's normal form plus the
 // member, a plain path unchanged. Every entry point (open, drop, command line, recent

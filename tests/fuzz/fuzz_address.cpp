@@ -146,27 +146,42 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
     // pass has already walked past, so `/.//a.zip` cleans to `//a.zip` and only a
     // second pass reaches `/a.zip` — and both funnels cleaned exactly once. The fix
     // is a loop to a fixed point rather than a second call, so the property is
-    // asserted over every address that carries no NUL, and the fuzzer rather than a
+    // asserted over every address there is, and the fuzzer rather than a
     // written-down list of shapes is what would find a third route to two spellings.
     // corpus/address/a033_dot_slash_before_a_container is that input, and it now
     // passes by normalizing to one spelling.
     //
-    // THE NUL IS THE ONE NARROWING LEFT, and it is a FINDING kept rather than fixed.
-    // QFileInfo treats a path with an embedded NUL as a broken filename and answers
-    // absoluteFilePath() with a string that is still RELATIVE — `a\0/../b` answers
-    // `b` — so the key is not absolute at all, means a different file in a different
-    // working directory, and resolves against that directory on the second
-    // application. It is a different defect from 47's and the loop cannot touch it:
-    // the second pass is correct arithmetic over a first answer that was already
-    // wrong. Reported, not fixed (bugs.md 48): it needs a ruling about what an
-    // address holding a NUL should do, and no filesystem, command line or file
-    // dialog can produce one. corpus/address/a034_nul_and_dotdot_in_a_relative_path
+    // UNCONDITIONAL IN BOTH DIRECTIONS SINCE bugs.md 48 WAS TAKEN, where this was
+    // narrowed to an address carrying no NUL. QFileInfo treats a path holding one as a
+    // broken filename and answers absoluteFilePath() with a string that is still
+    // RELATIVE — `a\0/../b` answers `b` once cleaned — so the key was not absolute at
+    // all, meant a different file from a different working directory, and resolved
+    // against that directory on its second application. It was a different defect from
+    // 47's and the loop could not touch it: the second pass was correct arithmetic over
+    // a first answer that was already wrong. Such an address is REFUSED now
+    // (logPathIsWellFormed), which is what lets both funnels leave it alone and the
+    // property be stated for every string. corpus/address/a034_nul_and_dotdot_in_a_relative_path
     // is the input for the key and a035_nul_and_dotdot_before_a_container for the
-    // archive funnel above it. A Qt RESOURCE path is the same root from the other
-    // side and needs no narrowing: cleanedToFixedPoint() never makes a path less
-    // absolute, `:/..` cleaning to `.`, so the fuzzer's `:////../` and `:/../a.zst`
-    // both pass — corpus/address/a036_resource_path_cleaned_below_its_root.
-    if (!address.contains(QChar(u'\0'))) {
+    // archive funnel above it; both pass by normalizing to themselves. A Qt RESOURCE
+    // path is the same root from the other side and needed no narrowing either:
+    // cleanedToFixedPoint() never makes a path less absolute, `:/..` cleaning to `.`, so
+    // the fuzzer's `:////../` and `:/../a.zst` both pass —
+    // corpus/address/a036_resource_path_cleaned_below_its_root.
+    //
+    // THE ONE NARROWING LEFT IS A REMOTE ARCHIVE MEMBER HOLDING A PERCENT SIGN, and it
+    // is a FINDING kept rather than fixed. ArchiveLocation::split() takes a remote
+    // member out of the URL's DECODED path and toString() appends it verbatim while
+    // re-encoding only the container, so one decode happens per normalize:
+    // `ssh://h/u.tar/b%2520c` answers `ssh://h:22/u.tar/b%20c` and then
+    // `ssh://h:22/u.tar/b c`, which is a third spelling again. It is neither 47's nor
+    // 48's — nothing local is involved and no cleaner runs — and it needs a ruling about
+    // whether an archive member inside a remote address is an encoded part of that
+    // address or an opaque string (bugs.md 49). Reported, not fixed.
+    // corpus/address/a037_percent_in_a_remote_archive_member is the input.
+    const auto archived = ArchiveLocation::split(address);
+    const bool remoteMemberCarriesAPercent = archived && !archived->member.isEmpty()
+        && RemoteLocation::isRemote(archived->container) && archived->member.contains(u'%');
+    if (!remoteMemberCarriesAPercent) {
         const QString logNormal = normalizeLogPath(address);
         FUZZ_CHECK(normalizeLogPath(logNormal) == logNormal, "normalizeLogPath is idempotent");
 

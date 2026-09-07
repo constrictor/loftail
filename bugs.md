@@ -448,19 +448,19 @@ that viewport gets small in the first place.
 
 ---
 
-A third pass, on 2026-09-07, raised entries 42 to 48. Different method from the two
+A third pass, on 2026-09-07, raised entries 42 to 49. Different method from the two
 before it: no agent drove the UI at all. These came out of building test
 infrastructure — a coverage measurement, five libFuzzer targets over the parsers
 and a mutation harness — and every one of them was found by a machine rather than
 by somebody looking. Four are the fuzzer's, one came out of reading the lines a
 coverage report said had never executed, and one out of a test whose first draft
 asserted the wrong thing and was right to. Each was recorded with the ruling it
-needs, because four of them have two defensible answers and the choice is the
-user's; six have since been taken and fixed, and the one still open is entry 48, which
-the pass raised on its way out. The last three arrived in a chain, each one the
-previous one's fix asserting a property whole and the fuzzer answering with another
-address that is not a fixed point of its own normal form, for a reason that has
-nothing to do with the one before it.
+needs, because five of them have two defensible answers and the choice is the
+user's; seven have since been taken and fixed, and the one still open is entry 49,
+which the last of those fixes raised on its way out. The last five arrived in a chain,
+each one the previous one's fix asserting a property whole and the fuzzer answering
+with another address that is not a fixed point of its own normal form, for a reason
+that has nothing to do with the one before it.
 
 Entry 42 has gone: a literal `.` spelled after `%b`, `%a` or `%Z` inside `%d{...}`
 was claimed by two halves at once. The name run tolerates a trailing dot because
@@ -575,7 +575,7 @@ saying so, and `run-mutations.sh` skips such a patch rather than reporting SURVI
 about a binary that QSKIPped: every case in that file needs a real Secret Service,
 and a QSKIP exits 0.
 
-Entry 47 has gone last, and it is entry 44's defect by a road that has nothing to
+Entry 47 went next, and it is entry 44's defect by a road that has nothing to
 do with any character: `QDir::cleanPath()` is not idempotent, so its result is not
 necessarily clean. Dropping a `.` component leaves a separator behind at a position
 the collapse pass has already walked past, and `/.//a.zip` therefore cleans to
@@ -610,59 +610,98 @@ address. `tests/fuzz/corpus/address/a033_dot_slash_before_a_container` is the in
 that found it; the fuzz target's fixed-point property is unconditional again, as
 entry 44's was, and is now stated over `logSettingsKey()` as well.
 
----
+Entry 48 has gone last, and it is the chain's fourth link: an address that is not a fixed
+point of its own normal form for a fourth unrelated reason, found by the fuzz target
+within two minutes of entry 47's property being asserted whole. `QFileInfo` treats a
+path with an embedded NUL as a broken filename, and `absoluteFilePath()` then answers a
+string that is still **relative** — `a\0/../b` answers `a\0/../b`, which the clean
+reduces to `b`, and `a\0/..` answers `.`. So `logSettingsKey()`, whose whole job is a
+spelling that does not move with the working directory, handed back one that does, and
+applying it a second time resolved that answer against the directory loftail happened
+to be started from. The archive funnel carried the same shape one level up, its local
+container branch being the same call. Neither entry 47's loop nor its resource guard
+could reach it: the second pass is correct arithmetic over a first answer that was
+already wrong, and the answer was relative before anything cleaned it.
 
-### 48. A path holding a NUL gets a settings key that is not absolute
+The ruling was the user's and it is entry 44's rather than 47's: a **refusal**, decided
+with no I/O, and not a `logSettingsKey()` taught to re-absolutize its own answer, which
+repairs a symptom and leaves the address. It lives in `logPathIsWellFormed()` rather
+than in `RemoteLocation::parse()`, because a NUL is not only a remote question — the
+plain key and the archive funnel both carried it, and that one function is asked about
+all three — and it sits **before the archive split**, so one comparison covers a plain
+path, a remote address, a container and a member alike. `QUrl` refuses a NUL in a
+remote address first, which is why `parse()` already answered `nullopt` for one; the
+check is written out regardless, because the addresses loftail accepts must not be a
+function of the Qt build, which is entry 44's argument and entry 45's. Because the
+address is refused, `absoluteLocalPath()` — the composite both funnels now answer a
+local address with — hands such a path straight back, which is what keeps both of them
+idempotent for every string rather than for most, exactly as an unparseable remote
+address falls through `normalize()` unchanged. The reach was the smallest of the pass by
+a wide margin: no filesystem can hold a NUL in a name, no `argv` can carry one and no
+file dialog can produce one, so the ways in were a hand-edited session file or
+`logsettings.json` (JSON spells `\u0000` happily) and a drag whose URL was built by
+something else. `tests/fuzz/corpus/address/a034_nul_and_dotdot_in_a_relative_path` and
+`a035_nul_and_dotdot_before_a_container` are the inputs, and the fuzz target's
+idempotence property was stated for every address again — until entry 49 below, which
+that very run turned up, narrowed it once more one level up.
 
-Found by the address fuzz target within two minutes of entry 47's property being
-asserted, and it is the third address in this pass that is not a fixed point of its
-own normal form — by a route that entry 47's loop cannot touch. `QFileInfo` treats a
-path with an embedded NUL as a broken filename, and `absoluteFilePath()` then answers
-a string that is still **relative**: `a\0/../b` answers `b`, and `a\0/..` answers
-`.`. So `logSettingsKey()`, whose whole job is a spelling that does not move with the
-working directory, hands back one that does — and applying it a second time resolves
-that relative answer against the cwd, which is how the fuzzer sees it. The archive
-funnel has the same shape one level up: `a\0/../b.tar.gz/m` normalizes through
-`ArchiveLocation::toString()`, whose local branch is the same call.
-
-It is not entry 47's defect and cleaning to a fixed point does not help, because the
-second pass is correct arithmetic over a first answer that was already wrong. Nor is
-it a `QDir::cleanPath()` question at all: the answer is relative before anything
-cleans it.
-
-A sibling turned up in the same run and IS answered, which is worth recording because
-it is the same root reached from the other side. A Qt **resource** path is the other
-thing `absoluteFilePath()` hands back unchanged rather than made absolute, and
-cleaning that answer throws away the prefix that gave it a meaning — `:/..` cleans to
-`.`. So entry 47's own fix would have traded one non-idempotent spelling for another
-had it cleaned unconditionally — and it did, twice, the fuzzer producing the plain-key
-shape and the archive shape within seven minutes of each other. `cleanedToFixedPoint()`
-therefore never makes a path LESS absolute: where the clean would, the uncleaned string
+A sibling turned up in the same run and was answered by entry 47's own fix, which is
+worth recording because it is that entry's root reached from the other side. A Qt
+**resource** path is the other thing `absoluteFilePath()` hands back unchanged rather
+than made absolute, and cleaning that answer throws away the prefix that gave it a
+meaning — `:/..` cleans to `.`. So an unconditional clean would have traded one
+non-idempotent spelling for another, and the fuzzer produced the plain-key shape and
+the archive shape within seven minutes of each other. `cleanedToFixedPoint()` therefore
+never makes a path **less absolute**: where the clean would, the uncleaned string
 stands, which is what both callers have always answered there. The guard is in the
-helper and not at either call site, so a third one cannot forget it. That is a guard
-against a regression and not a repair of this entry: a key that was never absolute is
-still a key that means a different file from a different working directory, and
-`tests/fuzz/corpus/address/a036_resource_path_cleaned_below_its_root` is what holds
-the guard down.
-
-The reach is the smallest of the pass by a wide margin. No filesystem can hold a NUL
-in a name, no `argv` can carry one, and no file dialog can produce one — the ways in
-are a hand-edited session file or `logsettings.json` (JSON spells `\u0000` happily)
-and a drag whose URL was built by something else. What it costs if one gets in is
-the ordinary cost of two spellings: a second slot out of the pool of 500, and
-settings written under one name and read back under another, plus a key that means a
-different file depending on where loftail was started from.
-
-The ruling is a genuine question and is why this is recorded rather than fixed. It is
-entry 44's shape — a character that does not survive the round trip — so refusing an
-address that holds a NUL at the entry points, decided with no I/O, is one answer and
-the consistent one; making `logSettingsKey()` re-absolutize its own answer is
-another, and is a repair of a symptom rather than of the address. `tests/fuzz/corpus/address/a034_nul_and_dotdot_in_a_relative_path`
-and `a035_nul_and_dotdot_before_a_container` are the inputs, and the fuzz target's
-idempotence property is narrowed to an address carrying no NUL with both names in the
-comment.
+helper and not at either call site, so a third one cannot forget it, and
+`tests/fuzz/corpus/address/a036_resource_path_cleaned_below_its_root` is what holds it
+down. That is a guard against a regression rather than a repair of anything — a key
+that was never absolute to begin with is still a key that means a different file from a
+different working directory, which is what the refusal above is for.
 
 ---
+
+### 49. A percent sign in a remote archive member is decoded once per normalize
+
+Found by the address fuzz target within five minutes of entry 48's property being
+asserted whole, which makes it the chain's fifth link and the fourth found this way. A
+remote archived address is split by `ArchiveLocation::split()`, which parses the
+container as a URL and takes the member out of its **decoded** path — and
+`ArchiveLocation::toString()` then re-encodes the container while appending the member
+**verbatim**. So one decode happens per normalize and none of them is undone:
+`ssh://h/u.tar/b%2520c` answers `ssh://h:22/u.tar/b%20c`, which answers
+`ssh://h:22/u.tar/b c`, which is finally a fixed point three spellings later.
+
+It is neither entry 47's nor entry 48's. Nothing local is involved, no cleaner runs and
+no `QFileInfo` is asked anything — the whole of it is that the two halves of an archive
+address disagree about whether the member is part of the URL. A local container is
+unaffected, `split()` taking its member straight off the string; a remote member with no
+percent sign in it is unaffected, there being nothing to decode.
+
+The cost is this class's usual one, and the reach is larger than entry 48's without
+being large: the member has to be a file whose real name inside the archive contains a
+`%` followed by two hex digits — `report%20final.log`, the shape a name that was once a
+URL comes back as — on a host, inside a container, which is a narrow enough intersection
+that nobody has hit it. What it costs when somebody does is two spellings of one log: a
+second slot out of the pool of 500, filters, rules and format written under one name and
+read back under another, two spool entries and two tab labels.
+
+The ruling is a genuine question and is why this is recorded rather than fixed, and it
+is not either of the two the pass has already taken. Refusing the address is wrong here
+— the member names a file that is really in the archive, exactly as `//a.zip` named one
+— so the answer is a repair, and the question is **which half is authoritative**: encode
+the member on the way out, so that a remote archive address is a URL all the way through
+and `split()` decodes what `toString()` wrote, or leave the member opaque and take it off
+the **raw** string rather than the decoded path, so that it is never encoded or decoded
+at all. The first keeps the address round-trippable through `QUrl` and changes what
+`logMatchTarget()` shows a file pattern; the second keeps every existing spelling and
+makes a remote archive address something less than a URL. Either is a change to the
+stored spelling of such a log, so whichever is taken wants the same migration thought
+that `logSettingsKey()`'s legacy fallback got.
+`tests/fuzz/corpus/address/a037_percent_in_a_remote_archive_member` is the input, and
+the fuzz target's idempotence property is narrowed to exclude a remote container whose
+member holds a percent sign, with that name in the comment.
 
 ## Seen but not confirmed
 

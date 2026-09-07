@@ -224,6 +224,22 @@ void TestArchiveLocation::theSecondNormalizeMovesNothingHoweverTheContainerIsSpe
     QTest::newRow("resource path") << QStringLiteral(":////../");
     QTest::newRow("resource path with a member") << QStringLiteral(":/a/../b.zip/app.log");
     QTest::newRow("resource path below its root") << QStringLiteral(":/../a.zst");
+
+    // A NUL, which is the third route to two spellings and the one neither the loop nor
+    // the resource guard reaches: QFileInfo calls such a path a broken filename and
+    // answers absoluteFilePath() with a string that is still RELATIVE, so the clean was
+    // correct arithmetic over a wrong answer and the key resolved against the working
+    // directory on its second application (bugs.md 48). Both funnels hand it back
+    // untouched now, the address being one logPathIsWellFormed() refuses outright. The
+    // fuzzer produced the container shape (a035) and the plain-key shape (a034) within
+    // two minutes of the property above being asserted.
+    QTest::newRow("a035 nul before a container")
+        << (QStringLiteral("a") + QChar(u'\0') + QStringLiteral("/../b.tar.gz/m"));
+    QTest::newRow("a034 nul in a plain path")
+        << (QStringLiteral("a") + QChar(u'\0') + QStringLiteral("/../b"));
+    QTest::newRow("nul inside a member")
+        << (QDir::rootPath() + QStringLiteral("srv/b.zip/a") + QChar(u'\0')
+            + QStringLiteral(".log"));
 }
 
 void TestArchiveLocation::theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled()

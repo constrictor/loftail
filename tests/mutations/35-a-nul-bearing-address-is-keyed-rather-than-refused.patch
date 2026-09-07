@@ -1,0 +1,86 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "ONE LOG, ONE SPELLING"; bugs.md 48):
+#   An address holding a NUL NAMES NO LOG and is refused with no I/O, in
+#   logPathIsWellFormed() — before the archive split, so the one comparison covers
+#   a plain path, a remote one, a container and a member alike. QFileInfo treats
+#   such a path as a broken filename and answers absoluteFilePath() with a string
+#   that is still RELATIVE, so logSettingsKey(), whose whole job is a spelling that
+#   does not move with the working directory, handed back one that does — and
+#   resolved it against that directory the second time it was applied. Because such
+#   an address is refused, absoluteLocalPath() also declines to respell it, which is
+#   what keeps both funnels idempotent for every string rather than for most
+#
+#   THE MUTATION IS THE TREE AS IT SHIPPED, all three parts of it: the refusal
+#   deleted, the funnel left to make a broken filename absolute, and the predicate
+#   itself gone — which it must be, an unused static function being a -Werror
+#   failure and a mutation that does not compile saying nothing about any guard.
+#   Deleting only the refusal is deliberately not the mutation: the ruling is one
+#   decision with two consequences, and a patch taking the refusal while leaving
+#   the fall-through would test which of the two the guard happens to assert first
+#   rather than whether the ruling is in force
+#
+# GUARD: tst_remotelocation::anAddressHoldingANulIsRefusedRatherThanRekeyed
+#
+# SILENT WHEN BROKEN: nothing is reported anywhere. A hand-edited session file or
+# logsettings.json naming such a log — JSON spells a NUL as \u0000 happily — opens a
+# tab that behaves perfectly, and what is wrong is that the log is filed under a
+# key that is not absolute: a second slot out of the pool of 500, its filters,
+# highlight rules and format written under one name and read back under another,
+# and a key that means a different file depending on which directory loftail was
+# started from. The address fuzz target sees it as a fixed-point violation; a
+# person sees a log that will not remember anything.
+
+diff --git a/src/core/RemoteLocation.cpp b/src/core/RemoteLocation.cpp
+--- a/src/core/RemoteLocation.cpp
++++ b/src/core/RemoteLocation.cpp
+@@ -99,14 +99,6 @@
+     return false;
+ }
+ 
+-// Whether an address holds a NUL, which is the other character that cannot be part of
+-// one — see logPathIsWellFormed(), which refuses it, and absoluteLocalPath(), which
+-// therefore declines to respell it.
+-bool holdsNul(const QString &s)
+-{
+-    return s.contains(QChar(u'\0'));
+-}
+-
+ } // namespace
+ 
+ bool RemoteLocation::isRemote(const QString &s)
+@@ -453,8 +445,6 @@
+ // absolute cannot forget it.
+ QString absoluteLocalPath(const QString &path)
+ {
+-    if (holdsNul(path))
+-        return path;
+     return cleanedToFixedPoint(QFileInfo(path).absoluteFilePath());
+ }
+ 
+@@ -673,9 +663,6 @@
+     // them at all. It is written out here regardless, and here rather than only at
+     // parse(), so that the set of addresses loftail accepts is not a function of the Qt
+     // build (bugs.md 44's argument, and 45's).
+-    if (holdsNul(path))
+-        return false;
+-
+     // An archive is well-formed when its container address is; whether the member is
+     // really inside is the same unanswerable-without-expanding question as above, and a
+     // missing one surfaces as an open failure rather than as an endless wait.

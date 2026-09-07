@@ -60,6 +60,7 @@ private slots:
     void normalizingAnAddressTwiceIsNormalizingItOnce();
     void normalizingAnAddressTwiceIsNormalizingItOnce_data();
     void aPortOutsideTheTcpRangeIsARefusedAddressAndNotAFailedConnect();
+    void anAddressHoldingANulIsRefusedRatherThanRekeyed();
     void availabilityIsOptimisticForRemote();
     void presenceTellsAnAbsentLogFromAnUnreadableOne();
     void settingsKeyIsWorkingDirectoryIndependent();
@@ -501,6 +502,84 @@ void TestRemoteLocation::aPortOutsideTheTcpRangeIsARefusedAddressAndNotAFailedCo
     QVERIFY2(error.contains(QStringLiteral("deploy")), qPrintable(error)); // which login
 }
 
+// bugs.md 48. A NUL IS THE OTHER CHARACTER THAT DOES NOT SURVIVE AN ADDRESS, and it
+// breaks the LOCAL half where the noncharacter broke the remote one. QFileInfo treats a
+// path holding one as a broken filename and answers absoluteFilePath() with a string
+// that is still RELATIVE — `a\0/../b` answers `a\0/../b`, which the clean reduces to
+// `b` — so logSettingsKey(), whose whole job is a spelling that does not move with the
+// working directory, handed back one that does and resolved it against that directory
+// the second time it was applied. One log, two spellings, at the usual cost: a second
+// slot out of the pool of 500 and settings written under one name and read under the
+// other.
+//
+// The ruling is entry 44's: a REFUSAL, decided with no I/O, rather than teaching the key
+// to re-absolutize its own answer — which repairs a symptom and leaves the address. It
+// lives in logPathIsWellFormed() rather than at parse(), because a NUL is not only a
+// remote question: the plain key and the archive funnel both carried it, and that one
+// function is asked about all three.
+void TestRemoteLocation::anAddressHoldingANulIsRefusedRatherThanRekeyed()
+{
+    const QChar nul(u'\0');
+    // The fuzzer's two inputs (corpus/address/a034_nul_and_dotdot_in_a_relative_path and
+    // a035_nul_and_dotdot_before_a_container), then the same character in each of the
+    // other places an address can hold one: an absolute local path, a remote path, the
+    // account, an archive container and a member inside one.
+    const QStringList refused = {
+        QStringLiteral("a") + nul + QStringLiteral("/../b"),
+        QStringLiteral("a") + nul + QStringLiteral("/../b.tar.gz/m"),
+        QDir::rootPath() + QStringLiteral("var/log/a") + nul + QStringLiteral(".log"),
+        QStringLiteral("ssh://h/x") + nul + QStringLiteral("/../y"),
+        QStringLiteral("ssh://u") + nul + QStringLiteral("v@h/p"),
+        QDir::rootPath() + QStringLiteral("srv/b") + nul + QStringLiteral(".zip/app.log"),
+        QDir::rootPath() + QStringLiteral("srv/b.zip/app") + nul + QStringLiteral(".log"),
+        QString(nul),
+    };
+    for (const QString &address : refused) {
+        // Printed with the NUL spelled out: qPrintable() stops at one, so a failure would
+        // otherwise name half an address.
+        const QString shown = QString(address).replace(nul, QStringLiteral("<NUL>"));
+        // It names no log at all, so the open FAILS and says so — it is not a log that
+        // has not turned up yet, and no amount of waiting will put a NUL in a filename.
+        QVERIFY2(!logPathIsWellFormed(address), qPrintable(shown));
+        // And it is left alone by both funnels, so it is a fixed point on its way to
+        // being refused: whatever is compared, keyed or reported, is compared, keyed and
+        // reported once.
+        QCOMPARE(normalizeLogPath(address), address);
+        QCOMPARE(logSettingsKey(address), address);
+    }
+
+    // The remote shapes are refused by QUrl first — a NUL is an invalid path character
+    // there — so parse() answered nullopt for them before this existed. Asserted for the
+    // shape's sake: which layer says no is not the contract, and the local and archive
+    // halves have no such layer under them at all.
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("ssh://h/x") + nul + QStringLiteral("/y"))
+                 .has_value());
+
+    // Nothing else moved. A control character that is not a NUL is an ordinary (if odd)
+    // character in a local filename and still names a log, as do the ordinary addresses
+    // beside it — a relative path among them, which is the shape this refusal must not
+    // be mistaken for.
+    for (const QString &kept : {QStringLiteral("ssh://web1/var/log/app.log"),
+                                QDir::rootPath() + QStringLiteral("var/log/app.log"),
+                                QDir::rootPath() + QStringLiteral("srv/b.zip/app.log"),
+                                QDir::rootPath() + QStringLiteral("var/log/a\tb.log"),
+                                QStringLiteral("a/../b")}) {
+        QVERIFY2(logPathIsWellFormed(kept), qPrintable(kept));
+    }
+
+    // What the user is told, and the rule every refusal path carries: the address is
+    // quoted VERBATIM, parse() having refused it and so never dropped its password, so
+    // the reason goes through withoutPassword() like every other unparseable one.
+    QString error;
+    const QString withSecret =
+        QStringLiteral("ssh://deploy:hunter2@web1/var/log/x") + nul + QStringLiteral("y");
+    QVERIFY(!openLogSource(withSecret, OpenPolicy::Interactive, &error));
+    QVERIFY2(!error.isEmpty(), qPrintable(error));
+    QVERIFY2(!error.contains(QStringLiteral("hunter2")), qPrintable(error));
+    QVERIFY2(error.contains(QStringLiteral("web1")), qPrintable(error));
+    QVERIFY2(error.contains(QStringLiteral("deploy")), qPrintable(error)); // which login
+}
+
 void TestRemoteLocation::normalizingAnAddressTwiceIsNormalizingItOnce_data()
 {
     QTest::addColumn<QString>("address");
@@ -526,6 +605,20 @@ void TestRemoteLocation::normalizingAnAddressTwiceIsNormalizingItOnce_data()
     QTest::newRow("noncharacter astral") << QString::fromUcs4(U"ssh://h/x\U0001FFFEy");
     QTest::newRow("a027 explicit port zero") << QStringLiteral("sftp://hoh:0/");
     QTest::newRow("port out of range") << QStringLiteral("ssh://h:65536/p");
+    // And the NUL, whose absolute path was not absolute (bugs.md 48). a034 is the
+    // fuzzer's plain-key shape and a035 its archive shape; the remote ones are the same
+    // character in the two components an address can spell it in.
+    QTest::newRow("a034 nul and dotdot in a relative path")
+        << (QStringLiteral("a") + QChar(u'\0') + QStringLiteral("/../b"));
+    QTest::newRow("a035 nul and dotdot before a container")
+        << (QStringLiteral("a") + QChar(u'\0') + QStringLiteral("/../b.tar.gz/m"));
+    QTest::newRow("nul in an absolute path")
+        << (QDir::rootPath() + QStringLiteral("var/log/a") + QChar(u'\0')
+            + QStringLiteral("/../b.log"));
+    QTest::newRow("nul in a remote path")
+        << (QStringLiteral("ssh://h/x") + QChar(u'\0') + QStringLiteral("/../y"));
+    QTest::newRow("nul in the account")
+        << (QStringLiteral("ssh://u") + QChar(u'\0') + QStringLiteral("v@h/p"));
 }
 
 // THE INVARIANT ITSELF, which is stronger than asserting the refusal: normalize() is
@@ -543,15 +636,17 @@ void TestRemoteLocation::normalizingAnAddressTwiceIsNormalizingItOnce()
 
     // And the same for the funnel every entry point actually calls, which adds the
     // archive branch on top — a030 is an archive-shaped address as well as a remote one.
-    // (Not asserted for a LOCAL archive path: QDir::cleanPath(), which
-    // ArchiveLocation::toString() runs on its container, is not idempotent when a
-    // leading `/.` collapses into a `//` — `/.//a.zip` cleans to `//a.zip` and then to
-    // `/a.zip`. Reported rather than fixed here; bugs.md 47.)
+    // Unconditional over the local archive rows as well since bugs.md 47 was taken, and
+    // over the NUL rows since 48 was: both funnels clean to a fixed point, and neither
+    // respells an address that names no log.
     const QString onceLog = normalizeLogPath(address);
     QCOMPARE(normalizeLogPath(onceLog), onceLog);
 
     // The settings key is the thing that would be spelled two ways, so it is asserted
-    // where the damage would be rather than only where the cause is.
+    // where the damage would be rather than only where the cause is — as the property
+    // itself, LogFileStore::save() re-keying an address its caller has already keyed.
+    const QString key = logSettingsKey(address);
+    QCOMPARE(logSettingsKey(key), key);
     QCOMPARE(logSettingsKey(onceLog), logSettingsKey(normalizeLogPath(onceLog)));
 }
 

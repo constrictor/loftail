@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 185 rules
+## Guarded — 187 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -85,6 +85,8 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | `cleanedToFixedPoint()` is a LOOP with a bound, not a second call, and falls out with the last value | One log, one spelling (L223) | tst_archivelocation::theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled |
 | It never makes a path LESS absolute, a Qt resource path coming back from `absoluteFilePath()` unchanged | One log, one spelling (L223) | tst_archivelocation::theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled |
 | A port outside 1..65535 is a malformed address refused at `parse()`, not a port carried into a connect and reported as a refusal by the far end | Display name (L19) | tst_remotelocation::aPortOutsideTheTcpRangeIsARefusedAddressAndNotAFailedConnect |
+| An address holding a NUL is REFUSED at `logPathIsWellFormed()` — before the archive split, so the plain, remote, container and member routes are one comparison | One log, one spelling (L223) | tst_remotelocation::anAddressHoldingANulIsRefusedRatherThanRekeyed |
+| `absoluteLocalPath()` therefore hands such a path back untouched, `QFileInfo` answering a broken filename with one that is still relative | One log, one spelling (L223) | tst_remotelocation::anAddressHoldingANulIsRefusedRatherThanRekeyed<br>tst_archivelocation::theSecondNormalizeMovesNothingHoweverTheContainerIsSpelled |
 | A name run gives up its optional trailing dot exactly where the format spells a literal one, in the regex and in `readWord()` together | Date format (L21) | tst_timestampparser::aFullStopTheFormatSpellsBelongsToTheFormatAndNotToTheNameBeforeIt |
 | The regression test must reject any modal dialog that is not the picker, or it hangs rather than failing | Nested member (L33) | tst_archiveopen |
 | Every multi-member case counts records PER TAB via `recordsInTab()`, not just the tab count | Nested member (L33) | tst_archiveopen::severalPickedMembersOpenAsSeveralTabs |

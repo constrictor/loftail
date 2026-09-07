@@ -99,6 +99,14 @@ bool holdsNoncharacter(const QString &s)
     return false;
 }
 
+// Whether an address holds a NUL, which is the other character that cannot be part of
+// one — see logPathIsWellFormed(), which refuses it, and absoluteLocalPath(), which
+// therefore declines to respell it.
+bool holdsNul(const QString &s)
+{
+    return s.contains(QChar(u'\0'));
+}
+
 } // namespace
 
 bool RemoteLocation::isRemote(const QString &s)
@@ -420,6 +428,36 @@ QString cleanedToFixedPoint(const QString &path)
     return (QDir::isAbsolutePath(path) && !QDir::isAbsolutePath(cleaned)) ? path : cleaned;
 }
 
+// The one composite both funnels answer a LOCAL address with: made absolute, then
+// cleaned to a fixed point.
+//
+// A PATH HOLDING A NUL IS HANDED BACK UNTOUCHED, because it is an address loftail
+// refuses (logPathIsWellFormed below) and there is accordingly nothing to respell.
+// QFileInfo treats such a path as a broken filename — it warns, and answers
+// absoluteFilePath() with a string that is still RELATIVE: `a\0/../b` answers
+// `a\0/../b`, which the clean then reduces to `b`. So the key was not absolute at all,
+// meant a different file from a different working directory, and resolved against that
+// directory the second time it was applied — one log with two spellings, at the cost
+// every entry of this class carries: a second slot out of the pool of 500, and settings
+// written under one name and read back under the other (bugs.md 48). The refusal is the
+// fix; leaving the string alone here is what makes it a fixed point on the way to being
+// refused, and is the same fall-through a remote address that does not parse takes
+// through normalize().
+//
+// IT IS NOT bugs.md 47's DEFECT and cleanedToFixedPoint() cannot reach it: the second
+// clean is correct arithmetic over a first answer that was already wrong, and the answer
+// was relative before anything cleaned it.
+//
+// THE GUARD IS IN THE HELPER AND NOT AT EITHER CALL SITE, which is the argument
+// cleanedToFixedPoint() carries one function up: a third site that makes a local address
+// absolute cannot forget it.
+QString absoluteLocalPath(const QString &path)
+{
+    if (holdsNul(path))
+        return path;
+    return cleanedToFixedPoint(QFileInfo(path).absoluteFilePath());
+}
+
 QString normalizeLogPath(const QString &s)
 {
     // Archive first: its normal form contains a remote address when the container is
@@ -469,11 +507,13 @@ QString logSettingsKey(const QString &path)
     // absoluteFilePath() cleans `.` and `..` and resolves nothing, so it is stable
     // against the working directory (which is what the key is for) without being stable
     // against the file's own identity (which it deliberately no longer claims).
-    // Cleaned to a FIXED POINT, absoluteFilePath() cleaning only once and
+    // Absolute and cleaned to a FIXED POINT, absoluteFilePath() cleaning only once and
     // QDir::cleanPath() not being idempotent — LogFileStore::save() re-keys an address
     // its caller has already keyed, so a spelling that moved on the second pass was
-    // written under one name and read back under another (bugs.md 47).
-    return cleanedToFixedPoint(QFileInfo(path).absoluteFilePath());
+    // written under one name and read back under another (bugs.md 47). The same helper
+    // is what hands a NUL-bearing path straight back rather than making it relative
+    // (bugs.md 48).
+    return absoluteLocalPath(path);
 }
 
 QString legacyLogSettingsKey(const QString &path)
@@ -616,6 +656,26 @@ bool logSourceAvailable(const QString &path)
 
 bool logPathIsWellFormed(const QString &path)
 {
+    // AN ADDRESS HOLDING A NUL NAMES NO LOG, and is refused here — before the split, so
+    // the one comparison covers a plain path, a remote one, an archive's container and
+    // the member inside it alike. No filesystem can hold a NUL in a name and no host
+    // can serve one, so this is not a log that has not turned up yet: it is one that
+    // cannot exist, which is exactly the line this function draws (M13, §6.5).
+    //
+    // It is decided with NO I/O, so per M17 it fails the open and names the reason
+    // rather than putting up a tab that waits for ever. What it prevents is bugs.md 48:
+    // QFileInfo answers such a path with one that is still relative, so the settings key
+    // moved with the working directory and one log had two spellings.
+    //
+    // WHICH LAYER REFUSES WHAT: a remote-shaped address is refused by QUrl first, which
+    // reads a NUL as an invalid path character (measured on Qt 6.10), so parse() already
+    // answers nullopt for one — and the local and archive halves have no such layer under
+    // them at all. It is written out here regardless, and here rather than only at
+    // parse(), so that the set of addresses loftail accepts is not a function of the Qt
+    // build (bugs.md 44's argument, and 45's).
+    if (holdsNul(path))
+        return false;
+
     // An archive is well-formed when its container address is; whether the member is
     // really inside is the same unanswerable-without-expanding question as above, and a
     // missing one surfaces as an open failure rather than as an endless wait.

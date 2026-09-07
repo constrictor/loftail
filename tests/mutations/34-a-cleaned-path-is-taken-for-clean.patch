@@ -52,7 +52,7 @@
 diff --git a/src/core/RemoteLocation.cpp b/src/core/RemoteLocation.cpp
 --- a/src/core/RemoteLocation.cpp
 +++ b/src/core/RemoteLocation.cpp
-@@ -409,15 +409,7 @@
+@@ -417,15 +417,7 @@
  // still moves is at least a DETERMINISTIC one, which is all any caller needs.
  QString cleanedToFixedPoint(const QString &path)
  {
@@ -68,4 +68,4 @@ diff --git a/src/core/RemoteLocation.cpp b/src/core/RemoteLocation.cpp
 +    return path;
  }
  
- QString normalizeLogPath(const QString &s)
+ // The one composite both funnels answer a LOCAL address with: made absolute, then
