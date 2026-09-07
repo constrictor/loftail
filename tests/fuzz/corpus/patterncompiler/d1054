@@ -1,0 +1,1 @@
+%c{2} %X{user} %E{HOME} %l %M %L %F %b %r %x %m%n

@@ -1,0 +1,160 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A libFuzzer dictionary (-dict=). Every token here is a word of one of the two
+# grammars: the 21 log4cplus conversion specifiers, and the strftime date
+# vocabulary inside %d{...}. Random bytes reach neither — "%" followed by a
+# letter that happens to be one of two dozen is a needle a coverage-guided
+# fuzzer finds eventually and a dictionary hands over immediately, and the
+# strftime half is why this file exists at all: that vocabulary went from ten
+# codes to the whole C/POSIX set, so it is the newest and least walked grammar
+# in the tree.
+#
+# Shared by every target on purpose. The address targets get nothing useful from
+# the date codes, but they get "ssh://" and the archive suffixes below, and one
+# dictionary that is right for the two grammars that matter beats five that
+# drift apart.
+
+# --- log4cplus conversion specifiers (PatternCompiler.h) ---
+spec_date="%d"
+spec_date_local="%D"
+spec_prio="%p"
+spec_logger="%c"
+spec_thread="%t"
+spec_threadname="%T"
+spec_message="%m"
+spec_file="%F"
+spec_basename="%b"
+spec_line="%L"
+spec_location="%l"
+spec_method="%M"
+spec_pid="%i"
+spec_elapsed="%r"
+spec_host="%h"
+spec_fqdn="%H"
+spec_newline="%n"
+spec_ndc="%x"
+spec_mdc="%X"
+spec_env="%E"
+spec_percent="%%"
+
+# --- modifiers, %[-][minWidth][.maxWidth]X ---
+mod_left="%-5"
+mod_width="%20"
+mod_trunc="%.30"
+mod_both="%-5.5"
+
+# --- braces: %d{...}, %c{N}, %X{key}, %E{VAR} ---
+brace_date_open="%d{"
+brace_date_local_open="%D{"
+brace_logger="%c{2}"
+brace_mdc="%X{user}"
+brace_env="%E{HOME}"
+brace_close="}"
+
+# --- the strftime vocabulary inside %d{...} (LogFormat.h, DateTokenKind) ---
+d_year4="%Y"
+d_year2="%y"
+d_isoyear="%G"
+d_isoyear2="%g"
+d_century="%C"
+d_month="%m"
+d_monthname="%b"
+d_monthfull="%B"
+d_monthalt="%h"
+d_day="%d"
+d_day_spacepad="%e"
+d_hour24="%H"
+d_hour24_spacepad="%k"
+d_hour12="%I"
+d_hour12_spacepad="%l"
+d_minute="%M"
+d_second="%S"
+d_ampm="%p"
+d_ampm_lower="%P"
+d_weekday="%a"
+d_weekday_full="%A"
+d_yearday="%j"
+d_weeknum_u="%U"
+d_weeknum_v="%V"
+d_weeknum_w="%W"
+d_weekday_u="%u"
+d_weekday_w="%w"
+d_zone_offset="%z"
+d_zone_name="%Z"
+d_epoch="%s"
+d_millis="%q"
+d_millis_frac="%Q"
+d_tab="%t"
+d_newline="%n"
+# composites, which PatternCompiler expands
+d_comp_c="%c"
+d_comp_D="%D"
+d_comp_F="%F"
+d_comp_r="%r"
+d_comp_R="%R"
+d_comp_T="%T"
+d_comp_x="%x"
+d_comp_X="%X"
+
+# --- whole date formats seen in the wild ---
+fmt_iso="%Y-%m-%d %H:%M:%S"
+fmt_iso_ms="%Y-%m-%d %H:%M:%S,%q"
+fmt_rfc3339="%Y-%m-%dT%H:%M:%S.%Q%z"
+fmt_syslog="%b %e %H:%M:%S"
+fmt_us="%m/%d/%y %H:%M:%S"
+
+# --- separators a layout is built out of ---
+sep_bracket_open="["
+sep_bracket_close="]"
+sep_dash=" - "
+sep_colon=": "
+sep_comma=","
+sep_dot="."
+
+# --- priority words (invariant #4: these round-trip against log text) ---
+prio_trace="TRACE"
+prio_debug="DEBUG"
+prio_info="INFO"
+prio_warn="WARN"
+prio_error="ERROR"
+prio_fatal="FATAL"
+
+# --- addresses (RemoteLocation, ArchiveLocation) ---
+scheme_ssh="ssh://"
+scheme_sftp="sftp://"
+at="@"
+colon_port=":22"
+userinfo="user:password@"
+ipv6="[2001:db8::1]"
+arc_gz=".gz"
+arc_bz2=".bz2"
+arc_xz=".xz"
+arc_zst=".zst"
+arc_zip=".zip"
+arc_tar=".tar"
+arc_targz=".tar.gz"
+path_var="/var/log/"
+path_log="app.log"
+
+# --- byte-order marks and the encoding traps (invariant #8, bugs.md 36) ---
+bom_utf8="\xef\xbb\xbf"
+bom_utf16le="\xff\xfe"
+bom_utf16be="\xfe\xff"
+crlf="\x0d\x0a"
+nul="\x00"

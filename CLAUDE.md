@@ -321,6 +321,7 @@ When a change alters user-visible behavior, update `SPEC.md`. When it alters an 
 - **Qt Linguist tools**, optional and auto-detected, only to produce `.ts` files. Configure prints `Translation tooling: ENABLED/DISABLED`, and when found adds a `loftail_lupdate` target that nothing depends on. No catalogue ships and `translations/` is git-ignored — see `ARCHITECTURE.md` §9.1
 - **clang-tidy**, optional, **OFF by default**, for static analysis. Configure prints `clang-tidy: ENABLED/DISABLED`; `-DLOFTAIL_CLANG_TIDY=ON` lints `src/` on the compile line, `-DLOFTAIL_CLANG_TIDY_EXE=` names the binary (the versions genuinely disagree — CI pins 18, the dev machine has 21). Independently of that option, `CMAKE_EXPORT_COMPILE_COMMANDS` is now **always on** and the `clang_tidy` / `clang_tidy_all` targets sweep the resulting `compile_commands.json`, which is the cheaper route and the one the commands below use. Checks and their rationale are in `.clang-tidy` at the repo root. The `clang-tidy` CI job is **non-blocking** (`continue-on-error` on the job): the tree has a standing baseline nobody has cleared, and a job that is always red is a job people scroll past
 - **Coverage**, optional, **OFF by default**, gcov through `-DLOFTAIL_COVERAGE=ON`. Configure prints `Coverage instrumentation: ENABLED/DISABLED`, and where lcov and genhtml are both on `PATH` it adds a `coverage` target that runs the suite and writes an lcov HTML report over `src/`. It is global like the sanitizer flags and for the same reason — every TU linked into a binary must agree — and it sits below every `FetchContent` block for the `-Werror` block's reason. The `coverage` CI job is **non-blocking** (`continue-on-error` on the job) and reports into the run's step summary: there is no agreed baseline, and this is an instrument rather than a gate. It exists because this tree has repeatedly shipped code that had never been executed, only compiled — the optional dependencies and the platform branches are where that code lives
+- **Fuzzing**, optional, **OFF by default**, libFuzzer through `-DLOFTAIL_FUZZ=ON`, which **requires Clang** (`-fsanitize=fuzzer` has no GCC equivalent) and is refused with a named error under GCC or MSVC. Configure prints `Fuzz targets: ENABLED/DISABLED`. It combines with ASan and UBSan — `-fsanitize=fuzzer-no-link,address,undefined` globally, `-fsanitize=fuzzer` on the link of a target — because a fuzzer without a sanitizer only finds the inputs that crash outright, and it sits below every `FetchContent` block for the `-Werror` block's reason. The five targets are in `tests/fuzz/` and cover the layers that eat bytes somebody else chose: `PatternCompiler`, the `PatternCompiler`+`TimestampParser` pair over a `%d{...}` body, `Decoder`, `RemoteLocation`/`ArchiveLocation`, and `Indexer` under a fixed format. **The half that runs for everyone needs none of it**: the same `LLVMFuzzerTestOneInput` is linked with `tests/fuzz/ReplayMain.cpp` into `tst_fuzzreplay_<name>`, built in the ORDINARY GCC build and registered as the `fuzz_replay_<name>` CTest cases, which walk the committed corpus — so every input a fuzzer ever finds becomes a permanent millisecond-cost regression test. The `fuzz` CI job **gates**, unlike `clang-tidy` and `coverage`: it replays the corpus deterministically first and then explores for 60 s a target
 - **Warnings as errors**, ON by default on GCC and Clang: every build gets `-Wall -Wextra`, and `-Werror` with them unless `-DLOFTAIL_WERROR=OFF`. Configure prints `Warnings as errors: ENABLED/DISABLED`. **MSVC defaults to OFF** — the reference Qt 6.4 under a modern MSVC already needs a workaround pragma, and Windows CI is the only cross-platform check, so a warning nobody here can reproduce would gate every Windows build; `-DLOFTAIL_WERROR=ON` adds `/WX` there for anyone who wants it. The flags are applied **below every `FetchContent` block** in the root `CMakeLists.txt`, which is the only thing keeping a fetched libssh2 or QtKeychain out of a `-Werror` build — see `ARCHITECTURE.md` §14
 - **Qt Test** for unit tests
 - **Reference build environment is Ubuntu 24.04 LTS**: the project must build with the stock toolchain (GCC 13, CMake 3.28, Ninja, Qt 6.4.2) using no separately-installed Qt. This is why the Qt minimum is 6.4, not 6.5 LTS — see `ARCHITECTURE.md` §1.
@@ -369,6 +370,30 @@ cmake --build build-tsan
 QT_QPA_PLATFORM=offscreen \
 TSAN_OPTIONS="report_thread_leaks=0 suppressions=$PWD/tests/tsan.supp" \
   ctest --test-dir build-tsan -L threading --output-on-failure
+
+# libFuzzer over the parsers that eat untrusted bytes (tests/fuzz). Clang only,
+# a build directory of its own, and ASan+UBSan ride along — a fuzzer without a
+# sanitizer only finds the inputs that crash outright.
+cmake -S . -B build-fuzz -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_CXX_COMPILER=clang++ -DLOFTAIL_FUZZ=ON
+cmake --build build-fuzz --target fuzz
+
+# One target, seeded from the committed corpus and steered by the dictionary.
+# -print_funcs=0 is NOT cosmetic: libFuzzer symbolizes each newly reached function
+# by spawning llvm-symbolizer, which on an ASan binary this size costs ~90 s of
+# wall clock and drops the run to single-digit executions a second (measured).
+./build-fuzz/tests/fuzz/fuzz_patterncompiler /tmp/corpus-pattern tests/fuzz/corpus/patterncompiler \
+  -dict=tests/fuzz/loftail.dict -max_total_time=300 -max_len=4096 -print_funcs=0
+
+# The committed corpus alone, once each, no mutation: the deterministic gate, and
+# what the CI job runs before it explores.
+./build-fuzz/tests/fuzz/fuzz_address tests/fuzz/corpus/address -runs=0 -print_funcs=0
+
+# THE HALF THAT NEEDS NEITHER CLANG NOR LIBFUZZER, and the one that runs for
+# everyone: the same targets linked with a corpus-replaying main(), in the default
+# GCC build. A crash the fuzzer finds is minimised, dropped into
+# tests/fuzz/corpus/<target>/, and is a regression test from then on.
+ctest --test-dir build -R fuzz_replay --output-on-failure
 
 # clang-tidy over src/. A build directory of its own, like the sanitizers, and
 # configured with clang++ so the compilation database and the analyzer agree.

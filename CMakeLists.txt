@@ -731,6 +731,74 @@ if(LOFTAIL_COVERAGE)
     endif()
 endif()
 
+# ---------------------------------------------------------------------------
+# Fuzzing (libFuzzer). Off by default; a build directory of its own, like the
+# sanitizers, clang-tidy and coverage, never a flag you flip on the one you
+# develop in.
+#
+#   -DLOFTAIL_FUZZ=ON   build the fuzz targets in tests/fuzz (needs Clang)
+#
+# WHY this layer: everything under tests/fuzz eats bytes somebody else chose — a
+# log file another process wrote, a ConversionPattern typed into Preferences, an
+# address typed into the open dialog. bugs.md 36 is exactly that shape: a 64 KB
+# sample cut inside a multi-byte character flipped a whole file to the system
+# codepage. And the %d{...} date vocabulary recently went from ten codes to the
+# whole strftime set, which is a grammar nobody has enumerated by hand.
+#
+# libFuzzer needs Clang: -fsanitize=fuzzer is a Clang feature, and GCC has no
+# equivalent. It is combined with ASan and UBSan because a fuzzer without a
+# sanitizer only finds inputs that crash outright, which is the smallest and
+# least interesting class — the two together are what make a found input mean
+# something. -fno-sanitize-recover for UBSan's reason in the sanitizer block: a
+# report the fuzzer does not treat as a crash is a report nobody reads.
+#
+# The instrumentation is GLOBAL (add_compile_options), for the sanitizer and
+# coverage blocks' reason: coverage feedback and a sanitizer are only sound when
+# every translation unit linked into the binary agrees. Only the LINK of a fuzz
+# target adds -fsanitize=fuzzer, which is what supplies libFuzzer's main(); see
+# tests/fuzz/CMakeLists.txt.
+#
+# And it sits BELOW every FetchContent block above it, for the reason the
+# -Werror, coverage and sanitizer blocks give: add_compile_options only reaches
+# directories added AFTER the call, which is what keeps a fetched libssh2 or
+# QtKeychain — third-party sources this project neither writes nor fuzzes — out
+# of the instrumented build.
+#
+# The corpus-replay CTest cases in tests/fuzz are built and run WITHOUT this
+# option, in the ordinary GCC build. That is deliberate and is the half that runs
+# for everyone: see tests/fuzz/CMakeLists.txt.
+option(LOFTAIL_FUZZ "Build the libFuzzer targets in tests/fuzz (requires Clang)" OFF)
+
+if(LOFTAIL_FUZZ)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Say so at configure time rather than emitting a flag GCC rejects per
+        # translation unit, which reads as a broken tree rather than a wrong
+        # toolchain.
+        message(FATAL_ERROR
+            "LOFTAIL_FUZZ requires Clang (libFuzzer is -fsanitize=fuzzer, which GCC "
+            "does not have); configure with -DCMAKE_CXX_COMPILER=clang++")
+    endif()
+    if(LOFTAIL_SANITIZE STREQUAL "thread")
+        # ASan and TSan cannot share the shadow mapping, and a fuzzer without ASan
+        # is the weaker instrument. Refuse rather than silently dropping one.
+        message(FATAL_ERROR
+            "LOFTAIL_FUZZ builds with ASan+UBSan and cannot be combined with "
+            "-DLOFTAIL_SANITIZE=thread")
+    endif()
+    set(loftail_fuzz_flags
+        -fsanitize=fuzzer-no-link,address,undefined
+        -fno-sanitize-recover=undefined
+        -fno-omit-frame-pointer)
+    add_compile_options(${loftail_fuzz_flags})
+    add_link_options(${loftail_fuzz_flags})
+    message(STATUS "Fuzz targets: ENABLED "
+                   "(${loftail_fuzz_flags}; build with --target fuzz)")
+else()
+    message(STATUS "Fuzz targets: DISABLED "
+                   "(-DLOFTAIL_FUZZ=ON with a Clang toolchain to enable; the "
+                   "corpus-replay regression tests are built and run regardless)")
+endif()
+
 enable_testing()
 
 add_subdirectory(src)

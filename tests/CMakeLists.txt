@@ -61,6 +61,15 @@ foreach(unit decoder indexer logmodel)
     add_test(NAME tst_${unit} COMMAND tst_${unit})
 endforeach()
 
+# The format round trip: render a record, index it back, assert every field —
+# including the timestamp AS DISPLAYED, which is the half bugs.md 37 lived in
+# (the two default date constants swapped, so the Time column rendered
+# `%Y-%15-%27 %10:%8:%S` with parsing correct throughout). Core-only, table
+# driven, no QApplication. The property complement to tests/fuzz.
+qt_add_executable(tst_formatroundtrip tst_formatroundtrip.cpp)
+target_link_libraries(tst_formatroundtrip PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_formatroundtrip COMMAND tst_formatroundtrip)
+
 # M2b — worker-thread indexing controller. Core-only, GUILESS (QCoreApplication
 # event loop drives the queued cross-thread signals).
 qt_add_executable(tst_indexcontroller tst_indexcontroller.cpp)
@@ -885,3 +894,9 @@ if(Python3_Interpreter_FOUND)
 else()
     message(STATUS "GUARDS.md guard index check: DISABLED (no Python 3 interpreter)")
 endif()
+
+# The fuzz targets and their corpus-replay regression cases. The replay half is
+# built in every configuration; the libFuzzer half only under -DLOFTAIL_FUZZ=ON.
+# Added last, below the guards block, because these are not tst_ binaries of this
+# directory and must not be swept by the loops above.
+add_subdirectory(fuzz)

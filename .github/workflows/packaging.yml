@@ -313,6 +313,101 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1
         run: ctest --test-dir build-asan --output-on-failure
 
+  fuzz:
+    # libFuzzer over the parsers that eat untrusted bytes: the conversion pattern
+    # typed into Preferences, the address typed into the open dialog, and the log
+    # file itself, which is bytes somebody else's process wrote (tests/fuzz).
+    #
+    # A job of its own rather than a step on `sanitizers`, and the reason is the
+    # toolchain and nothing else: that job builds with the runner's GCC, and
+    # -fsanitize=fuzzer is a Clang feature GCC has no equivalent for. Everything
+    # else about it is the sanitizer job — RelWithDebInfo, ASan and UBSan, a build
+    # directory of its own — because a fuzzer without a sanitizer only finds inputs
+    # that crash outright, which is the smallest and least interesting class.
+    #
+    # It GATES. A property violated or a memory error found inside sixty seconds is
+    # a real bug, not a flaky fixture — and the deterministic half runs first, so a
+    # red here names either a committed corpus input (reproducible by anyone with
+    # `ctest -R fuzz_replay`, no Clang needed) or a fresh input the log prints and
+    # the artifact carries.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain + system Qt 6 + clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake \
+            qt6-base-dev libgl1-mesa-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev \
+            clang-18
+
+      - name: Configure + build the fuzz targets
+        run: |
+          cmake -S . -B build-fuzz -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_COMPILER=clang++-18 -DLOFTAIL_FUZZ=ON 2>&1 | tee configure-fuzz.log
+          # The option is the whole point of the job; a typo that silently produced
+          # an ordinary build would go green having fuzzed nothing.
+          grep -q "Fuzz targets: ENABLED" configure-fuzz.log \
+            || { echo "::error::-DLOFTAIL_FUZZ=ON did not take effect"; exit 1; }
+          cmake --build build-fuzz --target fuzz
+
+      - name: Replay the committed corpus
+        # The DETERMINISTIC half, and it runs first: every seed and every input a
+        # fuzzer has ever found, executed once each, with no mutation and no clock.
+        # -runs=0 is what says "run the corpus and stop". A failure here is
+        # reproducible by anyone, on any toolchain, with `ctest -R fuzz_replay`.
+        run: |
+          for t in patterncompiler timestampparser decoder address indexer; do
+            echo "::group::corpus $t"
+            ./build-fuzz/tests/fuzz/fuzz_$t tests/fuzz/corpus/$t -runs=0 -print_funcs=0
+            echo "::endgroup::"
+          done
+
+      - name: Fuzz each target for a bounded time
+        # The exploratory half: sixty seconds per target, seeded from the committed
+        # corpus and steered by the dictionary. Bounded by WALL CLOCK rather than by
+        # a run count, because the five targets differ by two orders of magnitude in
+        # throughput (a quarter of a million inputs a second for the decoder, about
+        # a thousand for the address one, which stats the path it is handed).
+        #
+        # -print_funcs=0 is not cosmetic: libFuzzer symbolizes every newly reached
+        # function by spawning llvm-symbolizer, which on an ASan binary of this size
+        # costs a minute and a half of wall clock and drops the exploration to
+        # single-digit executions a second. Measured, both ways.
+        #
+        # A crash file lands in the working directory; the next step keeps it.
+        run: |
+          mkdir -p fuzz-findings
+          for t in patterncompiler timestampparser decoder address indexer; do
+            echo "::group::fuzz $t"
+            mkdir -p /tmp/corpus-$t
+            ./build-fuzz/tests/fuzz/fuzz_$t /tmp/corpus-$t tests/fuzz/corpus/$t \
+              -dict=tests/fuzz/loftail.dict \
+              -max_total_time=60 -max_len=4096 -timeout=25 \
+              -rss_limit_mb=4096 -print_funcs=0 -print_final_stats=1 \
+              -artifact_prefix=fuzz-findings/ || touch fuzz-findings/FAILED
+            echo "::endgroup::"
+          done
+          test ! -e fuzz-findings/FAILED || {
+            echo "::error::a fuzz target failed; the input is in the fuzz-findings artifact"
+            exit 1
+          }
+
+      - name: Keep whatever it found
+        # Only on a failure, and ALWAYS on a failure: a crash input that exists only
+        # in a log line is a bug nobody can reproduce. Committing the file under
+        # tests/fuzz/corpus/<target>/ is what turns it into a permanent regression
+        # case for everyone, with no Clang and no libFuzzer.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings
+          path: fuzz-findings/
+          if-no-files-found: ignore
+
   ssh-live:
     # THE ONLY JOB THAT EXECUTES THE LIBSSH2 TRANSPORT. Everything above RemoteFetcher is
     # covered without a network by tst_spooledsource, tst_remotetail and tst_remoteopen;
