@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 164 rules
+## Guarded — 173 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -100,6 +100,10 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | Both non-blocking budgets are a deliberately loose second (`kNonBlockingMs`) | FakeFetcher (L61) | tst_asyncconnect |
 | `LogProfile::operator==` must gain a clause for every field, or `reduce()` makes it silent data loss | Six M22 rules (L67) | tst_logsettings::aProfileDiffersWhenAnyOneFieldOfItDoes |
 | Every path a shell sees goes through `shellQuote()` | Remote config (L71) | tst_sshexec |
+| `ConfigFileIO` never creates a directory, refused by name | Config write (L69) | tst_configeditor::aMissingDirectoryIsRefusedByName<br>tst_writefailure::aConfigInADirectoryThatIsNotThereIsRefusedByNameAndNothingIsCreated |
+| It replays the encoding, BOM and line endings it read, through `Decoder::encode()` | Config write (L69) | tst_configeditor::aSavedConfigKeepsTheEncodingTheBomAndTheLineEndingsItWasReadWith |
+| A config write that cannot be finished is REPORTED, and the file keeps what it had | Config write (L69) | tst_writefailure::aConfigWriteThatCannotBeFinishedIsReportedAndKeepsThePreviousContents |
+| "Not there" and "there and shut" are different sentences, and only the first is the supported empty-editor case | Presence not emptiness (L207) | tst_writefailure::aConfigThatIsThereAndShutIsNotDescribedAsOneThatIsNotThere |
 | The libssh2 half of the config write now runs on every push against real servers | Config write in CI (L73) | tst_sshlive::aConfigFileIsReadAndWrittenWholeOverSftp<br>tst_sshlive::writingAConfigKeepsItsPermissions<br>tst_sshlive::theExecFallbackWritesTheSameBytes |
 | `logAnchorOf()` and `SshWorkerPool` were EXTRACTED rather than copied, the untouched suites being the evidence | M23 (L75) | tst_configlocation<br>tst_configeditor |
 | The values are quoted and the SCRIPT IS NOT; getting it backwards fails silently in both directions | Nine M23 rules (L77) | tst_sshexec |
@@ -176,6 +180,11 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The tree pane width is capped at 40% of the splitter, and every tree row carries a tooltip | Preferences splitter (L217) | tst_preferences |
 | The splitter regression case must measure at TWO font sizes; the offscreen default alone passes with the bug in place | Preferences splitter (L217) | tst_preferences |
 | `ctx->fileSettings` is held EXACTLY as it was read, or the first write looks like no change | Ten M21 rules (L221) | tst_openflow::aSuppliedPatternThatFitsIsRememberedForTheLog |
+| A write goes slot file FIRST and the map second, so what an interruption leaves is always an unreferenced file | Ten M21 rules (L221) | tst_writefailure::aSaveWhoseSlotFileCannotBeWrittenNeverPutsTheAddressInTheMap<br>tst_writefailure::aSaveWhoseMapCannotBeWrittenLeavesTheRecordAsAnUnreferencedFile |
+| Every record names its own address inside the slot file and `read()` checks it; map entries are an ARRAY so a duplicate is visible | Ten M21 rules (L221) | tst_logfilestore::aSlotHoldingAnotherLogsRecordIsNotServed<br>tst_writefailure::everyInterruptionOfAWriteRecoversWithoutServingOneLogAnothersRecord |
+| No interruption of a pool write serves one log another log's record; the states a crash can leave are enumerated, not sampled | Ten M21 rules (L221) | tst_writefailure::everyInterruptionOfAWriteRecoversWithoutServingOneLogAnothersRecord |
+| `AtomicJson::writePrivate()` restricts the mode AFTER the rename, the rename making a new inode every time | M14 keychain (L203) | tst_writefailure::aPrivateWriteLeavesTheSecretReadableByNobodyElse |
+| A short write is never taken for the whole thing: `commit()` renames a truncated temporary and reports success | M21 one file per log (L219) | tst_writefailure::aWriteThatCannotBeFinishedIsReportedAndKeepsThePreviousContents |
 | Absent means "nobody ever said anything" and seeds defaults; an EMPTY list is a deletion and must stay deleted — four stores deep | Presence, not emptiness (L225) | tst_sessiongui::aDeletedDefaultRuleStaysDeletedAcrossARelaunch |
 | The `LogModel::setViewIndex()`/`viewGeometry()`/`sourceRow()` seam is inert: the defaults reproduce the old behaviour exactly | M19 is one seam (L233) | tst_logmodel<br>tst_logview<br>tst_filtercontext<br>tst_tail |
 | `LogView::sizeHint()` must stay a pure query; `refreshDigestCap()` is the mutating half | Six M19 rules (L237) | tst_multidoc |
@@ -225,7 +234,7 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | `WrapMetrics::setFont()` DROPS the memo, every entry in it being that font's | Log text zooms (L177) | tst_wrapmetrics::aFontChangeDropsTheMemoAndPaysForTheAsciiTableAgain |
 | The `perf` label is the wall clock and gates nothing; every cost contract that can be stated exactly is COUNTED | perf label (tests/CMakeLists.txt) | tst_wrapmetrics<br>tst_estimatedgeometry<br>tst_densitybar<br>tst_densitymap<br>tst_filter |
 
-## Unguarded — 453 rules
+## Unguarded — 450 rules
 
 CLAUDE.md states these as load-bearing and names no test for them. This table is
 a deliverable in its own right: it is the list of decisions that would go quietly
@@ -353,9 +362,7 @@ to fill it in with a plausible-looking case rather than a real one.
 | Find is the deliberate exception and stays enabled on both kinds of page | Six M22 rules (L67) |
 | `onCurrentTabChanged()` refreshes the actions unconditionally, outside the `setActiveView()` branch | Six M22 rules (L67) |
 | The unsaved-changes prompt runs BEFORE `saveSession()` in `closeEvent` | Six M22 rules (L67) |
-| `ConfigFileIO` never creates a directory, refused by name | Config write (L69) |
 | It restores the file's permissions after the `QSaveFile` rename | Config write (L69) |
-| It replays the encoding, BOM and line endings it read, through `Decoder::encode()` | Config write (L69) |
 | A remote config write is IN PLACE when the file exists, never temp-and-rename | Remote config (L71) |
 | Short writes are the normal case and the first return is not the whole thing | Remote config (L71) |
 | The exec path sends EOF before closing, or `cat` never finishes | Remote config (L71) |
@@ -586,8 +593,7 @@ to fill it in with a plausible-looking case rather than a real one.
 | A record exists only while it says something its parents do not — `LogFileSettings::reduce()` applied section by section inside `LogFileStore::save()` | Ten M21 rules (L221) |
 | `filterStateSaysNothing()` asks whether an axis NARROWS, never whether values are default | Ten M21 rules (L221) |
 | An axis added to `MatchCriteria::resolve()`'s `NoOpAxes::Collapse` belongs in `filterStateSaysNothing()` in the same commit | Ten M21 rules (L221) |
-| A write goes slot file first and map second; a remove goes map first and slot file second, so a crash always leaves an unreferenced file | Ten M21 rules (L221) |
-| Every record names its own address inside the slot file and `read()` checks it; map entries are an ARRAY so a duplicate is visible | Ten M21 rules (L221) |
+| A remove goes map first and slot file second (the save half is guarded; this half is unkillable from outside, `remove()` letting neither step abort the other) | Ten M21 rules (L221) |
 | `commitPreferences()` must NOT write `ctx->settings`, or `applySettings()`'s diff sees no change | Ten M21 rules (L221) |
 | `runSelectionOf()` answers nothing while the scan is running or a restore is armed, leaving the stored section alone | Ten M21 rules (L221) |
 | The Filters pane is GLOBAL and read only for the log it is showing; the write hangs off the pane's debounced `filtersChanged`, never `applyFiltersFor()` | Ten M21 rules (L221) |

@@ -345,6 +345,22 @@ qt_add_executable(tst_logfilestore tst_logfilestore.cpp)
 target_link_libraries(tst_logfilestore PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_logfilestore COMMAND tst_logfilestore)
 
+# The three write paths when the write does NOT work, and what a crash between two of
+# them leaves behind. AtomicJson.cpp was 60% covered and ConfigFileIO.cpp 49%, and the
+# uncovered remainder in both was exactly the failure handling; nothing anywhere tested
+# the claim that a crash in LogFileStore always leaves an unreferenced file rather than a
+# map entry naming another log's record. Core only, and NO test-only seam in src/ — every
+# failure is provoked from outside with the filesystem itself.
+#
+# POSIX-only, beside tst_tail and for the same shape of reason: the provocations are
+# setrlimit, SIGXFSZ and a mode of 000. The rules are platform-neutral and the Windows leg
+# simply does not see them.
+if(NOT WIN32)
+    qt_add_executable(tst_writefailure tst_writefailure.cpp)
+    target_link_libraries(tst_writefailure PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_writefailure COMMAND tst_writefailure)
+endif()
+
 # M14 — the seam a remembered password goes through. UNGATED, and for the same reason
 # tst_sshexec is: what it pins is a rule about CONSENT — a keychain that refuses is
 # reported, never quietly downgraded to a plain-text file — and a rule tested in one build

@@ -1,0 +1,47 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "The write rules are in one place"):
+#   ConfigView replays the ENCODING and the BOM it read — Decoder::encode() is
+#   the reverse direction on the same class, and only the read knew whether the
+#   file had a mark. A config file's encoding is not its log's
+#
+# GUARD: tst_configeditor::aSavedConfigKeepsTheEncodingTheBomAndTheLineEndingsItWasReadWith
+#
+# SILENT WHEN BROKEN: the editor shows exactly the same text before and after, and
+# so does every other viewer that guesses UTF-8. What changed is the bytes a
+# non-UTF-8 config parser reads, on a file loftail was only asked to edit one
+# line of.
+
+diff --git a/src/ui/ConfigView.cpp b/src/ui/ConfigView.cpp
+index fb2aefb..75e705e 100644
+--- a/src/ui/ConfigView.cpp
++++ b/src/ui/ConfigView.cpp
+@@ -262,10 +262,10 @@ QByteArray ConfigView::toBytes() const
+     if (m_lineEnding != QLatin1String("\n"))
+         text.replace(QLatin1String("\n"), m_lineEnding);
+ 
+-    Decoder decoder = Decoder::detect(QByteArrayView(), static_cast<Encoding>(m_encoding));
++    Decoder decoder = Decoder::detect(QByteArrayView(), Encoding::Utf8);
+     // The BOM is REPLAYED, never re-derived: only the read knew whether the file had
+     // one, and adding one unconditionally grows a mark onto a file that never had it.
+-    return m_bom + decoder.encode(text);
++    return decoder.encode(text);
+ }
+ 
+ bool ConfigView::isModified() const

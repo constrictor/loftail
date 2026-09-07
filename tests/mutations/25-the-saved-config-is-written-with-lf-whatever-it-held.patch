@@ -1,0 +1,42 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "The write rules are in one place"):
+#   ConfigView replays the LINE ENDINGS it read. QPlainTextEdit works in
+#   paragraphs, so the widget holds '\n' whatever the file held, and the ending
+#   has to be remembered on the way in rather than re-read on the way out
+#
+# GUARD: tst_configeditor::aSavedConfigKeepsTheEncodingTheBomAndTheLineEndingsItWasReadWith
+#
+# SILENT WHEN BROKEN: the file is still correct and still parses; every line of it
+# now differs from every line in version control, so the one line that was
+# actually edited is invisible in the diff.
+
+diff --git a/src/ui/ConfigView.cpp b/src/ui/ConfigView.cpp
+index fb2aefb..b6d9362 100644
+--- a/src/ui/ConfigView.cpp
++++ b/src/ui/ConfigView.cpp
+@@ -259,8 +259,6 @@ QByteArray ConfigView::toBytes() const
+     // QPlainTextEdit uses U+2029 for a paragraph break in some paths; normalise it
+     // deliberately rather than letting it reach a config parser.
+     text.replace(QChar(0x2029), QLatin1Char('\n'));
+-    if (m_lineEnding != QLatin1String("\n"))
+-        text.replace(QLatin1String("\n"), m_lineEnding);
+ 
+     Decoder decoder = Decoder::detect(QByteArrayView(), static_cast<Encoding>(m_encoding));
+     // The BOM is REPLAYED, never re-derived: only the read knew whether the file had

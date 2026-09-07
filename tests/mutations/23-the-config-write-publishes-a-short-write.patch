@@ -1,0 +1,47 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "The write rules are in one place"; SPEC.md §4):
+#   writeConfigFile() compares QSaveFile::write()'s return against the bytes it
+#   was given and cancels the write when they differ, so the target keeps its
+#   previous contents. This is somebody else's file — the one that decides what
+#   an application logs
+#
+# GUARD: tst_writefailure::aConfigWriteThatCannotBeFinishedIsReportedAndKeepsThePreviousContents
+#
+# SILENT WHEN BROKEN: the editor clears its modified mark, the tab looks saved, and
+# the config on disk is truncated mid-line. The next restart of the service is
+# where it surfaces.
+
+diff --git a/src/core/ConfigFileIO.cpp b/src/core/ConfigFileIO.cpp
+index 6fcb04a..3fbc256 100644
+--- a/src/core/ConfigFileIO.cpp
++++ b/src/core/ConfigFileIO.cpp
+@@ -129,11 +129,7 @@ ConfigWriteResult writeConfigFile(const QString &address, const QByteArray &byte
+         out.error = file.errorString();
+         return out;
+     }
+-    if (file.write(bytes) != bytes.size()) {
+-        out.error = file.errorString();
+-        file.cancelWriting(); // the target keeps its previous contents
+-        return out;
+-    }
++    file.write(bytes);
+     if (!file.commit()) {
+         out.error = file.errorString();
+         return out;

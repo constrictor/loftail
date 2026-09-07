@@ -73,6 +73,7 @@ private slots:
     void saveIsVisibleOnlyOnAnEditorTab();
     void anEditedTabIsMarkedAndSavingClearsTheMark();
     void savingWritesTheBytesAndPreservesPermissions();
+    void aSavedConfigKeepsTheEncodingTheBomAndTheLineEndingsItWasReadWith();
     void aMissingDirectoryIsRefusedByName();
     void perLogActionsDoNotActOnTheLogBehindTheEditor();
     void findSearchesTheEditorAndNotTheLog();
@@ -293,6 +294,11 @@ void TestConfigEditor::savingWritesTheBytesAndPreservesPermissions()
     const QFile::Permissions restricted =
         QFile::ReadOwner | QFile::WriteOwner | QFile::ReadGroup;
     QVERIFY(QFile::setPermissions(config, restricted));
+    // Read back rather than reused: QFile::permissions() answers with the Owner AND the
+    // User spelling of the same three Unix bits, so the mode to compare against later is
+    // the one the filesystem reports, never the one that was asked for.
+    const QFile::Permissions modeBefore = QFile::permissions(config);
+    QCOMPARE(modeBefore & (QFile::ReadOther | QFile::WriteOther), QFile::Permissions());
 
     std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("p.properties")));
     w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
@@ -310,13 +316,66 @@ void TestConfigEditor::savingWritesTheBytesAndPreservesPermissions()
     back.close();
 
 #ifndef Q_OS_WIN
-    // The save is a temp-file-and-rename, so it creates a NEW inode: without an explicit
-    // restore this file comes back 0644. A config that quietly became world-readable
-    // because a viewer saved it is the worst thing this feature could do, and nothing on
-    // screen would say it had happened.
-    QCOMPARE(QFile::permissions(config) & (QFile::ReadOther | QFile::WriteOther),
-             QFile::Permissions());
+    // The save is a temp-file-and-rename, so it creates a NEW inode: without the mode
+    // being carried across, this file comes back 0644. A config that quietly became
+    // world-readable because a viewer saved it is the worst thing this feature could do,
+    // and nothing on screen would say it had happened.
+    //
+    // THE WHOLE MODE, not merely the bits for everyone else. Asking only whether the
+    // other bits are off is weaker than the name of this case: a save that came back
+    // 0600 would satisfy it while having taken the group's read away from a file whose
+    // whole purpose is to be read by the service that runs as that group.
+    QCOMPARE(QFile::permissions(config), modeBefore);
 #endif
+}
+
+void TestConfigEditor::aSavedConfigKeepsTheEncodingTheBomAndTheLineEndingsItWasReadWith()
+{
+    const QString log = writeLog(QStringLiteral("encoding.log"));
+    const QString config = configPathFor(log, QStringLiteral("e.properties"));
+
+    // UTF-16LE with a BOM and CRLF endings — an ordinary shape for a config file written
+    // on Windows, and one where every one of the three replays is separately visible.
+    const QByteArray bom = QByteArrayLiteral("\xff\xfe");
+    const QString original = QStringLiteral("a=1\r\n");
+    QByteArray body;
+    for (const QChar c : original) {
+        body.append(char(c.unicode() & 0xff));
+        body.append(char(c.unicode() >> 8));
+    }
+    {
+        QFile f(config);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(bom + body);
+    }
+
+    std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("e.properties")));
+    w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
+    auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    auto *editor = qobject_cast<ConfigView *>(tabs->currentWidget());
+    QVERIFY(editor);
+    // The widget works in paragraphs, so what is on screen is '\n' whatever the file
+    // holds — which is exactly why the ending has to be remembered rather than re-read
+    // off the text on the way out.
+    QCOMPARE(editor->editor()->toPlainText(), QStringLiteral("a=1\n"));
+
+    QTextCursor typing = editor->editor()->textCursor();
+    typing.movePosition(QTextCursor::End);
+    typing.insertText(QStringLiteral("b=3\n"));
+    w->findChild<QAction *>(QStringLiteral("saveConfigAction"))->trigger();
+
+    QFile back(config);
+    QVERIFY(back.open(QIODevice::ReadOnly));
+    const QByteArray written = back.readAll();
+
+    // All three replays, stated as the bytes rather than as a decoded string, because a
+    // decoded string is what every one of the three failures still reads back correctly.
+    QByteArray expected = bom;
+    for (const QChar c : QStringLiteral("a=1\r\nb=3\r\n")) {
+        expected.append(char(c.unicode() & 0xff));
+        expected.append(char(c.unicode() >> 8));
+    }
+    QCOMPARE(written, expected);
 }
 
 void TestConfigEditor::aMissingDirectoryIsRefusedByName()

@@ -51,6 +51,25 @@
 # difference to assert on. It stays in src/ as the defence it is, and it stays in
 # the unguarded table.
 #
+# A SECOND ONE JOINED IT, and it is the mirror image: LogFileStore::remove()'s
+# order — map first, slot file second. Both halves of save()'s order are killable
+# because the first write's failure ABORTS the second (patch 19), and remove()
+# deliberately does not work that way: it ignores what flush() answered and
+# unlinks the slot file regardless, so provoking either step into failing leaves
+# the same state whichever order they are attempted in. There is nothing to
+# assert from outside, and the enumeration in
+# tst_writefailure::everyInterruptionOfAWriteRecoversWithoutServingOneLogAnothersRecord
+# covers what a reader can actually be hurt by — that every one of those states
+# recovers without one log being served another's record.
+#
+# THE commit() FAILURE BRANCH of AtomicJson::write() and writeConfigFile() is
+# likewise not reachable without root, and knowing why saves the next attempt:
+# a target that is a directory fails at open(), and a write past RLIMIT_FSIZE
+# fails at write() — measured, and the reason patch 20 is about the short write
+# rather than about the commit. Making the rename alone fail wants the directory
+# to become unwritable between the open and the commit, which is not something a
+# single-threaded test can arrange.
+#
 #   tests/mutations/run-mutations.sh [--build DIR] [PATCH...]
 
 set -u

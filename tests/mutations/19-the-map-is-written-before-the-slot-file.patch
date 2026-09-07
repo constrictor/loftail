@@ -1,0 +1,56 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "Ten M21 rules that are easy to undo by accident"):
+#   Every crash ends at an ORPHAN, and the two write orders are opposite for
+#   that. A write goes slot file first and map second, so what survives an
+#   interruption is always an unreferenced file — never a map entry naming a
+#   slot that holds a DIFFERENT log's record
+#
+# GUARD: tst_writefailure::aSaveWhoseSlotFileCannotBeWrittenNeverPutsTheAddressInTheMap
+#
+# SILENT WHEN BROKEN: nothing fails, nothing is reported and both orders behave
+# identically for as long as both writes succeed — which is every run in which
+# nothing goes wrong. The one that does go wrong hands one log another log's
+# format, filters and highlight rules, and the map it reads that from is a file
+# nobody looks at. The companion case
+# tst_writefailure::aSaveWhoseMapCannotBeWrittenLeavesTheRecordAsAnUnreferencedFile
+# fails under this patch too, from the other side.
+
+diff --git a/src/core/LogFileStore.cpp b/src/core/LogFileStore.cpp
+index 43d106a..ecd04b6 100644
+--- a/src/core/LogFileStore.cpp
++++ b/src/core/LogFileStore.cpp
+@@ -371,7 +371,7 @@ bool LogFileStore::save(LogFileSettings s, const LogProfile &inherited, QString
+ 
+     // SLOT FILE FIRST, MAP SECOND — see the header. A crash between them costs one
+     // unreferenced file; the other order would point the map at another log's record.
+-    if (!writeSlot(m_entries.at(i).slot, s, error))
++    if (!flush(error))
+         return false;
+ 
+     // NO MRU BUMP HERE. The tick means least recently OPENED, and a save is not an open:
+@@ -382,7 +382,7 @@ bool LogFileStore::save(LogFileSettings s, const LogProfile &inherited, QString
+     // Flushed rather than deferred, unlike touch(): save() runs on a gesture that has
+     // already written a file, and a record nobody can find until the next flush is a
+     // record the very next launch would miss.
+-    return flush(error);
++    return writeSlot(m_entries.at(i).slot, s, error);
+ }
+ 
+ bool LogFileStore::remove(const QString &address)

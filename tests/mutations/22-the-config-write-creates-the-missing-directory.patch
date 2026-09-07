@@ -1,0 +1,44 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "The write rules are in one place"):
+#   ConfigFileIO never creates a directory — refused BY NAME, the deliberate
+#   inverse of AtomicJson, which mkpath()s its own tree. A missing directory
+#   here almost always means a mistyped path
+#
+# GUARD: tst_configeditor::aMissingDirectoryIsRefusedByName
+#
+# SILENT WHEN BROKEN: the save appears to work. A config tree sprouts somewhere
+# nobody asked for it, holding the file the application was supposed to be
+# reading — while the application goes on reading the path that was meant, which
+# still does not exist. tst_writefailure::aConfigInADirectoryThatIsNotThereIs\
+# RefusedByNameAndNothingIsCreated states the same rule one layer down.
+
+diff --git a/src/core/ConfigFileIO.cpp b/src/core/ConfigFileIO.cpp
+index 6fcb04a..7b19c50 100644
+--- a/src/core/ConfigFileIO.cpp
++++ b/src/core/ConfigFileIO.cpp
+@@ -107,7 +107,7 @@ ConfigWriteResult writeConfigFile(const QString &address, const QByteArray &byte
+ 
+     const QFileInfo info(address);
+     const QDir dir = info.absoluteDir();
+-    if (!dir.exists()) {
++    if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
+         // REFUSED, BY NAME, and deliberately not created. The inverse of AtomicJson's
+         // rule, and inverted on purpose: that one writes loftail's own tree, where
+         // creating a missing directory is right. Here a missing directory almost always

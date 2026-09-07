@@ -1,0 +1,46 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "Ten M21 rules that are easy to undo by accident"):
+#   Every record names its own address inside the slot file as well as in the
+#   index, and read() CHECKS it — THE FILE WINS. That is the last line between a
+#   stale map, which any interrupted write can leave, and one log opening with
+#   another log's settings
+#
+# GUARD: tst_writefailure::everyInterruptionOfAWriteRecoversWithoutServingOneLogAnothersRecord
+#
+# SILENT WHEN BROKEN: only at an interruption point, and only for the log whose slot
+# was reused. It then opens with a stranger's format, filters, highlight rules
+# and run selection — a log that suddenly parses as nothing, with no gesture
+# anywhere that explains it. tst_logfilestore::aSlotHoldingAnotherLogsRecordIsNot\
+# Served fails under this patch too.
+
+diff --git a/src/core/LogFileStore.cpp b/src/core/LogFileStore.cpp
+index 43d106a..7da3a74 100644
+--- a/src/core/LogFileStore.cpp
++++ b/src/core/LogFileStore.cpp
+@@ -294,8 +294,7 @@ LogFileSettings LogFileStore::read(const QString &address)
+         const LogFileSettings s = LogFileSettings::fromJson(doc.object());
+         // THE FILE WINS. A map entry whose slot holds another log's record is a map that
+         // is out of date, not a record that belongs to this address — see the header.
+-        if (s.address == empty.address)
+-            return s;
++        return s;
+     }
+ 
+     m_entries.remove(i);

@@ -1,0 +1,43 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, ""Not there" and "there and shut" are different sentences"):
+#   A config file whose mode refuses the reader is reported as unreadable and
+#   named. The supported empty-editor case is a file that is NOT THERE, which
+#   Save then creates
+#
+# GUARD: tst_writefailure::aConfigThatIsThereAndShutIsNotDescribedAsOneThatIsNotThere
+#
+# SILENT WHEN BROKEN: the editor opens EMPTY over a file that has contents, says the
+# file is not there yet, and the next Save writes the empty buffer over it —
+# reported as a permission failure only at that point, if at all.
+
+diff --git a/src/core/ConfigFileIO.cpp b/src/core/ConfigFileIO.cpp
+index 6fcb04a..8cf902f 100644
+--- a/src/core/ConfigFileIO.cpp
++++ b/src/core/ConfigFileIO.cpp
+@@ -86,7 +86,8 @@ ConfigReadResult readConfigFile(const QString &address)
+         // "There and shut" is a different sentence from "not there", and this is where
+         // they are told apart: a file whose mode is 000 must not be described as one
+         // that has not appeared yet.
+-        out.error = Tr::tr("Cannot read %1: %2").arg(address, file.errorString());
++        out.ok = true;
++        out.existed = false;
+         return out;
+     }
+     out.bytes = file.readAll();

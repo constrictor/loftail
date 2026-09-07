@@ -1,0 +1,49 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "M21 ... AtomicJson"; SPEC.md §10):
+#   AtomicJson::write() compares what QSaveFile::write() returned against what it
+#   was given, and cancels the write when they differ. commit() does NOT catch a
+#   short write: it renames the truncated temporary into place and reports
+#   success
+#
+# GUARD: tst_writefailure::aWriteThatCannotBeFinishedIsReportedAndKeepsThePreviousContents
+#
+# SILENT WHEN BROKEN: the call returns true, so every caller — the settings pool, the
+# host bookmarks, the session — believes it saved. What is on disk is a JSON
+# document cut off in the middle, which the next launch reads as "no map" or "no
+# record" and quietly rebuilds around.
+
+diff --git a/src/core/AtomicJson.cpp b/src/core/AtomicJson.cpp
+index f05628b..669519e 100644
+--- a/src/core/AtomicJson.cpp
++++ b/src/core/AtomicJson.cpp
+@@ -59,12 +59,7 @@ bool AtomicJson::write(const QString &path, const QJsonDocument &doc, QString *e
+         return false;
+     }
+     const QByteArray bytes = doc.toJson(QJsonDocument::Indented);
+-    if (file.write(bytes) != bytes.size()) {
+-        if (error)
+-            *error = file.errorString();
+-        file.cancelWriting();
+-        return false;
+-    }
++    file.write(bytes);
+     if (!file.commit()) {
+         if (error)
+             *error = file.errorString();
