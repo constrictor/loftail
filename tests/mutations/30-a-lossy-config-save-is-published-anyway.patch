@@ -1,0 +1,47 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "The write rules are in one place"):
+#   what is about to be written is read back through the very detection the
+#   editor's read runs, and a save that would not survive it is REFUSED —
+#   nothing written, the file untouched, the buffer keeping every keystroke.
+#   ConfigView::bytesToSave() is the ONE way in, so no save site can walk round
+#   it by reaching toBytes() directly
+#
+# GUARD: tst_configeditor::aSaveThatWouldNotReadBackIsRefusedAndTheEditsStay
+#
+# SILENT WHEN BROKEN: the save reports success and the tab clears its modified
+# mark, so the buffer is no longer treated as the only copy — while what is on
+# disk is short of what was on screen by whatever the encoding could not spell.
+# The next open shows the shortened file, which is by then the only version left.
+
+diff --git a/src/ui/ConfigView.cpp b/src/ui/ConfigView.cpp
+index 84d401a..2dbf3dd 100644
+--- a/src/ui/ConfigView.cpp
++++ b/src/ui/ConfigView.cpp
+@@ -281,8 +281,8 @@ bool ConfigView::bytesToSave(QByteArray *bytes, QString *error) const
+     // the rule about what a config write may cost belongs.
+     const QString text = saveText();
+     QByteArray out = toBytes();
+-    if (!configBytesReadBackAs(displayName(), out, text, error))
+-        return false;
++    (void)text;
++    (void)error;
+     if (bytes)
+         *bytes = out;
+     return true;

@@ -1,0 +1,47 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, invariant #8; "The write rules are in one place"):
+#   decode() and encode() are the two directions of ONE class and must be
+#   inverse. Every Qt decoder drops a byte-order mark at the start of the range
+#   it is handed, but bomLength() has already accounted for the file's own and
+#   every caller has stepped past it — so a mark still standing there is a
+#   CHARACTER OF THE TEXT, and decode() sets ConvertInitialBom to keep it
+#
+# GUARD: tst_decoder::aZeroWidthNoBreakSpaceInTheTextSurvivesBothDirections
+#
+# SILENT WHEN BROKEN: a config file whose text begins with U+FEFF — what a file
+# through a mark-adding editor twice looks like — is opened, not edited, saved,
+# and comes back one character shorter. Nothing reports it: the editor shows the
+# same text before and after, the write succeeds, and on the remote path it is in
+# place, so there is no previous inode to compare against or fall back to.
+
+diff --git a/src/core/Decoder.cpp b/src/core/Decoder.cpp
+index 24be3e8..92bba22 100644
+--- a/src/core/Decoder.cpp
++++ b/src/core/Decoder.cpp
+@@ -239,8 +239,7 @@ QString Decoder::decode(QByteArrayView bytes) const
+     // detection is untouched — sniff() runs its own converter, whose flags are
+     // bugs.md 36's and not these.
+     QStringDecoder dec(converterFor(m_resolved),
+-                       QStringConverter::Flag::Stateless
+-                           | QStringConverter::Flag::ConvertInitialBom);
++                       QStringConverter::Flag::Stateless);
+     return dec.decode(bytes);
+ }
+ 

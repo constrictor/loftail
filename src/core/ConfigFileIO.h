@@ -76,6 +76,23 @@ ConfigReadResult readConfigFile(const QString &address);
 //     crash or a full disk leaves the previous contents rather than half a file.
 ConfigWriteResult writeConfigFile(const QString &address, const QByteArray &bytes);
 
+// Whether `bytes` read back as `text` — the guard every config save runs before a byte
+// leaves the process, with `name` naming the file in the sentence it gives back.
+//
+// The write path replays a file's own encoding, byte-order mark and line endings rather
+// than re-deciding them, which is only safe while the two directions of Decoder agree
+// about every character. Once they did not: decode() dropped a leading U+FEFF that
+// encode() had written, so a config opened, not edited and saved came back one character
+// shorter, silently, on the file that decides what an application logs — and the remote
+// write is in place, so there is no previous inode to fall back to (bugs.md 43).
+//
+// So the bytes are read back through the very detection the editor's own read runs, and
+// a save that would not survive its own round trip is REFUSED rather than published. It
+// is a guard and not a fix: the asymmetry that prompted it is fixed in Decoder, and this
+// is here for the next one. It costs one decode of one config file per save.
+bool configBytesReadBackAs(const QString &name, const QByteArray &bytes, const QString &text,
+                           QString *reason);
+
 // Whether `address` can be edited at all in this build and at this address.
 //
 // Remote config files are read and written over SSH, which is an optional dependency —

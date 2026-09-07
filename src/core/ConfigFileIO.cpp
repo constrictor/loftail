@@ -18,6 +18,7 @@
 
 #include "ConfigFileIO.h"
 
+#include "Decoder.h"
 #include "PromptRelay.h"
 #include "RemoteLocation.h"
 #include "SshPrompter.h"
@@ -159,6 +160,33 @@ ConfigWriteResult writeConfigFile(const QString &address, const QByteArray &byte
 
     out.ok = true;
     return out;
+}
+
+bool configBytesReadBackAs(const QString &name, const QByteArray &bytes, const QString &text,
+                           QString *reason)
+{
+    // Detection, not the encoding the writer used: what matters is not that the bytes
+    // are the encoder's own output but that OPENING THEM AGAIN gives back what was on
+    // screen, and opening them again is exactly this. The two lines are ConfigView's
+    // read, said once more.
+    const Decoder decoder = Decoder::detect(bytes, Encoding::Auto);
+    const QString readBack = decoder.decode(bytes.mid(int(decoder.bomLength())));
+    if (readBack == text)
+        return true;
+    if (reason) {
+        // NOT SAVED is the first thing it says, because the reader's next move depends
+        // on it: the file on disk is untouched and the buffer still holds every
+        // keystroke. A count, because "some characters" is not something to act on.
+        *reason = Tr::tr("%1 was not saved: written in this file's own encoding it would "
+                         "not read back as what is on screen (%2 characters against %3), "
+                         "so nothing was written and your edits are still here. Saving a "
+                         "copy elsewhere, or changing the file's encoding, is the way "
+                         "round it.")
+                      .arg(name)
+                      .arg(readBack.size())
+                      .arg(text.size());
+    }
+    return false;
 }
 
 bool configAddressIsRemote(const QString &address)

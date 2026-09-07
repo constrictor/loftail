@@ -1551,7 +1551,15 @@ void MainWindow::saveConfig(ConfigView *view, std::function<void()> then)
         // when the reply arrives is only honest if nothing was typed while it was in
         // flight — otherwise a keystroke made during a slow remote save is marked saved
         // and is lost at the next close with no prompt.
-        const QByteArray payload = view->toBytes();
+        QByteArray payload;
+        QString lossy;
+        if (!view->bytesToSave(&payload, &lossy)) {
+            // REFUSED BEFORE THE ROUND TRIP, so nothing reaches the far end and the in-
+            // place remote write — which has no previous inode behind it — is never
+            // started. The buffer keeps its modified flag and every keystroke with it.
+            view->showNotice(lossy);
+            return;
+        }
         const int sentAt = view->revision();
         view->setBusy(true, tr("Saving %1…").arg(view->displayName()));
         updateActionStates();
@@ -1581,7 +1589,13 @@ void MainWindow::saveConfig(ConfigView *view, std::function<void()> then)
         return;
     }
 
-    const ConfigWriteResult result = writeConfigFile(view->address(), view->toBytes());
+    QByteArray payload;
+    QString lossy;
+    if (!view->bytesToSave(&payload, &lossy)) {
+        view->showNotice(lossy);
+        return;
+    }
+    const ConfigWriteResult result = writeConfigFile(view->address(), payload);
     if (!result.ok) {
         // A save failure names a directory or a permission the reader has to act on, so
         // it goes in the page's own notice, which stays — not the status bar's transient
@@ -1667,7 +1681,15 @@ bool MainWindow::confirmDiscard(ConfigView *view)
     box.setEscapeButton(QMessageBox::Cancel);
     switch (box.exec()) {
     case QMessageBox::Save: {
-        const ConfigWriteResult result = writeConfigFile(view->address(), view->toBytes());
+        QByteArray payload;
+        QString lossy;
+        if (!view->bytesToSave(&payload, &lossy)) {
+            // A refused save is a Cancel here too, for the reason below: the tab stays,
+            // with its edits, which is the only thing that keeps them.
+            view->showNotice(lossy);
+            return false;
+        }
+        const ConfigWriteResult result = writeConfigFile(view->address(), payload);
         if (!result.ok) {
             // A FAILED save is a Cancel. Closing anyway would throw the work away after
             // the reader explicitly asked to keep it, which is the one outcome this

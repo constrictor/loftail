@@ -223,20 +223,25 @@ qsizetype Decoder::lineEnd(QByteArrayView buf, qsizetype from, bool *hadNewline)
 
 QString Decoder::decode(QByteArrayView bytes) const
 {
-    switch (m_resolved) {
-    case Encoding::Utf8:
-        return QString::fromUtf8(bytes);
-    case Encoding::System:
-        return QString::fromLocal8Bit(bytes);
-    case Encoding::Utf16LE:
-    case Encoding::Utf16BE: {
-        QStringDecoder dec(converterFor(m_resolved), QStringConverter::Flag::Stateless);
-        return dec.decode(bytes);
-    }
-    case Encoding::Auto:
-        break;
-    }
-    return QString::fromUtf8(bytes);
+    // ConvertInitialBom, in EVERY branch, and it is what makes this the reverse of
+    // encode() rather than nearly so. Qt's decoders — QString::fromUtf8() and the
+    // UTF-16 ones alike — treat a mark at the start of the RANGE THEY ARE GIVEN as
+    // the file's byte-order mark and drop it. But the file's own mark is
+    // bomLength()'s business and every caller has already stepped past it (the
+    // indexer, the format sniffers, the config editor), so a U+FEFF still standing
+    // here is a CHARACTER OF THE TEXT — the file's content beginning with a
+    // zero-width no-break space, which is what a file through a mark-adding editor
+    // twice looks like. Dropping it made decode(encode(text)) one character shorter
+    // than `text`, silently, on the one path where loftail writes a file it did not
+    // create (bugs.md 43).
+    //
+    // Nothing about the file's mark moves: this range never contains one. And
+    // detection is untouched — sniff() runs its own converter, whose flags are
+    // bugs.md 36's and not these.
+    QStringDecoder dec(converterFor(m_resolved),
+                       QStringConverter::Flag::Stateless
+                           | QStringConverter::Flag::ConvertInitialBom);
+    return dec.decode(bytes);
 }
 
 QByteArray Decoder::encode(const QString &text) const

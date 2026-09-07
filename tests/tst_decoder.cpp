@@ -71,6 +71,9 @@ private slots:
     void textIsWrittenBackInTheEncodingItWasReadIn_data();
     void textIsWrittenBackInTheEncodingItWasReadIn();
     void encodingAddsNoByteOrderMarkOfItsOwn();
+    void aZeroWidthNoBreakSpaceInTheTextSurvivesBothDirections_data();
+    void aZeroWidthNoBreakSpaceInTheTextSurvivesBothDirections();
+    void aMarkAfterTheFilesOwnMarkIsACharacterOfTheText();
 };
 
 void TestDecoder::detectsBom_data()
@@ -415,6 +418,75 @@ void TestDecoder::encodingAddsNoByteOrderMarkOfItsOwn()
         QCOMPARE(written.size(), qsizetype(text.size()) * d.unitSize());
         QCOMPARE(written, sample.sliced(d.bomLength()));
     }
+}
+
+// decode() and encode() are the two directions of ONE class, which is the whole
+// reason they live together — and they were not inverse at one character. Qt's
+// decoders drop a mark at the start of the range they are given, so a text
+// beginning with U+FEFF came back one character shorter than it went in, while the
+// same character anywhere else survived. The config editor is the one path where
+// loftail writes a file it did not create, so what that cost was a file saved a
+// character short, silently (bugs.md 43).
+//
+// The middle rows are here so a future change cannot fix one position by breaking
+// the other: they passed throughout and must go on passing.
+void TestDecoder::aZeroWidthNoBreakSpaceInTheTextSurvivesBothDirections_data()
+{
+    QTest::addColumn<int>("encoding");
+    QTest::addColumn<QString>("text");
+
+    const QString zwnbsp = QString(QChar(0xFEFF));
+    for (const Encoding e : {Encoding::Utf8, Encoding::Utf16LE, Encoding::Utf16BE}) {
+        const QByteArray label = e == Encoding::Utf8      ? QByteArrayLiteral("utf8")
+                                 : e == Encoding::Utf16LE ? QByteArrayLiteral("utf16le")
+                                                          : QByteArrayLiteral("utf16be");
+        QTest::newRow((label + " leading").constData())
+            << int(e) << zwnbsp + QStringLiteral("log4cplus.rootLogger=INFO");
+        QTest::newRow((label + " alone").constData()) << int(e) << zwnbsp;
+        QTest::newRow((label + " middle").constData())
+            << int(e) << QStringLiteral("a") + zwnbsp + QStringLiteral("b");
+        QTest::newRow((label + " trailing").constData())
+            << int(e) << QStringLiteral("ab") + zwnbsp;
+    }
+}
+
+void TestDecoder::aZeroWidthNoBreakSpaceInTheTextSurvivesBothDirections()
+{
+    QFETCH(int, encoding);
+    QFETCH(QString, text);
+
+    const Decoder d = Decoder::detect(QByteArrayView(), static_cast<Encoding>(encoding));
+    const QByteArray written = d.encode(text);
+    // The round trip closes on the DECODE side, which is where the character was
+    // being thrown away; that encode() adds no mark of its own is
+    // encodingAddsNoByteOrderMarkOfItsOwn's, and closing it from that end instead
+    // would grow a file that never had a BOM one.
+    QCOMPARE(d.decode(written), text);
+}
+
+// The shape the config editor actually meets: a file that carries a byte-order
+// mark AND whose text then begins with one — what a file through a mark-adding
+// editor twice looks like. bomLength() accounts for the file's; everything past it
+// is text, and the read is exactly ConfigView::setContents().
+void TestDecoder::aMarkAfterTheFilesOwnMarkIsACharacterOfTheText()
+{
+    const QString text = QString(QChar(0xFEFF)) + QStringLiteral("appender=file");
+
+    const QByteArray utf8 = QByteArray("\xEF\xBB\xBF", 3) + text.toUtf8();
+    const Decoder d8 = Decoder::detect(utf8, Encoding::Auto);
+    QCOMPARE(d8.resolvedEncoding(), Encoding::Utf8);
+    QCOMPARE(d8.bomLength(), qint64(3));
+    QCOMPARE(d8.decode(QByteArrayView(utf8).sliced(d8.bomLength())), text);
+
+    const QByteArray le = QByteArray("\xFF\xFE", 2) + utf16(text, false);
+    const Decoder dle = Decoder::detect(le, Encoding::Auto);
+    QCOMPARE(dle.bomLength(), qint64(2));
+    QCOMPARE(dle.decode(QByteArrayView(le).sliced(dle.bomLength())), text);
+
+    const QByteArray be = QByteArray("\xFE\xFF", 2) + utf16(text, true);
+    const Decoder dbe = Decoder::detect(be, Encoding::Auto);
+    QCOMPARE(dbe.bomLength(), qint64(2));
+    QCOMPARE(dbe.decode(QByteArrayView(be).sliced(dbe.bomLength())), text);
 }
 
 QTEST_APPLESS_MAIN(TestDecoder)

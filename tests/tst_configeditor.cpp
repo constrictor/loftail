@@ -74,6 +74,8 @@ private slots:
     void anEditedTabIsMarkedAndSavingClearsTheMark();
     void savingWritesTheBytesAndPreservesPermissions();
     void aSavedConfigKeepsTheEncodingTheBomAndTheLineEndingsItWasReadWith();
+    void aConfigWhoseTextBeginsWithAMarkIsSavedWhole();
+    void aSaveThatWouldNotReadBackIsRefusedAndTheEditsStay();
     void aMissingDirectoryIsRefusedByName();
     void perLogActionsDoNotActOnTheLogBehindTheEditor();
     void findSearchesTheEditorAndNotTheLog();
@@ -376,6 +378,93 @@ void TestConfigEditor::aSavedConfigKeepsTheEncodingTheBomAndTheLineEndingsItWasR
         expected.append(char(c.unicode() >> 8));
     }
     QCOMPARE(written, expected);
+}
+
+// bugs.md 43. A config file that carries a byte-order mark AND whose text then
+// begins with a zero-width no-break space — what a file through a mark-adding
+// editor twice looks like — used to come back one character shorter: decode()
+// dropped the second mark and encode() wrote only what it had been given, so a
+// file opened and saved lost a character with nothing on screen to say so.
+//
+// Stated as BYTES, for the reason the encoding-replay case above states its own
+// that way: the editor shows the same text either way, and so does every viewer
+// that guesses UTF-8. What moved is the file.
+void TestConfigEditor::aConfigWhoseTextBeginsWithAMarkIsSavedWhole()
+{
+    const QString log = writeLog(QStringLiteral("mark.log"));
+    const QString config = configPathFor(log, QStringLiteral("m.properties"));
+
+    const QByteArray bom = QByteArrayLiteral("\xef\xbb\xbf");
+    const QString text = QString(QChar(0xFEFF)) + QStringLiteral("a=1\n");
+    {
+        QFile f(config);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(bom + text.toUtf8());
+    }
+
+    std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("m.properties")));
+    w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
+    auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    auto *editor = qobject_cast<ConfigView *>(tabs->currentWidget());
+    QVERIFY(editor);
+    // The file's OWN mark is the BOM and is replayed from bomLength(); the one after
+    // it is a character of the text and belongs on screen.
+    QCOMPARE(editor->editor()->toPlainText(), text);
+
+    QTextCursor typing = editor->editor()->textCursor();
+    typing.movePosition(QTextCursor::End);
+    typing.insertText(QStringLiteral("b=3\n"));
+    w->findChild<QAction *>(QStringLiteral("saveConfigAction"))->trigger();
+
+    auto *notice = editor->findChild<QLabel *>(QStringLiteral("configNotice"));
+    QVERIFY2(!notice->isVisible(), qPrintable(notice->text()));
+
+    QFile back(config);
+    QVERIFY(back.open(QIODevice::ReadOnly));
+    QCOMPARE(back.readAll(), bom + (text + QStringLiteral("b=3\n")).toUtf8());
+}
+
+// The guard beside the fix: a save whose bytes would not read back as what is on
+// screen is REFUSED, and the refusal is the honest one — nothing is written, the
+// buffer keeps every keystroke and its modified flag, and the page says why.
+//
+// The loss here is not bugs.md 43's, which is fixed one layer down; it is an
+// unpaired surrogate, which no encoding can spell and every one of them drops. It
+// stands in for the next asymmetry, which is what the guard is for.
+void TestConfigEditor::aSaveThatWouldNotReadBackIsRefusedAndTheEditsStay()
+{
+    const QString log = writeLog(QStringLiteral("lossy.log"));
+    const QString config = configPathFor(log, QStringLiteral("l.properties"));
+    const QByteArray before = QByteArrayLiteral("a=1\n");
+    {
+        QFile f(config);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(before);
+    }
+
+    std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("l.properties")));
+    w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
+    auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    auto *editor = qobject_cast<ConfigView *>(tabs->currentWidget());
+    QVERIFY(editor);
+
+    QTextCursor typing = editor->editor()->textCursor();
+    typing.movePosition(QTextCursor::End);
+    typing.insertText(QStringLiteral("b=") + QString(QChar(0xD800)) + QStringLiteral("\n"));
+    QVERIFY(editor->isModified());
+    w->findChild<QAction *>(QStringLiteral("saveConfigAction"))->trigger();
+
+    auto *notice = editor->findChild<QLabel *>(QStringLiteral("configNotice"));
+    QVERIFY(notice->isVisible());
+    QVERIFY2(notice->text().contains(QStringLiteral("not saved")), qPrintable(notice->text()));
+
+    // THE FILE IS UNTOUCHED and the work is still here — the two halves of a
+    // refusal that is better than the save it declined.
+    QFile back(config);
+    QVERIFY(back.open(QIODevice::ReadOnly));
+    QCOMPARE(back.readAll(), before);
+    QVERIFY(editor->isModified());
+    QVERIFY(editor->editor()->toPlainText().contains(QChar(0xD800)));
 }
 
 void TestConfigEditor::aMissingDirectoryIsRefusedByName()

@@ -186,6 +186,7 @@ private slots:
     void aConfigThatIsThereAndShutIsNotDescribedAsOneThatIsNotThere();
     void aDirectoryWhereAConfigWasExpectedIsRefusedRatherThanRead();
     void aConfigTooLargeToEditIsRefusedRatherThanLoaded();
+    void bytesThatWouldNotReadBackAsWhatIsOnScreenAreRefusedAndNamed();
 
     // --- LogFileStore: which of the two writes goes first, and what a crash leaves ----
     void aSaveWhoseSlotFileCannotBeWrittenNeverPutsTheAddressInTheMap();
@@ -405,6 +406,41 @@ void TstWriteFailure::aConfigTooLargeToEditIsRefusedRatherThanLoaded()
     QVERIFY(!out.ok);
     QVERIFY(out.bytes.isEmpty());
     QVERIFY2(out.error.contains(QStringLiteral("huge.properties")), qPrintable(out.error));
+}
+
+// The guard beside bugs.md 43's fix: the write path replays a file's own encoding,
+// mark and line endings, which is only safe while the two directions of Decoder agree
+// about every character — so what is about to be written is read back through the very
+// detection the editor's read runs, and a save that would not survive it is refused.
+//
+// Both directions are asserted, and the accepting one is the half that would go quiet
+// if the guard were tightened into something no real file passes.
+void TstWriteFailure::bytesThatWouldNotReadBackAsWhatIsOnScreenAreRefusedAndNamed()
+{
+    // bugs.md 43's own shape: a file whose byte-order mark is followed by a
+    // zero-width no-break space that is a character of the text. Accepted, because
+    // it now reads back whole.
+    const QString withMark = QString(QChar(0xFEFF)) + QStringLiteral("a=1\n");
+    const QByteArray bytes = QByteArrayLiteral("\xef\xbb\xbf") + withMark.toUtf8();
+    QString reason;
+    QVERIFY2(configBytesReadBackAs(QStringLiteral("l.properties"), bytes, withMark, &reason),
+             qPrintable(reason));
+    QVERIFY(reason.isEmpty());
+
+    // And the refusal. An unpaired surrogate is a character no encoding can spell, so
+    // the bytes come back one short of the text they were made from — the shape of
+    // every loss this stands for, whatever produces the next one.
+    const QString lossy = QStringLiteral("a=") + QString(QChar(0xD800)) + QStringLiteral("\n");
+    QVERIFY(!configBytesReadBackAs(QStringLiteral("l.properties"), lossy.toUtf8(), lossy,
+                                   &reason));
+    // NOT SAVED first, and the file named: the reader's next move depends on knowing
+    // that their buffer is still the only copy of what they typed.
+    QVERIFY2(reason.contains(QStringLiteral("not saved")), qPrintable(reason));
+    QVERIFY2(reason.contains(QStringLiteral("l.properties")), qPrintable(reason));
+
+    // A null reason pointer is not a crash: the answer is the return value.
+    QVERIFY(!configBytesReadBackAs(QStringLiteral("l.properties"), lossy.toUtf8(), lossy,
+                                   nullptr));
 }
 
 // ---------------------------------------------------------------------------

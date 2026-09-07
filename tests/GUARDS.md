@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 174 rules
+## Guarded — 177 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -103,6 +103,9 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | Every path a shell sees goes through `shellQuote()` | Remote config (L71) | tst_sshexec |
 | `ConfigFileIO` never creates a directory, refused by name | Config write (L69) | tst_configeditor::aMissingDirectoryIsRefusedByName<br>tst_writefailure::aConfigInADirectoryThatIsNotThereIsRefusedByNameAndNothingIsCreated |
 | It replays the encoding, BOM and line endings it read, through `Decoder::encode()` | Config write (L69) | tst_configeditor::aSavedConfigKeepsTheEncodingTheBomAndTheLineEndingsItWasReadWith |
+| `decode()` and `encode()` are INVERSE: `ConvertInitialBom` in every branch, so a mark past `bomLength()` is a character of the text | Config write (L69) | tst_decoder::aZeroWidthNoBreakSpaceInTheTextSurvivesBothDirections<br>tst_decoder::aMarkAfterTheFilesOwnMarkIsACharacterOfTheText<br>tst_configeditor::aConfigWhoseTextBeginsWithAMarkIsSavedWhole |
+| A save whose bytes would not read back as what is on screen is REFUSED, with nothing written and the buffer keeping its edits | Config write (L69) | tst_configeditor::aSaveThatWouldNotReadBackIsRefusedAndTheEditsStay<br>tst_writefailure::bytesThatWouldNotReadBackAsWhatIsOnScreenAreRefusedAndNamed |
+| `ConfigView::bytesToSave()` is the one way in, so no save site can walk round the guard | Config write (L69) | tst_configeditor::aSaveThatWouldNotReadBackIsRefusedAndTheEditsStay |
 | A config write that cannot be finished is REPORTED, and the file keeps what it had | Config write (L69) | tst_writefailure::aConfigWriteThatCannotBeFinishedIsReportedAndKeepsThePreviousContents |
 | "Not there" and "there and shut" are different sentences, and only the first is the supported empty-editor case | Presence not emptiness (L207) | tst_writefailure::aConfigThatIsThereAndShutIsNotDescribedAsOneThatIsNotThere |
 | The libssh2 half of the config write now runs on every push against real servers | Config write in CI (L73) | tst_sshlive::aConfigFileIsReadAndWrittenWholeOverSftp<br>tst_sshlive::writingAConfigKeepsItsPermissions<br>tst_sshlive::theExecFallbackWritesTheSameBytes |

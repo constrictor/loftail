@@ -18,6 +18,7 @@
 
 #include "ConfigView.h"
 
+#include "ConfigFileIO.h"
 #include "Decoder.h"
 #include "FindBar.h"
 #include "Fonts.h"
@@ -253,7 +254,7 @@ void ConfigView::setContents(const QByteArray &bytes, bool existed)
     updateSyntaxLabel();
 }
 
-QByteArray ConfigView::toBytes() const
+QString ConfigView::saveText() const
 {
     QString text = m_edit->toPlainText();
     // QPlainTextEdit uses U+2029 for a paragraph break in some paths; normalise it
@@ -261,11 +262,30 @@ QByteArray ConfigView::toBytes() const
     text.replace(QChar(0x2029), QLatin1Char('\n'));
     if (m_lineEnding != QLatin1String("\n"))
         text.replace(QLatin1String("\n"), m_lineEnding);
+    return text;
+}
 
+QByteArray ConfigView::toBytes() const
+{
     Decoder decoder = Decoder::detect(QByteArrayView(), static_cast<Encoding>(m_encoding));
     // The BOM is REPLAYED, never re-derived: only the read knew whether the file had
     // one, and adding one unconditionally grows a mark onto a file that never had it.
-    return m_bom + decoder.encode(text);
+    return m_bom + decoder.encode(saveText());
+}
+
+bool ConfigView::bytesToSave(QByteArray *bytes, QString *error) const
+{
+    // ONE funnel, and every save goes through it: the whole point of a guard is that
+    // there is no second way to reach the write. It is asked here, where both halves
+    // are — the string on screen and the bytes it becomes — and answered in core, where
+    // the rule about what a config write may cost belongs.
+    const QString text = saveText();
+    QByteArray out = toBytes();
+    if (!configBytesReadBackAs(displayName(), out, text, error))
+        return false;
+    if (bytes)
+        *bytes = out;
+    return true;
 }
 
 bool ConfigView::isModified() const

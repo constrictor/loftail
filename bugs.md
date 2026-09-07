@@ -456,7 +456,7 @@ by somebody looking. Three are the fuzzer's, one came out of reading the lines a
 coverage report said had never executed, and one out of a test whose first draft
 asserted the wrong thing and was right to. Each was recorded with the ruling it
 needs, because four of the five have two defensible answers and the choice is the
-user's; one of them has since been taken and fixed.
+user's; two of them have since been taken and fixed.
 
 Entry 42 has gone: a literal `.` spelled after `%b`, `%a` or `%Z` inside `%d{...}`
 was claimed by two halves at once. The name run tolerates a trailing dot because
@@ -479,35 +479,34 @@ nothing else. The fix took `%p` and `%P` with it: they are read back through the
 word reader while their regex never allowed a dot at all, so a format spelling one
 after them failed the same way and had never been noticed.
 
----
-
-### 43. Saving a config file whose text begins with U+FEFF drops the character
-
-`Decoder::decode()` and `Decoder::encode()` are meant to be the two directions of
-one class, which is what lets `ConfigFileIO` replay a file's own encoding, BOM and
-line endings back at it rather than re-deciding them. They are not inverse at one
-character: `decode()` drops a **leading** U+FEFF and `encode()` writes one, so
-`decode(encode(text)) != text` for any text starting with ZWNBSP. The same
-character in the middle of the string survives both ways.
-
-The cause is Qt's, not loftail's: the UTF-8 decoder treats a byte-order mark as a
-mark wherever the range it is given starts, and the range here starts at the text.
-`bomLength()` has already accounted for the file's own mark, so this is a
-*second* one — the file's content beginning with a ZWNBSP after its BOM, which is
-rare but is exactly what a file that has been through a BOM-adding editor twice
-looks like.
-
-It lands on the one path where loftail writes a file it did not create. A config
-file opened, not edited, and saved comes back one character shorter, silently, on
-the file that decides what an application logs — and the write is in place on the
-remote path, so there is no previous inode to fall back to. Minimised input in
-`tests/fuzz/corpus/decoder/utf8_leading_bom_in_line`.
-
-The ruling it needs: whether `decode()` should stop skipping a mark it was not
-asked about (`QStringDecoder` can be told, but the flag interacts with the
-detection sample's own trim), or whether `ConfigFileIO` should compare what it is
-about to write against what it read and refuse a save that loses characters. The
-second is more work and catches the next asymmetry as well as this one.
+Entry 43 has gone with it: `Decoder::decode()` and `Decoder::encode()` are the two
+directions of one class, which is the whole of what lets `ConfigFileIO` replay a config
+file's own encoding, byte-order mark and line endings back at it — and they were not
+inverse at one character. Qt's decoders take a mark at the start of the range they are
+given for the file's own and drop it, so a text beginning with U+FEFF came back one
+character shorter, while the same character anywhere else survived; a config opened, not
+edited and saved lost it, silently, on the file that decides what an application logs and
+on the one path where the write is in place with no previous inode behind it. Both
+rulings were taken. `decode()` now sets `ConvertInitialBom` in every branch — the file's
+own mark is `bomLength()`'s business and every caller has already stepped past it, so a
+mark still standing there is a character of the text — which took `QString::fromUtf8()`
+and `fromLocal8Bit()` out of that function with it, the two spellings that were doing the
+dropping and could not be told not to; detection is untouched, `sniff()` running a
+converter of its own whose flags are entry 36's. And `configBytesReadBackAs()` beside it
+reads what is about to be written back through the very detection the editor's read runs
+and refuses a save that would not survive it, reporting it on the page's own notice with
+nothing written and the buffer still holding every keystroke — a guard for the next
+asymmetry rather than for this one, which is why it is pinned on an unpaired surrogate
+that no encoding can spell. `ConfigView::bytesToSave()` is the one way in, so the check
+cannot be walked around by a fourth save site. The fuzz target that found it lost its
+carve-out in the same change, and checking what that carve-out was actually hiding turned
+up one more thing worth recording: the minimised input this entry named,
+`corpus/decoder/utf8_leading_bom_in_line`, decodes to an EMPTY line under the old code and
+so passed the round-trip property vacuously — the shape that reproduces it carries the
+mark twice, the old decoder dropping the first and keeping the second, which is the only
+way a decoded line could begin with one at all. `corpus/decoder/utf8_two_marks_in_line`
+is that input, and it is the one that reddens when the fix is reverted; the minimised one
+is kept as the shape of the report rather than as the guard.
 
 ---
 

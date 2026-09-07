@@ -77,6 +77,11 @@ public:
     // exactly the population that writes one.
     QByteArray toBytes() const;
 
+    // The same bytes, refused if they would not read back as what is on screen. THE ONE
+    // WAY IN for a save: toBytes() is what it is built from and is still public for the
+    // tests that measure the bytes themselves. See configBytesReadBackAs().
+    bool bytesToSave(QByteArray *bytes, QString *error) const;
+
     bool isModified() const;
     void setModified(bool modified);
     bool fileExisted() const { return m_existed; }
@@ -130,6 +135,10 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    // The buffer as text, with the file's own line endings put back — what toBytes()
+    // encodes and what bytesToSave() compares the encoding against.
+    QString saveText() const;
+
     void updatePathLabel();
     void updateSyntaxLabel();
 

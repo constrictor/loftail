@@ -111,15 +111,22 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
         // it cannot spell is a substitution, not a bug) and Qt's UTF-16 decoder
         // replaces an unpaired surrogate rather than keeping it.
         //
-        // And not for text whose FIRST character is U+FEFF: decode() drops one
-        // there and encode() writes one back, so a line that begins with a
-        // zero-width no-break space comes back one character shorter. That is a
-        // real asymmetry, found by this target in its first minute and REPORTED
-        // rather than fixed (it is Qt's UTF-8 decoder treating a leading BOM as a
-        // BOM wherever the range starts); corpus/decoder/utf8_leading_bom_in_line
-        // is the minimised input, kept so the day it is fixed the case is here.
-        if (dec.resolvedEncoding() == Encoding::Utf8
-            && !(!text.isEmpty() && text.at(0) == QChar(0xFEFF))) {
+        // A LEADING U+FEFF IS NO LONGER CARVED OUT, and that is the whole of what
+        // this target found: decode() used to drop one there while encode() wrote
+        // it back, so a line beginning with a zero-width no-break space came back
+        // one character shorter — Qt's UTF-8 decoder taking a mark at the start of
+        // the range it is given for the file's own, which bomLength() has long
+        // since accounted for. Fixed in Decoder::decode() with ConvertInitialBom
+        // (bugs.md 43).
+        //
+        // TWO corpus inputs, and only one of them bites. The line that reproduces
+        // the old behaviour carries the mark TWICE — utf8_two_marks_in_line — since
+        // the old decode() dropped the first and kept the second, which is the only
+        // way a decoded line could begin with one at all; re-encoding it then lost
+        // it again. utf8_leading_bom_in_line, the input the fuzzer minimised to and
+        // bugs.md names, decodes to an EMPTY line under the old code and so passed
+        // it vacuously: it is kept as the shape of the report, not as the guard.
+        if (dec.resolvedEncoding() == Encoding::Utf8) {
             const QByteArray reEncoded = dec.encode(text);
             FUZZ_CHECK(dec.decode(reEncoded) == text, "decode(encode(text)) is text in UTF-8");
         }
