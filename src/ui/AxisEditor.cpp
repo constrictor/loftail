@@ -605,6 +605,12 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
         // and leave the axis that ships switched off empty for good.
         if (!m_populating && item && !isOthersRow(item))
             seenFor(axis).insert(item->text(), item->checkState() == Qt::Checked);
+        // And the memo stops being what the axis says the moment the user says
+        // something themselves (LoadedSelection). Every route that moves a tick comes
+        // through here — a click, All/None/Invert, the record menu, the "Others" row —
+        // so this is the one place it is written, exactly as the memo above it is.
+        if (!m_populating)
+            disarmLoaded(axis);
         emitChanged();
     });
     // All / None / Invert carry the same answer to the values that have not turned up
@@ -636,6 +642,9 @@ void AxisEditor::buildValueAxis(QVBoxLayout *root, ValueAxis axis, const QString
         // so the discovery rule is left alone here. Adding one name says nothing about
         // the ones the scan has not reached.
         manualFor(axis).insert(name);
+        // The row this makes is built under m_populating, so the handler above never
+        // sees it: adding a name by hand is a user edit and has to disarm here.
+        disarmLoaded(axis);
         {
             // Blocked so the clear does not re-narrow a list that is about to be
             // rebuilt; refreshDiscoveredLists() re-narrows with the now-empty text.
@@ -740,6 +749,9 @@ void AxisEditor::clearAll()
     // walking the lists by hand.
     m_loggerSeen.clear();
     m_threadSeen.clear();
+    // Nothing loaded either: a reset is the user retracting whatever was hydrated.
+    disarmLoaded(ValueAxis::Subsystem);
+    disarmLoaded(ValueAxis::Thread);
     m_populating = false;
 
     // Nothing seen, nothing restrictive: everything ticked.
@@ -871,6 +883,10 @@ void AxisEditor::setDocument(Document *document)
     // already-seen-but-not-checked and the new file would open fully filtered out.
     m_loggerSeen.clear();
     m_threadSeen.clear();
+    // A memo about the PREVIOUS file's selection, and a wrong one about this file's —
+    // the same reason "seen" dies with the binding, one line up.
+    disarmLoaded(ValueAxis::Subsystem);
+    disarmLoaded(ValueAxis::Thread);
     // Likewise a statement about the previous file's values, and a wrong one about
     // this file's: carried across, a new file would open with every subsystem it
     // discovers arriving unticked. Guarded, because the discovery rule is a CHECKBOX
@@ -1194,8 +1210,20 @@ void AxisEditor::refreshDiscoveredLists()
         m_populating = false;
         return;
     }
-    repopulate(checkedNames(m_loggerList), checkedNames(m_threadList), ListRule::Discover,
-               ListRule::Discover);
+    // An ARMED axis is still reproducing a stored selection (LoadedSelection), so a
+    // name the scan has just turned up is one that selection already spoke about:
+    // it is LOADED — ticked exactly as the memo says — and not discovered, which
+    // would tick it because the discovery rule has never seen it. Once the list can
+    // express the memo, repopulate() disarms and this returns to Discover, so a
+    // subsystem genuinely appearing for the first time still arrives shown.
+    const LoadedSelection &logger = m_loggerLoaded;
+    const LoadedSelection &thread = m_threadLoaded;
+    repopulate(logger.armed ? QSet<QString>(logger.names.begin(), logger.names.end())
+                            : checkedNames(m_loggerList),
+               thread.armed ? QSet<QString>(thread.names.begin(), thread.names.end())
+                            : checkedNames(m_threadList),
+               logger.armed ? ListRule::Load : ListRule::Discover,
+               thread.armed ? ListRule::Load : ListRule::Discover);
     // The other thing the index tells the editor. Both callers of this function mean
     // "the scan has moved on", and a time axis seeded once at open time is seeded from
     // an empty file.
@@ -1224,11 +1252,16 @@ void AxisEditor::repopulate(const QSet<QString> &loggerChecked,
         // report has too.
         updateListButtonHints(ValueAxis::Subsystem);
     }
+    // After the rows, and whether or not they moved: the memo is settled by what the
+    // list HOLDS, and a repopulation that changed nothing can still be the one that
+    // finds every memoized name already there.
+    settleLoaded(ValueAxis::Subsystem);
     if (populateList(m_threadList, threads, threadChecked, m_threadManualNames,
                      m_threadSeen, threadRule, restrictiveFor(ValueAxis::Thread))) {
         narrowList(m_threadList, m_threadNarrow ? m_threadNarrow->text() : QString());
         updateListButtonHints(ValueAxis::Thread);
     }
+    settleLoaded(ValueAxis::Thread);
 }
 
 // ---------------------------------------------------------------------------
@@ -1252,6 +1285,24 @@ bool AxisEditor::setComboPriority(Priority p)
     return row >= 0;
 }
 
+void AxisEditor::readValueAxis(ValueAxis axis, QStringList &names, bool &coversAll,
+                               bool &restrictive) const
+{
+    const LoadedSelection &loaded = loadedFor(axis);
+    if (loaded.armed) {
+        names = loaded.names;
+        coversAll = loaded.coversAll;
+        restrictive = loaded.restrictive;
+        return;
+    }
+    names = toSortedList(checkedNames(listFor(axis)));
+    // Coverage is answered from the list the user was shown, never from the intern
+    // table: the table grows mid-scan and the list lags it, so asking the table would
+    // make a discovered-but-not-yet-listed subsystem look excluded.
+    coversAll = coversAllFor(axis);
+    restrictive = restrictiveFor(axis);
+}
+
 MatchCriteria AxisEditor::criteria() const
 {
     MatchCriteria c;
@@ -1259,18 +1310,17 @@ MatchCriteria AxisEditor::criteria() const
     c.priorityEnabled = m_priorityEnable->isChecked();
     c.minPriority = comboPriority();
 
+    // The memo where one is armed, the widgets otherwise (LoadedSelection). A list
+    // the scan has not caught up with cannot express an exclusion, so reading it back
+    // would report an axis that narrows nothing and hand that answer to everything
+    // downstream — the Document's FilterSet, the log's stored record, the selected
+    // highlight rule.
     c.loggerEnabled = m_loggerGroup->isChecked();
-    c.loggerNames = toSortedList(checkedNames(m_loggerList));
-    // Coverage is answered from the list the user was shown, never from the intern
-    // table: the table grows mid-scan and the list lags it, so asking the table would
-    // make a discovered-but-not-yet-listed subsystem look excluded.
-    c.loggerCoversAll = coversAllFor(ValueAxis::Subsystem);
-    c.loggerRestrictive = restrictiveFor(ValueAxis::Subsystem);
-
     c.threadEnabled = m_threadGroup->isChecked();
-    c.threadNames = toSortedList(checkedNames(m_threadList));
-    c.threadCoversAll = coversAllFor(ValueAxis::Thread);
-    c.threadRestrictive = restrictiveFor(ValueAxis::Thread);
+    readValueAxis(ValueAxis::Subsystem, c.loggerNames, c.loggerCoversAll,
+                  c.loggerRestrictive);
+    readValueAxis(ValueAxis::Thread, c.threadNames, c.threadCoversAll,
+                  c.threadRestrictive);
 
     c.text.enabled = m_textGroup->isChecked();
     c.text.negate = m_textNegate->isChecked();
@@ -1373,9 +1423,20 @@ void AxisEditor::setCriteria(const MatchCriteria &c)
             return ListRule::Load;
         return enabled ? ListRule::CoverAll : ListRule::Unstated;
     };
-    repopulate(loggerSel, threadSel,
-               ruleFor(c.loggerEnabled, c.loggerCoversAll, c.loggerRestrictive),
-               ruleFor(c.threadEnabled, c.threadCoversAll, c.threadRestrictive));
+    const ListRule loggerRule = ruleFor(c.loggerEnabled, c.loggerCoversAll,
+                                       c.loggerRestrictive);
+    const ListRule threadRule = ruleFor(c.threadEnabled, c.threadCoversAll,
+                                        c.threadRestrictive);
+    // ARMED where the statement narrows — which is exactly where the rule came out
+    // Load, the two questions being the same one. See LoadedSelection: until the list
+    // can express it, the memo is what criteria() reports and what the rows are built
+    // from, or a selection loaded before the scan is read back as covering everything
+    // and the log's whole record is deleted for saying nothing.
+    armLoaded(ValueAxis::Subsystem, c.loggerNames, c.loggerCoversAll, c.loggerRestrictive,
+              loggerRule == ListRule::Load);
+    armLoaded(ValueAxis::Thread, c.threadNames, c.threadCoversAll, c.threadRestrictive,
+              threadRule == ListRule::Load);
+    repopulate(loggerSel, threadSel, loggerRule, threadRule);
 
     updateAxisState();
     updateTextValidity();
@@ -1403,6 +1464,62 @@ QSet<QString> &AxisEditor::manualFor(ValueAxis axis)
 QHash<QString, bool> &AxisEditor::seenFor(ValueAxis axis)
 {
     return axis == ValueAxis::Subsystem ? m_loggerSeen : m_threadSeen;
+}
+
+AxisEditor::LoadedSelection &AxisEditor::loadedFor(ValueAxis axis)
+{
+    return axis == ValueAxis::Subsystem ? m_loggerLoaded : m_threadLoaded;
+}
+
+const AxisEditor::LoadedSelection &AxisEditor::loadedFor(ValueAxis axis) const
+{
+    return axis == ValueAxis::Subsystem ? m_loggerLoaded : m_threadLoaded;
+}
+
+void AxisEditor::armLoaded(ValueAxis axis, const QStringList &names, bool coversAll,
+                           bool restrictive, bool narrows)
+{
+    LoadedSelection &loaded = loadedFor(axis);
+    // A statement that narrows nothing is not armed, and that is not an optimisation:
+    // covers-all is a claim about the FILE rather than a list of names, so there is
+    // nothing in it that an empty list can fail to express and nothing to lose.
+    loaded = LoadedSelection{};
+    if (!narrows)
+        return;
+    loaded.armed = true;
+    loaded.names = names;
+    loaded.coversAll = coversAll;
+    loaded.restrictive = restrictive;
+}
+
+void AxisEditor::disarmLoaded(ValueAxis axis)
+{
+    loadedFor(axis) = LoadedSelection{};
+}
+
+void AxisEditor::settleLoaded(ValueAxis axis)
+{
+    LoadedSelection &loaded = loadedFor(axis);
+    if (!loaded.armed)
+        return;
+    const QListWidget *list = listFor(axis);
+    if (!list)
+        return;
+    // The evidence is a listed value the memo does NOT name — never the memo's own
+    // names being listed, which says nothing at all: setCriteria() carries the ticked
+    // names in as manual entries, so they are on screen from the moment they are
+    // loaded, over an empty log as much as over a scanned one. What cannot be said
+    // until the scan gets there is the EXCLUSION of a name, and a name outside the
+    // memo is exactly that name arriving.
+    const QSet<QString> memo(loaded.names.begin(), loaded.names.end());
+    for (int i = kFirstValueRow; i < list->count(); ++i) {
+        if (memo.contains(list->item(i)->text()))
+            continue;
+        // The ticks can express the memo now, so the widget is the truth again — and
+        // the discovery rule is armed once more for a name nobody has seen yet.
+        loaded = LoadedSelection{};
+        return;
+    }
 }
 
 bool AxisEditor::axisOfViewport(const QObject *viewport, ValueAxis &axis) const

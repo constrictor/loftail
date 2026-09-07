@@ -159,6 +159,10 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | `kPriorityByIndex` must keep all six levels; the combo skips TRACE and `comboPriority()` is the only bridge | Three later pane changes (L147) | tst_filterpane::theLevelsOfferedStartAtDebugAndDefaultToInfo |
 | A stored TRACE floor is applied as an UNTICKED axis, never promoted to DEBUG | Three later pane changes (L147) | tst_filterpane::aRestoredTraceFloorBecomesAnUntickedAxis |
 | The Filters pane has no header row; `updateActivity()` keeps its change guard, the dock title being a `QTabBar` entry | Three later pane changes (L147) | tst_panechrome::theFiltersTabIsMarkedWhileFiltersAreInForce |
+| A selection that narrows is armed as `setCriteria()` loads it; `criteria()` then reports the memo, not the widget | A selection loaded before the scan (L153) | tst_filterpane::aSelectionHydratedOverAnUnscannedLogStillNarrowsSomething |
+| An armed axis rebuilds its rows under `ListRule::Load`, so a discovered name is ticked as the selection says | A selection loaded before the scan (L153) | tst_multidoc::aSubsystemSelectionSurvivesClosingAndReopeningTheLog |
+| It settles on a listed value the memo does NOT name — never on the memo's own names being listed | A selection loaded before the scan (L153) | tst_multidoc::aSubsystemSelectionSurvivesClosingAndReopeningTheLog |
+| An EMPTY log stays armed, so its record survives a launch with nothing on screen to enforce a selection over | A selection loaded before the scan (L153) | tst_multidoc::aSelectionSurvivesARestartOnWhichTheLogIsEmpty |
 | `AxisEditor`'s `seen` is a `QHash<QString, bool>`, so a name off screen returns in the state it left in | Rotation empties the lists (L149) | tst_filterpane |
 | The memo is read ONLY for a name that is not currently a row — on screen, the widget is the truth | Rotation empties the lists (L149) | tst_filterpane |
 | The memo is written from the list's `itemChanged` handler, not at the next repopulation | Rotation empties the lists (L149) | tst_filterpane |

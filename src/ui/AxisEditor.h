@@ -353,6 +353,62 @@ private:
                              const QSet<QString> &threadChecked, ListRule loggerRule,
                              ListRule threadRule);
 
+    // WHAT A SELECTION LOADED BEFORE THE SCAN CAN STATE, which is nothing at all —
+    // and the memo that lets it state itself anyway.
+    //
+    // setCriteria() runs on a tab switch and on an open, both of which can happen
+    // while the log is still being SCANNED, so the index names no values and the list
+    // has no rows for the stored selection to be reproduced over. Only the TICKED
+    // names are stored (MatchCriteria keeps a name list plus the "Others" rule), so
+    // the exclusion of a name is expressed by that name being listed and unticked —
+    // which is unsayable until the scan has produced it. The widget therefore reads
+    // back as covering everything: coversAllFor() answers true over an empty list,
+    // filterStateSaysNothing() agrees the axis narrows nothing, and LogFileStore
+    // deletes the log's whole record. The scan then discovers the excluded name under
+    // ListRule::Discover, which ticks it, so the view is unfiltered too and neither
+    // surface contradicts the other.
+    //
+    // So a selection that NARROWS is memoized as it is loaded and the axis is ARMED.
+    // While armed, two things hold: criteria() reports the memo rather than the
+    // widget, so no write can lose what the rows cannot show; and the rows are
+    // rebuilt under ListRule::Load against the memo, so a name the scan turns up
+    // arrives ticked exactly as the stored selection says instead of arriving fresh
+    // and ticked — which is what keeps the table and the pane agreeing.
+    //
+    // It disarms when the list can EXPRESS the memo — at least one value row, and
+    // every memoized name among them — and on any user edit to that axis. That is
+    // what returns the discovery rule to a scanned log, so a subsystem appearing for
+    // the first time still arrives shown (SPEC.md §6). A log that is EMPTY never
+    // expresses anything, which is exactly why it stays armed: its record must
+    // survive a launch on which there is nothing to enforce a selection over. The
+    // residual cost is stated rather than fixed: while a stored name has not turned
+    // up, a DIFFERENT name arriving is loaded rather than discovered, so it arrives
+    // unticked.
+    struct LoadedSelection
+    {
+        bool        armed = false;
+        QStringList names; // the ticked names, as stored
+        bool        coversAll = false;
+        bool        restrictive = false;
+    };
+    LoadedSelection m_loggerLoaded;
+    LoadedSelection m_threadLoaded;
+    // One value axis as criteria() reports it: the memo where one is armed, the
+    // widgets otherwise. Both axes go through it so the two cannot drift.
+    void readValueAxis(ValueAxis axis, QStringList &names, bool &coversAll,
+                       bool &restrictive) const;
+    LoadedSelection &loadedFor(ValueAxis axis);
+    const LoadedSelection &loadedFor(ValueAxis axis) const;
+    // Arm the axis with what setCriteria() was handed, or disarm it because the
+    // statement narrows nothing and so cannot be lost.
+    void armLoaded(ValueAxis axis, const QStringList &names, bool coversAll,
+                   bool restrictive, bool narrows);
+    // The user has spoken about this axis, so the memo is not what it says any more.
+    void disarmLoaded(ValueAxis axis);
+    // Disarm if the list can now say what the memo says. Called after every
+    // repopulation of that axis, which is the only thing that can make it true.
+    void settleLoaded(ValueAxis axis);
+
     // The widgets and per-axis state behind ValueAxis, so the record-menu edits are
     // written once rather than twice.
     QListWidget *listFor(ValueAxis axis) const;
