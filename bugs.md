@@ -448,6 +448,163 @@ that viewport gets small in the first place.
 
 ---
 
+A third pass, on 2026-09-07, raised entries 42 to 46. Different method from the two
+before it: no agent drove the UI at all. These came out of building test
+infrastructure — a coverage measurement, five libFuzzer targets over the parsers
+and a mutation harness — and every one of them was found by a machine rather than
+by somebody looking. Three are the fuzzer's, one came out of reading the lines a
+coverage report said had never executed, and one out of a test whose first draft
+asserted the wrong thing and was right to. None is fixed: each is recorded with
+the ruling it needs, because four of the five have two defensible answers and the
+choice is the user's.
+
+---
+
+### 42. A literal `.` after `%b`, `%a` or `%Z` inside `%d{...}` compiles a regex that matches text the parser then refuses
+
+`kNameRun` is `\p{L}+\.?` — it already tolerates a trailing full stop, because
+`strftime` uses the process's locale and a good many of them write `Aug.` rather
+than `Aug`. `TimestampParser::readWord()` tolerates one for the same reason, and
+consumes it. So the two halves both allow for the dot, and then both claim it.
+
+For `%d{%b. %e %H:%M:%S}` the generated regex is
+`^(\p{L}+\.?\.\ [ \d]\d{1}\ ...)`, which **matches** `Aug. 27 10:15:01` — the
+`\.?` takes the dot and the literal `\.` is satisfied by nothing, or the other way
+about, depending on the backtrack. The parser is then handed the text the regex
+agreed to, `readWord()` returns `Aug` and eats the `.`, and the next token —
+`Literal '.'` — finds a space. It answers `Record::kNoTimestamp`.
+
+The cost is the whole timestamp axis for the whole log: a blank Time column on
+every record, no timestamp filtering, no time bounds on any highlight rule, and
+`SincePrevious` empty throughout. Nothing reports it, because a record whose date
+did not parse is a supported thing (`SPEC.md` §4 keeps such lines visible) and one
+of them looks exactly like all of them. And the format dialog's preview shows the
+split **correctly**, because the preview drives `recordRe` and never the parser —
+so this arrives as a report in the shape of entry 24: "it looks right in
+Preferences and wrong in the tab".
+
+This is precisely the class `tst_timestampparser`'s own header says the file
+exists to pin — a regex that matches text the parser cannot read — and the
+undotted spelling `%b %e ...` reading `Aug. 27 ...` works correctly, which is what
+kept it hidden. Found by the pattern/parser fuzz pair, which drives the compiler
+and the parser as one because hand-building a `DateFormat` is the re-derivation
+the tokens rule forbids. Now pinned in the working direction by
+`tst_timestampparser::aMonthAbbreviationCarryingItsLocalesFullStopIsStillThatMonth`.
+
+Not to be fixed blind — the two halves cannot both keep the dot, and which one
+gives is a product decision with a cost either way. Either the parser stops
+consuming a trailing dot **when the format supplies a literal one**, which is
+narrow but makes the two halves agree about *when* rather than *whether*; or
+`kNameRun` drops its `\.?` and a locale's dot must be spelled in the format, which
+is cleaner and regresses every Ukrainian or German desktop whose `%b` writes one
+and whose format does not say so.
+
+---
+
+### 43. Saving a config file whose text begins with U+FEFF drops the character
+
+`Decoder::decode()` and `Decoder::encode()` are meant to be the two directions of
+one class, which is what lets `ConfigFileIO` replay a file's own encoding, BOM and
+line endings back at it rather than re-deciding them. They are not inverse at one
+character: `decode()` drops a **leading** U+FEFF and `encode()` writes one, so
+`decode(encode(text)) != text` for any text starting with ZWNBSP. The same
+character in the middle of the string survives both ways.
+
+The cause is Qt's, not loftail's: the UTF-8 decoder treats a byte-order mark as a
+mark wherever the range it is given starts, and the range here starts at the text.
+`bomLength()` has already accounted for the file's own mark, so this is a
+*second* one — the file's content beginning with a ZWNBSP after its BOM, which is
+rare but is exactly what a file that has been through a BOM-adding editor twice
+looks like.
+
+It lands on the one path where loftail writes a file it did not create. A config
+file opened, not edited, and saved comes back one character shorter, silently, on
+the file that decides what an application logs — and the write is in place on the
+remote path, so there is no previous inode to fall back to. Minimised input in
+`tests/fuzz/corpus/decoder/utf8_leading_bom_in_line`.
+
+The ruling it needs: whether `decode()` should stop skipping a mark it was not
+asked about (`QStringDecoder` can be told, but the flag interacts with the
+detection sample's own trim), or whether `ConfigFileIO` should compare what it is
+about to write against what it read and refuse a save that loses characters. The
+second is more work and catches the next asymmetry as well as this one.
+
+---
+
+### 44. A Unicode noncharacter in a remote path or account makes `normalize()` non-idempotent
+
+`RemoteLocation::toString()` percent-encodes a noncharacter, and re-parsing the
+result yields not the character but three U+FFFD — so `normalize(normalize(s))`
+is not `normalize(s)`. `ssh://h/x<U+FFFF>y` becomes `ssh://h:22/x%EF%BF%BFy`
+becomes a path with the replacement character in it, and the string is not a fixed
+point of the function every entry point runs it through.
+
+The whole tree turns on that fixed point. `logSettingsKey()` is documented as one
+log, one spelling; `Document::prepare()` normalizes a **second** time after the
+open path already has; the tab-label rule, the recent-files menu, the spool
+registry and the session all key on the result. A log whose path contains one of
+these characters therefore has two spellings, which is the exact condition
+`ONE LOG, ONE SPELLING` exists to prevent — a second slot burned out of the pool
+of 500, settings written under one name and read under the other.
+
+The extent is known exactly rather than estimated: the fuzz target's finding was
+swept against all 1,114,112 code points, and it is **the 66 Unicode
+noncharacters** and nothing else. Inputs
+`tests/fuzz/corpus/address/a029_noncharacter_in_path` and `a030_noncharacter_in_user`.
+
+Whether it is worth fixing is a genuine question — no ordinary path contains
+U+FFFF — but the cheap answer is available: refuse such an address at
+`RemoteLocation::parse()`, which is a no-I/O refusal and so keeps its tab and says
+why, rather than making `toString()` and `parse()` agree about a character neither
+of them wants.
+
+---
+
+### 45. `ssh://host:0/path` parses, and port 0 survives into the connect
+
+`QUrl::port(default)` substitutes the default only when the address spells **no**
+port. An explicit `:0` is a port the address spells, so it is taken at face value:
+`RemoteLocation::parse()` accepts it, `target()` answers `user@host:0`, the
+session cache keys on that, and `connectTo()` is handed it. Port 0 is not a port —
+a connect to it fails, and what the user gets is a transport error rather than the
+address error it is.
+
+The cost is small and the fix is smaller: it is here because it is the shape of a
+class rather than because it hurts. Every other range check on that address is
+done at parse time and reported as a malformed address, which keeps the tab and
+names the reason; this one is deferred to the far end and reported as though the
+host had refused. Found by the address fuzz target;
+`tests/fuzz/corpus/address/a027_explicit_port_zero`.
+
+---
+
+### 46. `KeychainSecretStore::available()`'s probe latch is read from any thread without synchronisation
+
+`available()` opens with `if (m_probed) return m_available;`, and that line sits
+**above** the check that refuses to run off the application thread. So a store that
+has already probed answers from any thread, and the answer is an unsynchronised
+read of a plain `bool` pair written by another one.
+
+The `.cpp` says the path is unreachable, and it is right about the route it means:
+everything above it goes through `secretStore()`, which marshals through
+`GuiCallGate`, so no second thread reaches this object in the shipped
+application. That is why this is recorded rather than fixed — it is a latent race
+in code that, until 2026-09-07, had **never been executed at all** (0.0% of 105
+lines, the only file in the tree at a flat zero), and the guard that makes it
+unreachable is a call-site discipline rather than anything the class enforces.
+
+It surfaced from the other side: the first draft of
+`tst_keychainlive::everyOperationRefusesToRunOffTheApplicationThread` asserted
+that `available()` refuses off-thread, and it does not. The case now drives a
+second, unprobed store, which is the first execution of the thread guard that
+`ARCHITECTURE.md` §6.3.2 describes. The ruling: either move the thread check above
+the latch, which costs nothing and makes the class enforce its own contract, or
+make the pair atomic, or write down that the discipline is the caller's and leave
+it — but the current state, where the comment claims a guarantee one line below
+where it stops holding, is the one that should not stand.
+
+---
+
 ## Seen but not confirmed
 
 Not findings. Recorded so the next pass knows where to look rather than
