@@ -310,16 +310,12 @@ void TestMultiDoc::initTestCase()
     QVERIFY(m_dir.isValid());
     m_a = m_dir.filePath(QStringLiteral("a.log"));
     m_b = m_dir.filePath(QStringLiteral("b.log"));
-    writeLog(m_a, "net.io", 30);
-    writeLog(m_b, "db.pool", 20);
 
     QDir d(m_dir.path());
     QVERIFY(d.mkpath(QStringLiteral("svc-a")));
     QVERIFY(d.mkpath(QStringLiteral("svc-b")));
     m_svcA = m_dir.filePath(QStringLiteral("svc-a/app.log"));
     m_svcB = m_dir.filePath(QStringLiteral("svc-b/app.log"));
-    writeLog(m_svcA, "net.io", 12);
-    writeLog(m_svcB, "net.io", 12);
 }
 
 void TestMultiDoc::init()
@@ -332,6 +328,17 @@ void TestMultiDoc::init()
     // same path as an earlier one would otherwise inherit whatever that one left behind,
     // and pass or fail on the order QtTest happened to run them in.
     clearLogSettings();
+
+    // AND THE FIXTURE LOGS THEMSELVES, which are shared BY PATH across every case and
+    // are not read-only: four cases append a line to a.log to drive a live tick. Written
+    // here rather than in initTestCase() for exactly the reason above one line up — a
+    // grown a.log is state outliving the case that grew it, and the case that counts its
+    // 30 records then passes or fails on the order QtTest ran them in (found by
+    // tests/shuffle_cases.py, which is the only thing that runs them in another order).
+    writeLog(m_a, "net.io", 30);
+    writeLog(m_b, "db.pool", 20);
+    writeLog(m_svcA, "net.io", 12);
+    writeLog(m_svcB, "net.io", 12);
 }
 
 void TestMultiDoc::documentsAndPanesLiveInSeparateShells()

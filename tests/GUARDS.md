@@ -38,6 +38,16 @@ The mutation harness in `tests/mutations/` is the other half of this: an index
 says a guard exists, and a mutation says it bites. See
 `tests/mutations/run-mutations.sh`.
 
+`tests/shuffle_cases.py` is a third half, and it guards something no entry below
+can: that a case passes for its own reasons rather than because of what ran
+before it. It permutes the cases of each binary inside one process — which
+`ctest --schedule-random` cannot do, that flag reordering the binaries while the
+state that leaks is per-process — and the nightly `flake-hunt` workflow runs it
+beside `--repeat until-fail`. Four suites failed the first shuffled run; see
+CLAUDE.md, "THE SUITE HAD NEVER BEEN RUN IN ANY ORDER BUT ITS OWN".
+`tst_sessiongui` is excluded there by name, its cases chaining through the
+session on purpose.
+
 A COST contract is guarded the same way and never with a wall clock: the guard
 counts the operations the contract is about — glyph measurements per codepoint,
 records re-measured per ingest tick and per frame, rows scanned per slice, rows

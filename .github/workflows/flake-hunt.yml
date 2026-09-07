@@ -1,0 +1,209 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: flake-hunt
+
+# Runs the suite over and over, and in orders nothing else ever runs it in, to turn two
+# standing hazards into things somebody is told about.
+#
+#   TIMING. ~200 qWait/msleep sites, and the budgets are deliberately loose because a
+#   shared runner is slow — tst_asyncconnect's kNonBlockingMs is a whole second because
+#   250 ms went red at 543 ms with the code correct. Loose hides a regression as readily
+#   as it absorbs a slow box, and nobody knew the actual margin. Repetition is what turns
+#   "it passed" into "it passed twenty times".
+#
+#   ORDER. A log's settings, its session and the fixture files themselves outlive the
+#   case that wrote them, so a case that opens the same path as an earlier one inherits
+#   whatever that one left behind (CLAUDE.md, M21 — three suites were ALREADY failing
+#   that way when it was found). Nothing checked that every suite needing a reset has
+#   one, and four did not: tst_multidoc, tst_remoteopen, tst_archiveopen and
+#   tst_sshcredentials all failed the first shuffled run.
+#
+# WHY A FILE OF ITS OWN rather than a schedule: trigger on packaging.yml. That workflow is
+# eight build-and-package jobs across three platforms, none of which wants to run nightly;
+# a schedule there means an `if: github.event_name != 'schedule'` on every one of them,
+# which is a guard the ninth job will be added without. One trigger, one job, one purpose.
+on:
+  schedule:
+    # 04:20 UTC — off the hour, so it is not queued behind everybody else's midnight cron.
+    - cron: '20 4 * * *'
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: 'Whole-suite repetitions per leg'
+        required: false
+        default: '10'
+      rounds:
+        description: 'Shuffled-CASE-ORDER rounds (tests/shuffle_cases.py)'
+        required: false
+        default: '10'
+
+jobs:
+  hunt:
+    # NON-GATING, and on the JOB rather than on a step, which is the same rule the
+    # clang-tidy job follows and for the same reason: at job level the WORKFLOW's
+    # conclusion stays `success`, and release.yml's promote guard tests that conclusion
+    # before it publishes anything. On a step the job goes red and takes the workflow's
+    # conclusion with it. What this job produces is a report, not a verdict — a flake it
+    # finds is worth reading, never worth blocking a release on, because the one thing
+    # worse than an unknown flake rate is a red build people have learned to scroll past.
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      QT_QPA_PLATFORM: offscreen
+      # Budgets chosen from a measured suite. On the dev box the whole suite is 27 s at
+      # -j4 and one shuffled round is 24 s; a hosted runner is ~2-3x that, so 10 + 10 + 10
+      # comes to roughly 35 minutes of testing on top of a ~5 minute build. Raising them
+      # is a dispatch input rather than an edit, because the right number is "as many as
+      # fit tonight" and that moves with the runner.
+      REPEATS: ${{ github.event.inputs.repeats || '10' }}
+      ROUNDS: ${{ github.event.inputs.rounds || '10' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain + system Qt 6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake \
+            qt6-base-dev libgl1-mesa-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev \
+            fontconfig
+
+      # One build for all three legs. The optional dependencies are asserted exactly as
+      # the linux job in packaging.yml asserts them: auto-detection failing silently would
+      # shrink the suite this job exists to repeat, and it would still go green.
+      - name: Configure + build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug 2>&1 | tee configure.log
+          grep -q "SSH remote sources: ENABLED" configure.log \
+            || { echo "::error::libssh2 was not detected"; exit 1; }
+          grep -q "Archived log sources: ENABLED" configure.log \
+            || { echo "::error::libarchive was not detected"; exit 1; }
+          grep -q "OS keychain for passwords: ENABLED" configure.log \
+            || { echo "::error::QtKeychain was not detected"; exit 1; }
+          cmake --build build
+
+      # Leg 1: the ordinary order, N times over. ctest's own --repeat until-fail:N runs
+      # EACH TEST N times and requires every run to pass, which is the cheapest form of
+      # "it passed once" becoming "it passed N times".
+      - name: Repeat the suite in its ordinary order
+        id: repeat
+        continue-on-error: true
+        run: |
+          mkdir -p flake-logs
+          set -o pipefail
+          ctest --test-dir build --output-on-failure --repeat until-fail:"$REPEATS" \
+            2>&1 | tee flake-logs/repeat.log
+
+      # Leg 2: ctest's own shuffle, which reorders the BINARIES. It cannot reach the
+      # order dependence above — every GUI suite isolates its configuration per PROCESS —
+      # but it is what catches two binaries racing for a shared resource, and a round
+      # counter here is what makes "on which repetition" answerable.
+      - name: Repeat the suite in a random BINARY order
+        id: random
+        continue-on-error: true
+        run: |
+          mkdir -p flake-logs
+          rc=0
+          for i in $(seq 1 "$REPEATS"); do
+            echo "=== random binary order, round $i ===" | tee -a flake-logs/schedule-random.log
+            if ! ctest --test-dir build --output-on-failure --schedule-random \
+                 2>&1 | tee -a flake-logs/schedule-random.log; then
+              echo "FLAKE: schedule-random round $i" | tee -a flake-logs/failures.txt
+              rc=1
+            fi
+          done
+          exit $rc
+
+      # Leg 3: the one that finds order dependence. See tests/shuffle_cases.py — it
+      # permutes the CASES of each binary inside one process, which is where the hazard
+      # lives and which no ctest flag can reach.
+      - name: Repeat the suite in a random CASE order
+        id: shuffle
+        continue-on-error: true
+        run: |
+          mkdir -p flake-logs
+          set -o pipefail
+          python3 tests/shuffle_cases.py --build build --seed "$GITHUB_RUN_NUMBER" \
+            --rounds "$ROUNDS" 2>&1 | tee flake-logs/shuffle.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## flake-hunt"
+            echo
+            echo "| leg | what it varies | repetitions | result |"
+            echo "| --- | --- | --- | --- |"
+            echo "| ctest --repeat until-fail | nothing | $REPEATS per test | ${{ steps.repeat.outcome }} |"
+            echo "| ctest --schedule-random | binary order | $REPEATS | ${{ steps.random.outcome }} |"
+            echo "| shuffle_cases.py | case order within each binary | $ROUNDS | ${{ steps.shuffle.outcome }} |"
+            echo
+            if grep -qs . flake-logs/failures.txt; then
+              echo "### Rounds that failed"
+              echo '```'
+              cat flake-logs/failures.txt
+              echo '```'
+            fi
+            # ctest names what failed in a stable one-line-per-test form; the shuffle
+            # harness prints the exact argument list to reproduce a failing permutation,
+            # which is the only thing that makes a random-order failure actionable.
+            if grep -qs "(Failed)" flake-logs/*.log; then
+              echo "### Failing tests"
+              echo '```'
+              grep -hs "(Failed)" flake-logs/*.log | sort -u
+              echo '```'
+            fi
+            if grep -qs "^reproduce:" flake-logs/shuffle.log; then
+              echo "### Reproduce a shuffled failure"
+              echo '```'
+              grep -hs -A0 "^reproduce:" flake-logs/shuffle.log
+              echo '```'
+            fi
+            if [ "${{ steps.repeat.outcome }}" = success ] \
+               && [ "${{ steps.random.outcome }}" = success ] \
+               && [ "${{ steps.shuffle.outcome }}" = success ]; then
+              echo "No flake and no order dependence found."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: flake-hunt-logs
+          path: |
+            flake-logs/
+            build/Testing/Temporary/LastTest*.log
+            build/Testing/Temporary/LastTestsFailed*.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      # The job is non-gating, so the steps above swallow their own failures to reach the
+      # summary. This is what makes the run itself readable as red in the Actions list
+      # while release.yml's guard still sees the workflow conclusion as success.
+      - name: Fail the job if any leg did
+        if: >
+          steps.repeat.outcome == 'failure' ||
+          steps.random.outcome == 'failure' ||
+          steps.shuffle.outcome == 'failure'
+        run: |
+          echo "::error::a flake-hunt leg failed; see the summary and the flake-hunt-logs artifact"
+          exit 1

@@ -154,7 +154,19 @@ private slots:
     // without this a case inherits whatever an earlier one left under the same path
     // and passes or fails on the order QtTest happened to run them in. Every other GUI
     // suite that opens logs does this; this one never had it.
-    void init() { clearLogSettings(); }
+    // AND THE SESSION, which is not one of the stores clearLogSettings() covers. Three
+    // cases here close a window on purpose, so the next case's MainWindow restores their
+    // tabs in its constructor and every tab count in this file is then off by however
+    // many. Two cases used to clear it for themselves, which only worked while the
+    // declaration order kept them next to the case that had written it; done here, once,
+    // it holds in any order (tests/shuffle_cases.py).
+    void init()
+    {
+        QSettings s;
+        s.remove(QStringLiteral("session"));
+        s.sync();
+        clearLogSettings();
+    }
 
     void aCompressedLogOpensWithoutAskingAnything();
     void aMultiMemberArchiveAsksWhichLog();
@@ -499,11 +511,6 @@ void TestArchiveOpen::aTabOpenedBeforeItsContainerExistsFillsInWhenItAppears()
     // It did not hold here for four milestones — the tab appeared and then waited for
     // ever, because the fetcher that would have looked for the container was never
     // built (ARCHITECTURE.md §6.4).
-    {
-        QSettings settings;
-        settings.clear(); // no tab but this one: an earlier case left a session behind
-    }
-
     const QString tgz = path(QStringLiteral("late.tar.gz"));
     const QString address = tgz + QStringLiteral("/var/log/app.log");
     QVERIFY(!QFileInfo::exists(tgz));
@@ -533,11 +540,6 @@ void TestArchiveOpen::aRestoredArchivedLogWaitsForItsContainerAndPicksItUp()
     // SPEC.md §98's own example, in its archived form: a session restored with a log on
     // a share that is not mounted yet. Reachable by construction, since restore goes
     // through the same Document::prepare() an open does.
-    {
-        QSettings settings;
-        settings.clear(); // this test owns the session; earlier cases left their own
-    }
-
     const QString tgz = path(QStringLiteral("session.tar.gz"));
     const QString address = tgz + QStringLiteral("/app.log");
     QVERIFY(placeTarGz(tgz, {{QStringLiteral("app.log"), sampleLog()}}));

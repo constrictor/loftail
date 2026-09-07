@@ -30,6 +30,7 @@
 #include <QTimer>
 
 #include "FakeFetcher.h"
+#include "GuiCallGate.h"
 #include "FakeSecretStore.h"
 #include "HostBookmarkStore.h"
 #include "MainWindow.h"
@@ -120,6 +121,22 @@ private:
     }
 
 private slots:
+    // THE PROCESS-WIDE GATE IS LATCHED SHUT BY A WINDOW GOING AWAY, and two cases here
+    // build a real MainWindow. ~MainWindow calls setSshPrompter(nullptr), which cancels
+    // guiCallGate() — right in production, where the last window taking the prompter with
+    // it is the end of anybody being there to ask, and wrong for a test process that goes
+    // on running. Every later secretStore() call is marshalled through that gate
+    // (MarshalledSecretStore), so a cancelled one hands back a default: backendName()
+    // comes out EMPTY, "Remember this password in KWallet" is greyed and mislabelled, and
+    // the case asserting the consent contract fails against a keychain that is right
+    // there. Reopening restores what a fresh process has. The credential cache goes with
+    // it for the same reason — it is a process global two cases write to.
+    void init()
+    {
+        guiCallGate().reopen();
+        SshCredentialCache::clear();
+    }
+
     void aKeychainNamesItselfOnTheCheckbox();
     void withoutAKeychainTheFileIsNamedAndWarnedAbout();
     void withNeitherAKeychainNorAHostTheBoxIsDisabled();

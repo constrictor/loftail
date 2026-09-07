@@ -39,6 +39,7 @@
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
+#include "ConfigReset.h"
 #include "FakeFetcher.h"
 #include "HostBookmarkStore.h"
 #include "PreferencesDialog.h"
@@ -141,6 +142,20 @@ private:
     }
 
 private slots:
+    // EVERY STORE A CASE HERE CAN LEAVE SOMETHING IN. The session is the one that bites:
+    // sessionRoundTripsARemoteDocument() closes a window on purpose, so the next case's
+    // MainWindow restores that tab in its constructor, and an openFile() of the same
+    // address then RAISES the restored tab instead of opening it — which adds nothing to
+    // the recent-files list, and remoteOpenIsRemembered() fails on a list that is correct
+    // for what actually happened. Order dependence, found by tests/shuffle_cases.py.
+    void init()
+    {
+        QSettings s;
+        s.remove(QStringLiteral("session"));
+        s.sync();
+        clearLogSettings();
+    }
+
     void opensARemoteUrlAsATab();
     void equivalentSpellingsRaiseTheSameTab();
     void dropOfAnSshUrlOpens();
