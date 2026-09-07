@@ -157,6 +157,7 @@ private slots:
     void rotateTriggersReindex();
     void overwriteInPlaceTriggersRescan();
     void sameSizeOverwriteTriggersRescan();
+    void theReloadCauseIsAnnouncedBeforeTheRescanThatCarriesIt();
     void aPlainAppendNeverRescans();
     void filteredAndHighlightedAppend();
 };
@@ -464,6 +465,47 @@ void TestTail::sameSizeOverwriteTriggersRescan()
 // breaking: an ordinary append must go on being an append. Including across the witness
 // boundary — the log starts shorter than HeadWitness::kBytes and grows well past it, so
 // the witness is extended by the very ticks that must not rescan.
+// `reloaded(cause)` is emitted BEFORE `rescanned()`, and `rescanned()` must stay the LAST
+// statement of doRescan(): being last is what makes handing control to eight external
+// subscribers safe with no QPointer dance on `this`. Swapping the two compiles, behaves
+// identically for every subscriber that only counts, and leaves the reload notice being
+// posted after a subscriber has had the chance to destroy the controller — a defect
+// nothing on screen would ever report.
+//
+// The RELATION, not a count: what is asserted is that on one rescan the cause arrives
+// first and that nothing arrives after the rescan at all.
+void TestTail::theReloadCauseIsAnnouncedBeforeTheRescanThatCarriesIt()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("order.log"));
+
+    QByteArray whole;
+    for (int i = 0; i < 4; ++i)
+        whole += rec(i, "t0", "INFO ", "logger.a", QByteArray("m") + QByteArray::number(i));
+    QVERIFY(writeWhole(path, whole));
+
+    Document doc;
+    QVERIFY(doc.open(path, QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+    QCOMPARE(model.rowCount(), 4);
+
+    QStringList order;
+    connect(&live, &LiveController::reloaded, &live,
+            [&](ReloadCause) { order.append(QStringLiteral("reloaded")); });
+    connect(&live, &LiveController::rescanned, &live,
+            [&] { order.append(QStringLiteral("rescanned")); });
+
+    // A copytruncate: the same file, shorter. Any announced cause would do — what is
+    // under test is which signal goes out first.
+    QVERIFY(writeWhole(path, rec(0, "t9", "FATAL", "logger.new", "after")));
+    live.checkNow();
+
+    QCOMPARE(order, QStringList({QStringLiteral("reloaded"), QStringLiteral("rescanned")}));
+}
+
 void TestTail::aPlainAppendNeverRescans()
 {
     QTemporaryDir dir;

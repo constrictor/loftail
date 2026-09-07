@@ -147,6 +147,7 @@ private slots:
     void publishedOrderOwesNothingToRuleOrder();
     void rowsAreInTimestampOrderNotFileOrder();
     void aRecordWithNoTimestampKeepsItsSlot();
+    void anUnplaceableRecordInTheMiddleKeepsItsSlotRatherThanSortingToTheTop();
     void aRuleWithNoMatchHasNoRow();
     void noRuleOptsInMeansAnEmptyDigest();
     void aColourOnlyRuleIsNotInTheDigest();
@@ -276,6 +277,40 @@ void TestDigest::aRecordWithNoTimestampKeepsItsSlot()
     // Slot 0 is still the unplaceable record; slots 1 and 2 hold the other two in
     // timestamp order.
     QCOMPARE(ordinals(doc), QVector<int>({0, 2, 1}));
+}
+
+// THE OTHER HALF OF "keeps its slot", and the half the case above cannot see: there the
+// unplaceable record is the FIRST ordinal, so pinning it to the top and leaving it where
+// it is produce the same list, and a comparator handed Record::kNoTimestamp — qint64's
+// minimum — would pass unnoticed. Here it sits between two placeable records, which is
+// the only arrangement in which the two answers differ.
+//
+// The record is one whose start line MATCHES recordStartRe and whose date does not parse
+// (a second no clock has), so it is a record of its own rather than a continuation of the
+// one above it — the only way an unparsed record can be anywhere but the top of a file.
+void TestDigest::anUnplaceableRecordInTheMiddleKeepsItsSlotRatherThanSortingToTheTop()
+{
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("a.log"));
+    const QByteArray unparsable =
+        "2026-07-21 00:00:99,000 [t1] INFO   svc - middle\n";
+    QVERIFY(writeWhole(path, rec(5, "INFO ", "beta") + unparsable + rec(3, "INFO ", "gamma")));
+
+    Document doc;
+    QVERIFY(openDoc(doc, path));
+    QCOMPARE(doc.index().records.size(), 3);
+    QVERIFY(doc.index().records.at(0).timestamp != Record::kNoTimestamp);
+    QCOMPARE(doc.index().records.at(1).timestamp, Record::kNoTimestamp);
+    QVERIFY(doc.index().records.at(2).timestamp != Record::kNoTimestamp);
+
+    doc.highlighters().rules = {textRule("beta"), textRule("middle"), textRule("gamma")};
+    doc.refreshHighlighting();
+
+    // Slot 1 is still the unplaceable record; only the two that can be placed in time
+    // are reordered around it, so the earlier of them (ordinal 2) takes slot 0 and the
+    // later (ordinal 0) takes slot 2. Sorting the unplaceable one instead would put it
+    // at the top of the strip, above records stamped hours before it.
+    QCOMPARE(ordinals(doc), QVector<int>({2, 1, 0}));
 }
 
 void TestDigest::aRuleWithNoMatchHasNoRow()

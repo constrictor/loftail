@@ -31,14 +31,25 @@
 # BY HAND, never in CI: it rebuilds per patch (minutes each) and it edits the
 # working tree, so it gates nothing — the TSan recipe's status exactly.
 #
-# ONE CANDIDATE WAS TRIED AND DROPPED, and it is worth not re-attempting blind:
-# swapping the order of `replaced` and the shrink in LiveController::checkNow(),
-# which CLAUDE.md flags under "A rotation is no longer silent". Nothing goes red
-# — tst_tail::rotateTriggersReindex rotates onto a file that happens to be
-# LARGER than the one it replaced, so the shrink is not taken either way, and no
-# other case anywhere asserts a ReloadCause over a rotation that shrank. That
-# rule is genuinely unguarded and is listed as such in tests/GUARDS.md; a patch
-# for it belongs here the day a case exists to kill it.
+# ONE CANDIDATE WAS TRIED, DROPPED, AND IS NOW PATCH 08 — how it got there is the
+# lesson worth keeping. Swapping the
+# order of `replaced` and the shrink in LiveController::checkNow() was tried first
+# against tst_tail and dropped as unkillable — and the reason was not that the rule
+# is unimportant but that the question was being asked of the wrong source. A
+# MappedLogSource holds the inode it opened, so after a rename+recreate its
+# refreshSize() still measures the file it holds and the shrink is never seen
+# locally AT ALL. A spool is the opposite: refreshSize() adopts the new generation
+# and reports what has been fetched into it, so a remote rotation onto a smaller
+# log is the one shape in which the two orders disagree. When a mutation survives,
+# ask whether the case is reaching the code before concluding the rule is inert.
+#
+# ONE CANDIDATE IS STILL DROPPED and is worth not re-attempting blind:
+# ConfigFileIO's restore of the file's permissions after the QSaveFile rename.
+# Defeating the restore reddens nothing, and not because the case is weak —
+# QSaveFile::commit() already carries an existing target's mode across the rename
+# on this platform, so the restore is a no-op here and there is no observable
+# difference to assert on. It stays in src/ as the defence it is, and it stays in
+# the unguarded table.
 #
 #   tests/mutations/run-mutations.sh [--build DIR] [PATCH...]
 
@@ -49,7 +60,7 @@ PATCHES=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --build) BUILD=$2; shift 2 ;;
-        -h|--help) sed -n '20,36p' "$0"; exit 0 ;;
+        -h|--help) sed -n '20,32p' "$0"; exit 0 ;;
         *) PATCHES+=("$1"); shift ;;
     esac
 done

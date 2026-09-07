@@ -1,0 +1,41 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A LINK THAT DROPS OVER A LOG ALREADY FETCHED"):
+#   LogSource::isDelivering() is the fifth non-pure arrival on LogSource and the one
+#   whose default is TRUE — a local file delivers whatever its origin holds, and only
+#   originVanished() has anything to say about that.
+#
+# GUARD: tst_spooledsource::aLocalSourceDeliversByDefaultAndASpooledOneOnlyWhileItIsFetching
+#
+# SILENT WHEN BROKEN: false is a claim nothing above the seam can contradict, and it puts
+# every local file permanently out of reach of the one branch that reads it.
+
+diff --git a/src/core/LogSource.h b/src/core/LogSource.h
+index 2cf476f..10a1adc 100644
+--- a/src/core/LogSource.h
++++ b/src/core/LogSource.h
+@@ -200,7 +200,7 @@ public:
+     // its origin holds for as long as the origin is there, and only originVanished()
+     // has anything to say about that. A default of false would put every local file
+     // permanently out of reach.
+-    virtual bool isDelivering() const { return true; }
++    virtual bool isDelivering() const { return false; }
+ 
+     // True when this source's byte stream is provably FINISHED — every byte has been
+     // delivered and there will never be another.

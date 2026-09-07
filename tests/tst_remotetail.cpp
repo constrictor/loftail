@@ -122,6 +122,7 @@ private slots:
     void withheldBytesAreNotIngestedUntilCommitted();
     void truncationTriggersRescan();
     void rotationTriggersReindex();
+    void aRotationOntoASmallerLogIsAnnouncedAsReplacedAndNeverAsTruncated();
     void rotationOnASlowLinkDoesNotBlankTheTab();
     void rescanDuringTailDoesNotReconnect();
     void filteredAndHighlightedAppend();
@@ -300,6 +301,57 @@ void TestRemoteTail::rotationTriggersReindex()
     live.checkNow();
     QCOMPARE(model.rowCount(), 3);
     QCOMPARE(rescans, 1); // the append was not mistaken for another rotation
+}
+
+// THE ORDER OF THE TWO TESTS THAT CLASSIFY A RELOAD (LiveController::checkNow()).
+//
+// `replaced` is asked BEFORE the shrink against m_lastSize, and swapping the two is a
+// one-line tidy that reads as equivalent. It is not: a rotation lands whatever the
+// writer starts over with, which is very nearly always SHORTER than the file it
+// replaced, so the other order calls nearly every real rotation a truncation. Nothing
+// but the sentence in the status bar moves, so it is wrong in silence.
+//
+// It has to be asked HERE rather than in tst_tail, and that is the reason this case
+// exists at all: a MappedLogSource holds the inode it opened, so after a rename+recreate
+// its refreshSize() still measures the file it is holding and the shrink is never seen
+// locally at all. A spool is the opposite — refreshSize() adopts the new generation and
+// reports what has been fetched into it — so a remote rotation onto a smaller log is the
+// one shape in which the two orders disagree, and it is also the shape SPEC.md §3 calls
+// out as making ReloadCause::Truncated structurally unreachable for a remote log.
+void TestRemoteTail::aRotationOntoASmallerLogIsAnnouncedAsReplacedAndNeverAsTruncated()
+{
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+
+    QByteArray before;
+    for (int i = 0; i < 8; ++i)
+        before += rec(i, "t0", "INFO ", "logger.old", QByteArray("a fairly long line ")
+                                                          + QByteArray::number(i));
+    remote->setInitialContent(before);
+
+    Document doc;
+    QVERIFY(openDoc(doc));
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.start();
+    QCOMPARE(model.rowCount(), 8);
+
+    QVector<ReloadCause> causes;
+    connect(&live, &LiveController::reloaded, &live, [&](ReloadCause c) { causes.append(c); });
+
+    // The rotation: a new file at the same path, freshly started and so far shorter than
+    // what it replaced. The relation, not a byte count — what the classification turns on
+    // is only that the new log is smaller than the old one.
+    QByteArray after;
+    after += rec(0, "t9", "WARN ", "logger.new", "one");
+    QVERIFY(after.size() < before.size());
+    remote->replaceWith(after);
+    live.checkNow();
+
+    QCOMPARE(model.rowCount(), 1);
+    QCOMPARE(causes.size(), 1);
+    QVERIFY(causes.value(0) == ReloadCause::Replaced);
+    QVERIFY(causes.value(0) != ReloadCause::Truncated);
 }
 
 void TestRemoteTail::rotationOnASlowLinkDoesNotBlankTheTab()

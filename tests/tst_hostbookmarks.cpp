@@ -70,6 +70,7 @@ private slots:
     void aFileHoldingAPasswordIsOwnerOnly();
     void rejectsAnUnknownSchemaVersion();
     void findMatchesOnTheConnectionIdentity();
+    void findComparesTheUserAsWrittenAndNotTheOneAConnectWouldFillIn();
     void bookmarkBuildsItsLocationAndOptions();
     void theCompressionChoiceSurvivesAndReadsBackFromAnOlderFile();
     void credentialCacheAsksOncePerHost();
@@ -326,6 +327,59 @@ void TestHostBookmarks::findMatchesOnTheConnectionIdentity()
         QStringLiteral("ssh://root@web1.example.com/var/log/app.log"));
     QVERIFY(other.has_value());
     HostBookmarkStore::find(bookmarks, *other, &found);
+    QVERIFY(!found);
+}
+
+// TWO QUESTIONS, ONE ADDRESS. `RemoteLocation::target()` fills a missing account in
+// from the local login name, because that is who the connect will sign in as and so
+// what the credential cache and the keychain must be keyed on. `find()` answers a
+// different question — WHICH SAVED HOST this address is — and deliberately keeps
+// comparing the `user` field as written, so "a bookmark with no user matches a location
+// with no user, and vice versa" (ARCHITECTURE.md §6.3.2).
+//
+// Routing find() through effectiveUser() too reads as making the two agree. It is the
+// opposite: a bookmark saved bare would stop being found for the address it was saved
+// from, and one saved under the local account would start claiming addresses that never
+// named it — so the wrong host's poll cadence, tail-start, compression and remembered
+// password would be applied, with nothing on screen to say which bookmark answered.
+void TestHostBookmarks::findComparesTheUserAsWrittenAndNotTheOneAConnectWouldFillIn()
+{
+    const auto bare = RemoteLocation::parse(
+        QStringLiteral("ssh://logs.internal:2222/var/log/app.log"));
+    QVERIFY(bare.has_value());
+    QVERIFY(bare->user.isEmpty());
+
+    const QString local = bare->effectiveUser();
+    if (local.isEmpty())
+        QSKIP("no local account name to fill in, so the two questions cannot differ here");
+    // The premise: a connect WOULD sign in as somebody, and target() says so.
+    QVERIFY(bare->target().startsWith(local + QLatin1Char('@')));
+
+    HostBookmark noUser;
+    noUser.label = QStringLiteral("bare");
+    noUser.host = QStringLiteral("logs.internal");
+    noUser.port = 2222;
+
+    HostBookmark namedUser = noUser;
+    namedUser.label = QStringLiteral("named");
+    namedUser.user = local;
+
+    bool found = false;
+    QCOMPARE(HostBookmarkStore::find({noUser}, *bare, &found).label, QStringLiteral("bare"));
+    QVERIFY(found);
+    // The bookmark that spells the account out is a DIFFERENT connection from the
+    // address that does not, however the connect would resolve them.
+    HostBookmarkStore::find({namedUser}, *bare, &found);
+    QVERIFY(!found);
+
+    // And the same seen from the other side.
+    const auto spelled = RemoteLocation::parse(
+        QStringLiteral("ssh://") + local + QStringLiteral("@logs.internal:2222/var/log/app.log"));
+    QVERIFY(spelled.has_value());
+    QCOMPARE(HostBookmarkStore::find({namedUser}, *spelled, &found).label,
+             QStringLiteral("named"));
+    QVERIFY(found);
+    HostBookmarkStore::find({noUser}, *spelled, &found);
     QVERIFY(!found);
 }
 

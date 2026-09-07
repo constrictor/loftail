@@ -1,0 +1,46 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "The digest strip is CAPTIONED and its rows are CHRONOLOGICAL"):
+#   publishDigest() dedupes by ordinal and then reorders by timestamp, and a record with
+#   NO timestamp keeps its SLOT and never reaches the comparator. Record::kNoTimestamp is
+#   qint64's minimum, so sorting on it pins every unparsed line to the top of the strip.
+#
+# GUARD: tst_digest::anUnplaceableRecordInTheMiddleKeepsItsSlotRatherThanSortingToTheTop
+#
+# SILENT WHEN BROKEN: the strip holds the right rows in the wrong order, which reads as
+# a bug in the log rather than in the viewer.
+# tst_digest::aRecordWithNoTimestampKeepsItsSlot cannot see it: there the unplaceable
+# record is the FIRST ordinal, so pinning it to the top and leaving it where it is
+# produce the same list.
+
+diff --git a/src/core/Document.cpp b/src/core/Document.cpp
+index 00c2816..bf5cbe2 100644
+--- a/src/core/Document.cpp
++++ b/src/core/Document.cpp
+@@ -663,9 +663,7 @@ bool Document::publishDigest(bool force)
+     // digest never uses the incremental append path (appendVisible/trailingCountFrom),
+     // which is the one place an ascending list is assumed — every digest update
+     // republishes wholesale through setVisible().
+-    const auto placeable = [this](qint32 o) {
+-        return m_index.records.at(o).timestamp != Record::kNoTimestamp;
+-    };
++    const auto placeable = [](qint32) { return true; };
+     QVector<qint32> chronological;
+     chronological.reserve(ordinals.size());
+     for (const qint32 o : ordinals)

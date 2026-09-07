@@ -24,6 +24,7 @@
 #include "Document.h"
 #include "FakeFetcher.h"
 #include "LiveController.h"
+#include "LogFormat.h"
 #include "LogModel.h"
 #include "LogSource.h"
 #include "ManualFormatProvider.h"
@@ -92,6 +93,7 @@ private slots:
     void aDisconnectedRemoteLogKeepsTheRecordsItFetched();
     void aDisconnectWithNothingFetchedStillWaits();
     void aReconnectHoldsTheCachedRecordsUntilItsFirstBytes();
+    void aHeldReconnectLeavesTheCachedRecordsReadableAndNotMerelyCounted();
     void aTransportThatGivesUpKeepsTheStaleMarkAndSaysWhy();
     void aTransportThatGivesUpWithNothingFetchedStillWaits();
 
@@ -434,6 +436,82 @@ void TestWaitingRemote::aTransportThatGivesUpKeepsTheStaleMarkAndSaysWhy()
     QVERIFY(!doc.isStale());
     QCOMPARE(stale.size(), 3);
     QVERIFY(stale.last().isEmpty());
+}
+
+// THE GUARD FOR THE ORDER OF THE HOLD AND THE REFRESH, which the case above cannot
+// see. aReconnectHoldsTheCachedRecordsUntilItsFirstBytes() asserts the row COUNT, and a
+// row count is exactly what survives the mistake: LiveController::checkNow() takes the
+// held-reconnect branch either way, so the table keeps its two rows. What moves is what
+// those rows say. refreshSize() is the call that ADOPTS the new generation, and once it
+// has, the index's offsets name bytes in a spool file that does not hold them — so every
+// record decodes to nothing, in silence, with no way back for the life of the tab
+// (SPEC.md §3, ARCHITECTURE.md §6.5). Reading the cells is the only way to tell the two
+// apart, so this case reads them.
+void TestWaitingRemote::aHeldReconnectLeavesTheCachedRecordsReadableAndNotMerelyCounted()
+{
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(rec(0, "INFO ", "app", "one") + rec(1, "ERROR", "db.pool", "two"));
+
+    Document doc;
+    QVERIFY(doc.open(url(), QString::fromLatin1(kPattern), Encoding::Utf8, QTimeZone::utc()));
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    int resumes = 0;
+    wireResume(live, doc, model, &resumes);
+    live.start();
+
+    // The message column by ROLE, never by a written-down index: the column order is the
+    // pattern's, and a pattern that grows a field would move a number.
+    const auto messageColumn = [&doc] {
+        const QVector<Field> &fields = doc.format().fields;
+        for (int c = 0; c < fields.size(); ++c)
+            if (fields.at(c).role == FieldRole::Message)
+                return c;
+        return -1;
+    };
+    const int msgCol = messageColumn();
+    QVERIFY(msgCol >= 0);
+    const auto messageAt = [&](int row) {
+        return model.data(model.index(row, msgCol)).toString();
+    };
+
+    const QString firstMessage = messageAt(0);
+    const QString secondMessage = messageAt(1);
+    QVERIFY(!firstMessage.isEmpty());
+    QVERIFY(!secondMessage.isEmpty());
+
+    remote->becomeUnavailable(QStringLiteral("Lost the connection to web1 — reconnecting…"));
+    live.checkNow();
+    QVERIFY(doc.isStale());
+    QCOMPARE(model.rowCount(), 2);
+    // The whole point of the state: the bytes are loftail's own spool and stay readable
+    // after the far end goes.
+    QCOMPARE(messageAt(0), firstMessage);
+    QCOMPARE(messageAt(1), secondMessage);
+
+    // The link is back and the fetcher has opened a new generation to re-fetch into.
+    // Nothing has been committed to it yet, so the hold is what must happen — BEFORE the
+    // refresh that would swap the spool file under the index still describing the old one.
+    const QByteArray fresh = rec(0, "INFO ", "app", "one") + rec(1, "ERROR", "db.pool", "two")
+        + rec(2, "ERROR", "db.pool", "three");
+    remote->beginReplacing(fresh.size());
+    live.checkNow();
+    live.checkNow(); // and it holds for as long as the re-fetch takes, not for one tick
+
+    QVERIFY(doc.isStale());
+    QCOMPARE(model.rowCount(), 2);
+    QCOMPARE(messageAt(0), firstMessage);
+    QCOMPARE(messageAt(1), secondMessage);
+
+    // And the hold ends the moment there are bytes, with the records the new file holds.
+    remote->finishReplacing(fresh);
+    live.checkNow();
+    QVERIFY(!doc.isStale());
+    QCOMPARE(model.rowCount(), 3);
+    QCOMPARE(messageAt(0), firstMessage);
 }
 
 // The other half, and the line the fix must not cross: a refusal on a tab that never

@@ -1,0 +1,57 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A LINK THAT DROPS OVER A LOG ALREADY FETCHED"):
+#   A reconnect is held until it has bytes, and the guard sits BEFORE refreshSize() —
+#   that call is what ADOPTS the new generation, and once it has, the index's offsets
+#   name bytes the new spool file does not hold.
+#
+# GUARD: tst_waitingremote::aHeldReconnectLeavesTheCachedRecordsReadableAndNotMerelyCounted
+#
+# SILENT WHEN BROKEN: the ROW COUNT is what survives the mistake, so the table still
+# looks right — every record decodes to nothing, with no way back for the life of the
+# tab. tst_waitingremote::aReconnectHoldsTheCachedRecordsUntilItsFirstBytes asserts the
+# count and passes throughout, which is why the guard reads the cells.
+
+diff --git a/src/core/LiveController.cpp b/src/core/LiveController.cpp
+index bf9b909..5a4c3d7 100644
+--- a/src/core/LiveController.cpp
++++ b/src/core/LiveController.cpp
+@@ -243,17 +243,17 @@ void LiveController::checkNow()
+     // notReadyYet() is the question ("committed nothing, and still on its way"), and it
+     // is asked only of a document that is already stale, so an ordinary rotation on a
+     // healthy link is untouched.
++    // Refresh the source size (re-maps so reads cannot run past the live EOF). This
++    // also latches truncation when the file shrank below what we indexed.
++    const qint64 newSize = src->refreshSize();
++    const bool truncated = src->wasTruncated() || newSize < m_lastSize;
++
+     if (replaced && m_document->isStale() && src->notReadyYet()) {
+         publishSourceStatus();
+         beginStale(sourceStatusText(*src, m_document->path()));
+         return;
+     }
+ 
+-    // Refresh the source size (re-maps so reads cannot run past the live EOF). This
+-    // also latches truncation when the file shrank below what we indexed.
+-    const qint64 newSize = src->refreshSize();
+-    const bool truncated = src->wasTruncated() || newSize < m_lastSize;
+-
+     if (replaced || truncated) {
+         m_vanishedSince.invalidate(); // something IS at the origin: a rotation, not a deletion
+         // Whatever the cached records were showing, this rescan replaces them with what

@@ -1,0 +1,43 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A rotation is no longer silent"):
+#   `reloaded` is emitted BEFORE rescanned(), which must stay the LAST statement of
+#   doRescan() — being last is what makes handing control to eight external subscribers
+#   safe with no QPointer dance on `this`.
+#
+# GUARD: tst_tail::theReloadCauseIsAnnouncedBeforeTheRescanThatCarriesIt
+#
+# SILENT WHEN BROKEN: every subscriber that only counts behaves identically, and what is
+# left is a notice posted after a subscriber has had the chance to destroy the controller.
+
+diff --git a/src/core/LiveController.cpp b/src/core/LiveController.cpp
+index bf9b909..ddbadaa 100644
+--- a/src/core/LiveController.cpp
++++ b/src/core/LiveController.cpp
+@@ -674,9 +674,9 @@ void LiveController::doRescan(ReloadCause cause)
+     // Only a re-read that actually worked is announced — a failed reopen would be
+     // claiming the log was reloaded when it was not — and never a Retry, which fires on
+     // every tick that an unreadable log is still unreadable.
++    emit rescanned();
+     if (ok && cause != ReloadCause::Retry)
+         emit reloaded(cause);
+-    emit rescanned();
+ }
+ 
+ void LiveController::ingestAppended()

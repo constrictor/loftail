@@ -38,7 +38,7 @@ The mutation harness in `tests/mutations/` is the other half of this: an index
 says a guard exists, and a mutation says it bites. See
 `tests/mutations/run-mutations.sh`.
 
-## Guarded — 145 rules
+## Guarded — 152 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -187,8 +187,15 @@ says a guard exists, and a mutation says it bites. See
 | A ReFS volume's 128-bit index is answered as unknown rather than as a value every file on the volume would share | Windows pathIdentity (L283) | tst_pathidentity |
 | The identity is re-resolved from the PATH, never read off the handle the source already holds | Windows pathIdentity (L283) | tst_pathidentity |
 | Any test asserting on resolved font properties must guard on an empty `QFontDatabase::families()` and `QSKIP` | Windows has no fonts (L285) | tst_logview::everyColumnRendersFixedPitch |
+| Past `kMaxBuckets` buckets are merged pairwise by a bitwise OR over the class bits, never by keeping the lower index | Density map (L93) | tst_densitymap::theCoarseningThatGrowthForcesUnionsTheBucketsItMerges |
+| `HostBookmarkStore::find()` keeps comparing the RAW `user` field — a different question from `target()`'s | Password key agreement (L113) | tst_hostbookmarks::findComparesTheUserAsWrittenAndNotTheOneAConnectWouldFillIn |
+| A reconnect is held until it has bytes, and the guard sits BEFORE `refreshSize()`, which adopts the new generation | Stale document (L115) | tst_waitingremote::aHeldReconnectLeavesTheCachedRecordsReadableAndNotMerelyCounted |
+| `isDelivering()` defaults to TRUE, or every local file is permanently out of reach | Stale document (L115) | tst_spooledsource::aLocalSourceDeliversByDefaultAndASpooledOneOnlyWhileItIsFetching |
+| `replaced` is tested BEFORE the shrink, or nearly every real rotation is called a truncation | Rotation announced (L119) | tst_remotetail::aRotationOntoASmallerLogIsAnnouncedAsReplacedAndNeverAsTruncated |
+| `reloaded` is emitted BEFORE `rescanned()`, which must stay the last statement of `doRescan()` | Rotation announced (L119) | tst_tail::theReloadCauseIsAnnouncedBeforeTheRescanThatCarriesIt |
+| `publishDigest()` dedupes by ordinal and THEN reorders by timestamp; a record with no timestamp keeps its slot and never reaches the comparator | Digest captioned and ordered (L235) | tst_digest::anUnplaceableRecordInTheMiddleKeepsItsSlotRatherThanSortingToTheTop |
 
-## Unguarded — 469 rules
+## Unguarded — 462 rules
 
 CLAUDE.md states these as load-bearing and names no test for them. This table is
 a deliverable in its own right: it is the list of decisions that would go quietly
@@ -353,7 +360,6 @@ to fill it in with a plausible-looking case rather than a real one.
 | The scan is bounded per SLICE and not in total, on a wall clock rather than a row count | Density map (L93) |
 | The scan timer runs only while the bar is visible | Density map (L93) |
 | Buckets hold a fixed ROW COUNT, never a fraction of the view, which is what makes an append free | Density map (L93) |
-| Past `kMaxBuckets` buckets are merged pairwise by a bitwise OR over the class bits, never by keeping the lower index | Density map (L93) |
 | A shrink clears only the last surviving bucket and rewinds the scan to its first row | Density map (L93) |
 | A row whose content moves is rewound the same way, both lanes together, and it must stay a rewind not a `clear(Lane)` | Density map (L93) |
 | The denominator is `spanLines()`, in one place | Six density rules (L95) |
@@ -398,15 +404,12 @@ to fill it in with a plausible-looking case rather than a real one.
 | The numeric mirror of libssh2's error codes is `static_assert`ed against the real header | Machine that reboots (L111) |
 | `RemoteLocation::toString()` must NOT use `effectiveUser()` — the stored address stays what the user typed | Password key agreement (L113) |
 | `target()` still guards an empty effective user, or a machine with no home is keyed `@host:22` | Password key agreement (L113) |
-| `HostBookmarkStore::find()` keeps comparing the RAW `user` field — a different question from `target()`'s | Password key agreement (L113) |
 | Stale-vs-wait is chosen on "is there anything to show", never on "is it remote" | Stale document (L115) |
 | A LOCAL log is excluded from stale, because a local wait releases its source for invariant #5's reason | Stale document (L115) |
 | Stale has NO placeholder — the sentence goes to a per-view strip, the tab mark and the status bar | Stale document (L115) |
 | `beginStale()` re-announces only when the sentence changes, it running on every 750 ms tick of an outage | Stale document (L115) |
-| A reconnect is held until it has bytes, and the guard sits BEFORE `refreshSize()`, which adopts the new generation | Stale document (L115) |
 | `beginWaiting()` calls `endStale()` first — the strip and mark only ever learn from `staleChanged` | Stale document (L115) |
 | Leaving stale asks `LogSource::isDelivering()` and never `!originVanished()`, which a fetcher's `Error` also satisfies | Stale document (L115) |
-| `isDelivering()` defaults to TRUE, or every local file is permanently out of reach | Stale document (L115) |
 | `isDelivering()` is asked only of a document that is ALREADY stale; going stale stays the vanish branch's decision | Stale document (L115) |
 | Waiting still ends on EXISTENCE — a local `stat` cannot tell "not written yet" from "empty for ever" | Format judged on real bytes (L117) |
 | `formatSettled()` carries "not judged yet" and is now read on the local path too | Format judged on real bytes (L117) |
@@ -415,9 +418,7 @@ to fill it in with a plausible-looking case rather than a real one.
 | Every judgement above the flag is gated on it — `openWithSettings()` defers the prompt while unsettled | Format judged on real bytes (L117) |
 | `resumeOrSettleDocument()` runs its persist/ask/report block only when the resume actually settled something | Format judged on real bytes (L117) |
 | There are two reload causes and not three — rewriting in place counts as replacing | Rotation announced (L119) |
-| `replaced` is tested BEFORE the shrink, or nearly every real rotation is called a truncation | Rotation announced (L119) |
 | The no-source branch passes `Retry` and announces nothing; only a rescan that SUCCEEDED announces | Rotation announced (L119) |
-| `reloaded` is emitted BEFORE `rescanned()`, which must stay the last statement of `doRescan()` | Rotation announced (L119) |
 | The reload announcement is handled BELOW `ctx != activeContext()` — a passing sentence cannot wait on a background tab | Rotation announced (L119) |
 | `announceReload()` returns early when the same sentence is already up, or the 5 s timer re-arms for ever | Rotation announced (L119) |
 | The rotation notice goes to `statusBar()->showMessage(…, 5000)`, never `m_statusLabel` | Rotation announced (L119) |
@@ -579,7 +580,6 @@ to fill it in with a plausible-looking case rather than a real one.
 | Four actions, each opt-in per rule; first-match-wins becomes per action | M19 actions are a set (L229) |
 | `SPEC.md` §11 stays byte-identical despite the notification contradicting it — do not "fix" the spec or remove the feature | §11 contradiction stands (L231) |
 | The digest caption is a SIBLING `SectionBox`, never a parent, because the cap is a fraction of `parentWidget()`'s height | Digest captioned and ordered (L235) |
-| `publishDigest()` dedupes by ordinal and THEN reorders by timestamp; a record with no timestamp keeps its slot and never reaches the comparator | Digest captioned and ordered (L235) |
 | `HighlightRule::fromJson` tests `contains("actions")`, never the array's emptiness | Six M19 rules (L237) |
 | `toJson` omits the actions key for a colour-only rule, so nothing serializes differently and neither store's version moves | Six M19 rules (L237) |
 | The tab marker is set ABOVE the `ingested` handler's `ctx != activeContext()` early return | Six M19 rules (L237) |

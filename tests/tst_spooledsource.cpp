@@ -66,6 +66,7 @@ private slots:
     void openFailureReportsTheTransportError();
     void unconfiguredRemoteReportsNotBuiltIn();
     void aConnectingArchiveSaysWhatItIsOpeningRatherThanConnecting();
+    void aLocalSourceDeliversByDefaultAndASpooledOneOnlyWhileItIsFetching();
 };
 
 void TestSpooledSource::readsInitialContentThroughTheSpool()
@@ -401,6 +402,55 @@ void TestSpooledSource::aConnectingArchiveSaysWhatItIsOpeningRatherThanConnectin
     QVERIFY(localSrc);
     QVERIFY(sourceStatusText(*localSrc, plain).isEmpty());
     QVERIFY(sourceStatusText(*localSrc, local + QStringLiteral("/var/log/app.log")).isEmpty());
+}
+
+// `isDelivering()` is what takes a document back OUT of the stale state, and it is the
+// one non-pure arrival on LogSource whose default answer is TRUE (LogSource.h). Both
+// halves of that are load-bearing and neither is visible from a single source.
+//
+// A LOCAL file delivers whatever its origin holds — only originVanished() has anything
+// to say about that — so a default of false would answer "not delivering" for every
+// mapped and buffered source in the tree, which is a claim nothing above the seam could
+// contradict and which puts every local file permanently out of reach of the one branch
+// that reads it. A SPOOLED source is the one that overrides it, and answers on the
+// fetcher's state rather than on `!originVanished()`: a fetcher that gives up moves
+// Waiting -> Error, and Error is not a link that came back.
+void TestSpooledSource::aLocalSourceDeliversByDefaultAndASpooledOneOnlyWhileItIsFetching()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString localPath = dir.filePath(QStringLiteral("plain.log"));
+    {
+        QFile f(localPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArrayLiteral("2026-07-21 00:00:00,000 [t1] INFO   svc - hello\n"));
+    }
+    QString error;
+    auto local = openLogSource(localPath, OpenPolicy::Interactive, &error);
+    QVERIFY2(local, qPrintable(error));
+    QVERIFY(local->isDelivering()); // the base-class answer, and it must stay true
+
+    FakeRemoteFarm farm;
+    auto remote = farm.at(QString::fromLatin1(kUrl));
+    remote->setInitialContent(QByteArrayLiteral("hello remote"));
+    auto spooled = openSource();
+    QVERIFY(spooled);
+    QVERIFY(spooled->isDelivering()); // Live
+
+    // The link drops. The spool keeps every byte it had, so the records stay readable —
+    // and that is exactly why "is anything arriving" has to be a question of its own.
+    remote->becomeUnavailable(QStringLiteral("Lost the connection to web1 — reconnecting…"));
+    QVERIFY(!spooled->isDelivering());
+    QVERIFY(spooled->originVanished());
+
+    // And the fetcher gives up. `!originVanished()` goes TRUE here while nothing has
+    // become reachable, which is the misreading isDelivering() exists to prevent.
+    remote->failWith(QStringLiteral("The host key for web1 has changed."));
+    QVERIFY(!spooled->originVanished());
+    QVERIFY(!spooled->isDelivering());
+
+    remote->becomeAvailable();
+    QVERIFY(spooled->isDelivering());
 }
 
 QTEST_GUILESS_MAIN(TestSpooledSource)

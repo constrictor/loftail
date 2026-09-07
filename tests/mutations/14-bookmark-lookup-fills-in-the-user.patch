@@ -1,0 +1,44 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A REMEMBERED PASSWORD SURVIVES A RESTART ONLY IF..."):
+#   HostBookmarkStore::find() deliberately keeps comparing the RAW `user` field — "a
+#   bookmark with no user matches a location with no user" — which is a different
+#   question (which saved host this address IS) from the one target() answers (who the
+#   connect will sign in as, and therefore what the keychain is keyed on).
+#
+# GUARD: tst_hostbookmarks::findComparesTheUserAsWrittenAndNotTheOneAConnectWouldFillIn
+#
+# SILENT WHEN BROKEN: a bookmark saved bare stops being found for the address it was
+# saved from, and one saved under the local account starts claiming addresses that never
+# named it — so another host's poll cadence, tail-start, compression and remembered
+# password are applied, with nothing on screen to say which bookmark answered.
+
+diff --git a/src/core/HostBookmarkStore.cpp b/src/core/HostBookmarkStore.cpp
+index 622fb3b..cca67a0 100644
+--- a/src/core/HostBookmarkStore.cpp
++++ b/src/core/HostBookmarkStore.cpp
+@@ -245,7 +245,7 @@ HostBookmark HostBookmarkStore::find(const QVector<HostBookmark> &bookmarks,
+     for (const HostBookmark &b : bookmarks) {
+         // A bookmark with no user matches a location with no user, and vice versa —
+         // they are different connections (see RemoteLocation::target()).
+-        if (sameHost(b, location.user, location.host, location.port)) {
++        if (sameHost(b, location.effectiveUser(), location.host, location.port)) {
+             if (found)
+                 *found = true;
+             return b;

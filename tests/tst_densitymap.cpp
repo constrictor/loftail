@@ -274,6 +274,49 @@ private slots:
         QCOMPARE(m.rowsPerBucket(), 1);
     }
 
+    // THE MERGE ITSELF, which the case above cannot reach: there the two rows share a
+    // bucket from the moment the map is bound, so what unions them is the SCAN. The
+    // coarsening loop in reshape() is a second place the same claim has to hold, and it
+    // is the one a growing log walks — a bucket that already carried a mark is folded
+    // into its neighbour, and a merge that kept one of the two instead of both would
+    // take a whole colour off the bar on exactly the logs big enough to need it.
+    //
+    // The relation, not a bucket number: what is asserted is that the two rows end up in
+    // ONE bucket and that the bucket names both classes.
+    void theCoarseningThatGrowthForcesUnionsTheBucketsItMerges()
+    {
+        DensityMap m;
+        m.rebind(DensityMap::kMaxBuckets);
+        QCOMPARE(m.rowsPerBucket(), 1); // a bucket per row: the two are separate
+
+        const auto probe = [](int row) -> DensityMap::Marks {
+            if (row == 0)
+                return DensityMap::classBit(3);
+            if (row == 1)
+                return DensityMap::classBit(1);
+            return DensityMap::kNone;
+        };
+        scanAll(m, DensityMap::Lane::Rules, probe);
+        QVERIFY(m.bucketOf(0) != m.bucketOf(1));
+        QCOMPARE(m.at(DensityMap::Lane::Rules, m.bucketOf(0)), DensityMap::classBit(3));
+        QCOMPARE(m.at(DensityMap::Lane::Rules, m.bucketOf(1)), DensityMap::classBit(1));
+
+        // One more row than the map has buckets for: the pairwise merge runs, and rows 0
+        // and 1 are the first pair it folds together.
+        m.setRows(DensityMap::kMaxBuckets + 1);
+        QVERIFY(m.rowsPerBucket() > 1);
+        QCOMPARE(m.bucketOf(0), m.bucketOf(1));
+
+        const DensityMap::Marks merged = m.at(DensityMap::Lane::Rules, m.bucketOf(0));
+        QVERIFY(merged & DensityMap::classBit(3));
+        QVERIFY(merged & DensityMap::classBit(1));
+        // And the same seen from where the bar allocates its columns: neither colour has
+        // gone quiet.
+        const DensityMap::Marks all = m.unionMask(DensityMap::Lane::Rules);
+        QVERIFY(all & DensityMap::classBit(3));
+        QVERIFY(all & DensityMap::classBit(1));
+    }
+
     // Every row belongs to exactly one bucket and every bucket to a real row range —
     // the arithmetic the paint path places its bands with.
     void everyRowLandsInABucketThatCoversIt()

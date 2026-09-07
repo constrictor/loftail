@@ -1,0 +1,48 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A rotation is no longer silent"):
+#   LiveController::checkNow() tests `replaced` BEFORE the shrink against m_lastSize.
+#   A rotation lands whatever the writer starts over with, which is very nearly always
+#   SHORTER than the file it replaced, so the other order calls nearly every real
+#   rotation a truncation.
+#
+# GUARD: tst_remotetail::aRotationOntoASmallerLogIsAnnouncedAsReplacedAndNeverAsTruncated
+#
+# SILENT WHEN BROKEN: the log reloads correctly and only the sentence in the status bar
+# is wrong, so nothing anywhere reports it. Note it must be asked of a SPOOLED source: a
+# MappedLogSource holds the inode it opened, so after a rename+recreate its refreshSize()
+# still measures the file it holds and the shrink is never seen locally at all — which is
+# why tst_tail::rotateTriggersReindex cannot see this and why this patch's predecessor
+# was recorded here as unkillable.
+
+diff --git a/src/core/LiveController.cpp b/src/core/LiveController.cpp
+index bf9b909..f2e6921 100644
+--- a/src/core/LiveController.cpp
++++ b/src/core/LiveController.cpp
+@@ -270,8 +270,8 @@ void LiveController::checkNow()
+         // for all three — it re-fetches into a new generation and cannot tell them
+         // apart — so Truncated is structurally unreachable for a remote log, which
+         // SPEC.md §3 says out loud rather than leaving to be discovered.
+-        doRescan(!replaced && newSize < m_lastSize ? ReloadCause::Truncated
+-                                                   : ReloadCause::Replaced);
++        doRescan(newSize < m_lastSize ? ReloadCause::Truncated
++                                      : ReloadCause::Replaced);
+         return;
+     }
+ 
