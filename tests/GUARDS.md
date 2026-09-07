@@ -130,7 +130,11 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | `ReloadCause` is derived from `wasReplaced()` and a shrink, and NEVER read off the catch-all `wasTruncated()` | Rotation announced (L119) | tst_tail::overwriteInPlaceTriggersRescan |
 | The new signal sits BESIDE the nullary `rescanned()` rather than differentiating it | Rotation announced (L119) | tst_tail |
 | `HostBookmarkStore::find()` is called at connect time, so a bookmark's saved password is read back | M14 dangling wires (L129) | tst_sshcredentials |
-| A real keychain is unreachable in CI; the live test is gated twice and everything above the backend is faked | No keychain in CI (L131) | tst_keychainlive |
+| `available()` is a round trip and not a link check — a real backend must answer | Real Secret Service in CI (L131) | tst_keychainlive::roundTripsASecret |
+| Storing the same key twice REPLACES rather than adding a second item under it | Real Secret Service in CI (L131) | tst_keychainlive::storingTwiceReplacesTheSecretRatherThanAddingOne |
+| A secret survives being long and not ASCII across the backend | Real Secret Service in CI (L131) | tst_keychainlive::aSecretSurvivesBeingLongAndNotAscii |
+| A keychain is consulted only on the thread that opened the log, and `available()` does not LATCH off it | Real Secret Service in CI (L131) | tst_keychainlive::everyOperationRefusesToRunOffTheApplicationThread |
+| Erasing what is not there succeeds, `forgetSshPassword()` running on every rejected stored password | Real Secret Service in CI (L131) | tst_keychainlive::erasingWhatIsNotThereSucceeds |
 | The context spinners are capped with `setMaximumWidth` and nothing else | Two load-bearing widths (L143) | tst_filterpane::theContextRowLaysOutWithoutOverlapOrClipping |
 | `QSizePolicy::Ignored` must NOT be added to the context spinners — the combination lays the row on top of itself | Two load-bearing widths (L143) | tst_filterpane::theContextRowLaysOutWithoutOverlapOrClipping |
 | The axis order is Priority, Subsystem, Message text, Thread, Time range | Three later pane changes (L147) | tst_filterpane::theAxesAreInReadingOrder |

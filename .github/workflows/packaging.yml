@@ -467,6 +467,74 @@ jobs:
           path: ssh-test-logs
           if-no-files-found: warn
 
+  keychain-live:
+    # THE ONLY JOB THAT EXECUTES QtKeychain'S BACKEND. Everything above the SecretStore
+    # seam — the auth chain's ordering, the checkbox's three destinations, the consent
+    # rule — is covered with no keychain at all by tst_secretstore, tst_hostbookmarks and
+    # tst_sshcredentials over tests/FakeSecretStore.h; KeychainSecretStore.cpp itself is
+    # covered here or nowhere, and before this job it was nowhere. It measured 0.0% in
+    # the first coverage run, the only file in the tree at a flat zero, and several
+    # paragraphs of CLAUDE.md said of it that nothing in CI exercised it and nothing
+    # could.
+    #
+    # That claim was too strong, and the whole of the fix is that a session bus and a
+    # Secret Service are things a headless runner CAN have: dbus-run-session gives the
+    # run a bus of its own and gnome-keyring-daemon takes org.freedesktop.secrets on it.
+    # What it exercises is the real round trip — SecretStore::available() is a read and
+    # not a link check, deliberately, because QKeychain::isAvailable() is true as soon as
+    # libsecret-1 can be dlopen()ed and would pass on a runner with nothing behind it.
+    #
+    # A job of its own rather than a step on `linux`, for the ssh-live job's reason: it
+    # needs a daemon and a bus of its own, and when it has something to say the useful
+    # signal is WHICH half failed — the session or the backend — which a step wedged into
+    # the four-configuration linux job would bury.
+    #
+    # It GATES. A keyring on a fresh bus is deterministic — no network, no container, no
+    # credentials — and the harness's whole content is that a QSKIP no longer passes for
+    # a run, so a red here is a real answer about the backend.
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain + system Qt 6 + a real Secret Service
+        # gnome-keyring is the daemon, libsecret-1-0 is what QtKeychain dlopen()s to
+        # reach it, and dbus-x11 is where dbus-run-session lives on this image.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake \
+            qt6-base-dev libgl1-mesa-dev \
+            qtkeychain-qt6-dev \
+            gnome-keyring libsecret-1-0 dbus-x11
+
+      - name: Configure + build tst_keychainlive
+        # SSH and archives are off deliberately: neither is reachable from this test, and
+        # this way the job builds loftail_core and one test binary rather than the whole
+        # suite twice over. The keychain is AUTO-detected, so its absence would leave the
+        # test binary unbuilt and the harness would fail on a missing file — checked here
+        # anyway, where the message says what actually went wrong.
+        run: |
+          cmake -S . -B build-keychain -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DLOFTAIL_WITH_SSH=OFF -DLOFTAIL_WITH_ARCHIVE=OFF 2>&1 | tee configure-keychain.log
+          grep -q "OS keychain for passwords: ENABLED" configure-keychain.log \
+            || { echo "::error::QtKeychain was not detected; there is nothing to test here"; exit 1; }
+          cmake --build build-keychain --target tst_keychainlive
+
+      - name: Run tst_keychainlive against a throwaway GNOME Keyring
+        run: packaging/test-keychain/run-keychain-tests.sh --build build-keychain --logs keychain-test-logs
+
+      - name: Upload the run log and the daemon's own
+        # Always: a failure here is most often the SESSION's story — a daemon that never
+        # took the bus name, a login keyring that was never created — and that is only in
+        # gnome-keyring-daemon's own output, which the harness copies out.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: keychain-live-logs
+          path: keychain-test-logs
+          if-no-files-found: warn
+
   clang-tidy:
     # Static analysis over src/ (.clang-tidy at the repo root holds the check list
     # and the reasoning behind every exclusion).

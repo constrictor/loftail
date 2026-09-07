@@ -381,10 +381,16 @@ set_tests_properties(tst_sshcredentials PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=
 
 # M14 — the live keychain harness, and the ONLY place QtKeychain is exercised beyond
 # linking. Gated twice, exactly like tst_sshlive: not built without keychain support, and
-# it QSKIPs unless LOFTAIL_TEST_KEYCHAIN is set — it writes to the developer's real
-# keyring. CI never runs it, and could not: the runners are headless with no session bus,
-# so nothing there would answer. Say so plainly rather than letting a green pipeline imply
-# the backends were tested (PLAN.md M14 risk).
+# it QSKIPs unless LOFTAIL_TEST_KEYCHAIN is set, because it writes to whatever keyring
+# answers on the machine running it.
+#
+# CI DOES run it now, through packaging/test-keychain/run-keychain-tests.sh, which sets
+# that variable and points the whole run at a throwaway GNOME Keyring on a session bus of
+# its own — so the keyring it writes to is one dbus-run-session created a moment earlier.
+# The plain ctest entry below stays gated: a developer's `ctest` must not open their own
+# keyring, and on a KDE box QtKeychain would choose KWallet rather than the daemon the
+# harness starts. What still cannot be reached from a Linux runner is the macOS Keychain,
+# the Windows Credential Manager and KWallet (CLAUDE.md).
 if(LOFTAIL_HAVE_KEYCHAIN)
     qt_add_executable(tst_keychainlive tst_keychainlive.cpp)
     target_link_libraries(tst_keychainlive PRIVATE loftail_core Qt6::Test)
