@@ -1,0 +1,58 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "The date format inside %d{...} is a SECOND vocabulary"):
+#   the optional trailing dot a locale's abbreviation carries is given up by BOTH halves,
+#   conditionally and together: where the FORMAT spells a literal '.' after %b, %a, %Z or
+#   %p, the compiler drops it from the name run and sets DateToken::literalDotFollows on
+#   the token it emits in the same statement, and readWord() reads that flag off the
+#   token. Both halves allowing for it is bugs.md 42 — the regex matched by backtracking,
+#   the parser ate the dot, and the Literal '.' behind it found the space.
+#
+# GUARD: tst_timestampparser::aFullStopTheFormatSpellsBelongsToTheFormatAndNotToTheNameBeforeIt
+#
+# SILENT WHEN BROKEN: every record of such a log comes back with Record::kNoTimestamp — a
+# blank Time column, no timestamp filtering, no time bound on any highlight rule and an
+# empty SincePrevious throughout — while the record itself is indexed and every other
+# field is correct, and the format dialog's preview shows the split correctly because it
+# drives recordRe and never the parser.
+# The mutation is the PARSER half alone, which is the direction that fails: the compiler
+# still drops the regex's optional dot, so the text matches and only the read is wrong.
+# tst_timestampparser::aMonthAbbreviationCarryingItsLocalesFullStopIsStillThatMonth cannot
+# see it and must not — it is the other direction, the locale's own dot under a format
+# that does not spell one, and it is what reddens if the dot is dropped unconditionally
+# instead.
+
+diff --git a/src/core/TimestampParser.cpp b/src/core/TimestampParser.cpp
+index 0dadee0..2a58514 100644
+--- a/src/core/TimestampParser.cpp
++++ b/src/core/TimestampParser.cpp
+@@ -152,11 +152,12 @@ qint64 TimestampParser::parse(QStringView text) const
+     // the compiler emitted (DateToken::literalDotFollows), which is also what it
+     // dropped the regex's optional dot on, so the two cannot disagree (bugs.md 42).
+     const auto readWord = [&](const DateToken &tok) {
++        Q_UNUSED(tok)
+         const int start = pos;
+         while (pos < n && text[pos].isLetter())
+             ++pos;
+         const QStringView word = text.sliced(start, pos - start);
+-        if (!tok.literalDotFollows && pos < n && text[pos] == QLatin1Char('.'))
++        if (pos < n && text[pos] == QLatin1Char('.'))
+             ++pos;
+         return word;
+     };

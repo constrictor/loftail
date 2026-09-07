@@ -44,6 +44,7 @@ private slots:
     void aYearlessTimestampWellAheadOfTheClockIsReadAsLastYears();
     void aSpacePaddedFieldIsReadWhereNoLiteralSpacePrecedesIt();
     void aMonthAbbreviationCarryingItsLocalesFullStopIsStillThatMonth();
+    void aFullStopTheFormatSpellsBelongsToTheFormatAndNotToTheNameBeforeIt();
     void aFormatWithNoTokensOfItsOwnFallsBackToQtsParser();
     void aFieldThatIsNotThereStopsTheParseRatherThanGuessing_data();
     void aFieldThatIsNotThereStopsTheParseRatherThanGuessing();
@@ -166,6 +167,23 @@ void TestTimestampParser::theRegexAndTheParserAgree_data()
         << "%Y-%m-%d %H:%M:%S %u" << "2026-08-27 10:15:01 4" << utcMs(2026, 8, 27, 10, 15, 1);
     QTest::newRow("a tab separator")
         << "%Y-%m-%d%t%H:%M:%S" << "2026-08-27\t10:15:01" << utcMs(2026, 8, 27, 10, 15, 1);
+    // The dot the FORMAT spells. Both halves used to allow for it and both then
+    // claimed it: the regex matched by backtracking, the parser's word reader ate
+    // the dot, and the Literal token behind it found the space (bugs.md 42).
+    QTest::newRow("a month name whose dot the format spells")
+        << "%b. %d %Y %H:%M:%S" << "Aug. 27 2026 10:15:01" << utcMs(2026, 8, 27, 10, 15, 1);
+    QTest::newRow("a weekday name whose dot the format spells")
+        << "%a. %b %d %Y" << "Thu. Aug 27 2026" << utcMs(2026, 8, 27, 0, 0, 0);
+    QTest::newRow("a full month name whose dot the format spells")
+        << "%B. %d %Y" << "August. 27 2026" << utcMs(2026, 8, 27, 0, 0, 0);
+    QTest::newRow("a zone abbreviation whose dot the format spells")
+        << "%Y-%m-%d %H:%M:%S %Z." << "2026-08-27 10:15:01 UTC."
+        << utcMs(2026, 8, 27, 10, 15, 1);
+    QTest::newRow("a meridiem whose dot the format spells")
+        << "%Y-%m-%d %I:%M:%S %p." << "2026-08-27 01:15:01 PM."
+        << utcMs(2026, 8, 27, 13, 15, 1);
+    QTest::newRow("a dot after a composite lands on the code that ends it")
+        << "%c." << "Thu Aug 27 10:15:01 2026." << utcMs(2026, 8, 27, 10, 15, 1);
 }
 
 void TestTimestampParser::theRegexAndTheParserAgree()
@@ -300,6 +318,46 @@ void TestTimestampParser::aMonthAbbreviationCarryingItsLocalesFullStopIsStillTha
     const qint64 dotted = roundTrip(inner, QStringLiteral("Aug.  5 2026 10:15:01"), QTimeZone::utc());
     QCOMPARE(plain, utcMs(2026, 8, 5, 10, 15, 1));
     QCOMPARE(dotted, plain);
+}
+
+// The other direction of the same dot, and the one the working case above cannot
+// see: when the FORMAT itself spells a literal '.' after %b, %a, %Z or %p, that dot
+// is the format's and the name must not take it. Both halves used to allow for it
+// — kNameRun is `\p{L}+\.?` and readWord() consumed one — so the regex matched
+// `Aug. 27 …` by backtracking and the parser then read the name as "Aug", ate the
+// dot, and handed the Literal '.' token the space after it: Record::kNoTimestamp on
+// EVERY record of such a log, with a blank Time column, no timestamp filtering and
+// no time bound on any highlight rule, while the Preferences preview — which drives
+// recordRe and never the parser — showed the split correctly (bugs.md 42).
+//
+// The two halves give the dot up TOGETHER: the compiler drops the optional dot from
+// the name run and sets DateToken::literalDotFollows in the same statement, and the
+// parser reads that flag off the token rather than re-deriving anything from the
+// display string. Nothing about a locale's own dot moves — that is the case above,
+// which must keep passing unaltered.
+void TestTimestampParser::aFullStopTheFormatSpellsBelongsToTheFormatAndNotToTheNameBeforeIt()
+{
+    const QTimeZone utc = QTimeZone::utc();
+    const qint64 stamp = utcMs(2026, 8, 27, 10, 15, 1);
+
+    QString captured;
+    QCOMPARE(roundTrip(QStringLiteral("%b. %d %Y %H:%M:%S"),
+                       QStringLiteral("Aug. 27 2026 10:15:01"), utc, &captured), stamp);
+    QCOMPARE(captured, QStringLiteral("Aug. 27 2026 10:15:01"));
+
+    QCOMPARE(roundTrip(QStringLiteral("%a. %b %d %Y %H:%M:%S"),
+                       QStringLiteral("Thu. Aug 27 2026 10:15:01"), utc), stamp);
+    QCOMPARE(roundTrip(QStringLiteral("%Y-%m-%d %H:%M:%S %Z."),
+                       QStringLiteral("2026-08-27 10:15:01 UTC."), utc), stamp);
+
+    // A composite is expanded before any of this is decided, so the rule reaches
+    // the codes inside it: %c is `%a %b %e %H:%M:%S %Y`, whose %a and %b are each
+    // followed by a space, so both keep the locale tolerance — and a dot spelled
+    // after the composite lands on the %Y that ends it rather than on a name.
+    QCOMPARE(roundTrip(QStringLiteral("%c"),
+                       QStringLiteral("Thu. Aug. 27 10:15:01 2026"), utc), stamp);
+    QCOMPARE(roundTrip(QStringLiteral("%c."),
+                       QStringLiteral("Thu Aug 27 10:15:01 2026."), utc), stamp);
 }
 
 // A format that produced no tokens at all — an empty %d{}, which translates to no

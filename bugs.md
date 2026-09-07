@@ -454,50 +454,30 @@ infrastructure — a coverage measurement, five libFuzzer targets over the parse
 and a mutation harness — and every one of them was found by a machine rather than
 by somebody looking. Three are the fuzzer's, one came out of reading the lines a
 coverage report said had never executed, and one out of a test whose first draft
-asserted the wrong thing and was right to. None is fixed: each is recorded with
-the ruling it needs, because four of the five have two defensible answers and the
-choice is the user's.
+asserted the wrong thing and was right to. Each was recorded with the ruling it
+needs, because four of the five have two defensible answers and the choice is the
+user's; one of them has since been taken and fixed.
 
----
-
-### 42. A literal `.` after `%b`, `%a` or `%Z` inside `%d{...}` compiles a regex that matches text the parser then refuses
-
-`kNameRun` is `\p{L}+\.?` — it already tolerates a trailing full stop, because
-`strftime` uses the process's locale and a good many of them write `Aug.` rather
-than `Aug`. `TimestampParser::readWord()` tolerates one for the same reason, and
-consumes it. So the two halves both allow for the dot, and then both claim it.
-
-For `%d{%b. %e %H:%M:%S}` the generated regex is
-`^(\p{L}+\.?\.\ [ \d]\d{1}\ ...)`, which **matches** `Aug. 27 10:15:01` — the
-`\.?` takes the dot and the literal `\.` is satisfied by nothing, or the other way
-about, depending on the backtrack. The parser is then handed the text the regex
-agreed to, `readWord()` returns `Aug` and eats the `.`, and the next token —
-`Literal '.'` — finds a space. It answers `Record::kNoTimestamp`.
-
-The cost is the whole timestamp axis for the whole log: a blank Time column on
-every record, no timestamp filtering, no time bounds on any highlight rule, and
-`SincePrevious` empty throughout. Nothing reports it, because a record whose date
-did not parse is a supported thing (`SPEC.md` §4 keeps such lines visible) and one
-of them looks exactly like all of them. And the format dialog's preview shows the
-split **correctly**, because the preview drives `recordRe` and never the parser —
-so this arrives as a report in the shape of entry 24: "it looks right in
-Preferences and wrong in the tab".
-
-This is precisely the class `tst_timestampparser`'s own header says the file
-exists to pin — a regex that matches text the parser cannot read — and the
-undotted spelling `%b %e ...` reading `Aug. 27 ...` works correctly, which is what
-kept it hidden. Found by the pattern/parser fuzz pair, which drives the compiler
-and the parser as one because hand-building a `DateFormat` is the re-derivation
-the tokens rule forbids. Now pinned in the working direction by
-`tst_timestampparser::aMonthAbbreviationCarryingItsLocalesFullStopIsStillThatMonth`.
-
-Not to be fixed blind — the two halves cannot both keep the dot, and which one
-gives is a product decision with a cost either way. Either the parser stops
-consuming a trailing dot **when the format supplies a literal one**, which is
-narrow but makes the two halves agree about *when* rather than *whether*; or
-`kNameRun` drops its `\.?` and a locale's dot must be spelled in the format, which
-is cleaner and regresses every Ukrainian or German desktop whose `%b` writes one
-and whose format does not say so.
+Entry 42 has gone: a literal `.` spelled after `%b`, `%a` or `%Z` inside `%d{...}`
+was claimed by two halves at once. The name run tolerates a trailing dot because
+`strftime` writes the process's locale's abbreviation and a good many locales spell
+`Aug.`, and the parser's word reader consumes one for the same reason — so the regex
+matched `Aug. 27 10:15:01` by backtracking, the parser read the name as `Aug`, ate
+the dot, and handed the `Literal '.'` token the space behind it. Every record of such
+a log had no timestamp at all: a blank Time column, no timestamp filtering, no time
+bound on any highlight rule and an empty `SincePrevious` throughout, with nothing to
+report it and the format dialog's preview showing the split correctly, because the
+preview drives `recordRe` and never the parser. The ruling taken was the narrow one,
+both halves conditionally: the compiler drops the name run's optional dot and sets a
+flag on the token it emits in the same statement, and the parser reads that flag off
+the token rather than re-deriving anything from the display string — so the two agree
+about *when* the dot is the format's rather than agreeing about an outcome while
+disagreeing about the mechanism. Nothing about a locale's own dot moved, which is the
+whole reason the other candidate — dropping the optional dot unconditionally — was
+not taken; the existing guard for that direction reddens under it, and does so under
+nothing else. The fix took `%p` and `%P` with it: they are read back through the same
+word reader while their regex never allowed a dot at all, so a format spelling one
+after them failed the same way and had never been noticed.
 
 ---
 

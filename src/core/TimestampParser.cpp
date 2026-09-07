@@ -145,13 +145,18 @@ qint64 TimestampParser::parse(QStringView text) const
         out = int(v);
         return true;
     };
-    // A run of letters, plus the trailing '.' some locales' abbreviations carry.
-    const auto readWord = [&]() {
+    // A run of letters, plus the trailing '.' some locales' abbreviations carry —
+    // unless the FORMAT spelled a literal '.' straight after the code, in which case
+    // that dot belongs to the Literal token that comes next and taking it here
+    // leaves that token facing the character after it. The fact travels on the token
+    // the compiler emitted (DateToken::literalDotFollows), which is also what it
+    // dropped the regex's optional dot on, so the two cannot disagree (bugs.md 42).
+    const auto readWord = [&](const DateToken &tok) {
         const int start = pos;
         while (pos < n && text[pos].isLetter())
             ++pos;
         const QStringView word = text.sliced(start, pos - start);
-        if (pos < n && text[pos] == QLatin1Char('.'))
+        if (!tok.literalDotFollows && pos < n && text[pos] == QLatin1Char('.'))
             ++pos;
         return word;
     };
@@ -169,7 +174,7 @@ qint64 TimestampParser::parse(QStringView text) const
             if (!readIntTo(2, month)) return Record::kNoTimestamp;
             break;
         case DateTokenKind::MonthName: {
-            const QStringView word = readWord();
+            const QStringView word = readWord(tok);
             if (word.isEmpty())
                 return Record::kNoTimestamp;
             const auto it = m_months.constFind(word.toString().toLower());
@@ -211,7 +216,7 @@ qint64 TimestampParser::parse(QStringView text) const
             break;
         }
         case DateTokenKind::AmPm: {
-            const QStringView word = readWord();
+            const QStringView word = readWord(tok);
             if (word.size() != 2)
                 return Record::kNoTimestamp;
             const QChar first = word[0].toUpper();
@@ -257,7 +262,7 @@ qint64 TimestampParser::parse(QStringView text) const
             break;
         }
         case DateTokenKind::SkipWord:
-            if (readWord().isEmpty())
+            if (readWord(tok).isEmpty())
                 return Record::kNoTimestamp;
             break;
         case DateTokenKind::Literal:

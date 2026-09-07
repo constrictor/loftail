@@ -150,6 +150,22 @@ void TestFormatRoundTrip::aRenderedRecordComesBackFieldForField_data()
         << base;
     QTest::newRow("a literal percent inside the date")
         << QStringLiteral("%Y-%m-%d%%%H:%M:%S") << QStringLiteral("2026-08-27%10:15:01") << base;
+    // The end-to-end direction of bugs.md 42: a format that spells the dot after a
+    // name. The regex matched such a line all along, so the record was indexed and
+    // every other field came back — what was lost was the timestamp alone, on every
+    // record of the log, which is exactly the shape a field-for-field row sees and a
+    // compile test does not.
+    QTest::newRow("a month name whose dot the format spells")
+        << QStringLiteral("%b. %d %Y %H:%M:%S") << QStringLiteral("Aug. 27 2026 10:15:01")
+        << base;
+    QTest::newRow("a weekday name whose dot the format spells")
+        << QStringLiteral("%a. %Y-%m-%d %H:%M:%S") << QStringLiteral("Thu. 2026-08-27 10:15:01")
+        << base;
+    QTest::newRow("a zone abbreviation whose dot the format spells")
+        << QStringLiteral("%Y-%m-%d %H:%M:%S %Z.") << QStringLiteral("2026-08-27 10:15:01 UTC.")
+        << base;
+    QTest::newRow("a locale's own dot, which the format does not spell")
+        << QStringLiteral("%b %e %H:%M:%S") << QStringLiteral("Aug. 27 10:15:01") << qint64(-1);
 }
 
 void TestFormatRoundTrip::aRenderedRecordComesBackFieldForField()

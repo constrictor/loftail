@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 173 rules
+## Guarded — 174 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -79,6 +79,7 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The fallback must stay a SEGMENT and never a path, or `prefixedLabelsFor()` stops grouping | Display name (L19) | tst_remotelocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath |
 | `logSourceBareName()` is the name with the bracket off and is `tabLabelsFor()`'s grouping key, so it may not hold a path | Display name (L19) | tst_remotelocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath |
 | `RemoteLocation::withoutPassword()` is the one filter the name half, `logSourceDisplayPath()` and `LogSourceFactory` all ask | Display name (L19) | tst_hostbookmarks::aPasswordNeverLeaksIntoAPathString<br>tst_remotelocation::anAddressThatDoesNotParseStillLosesItsPassword |
+| A name run gives up its optional trailing dot exactly where the format spells a literal one, in the regex and in `readWord()` together | Date format (L21) | tst_timestampparser::aFullStopTheFormatSpellsBelongsToTheFormatAndNotToTheNameBeforeIt |
 | The regression test must reject any modal dialog that is not the picker, or it hangs rather than failing | Nested member (L33) | tst_archiveopen |
 | Every multi-member case counts records PER TAB via `recordsInTab()`, not just the tab count | Nested member (L33) | tst_archiveopen::severalPickedMembersOpenAsSeveralTabs |
 | The archive fixtures are built at runtime by libarchive's own write side; nothing binary is committed | libarchive in CI (L37) | tst_archivefetcher<br>tst_archivetail<br>tst_archivemembers<br>tst_archiveopen |

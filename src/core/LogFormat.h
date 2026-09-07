@@ -96,6 +96,18 @@ struct DateToken
     DateTokenKind kind = DateTokenKind::Literal;
     int   width = 0;   // maximum digits a numeric token consumes
     QChar literal;     // Literal only
+
+    // A word-shaped token (MonthName, SkipWord, AmPm) normally consumes a trailing
+    // '.', because strftime writes the locale's own abbreviation and a good many
+    // locales spell it "Aug.". When the FORMAT itself supplies a literal '.' right
+    // after the code, that dot belongs to the Literal token that follows and the
+    // word must not take it — the compiler drops the optional '.' from the name run
+    // in the same breath, so the regex and the parser agree about the dot BY
+    // CONSTRUCTION rather than by both happening to allow for it and then both
+    // claiming it (bugs.md 42). Set by PatternCompiler, read only by
+    // TimestampParser: the fact travels in the token stream, never re-derived from
+    // qtFormat, which cannot spell it.
+    bool literalDotFollows = false;
 };
 
 // How to read the text a %d / %D specifier produces. PatternCompiler translates

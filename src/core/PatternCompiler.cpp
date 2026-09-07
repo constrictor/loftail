@@ -54,8 +54,14 @@ constexpr QLatin1String kDefaultQtDateFormat("yyyy-MM-dd HH:mm:ss");
 // A month or weekday name. strftime renders these in the process's locale, so the
 // run is any letters rather than three ASCII ones — \p{L} and not \w, which
 // depends on how PCRE2 was built. A trailing '.' is allowed for the locales whose
-// abbreviations carry one.
+// abbreviations carry one — EXCEPT where the format spells a literal '.' straight
+// after the code, in which case that dot is the literal's and the name run is the
+// bare letters (kNameRunPlain). Both halves of the compiler's output have to give
+// the dot up together: the regex matched either way, by backtracking, while the
+// parser's readWord() ate the dot and left the Literal token facing the space
+// after it, so every record of such a log had no timestamp at all (bugs.md 42).
 constexpr QLatin1String kNameRun("\\p{L}+\\.?");
+constexpr QLatin1String kNameRunPlain("\\p{L}+");
 
 CompileError makeError(CompileError::Code code, QString message, int offset)
 {
@@ -117,7 +123,13 @@ struct DateTranslation
 // because strftime renders them in the process's locale; the parser reads English
 // and the system locale back, which is what a log written in the C locale — every
 // syslog line on the machine — needs.
-Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int baseOffset);
+// `following` is the literal character that comes straight after `fmt` in the
+// enclosing format, or a null QChar where nothing does — it exists so that a name
+// code at the very end of a composite's expansion can still see a '.' the outer
+// format spelled after the composite. No shipped expansion ends in a name code, so
+// it is the by-construction half of the rule rather than a reachable case.
+Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int baseOffset,
+                                                            QChar following = QChar());
 
 // A code that strftime defines as a shorthand for other codes. Expanding rather
 // than hand-writing each one is what keeps %T and %H:%M:%S provably identical.
@@ -136,7 +148,8 @@ QStringView expansionOf(QChar code)
     }
 }
 
-Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int baseOffset)
+Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int baseOffset,
+                                                            QChar following)
 {
     DateTranslation result;
     result.format.strftime = fmt.toString();
@@ -157,6 +170,25 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
 
     int i = 0;
     const int n = int(fmt.size());
+
+    // Does a literal '.' come straight after the two-character code starting at i?
+    // The character after it in this format, or — when the code is the last thing
+    // in it — whatever the enclosing format put after the whole fragment.
+    const auto dotFollowsCodeAt = [&](int at) {
+        const QChar next = (at + 2 < n) ? fmt[at + 2] : following;
+        return next == QLatin1Char('.');
+    };
+
+    // A month, weekday or zone name: the letters, plus the trailing '.' a locale's
+    // abbreviation may carry unless the format claims that dot for itself. The
+    // regex fragment and the token's flag are decided together here, which is what
+    // stops the two halves disagreeing.
+    const auto name = [&](DateTokenKind kind, QLatin1String qtSpelling, bool dotIsLiteral) {
+        re += dotIsLiteral ? kNameRunPlain : kNameRun;
+        qt += qtSpelling;
+        tokens.append(DateToken{kind, 0, QChar(), dotIsLiteral});
+    };
+
     while (i < n) {
         const QChar c = fmt[i];
         if (c != QLatin1Char('%')) {
@@ -185,7 +217,8 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
         // sub-code is supported, so it cannot fail — but the error is still
         // propagated rather than asserted away.
         if (const QStringView sub = expansionOf(code); !sub.isEmpty()) {
-            auto expanded = translateDateFormat(sub, baseOffset + i);
+            auto expanded = translateDateFormat(sub, baseOffset + i,
+                                                (i + 2 < n) ? fmt[i + 2] : following);
             if (!expanded)
                 return Expected<DateTranslation, CompileError>::makeError(expanded.error());
             re += expanded.value().regex;
@@ -205,14 +238,10 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
         case u'd': numeric(DateTokenKind::Day, 2, false, QLatin1String("dd")); break;
         case u'e': numeric(DateTokenKind::Day, 2, true, QLatin1String("d")); break;
         case u'b':
-        case u'h': re += kNameRun; qt += QStringLiteral("MMM");
-                   tokens.append(DateToken{DateTokenKind::MonthName, 0, QChar()}); break;
-        case u'B': re += kNameRun; qt += QStringLiteral("MMMM");
-                   tokens.append(DateToken{DateTokenKind::MonthName, 0, QChar()}); break;
-        case u'a': re += kNameRun; qt += QStringLiteral("ddd");
-                   tokens.append(DateToken{DateTokenKind::SkipWord, 0, QChar()}); break;
-        case u'A': re += kNameRun; qt += QStringLiteral("dddd");
-                   tokens.append(DateToken{DateTokenKind::SkipWord, 0, QChar()}); break;
+        case u'h': name(DateTokenKind::MonthName, QLatin1String("MMM"), dotFollowsCodeAt(i)); break;
+        case u'B': name(DateTokenKind::MonthName, QLatin1String("MMMM"), dotFollowsCodeAt(i)); break;
+        case u'a': name(DateTokenKind::SkipWord, QLatin1String("ddd"), dotFollowsCodeAt(i)); break;
+        case u'A': name(DateTokenKind::SkipWord, QLatin1String("dddd"), dotFollowsCodeAt(i)); break;
 
         // --- the time ------------------------------------------------------
         case u'H': numeric(DateTokenKind::Hour24, 2, false, QLatin1String("HH")); break;
@@ -221,10 +250,13 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
         case u'l': numeric(DateTokenKind::Hour12, 2, true,  QLatin1String("h")); break;
         case u'M': numeric(DateTokenKind::Minute, 2, false, QLatin1String("mm")); break;
         case u'S': numeric(DateTokenKind::Second, 2, false, QLatin1String("ss")); break;
+        // %p and %P are read back through the same word reader, so they take the
+        // same flag: their regex never allowed a trailing dot at all, and a parser
+        // that ate one the format had spelled would fail the Literal after it.
         case u'p': re += QStringLiteral("[AP]M"); qt += QStringLiteral("AP");
-                   tokens.append(DateToken{DateTokenKind::AmPm, 0, QChar()}); break;
+                   tokens.append(DateToken{DateTokenKind::AmPm, 0, QChar(), dotFollowsCodeAt(i)}); break;
         case u'P': re += QStringLiteral("[ap]m"); qt += QStringLiteral("ap");
-                   tokens.append(DateToken{DateTokenKind::AmPm, 0, QChar()}); break;
+                   tokens.append(DateToken{DateTokenKind::AmPm, 0, QChar(), dotFollowsCodeAt(i)}); break;
 
         // --- log4cplus's own three (src/timehelper.cxx) ---------------------
         case u'q': re += QStringLiteral("\\d{3}"); qt += QStringLiteral("zzz");
@@ -250,7 +282,7 @@ Expected<DateTranslation, CompileError> translateDateFormat(QStringView fmt, int
                    re += QStringLiteral("(?:[+-]\\d{2}:?\\d{2}|Z)"); qt += QLatin1Char('t');
                    tokens.append(DateToken{DateTokenKind::UtcOffset, 0, QChar()}); break;
         case u'Z': re += QStringLiteral("[A-Za-z][A-Za-z0-9_/+-]*"); qt += QLatin1Char('t');
-                   tokens.append(DateToken{DateTokenKind::SkipWord, 0, QChar()}); break;
+                   tokens.append(DateToken{DateTokenKind::SkipWord, 0, QChar(), dotFollowsCodeAt(i)}); break;
 
         // --- matched, but carrying nothing this parser can use ---------------
         case u'j': re += QStringLiteral("\\d{3}");
