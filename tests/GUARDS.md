@@ -129,6 +129,9 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The restart address derivation is proven with no server | M23 in CI (L81) | tst_restarttarget |
 | A mark is placed in LINE units through `LogView::scrollFractionOfRow()`, never by record index | Six density rules (L95) | tst_densitybar::aMarkSitsWhereTheScrollbarWouldPutItsRecord |
 | The `densityStrip` `QSettings` key must be removed per case, or the suite passes on test order | Six density rules (L95) | tst_densitybar::init |
+| The part of a lane the scan has not reached is washed, and the wash goes when it finishes | A bar still being scanned (L101) | tst_densitybar::theUnreachedPartOfALaneIsWashedAndTheWashGoesWhenItFinishes |
+| A finished lane leaves no wash over its last record (the watermark lands ON the row count) | A bar still being scanned (L101) | tst_densitybar::aFinishedLaneLeavesNoWashOverTheLastRecord |
+| While the rule lane is incomplete the columns are allocated from the rules that could still fire | A bar still being scanned (L101) | tst_densitybar::aScanStillRunningGivesEveryRuleThatCouldFireAColumn |
 | The arrow buttons' width cap is a `setMaximumWidth` and nothing else, with no `QSizePolicy::Ignored` | Copy button row (L103) | tst_highlighterpane::theCopyButtonRidesTheRowTheArrowsPaidFor |
 | The height is capped too, to the worded neighbour's own hint | Copy button row (L103) | tst_highlighterpane::theCopyButtonRidesTheRowTheArrowsPaidFor |
 | Both numbers are measured from the neighbouring button and from the style, never written down | Copy button row (L103) | tst_highlighterpane::theCopyButtonRidesTheRowTheArrowsPaidFor |
