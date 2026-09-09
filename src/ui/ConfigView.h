@@ -106,8 +106,20 @@ public:
     // — there is nothing in it yet to edit, and letting somebody type into a buffer that
     // is about to be replaced would throw their work away — and Save is unavailable
     // during a write, which is what stops two writes racing for one file.
+    //
+    // WHERE it says so follows LogView, deliberately: a page with nothing in it yet says
+    // why in the MIDDLE of the empty area (LogView::setPlaceholderText's rule and its
+    // wording), because that is what a reader looking at a blank page is looking at. A
+    // save happens with the file on screen, so it has no empty area to speak into and
+    // keeps the header strip — the same split LogView makes between its placeholder and
+    // the status bar. Both are cleared by setBusy(false).
     void setBusy(bool busy, const QString &what);
     bool isBusy() const { return m_busy; }
+
+    // What is drawn centred over the empty text area, LogView's peer. Empty whenever
+    // there is text on screen, which is what keeps it from ever painting over the file.
+    // Public for the tests, which can read a string and cannot read a painted glyph.
+    const QString &placeholderText() const { return m_placeholder; }
 
     // The document's revision when a write was started. Clearing the modified flag on a
     // reply is only honest if nothing was typed in the meantime, so the reply compares
@@ -139,6 +151,11 @@ private:
     // encodes and what bytesToSave() compares the encoding against.
     QString saveText() const;
 
+    // The one way the centred notice moves — it lives in two places (here, for the
+    // tests and for the change guard, and on the edit, which paints it), and a second
+    // writer is how the two come to disagree.
+    void setPlaceholder(const QString &text);
+
     void updatePathLabel();
     void updateSyntaxLabel();
 
@@ -153,6 +170,7 @@ private:
     QVBoxLayout       *m_layout = nullptr;
 
     bool         m_busy = false;
+    QString      m_placeholder; // drawn centred when the buffer is empty (see setBusy)
     bool         m_existed = false;
     bool         m_syntaxChosen = false;
     bool         m_syntaxSniffed = false;

@@ -31,12 +31,14 @@
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QTextDocument>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
+#include <functional>
 #include <utility>
 
 namespace loftail {
@@ -58,8 +60,27 @@ class WheelFilteringEdit : public QPlainTextEdit
 public:
     using QPlainTextEdit::QPlainTextEdit;
     std::function<void(int)> onZoomStep;
+    // What an EMPTY buffer says instead of showing a blank page, drawn exactly as
+    // LogView draws its own — centred, muted, word-wrapped. Held here rather than set
+    // through QPlainTextEdit::setPlaceholderText, which Qt draws at the top left corner
+    // against the text's own margins: WHERE it appears is the whole of what is aligned.
+    QString centredNotice;
 
 protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QPlainTextEdit::paintEvent(event);
+        // Only over an empty buffer, which is LogView's rule for its placeholder and is
+        // what keeps this from ever being drawn across the file. Not a guard on the
+        // caller's behalf — ConfigView never sets the string with text on screen — but
+        // on the buffer's, which a reply can fill while the notice still stands.
+        if (centredNotice.isEmpty() || !document()->isEmpty())
+            return;
+        QPainter p(viewport());
+        p.setPen(mutedColor(palette()));
+        p.drawText(viewport()->rect(), Qt::AlignCenter | Qt::TextWordWrap, centredNotice);
+    }
+
     void wheelEvent(QWheelEvent *event) override
     {
         if (event->modifiers().testFlag(Qt::ControlModifier)) {
@@ -215,6 +236,10 @@ QString ConfigView::displayName() const
 void ConfigView::setContents(const QByteArray &bytes, bool existed)
 {
     m_existed = existed;
+    // The page is about to have a file in it, so whatever it was saying about not having
+    // one yet is spent. Cleared here as well as in setBusy() because this is the one
+    // place the buffer stops being empty without anybody having asked it to.
+    setPlaceholder(QString());
 
     // Read through the SAME detection every log goes through — BOM decisive, then the
     // NUL-frequency heuristic, then UTF-8 validation. A config file's encoding is NOT
@@ -356,17 +381,37 @@ void ConfigView::setBusy(bool busy, const QString &what)
 {
     m_busy = busy;
     m_edit->setReadOnly(busy);
-    if (busy) {
-        // The page's own notice rather than the status bar: a connect can take twenty
-        // seconds, and the status bar is rewritten on every ingest tick of every log.
-        m_notice->setText(what);
-        QPalette p = m_notice->palette();
-        // The ORDINARY text colour, not the error colour showNotice() uses — "connecting"
-        // is not a failure, and painting it red would say the open had already gone wrong.
-        p.setColor(QPalette::WindowText, mutedColor(palette()));
-        m_notice->setPalette(p);
-        m_notice->show();
+    if (!busy) {
+        setPlaceholder(QString());
+        return;
     }
+
+    // The page's own surface rather than the status bar either way: a connect can take
+    // twenty seconds, and the status bar is rewritten on every ingest tick of every log.
+    // WHICH surface is decided by whether there is anything on screen to speak around —
+    // LogView's own split between its centred placeholder and everything else, and the
+    // whole of what makes an editor's connect look like a log's.
+    if (m_edit->document()->isEmpty()) {
+        setPlaceholder(what);
+        return;
+    }
+
+    m_notice->setText(what);
+    QPalette p = m_notice->palette();
+    // The ORDINARY text colour, not the error colour showNotice() uses — "connecting"
+    // is not a failure, and painting it red would say the open had already gone wrong.
+    p.setColor(QPalette::WindowText, mutedColor(palette()));
+    m_notice->setPalette(p);
+    m_notice->show();
+}
+
+void ConfigView::setPlaceholder(const QString &text)
+{
+    if (m_placeholder == text)
+        return;
+    m_placeholder = text;
+    static_cast<WheelFilteringEdit *>(m_edit)->centredNotice = text;
+    m_edit->viewport()->update();
 }
 
 int ConfigView::revision() const

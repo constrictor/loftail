@@ -22,6 +22,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QFile>
+#include <QFontDatabase>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -83,6 +84,7 @@ private slots:
     void closingAnEditorTabWorksAndDoesNotDisturbTheLogs();
     void anEditorTabComesBackInPlaceAfterARelaunch();
     void cancellingTheUnsavedPromptAbortsTheQuitAndWritesNoSession();
+    void aConnectSaysSoInTheMiddleOfTheEmptyPageAndASaveInTheStrip();
     void aRemoteConfigPutsItsTabUpBeforeTheFarEndAnswers();
     void closingATabMidConnectDoesNotWaitForIt();
     void aRemoteEditorTabComesBackAfterARelaunch();
@@ -699,6 +701,71 @@ static QString blackHoleConfig()
 }
 #endif
 
+void TestConfigEditor::aConnectSaysSoInTheMiddleOfTheEmptyPageAndASaveInTheStrip()
+{
+    // Driven on the page itself rather than over a network: what is being pinned is
+    // WHERE the two kinds of busy message go, which needs no far end at all — and the
+    // remote case above cannot reach the save half, its connect never having finished.
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no font database; nothing would be drawn to measure");
+
+    ConfigView view(QStringLiteral("/etc/log4cplus.properties"));
+    view.resize(600, 400);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto *notice = view.findChild<QLabel *>(QStringLiteral("configNotice"));
+    QVERIFY(notice);
+    QWidget *viewport = view.editor()->viewport();
+
+    // Nothing in the buffer: the sentence goes in the MIDDLE of the empty area, which is
+    // LogView's rule for a log that is not there yet, and the header strip stays away.
+    view.setBusy(true, QStringLiteral("Connecting to host…"));
+    QCOMPARE(view.placeholderText(), QStringLiteral("Connecting to host…"));
+    QVERIFY(!notice->isVisible());
+
+    // The PIXEL half, which is the one nothing else can see: no assertion about a string
+    // can tell a centred notice from one drawn where Qt's own placeholder goes, at the
+    // top left corner. Measured as a band rather than as a coordinate, because where the
+    // ink falls inside the middle third moves with the style and the interface font.
+    QImage shot = viewport->grab().toImage();
+    QVERIFY(!shot.isNull());
+    const QRgb blank = shot.pixel(2, 2);
+    int firstInked = -1;
+    int lastInked = -1;
+    for (int y = 0; y < shot.height(); ++y) {
+        bool inked = false;
+        for (int x = 0; x < shot.width() && !inked; ++x)
+            inked = shot.pixel(x, y) != blank;
+        if (inked) {
+            if (firstInked < 0)
+                firstInked = y;
+            lastInked = y;
+        }
+    }
+    QVERIFY2(firstInked >= 0, "the notice was not drawn at all");
+    const int middle = (firstInked + lastInked) / 2;
+    QVERIFY2(middle > shot.height() / 3 && middle < 2 * shot.height() / 3,
+             qPrintable(QStringLiteral("ink centred on row %1 of %2")
+                            .arg(middle)
+                            .arg(shot.height())));
+
+    view.setBusy(false, QString());
+    QVERIFY(view.placeholderText().isEmpty());
+
+    // With the file on screen there is no empty area to speak into, so a save keeps the
+    // strip — and nothing is painted over the text, which is the half that would make
+    // the alignment a regression rather than a fix.
+    view.setContents(QByteArray("one=1\ntwo=2\n"), /*existed=*/true);
+    view.setBusy(true, QStringLiteral("Saving…"));
+    QVERIFY(view.placeholderText().isEmpty());
+    QVERIFY(notice->isVisible());
+    QCOMPARE(notice->text(), QStringLiteral("Saving…"));
+
+    view.setBusy(false, QString());
+    QVERIFY(view.placeholderText().isEmpty());
+}
+
 void TestConfigEditor::aRemoteConfigPutsItsTabUpBeforeTheFarEndAnswers()
 {
 #if !defined(LOFTAIL_HAVE_SSH)
@@ -725,10 +792,14 @@ void TestConfigEditor::aRemoteConfigPutsItsTabUpBeforeTheFarEndAnswers()
     // even a connect that fails instantly reports through a queued call, which cannot
     // have been delivered before this line runs.
     QVERIFY(view->isBusy());
+    // IN THE MIDDLE OF THE EMPTY PAGE, which is where LogView says the same kind of
+    // thing about a log that is not there yet — and NOT in the header strip, which is
+    // where this used to be and which is what put an editor's connect and a log's in two
+    // different places on one window.
+    QVERIFY(!view->placeholderText().isEmpty());
     auto *notice = view->findChild<QLabel *>(QStringLiteral("configNotice"));
     QVERIFY(notice);
-    QVERIFY(notice->isVisible());
-    QVERIFY(!notice->text().isEmpty());
+    QVERIFY(!notice->isVisible());
 
     // The text is not editable while there is nothing in it yet — typing into a buffer
     // about to be replaced by the file would throw the work away.
