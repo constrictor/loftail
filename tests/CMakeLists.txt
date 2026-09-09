@@ -408,6 +408,16 @@ endif()
 # server, since a QSKIP is a zero exit status. What is still verified only by hand is
 # what no container supplies — password and keyboard-interactive auth, an agent, a
 # host-key prompt, and a real network.
+if(LOFTAIL_HAVE_SSH AND NOT WIN32)
+    # The TCP half of SshSession::connectTo(), with no server of any kind: what the
+    # connect does before libssh2 is reached had no coverage that ever ran, tst_sshlive
+    # being skipped everywhere but the three-container harness. POSIX only, because the
+    # fixture is a raw listening socket whose accept queue is deliberately full.
+    qt_add_executable(tst_sshconnect tst_sshconnect.cpp)
+    target_link_libraries(tst_sshconnect PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_sshconnect COMMAND tst_sshconnect)
+endif()
+
 if(LOFTAIL_HAVE_SSH)
     qt_add_executable(tst_sshlive tst_sshlive.cpp)
     target_link_libraries(tst_sshlive PRIVATE loftail_core Qt6::Test)

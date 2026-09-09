@@ -19,7 +19,9 @@
 #include <QtTest>
 
 #include <QByteArray>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QProcess>
 #include <QProcessEnvironment>
 
@@ -43,6 +45,8 @@
 #include "SshSession.h"
 #include "SshSessionCache.h"
 #include "SshWorkerPool.h"
+
+#include "FakeSecretStore.h"
 
 using namespace loftail;
 
@@ -74,6 +78,7 @@ class TestSshLive : public QObject
 private:
     QString m_url;
     QString m_remotePath;
+    QByteArray m_realHome;
     RemoteLocation m_location;
 
     // Runs a command on the remote host over the system ssh client. Used only to SET
@@ -213,6 +218,94 @@ private:
         return ssh.exitStatus() == QProcess::NormalExit && ssh.exitCode() == 0;
     }
 
+
+// A PROMPTER THAT ANSWERS FROM A SCRIPT AND RECORDS WHAT IT WAS ASKED.
+//
+// The two questions a first connect asks — "do you trust this host key?" and "what is
+// the password?" — are the whole of what the user sees on it, and nothing in the tree
+// had ever driven either against a real server: every other case here passes nullptr,
+// which is what an unattended retry does. The GUI's own prompter is a dialog and cannot
+// run here; this is the same interface with the dialogs replaced by a script, which is
+// exactly the seam SshPrompter exists to be.
+class ScriptedPrompter final : public SshPrompter
+{
+public:
+    HostKeyChoice hostKeyAnswer = HostKeyChoice::AcceptAndRemember;
+    QString       passwordAnswer;
+    bool          rememberAnswer = false;
+    bool          cancelPassword = false;
+
+    int         hostKeyAsks = 0;
+    HostKeyInfo lastHostKey;
+    int         passwordAsks = 0;
+    QString     lastPasswordTarget;
+    int         acceptedCount = 0;
+    QString     acceptedTarget;
+    QString     acceptedPassword;
+    bool        acceptedRemember = false;
+
+    HostKeyChoice confirmHostKey(const HostKeyInfo &info) override
+    {
+        ++hostKeyAsks;
+        lastHostKey = info;
+        return hostKeyAnswer;
+    }
+
+    bool askPassword(const QString &target, const QString &, QString *password,
+                     bool *remember) override
+    {
+        ++passwordAsks;
+        lastPasswordTarget = target;
+        if (cancelPassword)
+            return false;
+        *password = passwordAnswer;
+        *remember = rememberAnswer;
+        return true;
+    }
+
+    void passwordAccepted(const QString &target, const QString &password,
+                          bool remember) override
+    {
+        ++acceptedCount;
+        acceptedTarget = target;
+        acceptedPassword = password;
+        acceptedRemember = remember;
+    }
+
+    void progress(const QString &) override {}
+};
+
+// A HOME NOTHING HAS EVER CONNECTED FROM, which is the only way to reach the first-ever
+// connect: loftail reads known_hosts and the default key files through
+// QStandardPaths::HomeLocation, i.e. $HOME, so pointing that at an empty directory makes
+// this run the first one as far as the transport is concerned. It is also what keeps a
+// case that ACCEPTS a host key from writing into the developer's real ~/.ssh.
+//
+// `withIdentity` copies the client key in, because the host-key question and the
+// password question are separate cases and only the second one wants the ladder to run
+// out of keys.
+static bool useFreshHome(QTemporaryDir *scratch, bool withIdentity)
+{
+    if (!scratch->isValid())
+        return false;
+    const QString ssh = scratch->path() + QStringLiteral("/.ssh");
+    if (!QDir().mkpath(ssh))
+        return false;
+    QFile::setPermissions(ssh, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    if (withIdentity) {
+        const QString from = QDir::homePath() + QStringLiteral("/.ssh/");
+        for (const QString &name : {QStringLiteral("id_ed25519"),
+                                    QStringLiteral("id_ed25519.pub")}) {
+            if (QFile::exists(from + name) && !QFile::copy(from + name, ssh + u'/' + name))
+                return false;
+        }
+        QFile::setPermissions(ssh + QStringLiteral("/id_ed25519"),
+                              QFile::ReadOwner | QFile::WriteOwner);
+    }
+    qputenv("HOME", QFile::encodeName(scratch->path()));
+    return true;
+}
+
 private slots:
     void initTestCase();
     void cleanup();
@@ -220,6 +313,17 @@ private slots:
     void followsAppendsFromTheRealServer();
     void detectsRealRotation();
     void reportsAnUnreachableHostClearly();
+
+    // THE FIRST-EVER CONNECT (§6.3, §6.3.2). Everything else in this file connects with
+    // a null prompter to a host already in known_hosts, which is the second connect and
+    // every connect after it — so the two questions a person is actually asked had no
+    // coverage at all, on the one gesture where they are both asked at once. Reported as
+    // "loftail says socket operation timed out instead of confirming the ssh key and
+    // asking for a password"; the socket half is guarded by tst_socketdetach and
+    // tst_sshconnect, and this is the half above it.
+    void aFirstConnectAsksAboutTheHostKeyAndRemembersIt();
+    void aRejectedHostKeySendsNoCredential();
+    void aFirstConnectAsksForThePasswordWhenNoKeyAnswers();
     void theExecFallbackReadsTheSameBytes();
     void theExecFallbackSizesWithoutStat();
 
@@ -277,6 +381,10 @@ void TestSshLive::initTestCase()
     // No prompter: authentication must be non-interactive, so a wedged test cannot
     // sit forever waiting for a dialog nobody is looking at.
     setSshPrompter(nullptr);
+    // Put back by cleanup(): the first-connect cases move HOME to reach a machine that
+    // has never been connected to, and everything else here needs the real one — its
+    // key is what every other case authenticates with.
+    m_realHome = qgetenv("HOME");
     QVERIFY2(remoteShell(QStringLiteral("true")),
              "Cannot reach the test host non-interactively (agent or key auth needed)");
 }
@@ -673,6 +781,139 @@ void TestSshLive::sequentialReadsLandWhereTheyAskedWithNoSeekBetweenThem()
 void TestSshLive::cleanup()
 {
     SourceSpoolRegistry::instance().clear();
+    // Both process globals a first-connect case moves. The credential cache in
+    // particular is what makes "asked once per host per session" true in production, so
+    // a case that leaves a password in it silently answers the next case's question.
+    if (!m_realHome.isEmpty())
+        qputenv("HOME", m_realHome);
+    SshCredentialCache::clear();
+    setSecretStore(nullptr);
+}
+
+void TestSshLive::aFirstConnectAsksAboutTheHostKeyAndRemembersIt()
+{
+    // A HOST THIS MACHINE HAS NEVER SEEN. Before any credential is sent, the transport
+    // must ask about the key — and what it asks with has to be the thing a person can
+    // check against `ssh-keygen -lf` on the server, which is why the fingerprint's
+    // spelling is asserted rather than just its presence.
+    QTemporaryDir scratch;
+    QVERIFY(useFreshHome(&scratch, true));
+
+    ScriptedPrompter prompter;
+    prompter.hostKeyAnswer = SshPrompter::HostKeyChoice::AcceptAndRemember;
+
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(m_location, &prompter, 20000, &error), qPrintable(error));
+
+    QCOMPARE(prompter.hostKeyAsks, 1);
+    QCOMPARE(prompter.lastHostKey.host, m_location.host);
+    QCOMPARE(prompter.lastHostKey.port, m_location.port);
+    QVERIFY(!prompter.lastHostKey.mismatch);
+    QVERIFY(!prompter.lastHostKey.keyType.isEmpty());
+    QVERIFY2(prompter.lastHostKey.fingerprintSha256.startsWith(QStringLiteral("SHA256:")),
+             qPrintable(prompter.lastHostKey.fingerprintSha256));
+    session.close();
+
+    // "Remember" means the file OpenSSH would have written, in the home the transport
+    // was told about — which is also the assertion that it wrote nowhere else.
+    const QString knownHosts = scratch.path() + QStringLiteral("/.ssh/known_hosts");
+    QVERIFY2(QFile::exists(knownHosts), "AcceptAndRemember wrote no known_hosts");
+    QFile file(knownHosts);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QByteArray written = file.readAll();
+    QVERIFY(written.contains(m_location.host.toUtf8()));
+
+    // And the second connect is silent, which is the whole point of having remembered:
+    // a prompter asked again here would be one asked on every open for ever.
+    ScriptedPrompter again;
+    SshSession second;
+    QVERIFY2(second.connectTo(m_location, &again, 20000, &error), qPrintable(error));
+    QCOMPARE(again.hostKeyAsks, 0);
+}
+
+void TestSshLive::aRejectedHostKeySendsNoCredential()
+{
+    // The refusal, which is the reason the question is asked before authentication and
+    // not after: a password must never reach a server whose key was not accepted.
+    QTemporaryDir scratch;
+    QVERIFY(useFreshHome(&scratch, true));
+
+    ScriptedPrompter prompter;
+    prompter.hostKeyAnswer = SshPrompter::HostKeyChoice::Reject;
+
+    SshSession session;
+    QString error;
+    SshSession::Failure failure = SshSession::Failure::None;
+    QVERIFY(!session.connectTo(m_location, &prompter, 20000, &error, &failure));
+    QCOMPARE(prompter.hostKeyAsks, 1);
+    QCOMPARE(prompter.passwordAsks, 0);
+    QVERIFY(!error.isEmpty());
+    // Nothing was remembered about a host that was refused.
+    QVERIFY(!QFile::exists(scratch.path() + QStringLiteral("/.ssh/known_hosts")));
+}
+
+void TestSshLive::aFirstConnectAsksForThePasswordWhenNoKeyAnswers()
+{
+    // THE OTHER HALF OF THE FIRST CONNECT, and the rung nothing else in the tree
+    // executes: every other case here authenticates with a key, and the unattended path
+    // bails with NeedsPerson before it can ever be reached (§6.5). What a fake cannot
+    // stand in for is the server — whether libssh2's password rung, or the
+    // keyboard-interactive one it falls through to, is what this sshd actually accepts.
+    //
+    // GATED on the harness having given the account a password: the reference server is
+    // key-only, since a password method offered to a run with no prompter is somewhere
+    // for a wedged test to hang rather than a clear refusal.
+    const QString password = QProcessEnvironment::systemEnvironment().value(
+        QStringLiteral("LOFTAIL_TEST_SSH_PASSWORD"));
+    if (password.isEmpty())
+        QSKIP("Set LOFTAIL_TEST_SSH_PASSWORD to the account's password to run this. "
+              "packaging/test-ssh/run-ssh-tests.sh does it for the stock server.");
+
+    // No identity in it, so the agent and key rungs find nothing and the ladder reaches
+    // the prompter — which is what a machine somebody has just been given access to
+    // looks like.
+    QTemporaryDir scratch;
+    QVERIFY(useFreshHome(&scratch, false));
+    SshCredentialCache::clear();
+
+    // A keychain read sits between the key files and the prompt, and on a developer's
+    // box it can raise an unlock dialog for a credential nothing has stored. Answering
+    // it here keeps this case about the server.
+    FakeSecretStore store;
+    store.setAvailable(false);
+    setSecretStore(&store);
+
+    ScriptedPrompter prompter;
+    prompter.hostKeyAnswer = SshPrompter::HostKeyChoice::AcceptOnce;
+    prompter.passwordAnswer = password;
+    prompter.rememberAnswer = true;
+
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(m_location, &prompter, 20000, &error), qPrintable(error));
+
+    QCOMPARE(prompter.hostKeyAsks, 1);
+    QCOMPARE(prompter.passwordAsks, 1);
+    QCOMPARE(prompter.lastPasswordTarget, m_location.target());
+
+    // Told once, and only after the server said yes — the prompter decides where a
+    // remembered password goes, so this call is the whole of that seam (SshPrompter.h).
+    QCOMPARE(prompter.acceptedCount, 1);
+    QCOMPARE(prompter.acceptedTarget, m_location.target());
+    QCOMPARE(prompter.acceptedPassword, password);
+    QCOMPARE(prompter.acceptedRemember, true);
+
+    // AcceptOnce remembered nothing, which is the difference between the two answers.
+    QVERIFY(!QFile::exists(scratch.path() + QStringLiteral("/.ssh/known_hosts")));
+
+    // And the password is not asked for twice on one host in one session, which is what
+    // makes opening a second log there silent.
+    ScriptedPrompter again;
+    again.hostKeyAnswer = SshPrompter::HostKeyChoice::AcceptOnce;
+    SshSession second;
+    QVERIFY2(second.connectTo(m_location, &again, 20000, &error), qPrintable(error));
+    QCOMPARE(again.passwordAsks, 0);
 }
 
 void TestSshLive::connectsAndReadsTheRemoteFile()

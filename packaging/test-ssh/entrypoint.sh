@@ -30,11 +30,16 @@
 #   LOFTAIL_WITH_STAT      "no" deletes `stat` from every directory on PATH, which is
 #                          the stripped-down image ExecSizeProbe's ls/wc rungs exist
 #                          for (ARCHITECTURE.md §6.3.1).
+#   LOFTAIL_PASSWORD       when set, gives the account this password and turns
+#                          PasswordAuthentication on. Empty (the default) leaves the
+#                          server key-only, which is what every case with no prompter
+#                          needs — see the PasswordAuthentication line below.
 set -eu
 
 : "${LOFTAIL_CLIENT_PUBKEY:?the client public key must be passed in}"
 with_sftp=${LOFTAIL_WITH_SFTP:-yes}
 with_stat=${LOFTAIL_WITH_STAT:-yes}
+password=${LOFTAIL_PASSWORD:-}
 
 home=/home/loftail
 mkdir -p "$home/.ssh"
@@ -48,6 +53,16 @@ chmod 600 "$home/.ssh/authorized_keys"
 # private key in the repository and no ssh-keyscan race — and a bind-mounted host key
 # would arrive owned by the host's uid, which sshd refuses to use.
 ssh-keygen -A >/dev/null
+
+# The account is created with `*` in /etc/shadow — no password will ever match — which
+# is what a key-only account wants and what has to be undone to offer one.
+if [ -n "$password" ]; then
+    if ! command -v chpasswd >/dev/null 2>&1; then
+        echo "loftail-sshd: LOFTAIL_PASSWORD was set but this image has no chpasswd" >&2
+        exit 1
+    fi
+    printf 'loftail:%s\n' "$password" | chpasswd
+fi
 
 if [ "$with_stat" != yes ]; then
     # Every directory on PATH, not a written-down /usr/bin/stat: it is a coreutils
@@ -67,9 +82,16 @@ conf=/etc/ssh/sshd_config.loftail
     echo "PermitRootLogin no"
     echo "PubkeyAuthentication yes"
     echo "AuthorizedKeysFile .ssh/authorized_keys"
-    # Key auth only. tst_sshlive installs no prompter, so a server that offered a
-    # password would give a wedged run somewhere to hang rather than a clear refusal.
-    echo "PasswordAuthentication no"
+    # Key auth by default: most of tst_sshlive installs no prompter, so a server that
+    # offered a password would give a wedged run somewhere to hang rather than a clear
+    # refusal. LOFTAIL_PASSWORD turns it on for the one server whose run drives the
+    # password rung with a scripted prompter — the only execution there is of the branch
+    # a person actually meets on a machine they have just been given access to.
+    if [ -n "$password" ]; then
+        echo "PasswordAuthentication yes"
+    else
+        echo "PasswordAuthentication no"
+    fi
     echo "KbdInteractiveAuthentication no"
     echo "UsePAM no"
     # So that compressionIsNegotiatedWhenTheHostAsksForItAndNotOtherwise() has a server

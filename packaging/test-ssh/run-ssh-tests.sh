@@ -217,7 +217,7 @@ echo "==> Building images"
 
 start_server()
 {
-    local name=$1 image=$2 port=$3 with_sftp=$4 with_stat=$5
+    local name=$1 image=$2 port=$3 with_sftp=$4 with_stat=$5 password=${6:-}
 
     "$docker" rm -f "$name" >/dev/null 2>&1 || true
     # No --rm: a server that dies on startup must leave its logs behind to be read.
@@ -226,6 +226,7 @@ start_server()
         -e "LOFTAIL_CLIENT_PUBKEY=$pubkey" \
         -e "LOFTAIL_WITH_SFTP=$with_sftp" \
         -e "LOFTAIL_WITH_STAT=$with_stat" \
+        -e "LOFTAIL_PASSWORD=$password" \
         "$image" >/dev/null
 
     # The host key is read out of the container rather than scanned off the port: it is
@@ -262,8 +263,15 @@ start_server()
     exit 1
 }
 
+# Generated per run, like the client key and for the same reason. It reaches exactly one
+# server and exactly one case: aFirstConnectAsksForThePasswordWhenNoKeyAnswers(), which
+# is the only place the password rung of the auth ladder is ever executed — every other
+# case here signs in with a key, and the unattended path bails before it can be reached.
+account_password=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
+
 echo "==> Starting servers"
-start_server loftail-sshd-sftp loftail-sshd-ubuntu:test "$sftp_port" yes yes
+start_server loftail-sshd-sftp loftail-sshd-ubuntu:test "$sftp_port" yes yes \
+    "$account_password"
 start_server loftail-sshd-nosftp loftail-sshd-ubuntu:test "$nosftp_port" no yes
 start_server loftail-sshd-busybox loftail-sshd-busybox:test "$busybox_port" yes no
 
@@ -304,6 +312,11 @@ run_case()
     if [ -n "$exec_url" ]; then
         env_extra+=("LOFTAIL_TEST_SSH_EXEC_URL=$exec_url")
     fi
+    # Only the run whose server was given one, and the case is gated on it: a password
+    # offered to a run with no prompter is somewhere for a wedged test to hang.
+    if [ -n "${case_password:-}" ]; then
+        env_extra+=("LOFTAIL_TEST_SSH_PASSWORD=$case_password")
+    fi
 
     echo
     echo "==> $label: $url"
@@ -326,12 +339,17 @@ busybox_url="ssh://loftail@127.0.0.1:$busybox_port/tmp/loftail-test.log"
 # Run A — everything, against the ordinary server, with the exec host named so that
 # theExecStreamServesAForwardWalkFromOneChannel() (which needs BOTH: an SFTP main host
 # for the rest of the file and an SFTP-less one of its own) is reachable.
+case_password=$account_password
 run_case sftp "$sftp_url" "$nosftp_exec_url"
+case_password=
 require_ran "$last_log" \
     connectsAndReadsTheRemoteFile \
     followsAppendsFromTheRealServer \
     detectsRealRotation \
     reportsAnUnreachableHostClearly \
+    aFirstConnectAsksAboutTheHostKeyAndRemembersIt \
+    aRejectedHostKeySendsNoCredential \
+    aFirstConnectAsksForThePasswordWhenNoKeyAnswers \
     theExecFallbackReadsTheSameBytes \
     theExecFallbackSizesWithoutStat \
     theExecStreamServesAForwardWalkFromOneChannel \
