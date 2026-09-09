@@ -234,6 +234,16 @@ chmod +x "$scratch/bin/ssh"
 run_env=(env -u SSH_AUTH_SOCK "HOME=$scratch/home" "PATH=$scratch/bin:$PATH"
     QT_QPA_PLATFORM=offscreen)
 
+# So that `--build build-asan` simply works. Running this harness against a sanitizer
+# build is worth being able to do — it is the only way the libssh2 transport is ever
+# executed under ASan at all, neither CI job doing both — and without the suppression file
+# it goes red on a leak inside libssh2's own SFTP init against the blackhole server, which
+# tests/lsan.supp explains and which nothing here can free. Not forced: a caller who has
+# set LSAN_OPTIONS meant it.
+if [ -z "${LSAN_OPTIONS:-}" ] && [ -f "$here/../../tests/lsan.supp" ]; then
+    run_env+=("LSAN_OPTIONS=suppressions=$(cd -- "$here/../.." && pwd)/tests/lsan.supp")
+fi
+
 # --- images and servers -------------------------------------------------------------
 
 echo "==> Building images"

@@ -29,3 +29,27 @@ leak:px_proxy_factory_new
 leak:px_manager_new_with_options
 leak:libpxbackend-1.0.so
 leak:QNetworkProxyFactory::systemProxyForQuery
+
+# --- libssh2, on the SFTP init that a black-hole server never answers -------
+#
+# A server that ACCEPTS the `sftp` subsystem channel with nothing behind it (§6.3.1 —
+# a generic sshd config on a stripped-down image, and the `blackhole` container that
+# stands for one) makes libssh2_sftp_init() build its LIBSSH2_SFTP state, wait out the
+# whole session timeout for a version packet that is never coming, and return NULL.
+# The state it built is not freed: 48 bytes plus a 5-byte indirect, under
+# libssh2_sftp_init with nothing of loftail's below it.
+#
+# THERE IS NOTHING TO CALL. libssh2_sftp_shutdown() needs a handle and the caller was
+# given none; libssh2_session_free() does not reclaim it either, which is not an
+# assumption — SshSession::close() runs on this path in the very case that reports the
+# leak, and the report survives it. So this meets the file's own bar exactly: made and
+# lost inside the library, with no loftail frame that could free it.
+#
+# Bounded and small in practice — 53 bytes per LogTransport connect to such a server,
+# and Need::ExecOnly (§6.3) means an errand never pays it at all. It is visible only
+# against the `blackhole` container, i.e. only since there was one; the ordinary no-SFTP
+# server does not reach it, its init failing fast on a refused channel rather than on a
+# timeout. Neither CI job sees it — the sanitizer job has no server and the ssh-live job
+# is not an ASan build — so this exists for the person who runs
+# packaging/test-ssh/run-ssh-tests.sh --build build-asan, which is worth being able to do.
+leak:libssh2_sftp_init
