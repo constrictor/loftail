@@ -18,6 +18,7 @@
 
 #include <QtTest>
 
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -29,6 +30,8 @@
 #  include <winsock2.h>
 #else
 #  include <sys/socket.h>
+#  include <netinet/in.h>
+#  include <fcntl.h>
 #  include <unistd.h>
 #  include <cerrno>
 #endif
@@ -70,6 +73,71 @@ private:
         m_peer = m_server.nextPendingConnection();
         return m_peer != nullptr;
     }
+
+#if !defined(Q_OS_WIN)
+    // A PORT WHOSE ACCEPT QUEUE IS FULL, so that a connect to it STALLS instead of being
+    // refused or accepted: the kernel has nowhere to put the connection, drops the SYN,
+    // and the client retries about a second later. That is a connect slower than one
+    // slice of anybody's connect loop, built out of loopback and a listen backlog — no
+    // network, no unreachable address, no timing luck, and nothing that depends on how
+    // busy the runner is.
+    //
+    // POSIX only: it needs the raw listening socket, because QTcpServer accepts
+    // everything that arrives and would keep the queue empty.
+    bool stallingPortOpen()
+    {
+        m_stall = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (m_stall < 0)
+            return false;
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (::bind(m_stall, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0)
+            return false;
+        socklen_t length = sizeof(address);
+        if (::getsockname(m_stall, reinterpret_cast<sockaddr *>(&address), &length) != 0)
+            return false;
+        m_stallPort = quint16(ntohs(address.sin_port));
+        // The smallest backlog the kernel will take. It is a floor rather than a
+        // promise, which is why the queue is filled by counting connections rather than
+        // by trusting this number.
+        if (::listen(m_stall, 0) != 0)
+            return false;
+        for (int i = 0; i < 8; ++i) {
+            const int filler = ::socket(AF_INET, SOCK_STREAM, 0);
+            if (filler < 0)
+                return false;
+            ::fcntl(filler, F_SETFL, O_NONBLOCK);
+            ::connect(filler, reinterpret_cast<sockaddr *>(&address), sizeof(address));
+            m_fillers.append(filler);
+        }
+        return true;
+    }
+
+    // Take one connection off the queue, which lets the next SYN retry through.
+    void freeOneStallSlot()
+    {
+        sockaddr_in from {};
+        socklen_t length = sizeof(from);
+        const int taken = ::accept(m_stall, reinterpret_cast<sockaddr *>(&from), &length);
+        if (taken >= 0)
+            m_fillers.append(taken);
+    }
+
+    void closeStallingPort()
+    {
+        for (int fd : m_fillers)
+            ::close(fd);
+        m_fillers.clear();
+        if (m_stall >= 0)
+            ::close(m_stall);
+        m_stall = -1;
+    }
+
+    int          m_stall = -1;
+    quint16      m_stallPort = 0;
+    QList<int>   m_fillers;
+#endif
 
     static void spinEventLoop(int ms)
     {
@@ -113,12 +181,19 @@ private slots:
         m_client.abort();
         m_server.close();
         m_peer = nullptr;
+#if !defined(Q_OS_WIN)
+        closeStallingPort();
+#endif
     }
 
     void qtStealsBytesFromTheDescriptorItHolds();
     void aDetachedDescriptorKeepsItsBytes();
     void aDetachedSocketIsStillTwoWay();
     void shuttingDownUnblocksAReadWithoutFreeingTheDescriptor();
+    void aTimedOutWaitForConnectedAbandonsTheAttempt();
+    void aConnectSlowerThanOneSliceStillConnects();
+    void aConnectNobodyWantsIsGivenUpBetweenSlices();
+    void aRefusedConnectIsReportedRatherThanWaitedOut();
 };
 
 void TestSocketDetach::qtStealsBytesFromTheDescriptorItHolds()
@@ -232,6 +307,124 @@ void TestSocketDetach::shuttingDownUnblocksAReadWithoutFreeingTheDescriptor()
     // Idempotent: requestStop() may well be called more than once.
     shutdownDetachedSocket(owned);
     closeDetachedSocket(owned);
+}
+
+
+// A slice of the connect wait, small enough that a whole test is bounded by the connect
+// rather than by the slicing, and far below the ~1 s a stalled SYN takes to be retried.
+static constexpr int kSliceMs = 250;
+
+void TestSocketDetach::aTimedOutWaitForConnectedAbandonsTheAttempt()
+{
+    // WHY awaitSocketConnected() EXISTS, stated as a fact about Qt — the shape of
+    // qtStealsBytesFromTheDescriptorItHolds above, one call over. If this ever starts
+    // failing, Qt has begun keeping the attempt alive across its own timeout and a
+    // connect really can be sliced with waitForConnected(), which is worth being told.
+    //
+    // Until then: the expiry does not merely report "not yet". It sets
+    // SocketTimeoutError, drops the socket to UnconnectedState and resets the socket
+    // layer, so the connection being waited for is gone and every later call returns
+    // false at once. A loop that reads that error as "still trying" therefore kills the
+    // connect after its first slice and then spins out the whole budget — which is how
+    // the first open of any host slower than 250 ms reported "Socket operation timed
+    // out" about a machine that answers ssh in 40 ms.
+#if defined(Q_OS_WIN)
+    QSKIP("needs a raw listening socket to stall a connect");
+#else
+    QVERIFY(stallingPortOpen());
+
+    QTcpSocket socket;
+    socket.connectToHost(QHostAddress(QHostAddress::LocalHost), m_stallPort);
+    QVERIFY(!socket.waitForConnected(kSliceMs));
+    QCOMPARE(socket.error(), QAbstractSocket::SocketTimeoutError);
+    QCOMPARE(socket.state(), QAbstractSocket::UnconnectedState);
+
+    // And it stays gone: the second slice does not resume anything, it answers off a
+    // socket that is no longer connecting. Immediately, which is the busy-spin.
+    QElapsedTimer spun;
+    spun.start();
+    QVERIFY(!socket.waitForConnected(kSliceMs));
+    QVERIFY2(spun.elapsed() < kSliceMs / 2,
+             "the second wait actually waited — Qt may have kept the attempt");
+#endif
+}
+
+void TestSocketDetach::aConnectSlowerThanOneSliceStillConnects()
+{
+    // THE FIX. A connect that needs several slices has to survive them, or a host that
+    // is merely not on the local network cannot be opened at all.
+#if defined(Q_OS_WIN)
+    QSKIP("needs a raw listening socket to stall a connect");
+#else
+    QVERIFY(stallingPortOpen());
+
+    QTcpSocket socket;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    socket.connectToHost(QHostAddress(QHostAddress::LocalHost), m_stallPort);
+    // Room for the connection only once the wait is under way, so it genuinely spans
+    // more than one slice however fast the runner is.
+    QTimer::singleShot(kSliceMs, this, [this] { freeOneStallSlot(); });
+
+    QCOMPARE(awaitSocketConnected(socket, 20000, kSliceMs, nullptr), SocketWait::Connected);
+    QCOMPARE(socket.state(), QAbstractSocket::ConnectedState);
+    QVERIFY2(elapsed.elapsed() > kSliceMs,
+             "the connect did not outlast a slice — the fixture stalled nothing");
+
+    // And what the SSH transport does next still works on it.
+    const qintptr owned = detachSocketFromQt(socket);
+    QVERIFY(owned >= 0);
+    closeDetachedSocket(owned);
+#endif
+}
+
+void TestSocketDetach::aConnectNobodyWantsIsGivenUpBetweenSlices()
+{
+    // Closing a tab while its host is not answering costs a slice, not the whole connect
+    // budget — which is the reason the wait is sliced at all (SshSession::connectTo).
+#if defined(Q_OS_WIN)
+    QSKIP("needs a raw listening socket to stall a connect");
+#else
+    QVERIFY(stallingPortOpen());
+
+    QTcpSocket socket;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    socket.connectToHost(QHostAddress(QHostAddress::LocalHost), m_stallPort);
+
+    bool wanted = true;
+    QTimer::singleShot(kSliceMs, this, [&wanted] { wanted = false; });
+
+    QCOMPARE(awaitSocketConnected(socket, 20000, kSliceMs, [&wanted] { return !wanted; }),
+             SocketWait::Abandoned);
+    QVERIFY2(elapsed.elapsed() < 20000 / 4, "gave up on the budget rather than on the ask");
+
+    // The budget is honoured too, and is what a host that never answers costs.
+    QTcpSocket patient;
+    elapsed.restart();
+    patient.connectToHost(QHostAddress(QHostAddress::LocalHost), m_stallPort);
+    QCOMPARE(awaitSocketConnected(patient, 3 * kSliceMs, kSliceMs, nullptr),
+             SocketWait::TimedOut);
+    QVERIFY(elapsed.elapsed() >= 3 * kSliceMs);
+#endif
+}
+
+void TestSocketDetach::aRefusedConnectIsReportedRatherThanWaitedOut()
+{
+    // The other end of it: a refusal is not a slow connect and must not be paid for as
+    // one. Qt has already phrased it, so the caller reports socket.errorString().
+    QTcpServer closed;
+    QVERIFY(closed.listen(QHostAddress::LocalHost, 0));
+    const quint16 port = closed.serverPort();
+    closed.close();
+
+    QTcpSocket socket;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    socket.connectToHost(QHostAddress(QHostAddress::LocalHost), port);
+    QCOMPARE(awaitSocketConnected(socket, 20000, kSliceMs, nullptr), SocketWait::Failed);
+    QVERIFY(elapsed.elapsed() < 20000 / 4);
+    QVERIFY(!socket.errorString().isEmpty());
 }
 
 QTEST_MAIN(TestSocketDetach)

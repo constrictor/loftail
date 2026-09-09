@@ -1314,29 +1314,40 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     // In slices rather than one wait of `timeoutMs`, so that giving up on this connect
     // costs a quarter of a second rather than the whole timeout. A host that is simply
     // not answering is the dominant case of a slow open and the one that used to make
-    // closing its tab take twenty seconds. QAbstractSocket keeps connecting through a
-    // SocketTimeoutError, so looping is the documented way to do this.
+    // closing its tab take twenty seconds.
     //
-    // BEFORE the detach below, and that ordering is not negotiable: waitForConnected()
-    // runs Qt's own machinery on this socket, which is exactly what must stop happening
-    // once SSH bytes start moving (SocketDetach.h).
+    // NOT waitForConnected(), and the comment that stood here said the opposite: Qt does
+    // NOT keep connecting through a SocketTimeoutError — the expiry resets the socket
+    // layer and the attempt is over, so every later slice returned false at once and the
+    // loop busy-spun out the whole 20 s before reporting "Socket operation timed out"
+    // about a host that answers ssh in 40 ms. Anything slower than one slice, which a
+    // cold name lookup can be by itself, could never connect at all: the first remote
+    // open on a host that is not on the local network was simply unreachable, whichever
+    // credentials it would have asked for (SocketDetach.h).
+    //
+    // BEFORE the detach below, and that ordering is not negotiable: this runs Qt's own
+    // machinery on this socket, which is exactly what must stop happening once SSH bytes
+    // start moving (SocketDetach.h).
     d->socket.connectToHost(location.host, static_cast<quint16>(location.port));
-    {
-        QElapsedTimer elapsed;
-        elapsed.start();
-        while (!d->socket.waitForConnected(kConnectSliceMs)) {
-            if (d->socket.error() != QAbstractSocket::SocketTimeoutError
-                || elapsed.elapsed() >= timeoutMs) {
-                err = Tr::tr("Cannot reach %1:%2 — %3")
-                          .arg(location.host).arg(location.port).arg(d->socket.errorString());
-                return false;
-            }
-            if (d->abandonCheck && d->abandonCheck()) {
-                err = Tr::tr("Cancelled while connecting to %1.").arg(location.host);
-                d->teardown();
-                return false;
-            }
-        }
+    switch (awaitSocketConnected(d->socket, timeoutMs, kConnectSliceMs, d->abandonCheck)) {
+    case SocketWait::Connected:
+        break;
+    case SocketWait::Failed:
+        err = Tr::tr("Cannot reach %1:%2 — %3")
+                  .arg(location.host).arg(location.port).arg(d->socket.errorString());
+        d->teardown();
+        return false;
+    case SocketWait::TimedOut:
+        // Phrased here rather than taken off the socket, which has no error to report:
+        // the attempt is still in flight and it is loftail that is giving up on it.
+        err = Tr::tr("Cannot reach %1:%2 — the connection timed out.")
+                  .arg(location.host).arg(location.port);
+        d->teardown();
+        return false;
+    case SocketWait::Abandoned:
+        err = Tr::tr("Cancelled while connecting to %1.").arg(location.host);
+        d->teardown();
+        return false;
     }
 
     if (d->abandonCheck && d->abandonCheck()) {

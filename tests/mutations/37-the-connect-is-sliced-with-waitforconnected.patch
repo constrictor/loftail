@@ -1,0 +1,85 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A CONNECT CANNOT BE SLICED WITH `waitForConnected()`"):
+#   The 250 ms connect slices are a nested QEventLoop. QTcpSocket::waitForConnected()
+#   does not keep connecting through its own timeout — the expiry resets the socket
+#   layer — so slicing with it kills the attempt after the first slice.
+#
+# GUARD: tst_socketdetach::aConnectSlowerThanOneSliceStillConnects
+#
+# SILENT WHEN BROKEN: every connect slower than one slice fails, after busy-spinning
+# out the whole 20 s budget, with Qt's own "Socket operation timed out" — which reads
+# as the network's fault. The first open of any host not on the local network is
+# unreachable and neither the host-key nor the password prompt is ever shown. No
+# container in CI can see it: loopback connects inside the first slice.
+
+diff --git a/src/core/SocketDetach.cpp b/src/core/SocketDetach.cpp
+index 29bc277..0ff45fc 100644
+--- a/src/core/SocketDetach.cpp
++++ b/src/core/SocketDetach.cpp
+@@ -38,44 +38,15 @@ SocketWait awaitSocketConnected(QTcpSocket &socket, int timeoutMs, int sliceMs,
+ {
+     QElapsedTimer elapsed;
+     elapsed.start();
+-
+-    for (;;) {
+-        // Asked FIRST, so a socket that connected or failed synchronously — a loopback
+-        // peer, a literal address, a name lookup already in the cache — never enters a
+-        // loop it would have to be woken out of.
+-        switch (socket.state()) {
+-        case QAbstractSocket::ConnectedState:
+-            return SocketWait::Connected;
+-        case QAbstractSocket::UnconnectedState:
+-            // Refused, unreachable, or a name that does not resolve. Qt has phrased it.
++    while (!socket.waitForConnected(sliceMs)) {
++        if (socket.error() != QAbstractSocket::SocketTimeoutError)
+             return SocketWait::Failed;
+-        default:
+-            break;
+-        }
+-
++        if (elapsed.elapsed() >= timeoutMs)
++            return SocketWait::TimedOut;
+         if (abandoned && abandoned())
+             return SocketWait::Abandoned;
+-
+-        const qint64 left = qint64(timeoutMs) - elapsed.elapsed();
+-        if (left <= 0)
+-            return SocketWait::TimedOut;
+-
+-        // The two signals are what makes a healthy connect cost one turn of this loop
+-        // rather than a whole slice, and the timer is what bounds a connect that is
+-        // still in flight. `errorOccurred` does not necessarily mean the attempt is
+-        // over — QAbstractSocket works through the addresses a name resolved to — so the
+-        // decision is taken off state() at the top rather than off the signal that woke
+-        // us.
+-        QEventLoop loop;
+-        const QMetaObject::Connection onConnected =
+-            QObject::connect(&socket, &QTcpSocket::connected, &loop, &QEventLoop::quit);
+-        const QMetaObject::Connection onError =
+-            QObject::connect(&socket, &QAbstractSocket::errorOccurred, &loop, &QEventLoop::quit);
+-        QTimer::singleShot(int(qMin(qint64(sliceMs), left)), &loop, &QEventLoop::quit);
+-        loop.exec();
+-        QObject::disconnect(onConnected);
+-        QObject::disconnect(onError);
+     }
++    return SocketWait::Connected;
+ }
+ 
+ qintptr detachSocketFromQt(QTcpSocket &socket)

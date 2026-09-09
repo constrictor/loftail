@@ -18,7 +18,10 @@
 
 #include "SocketDetach.h"
 
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QTcpSocket>
+#include <QTimer>
 
 #if defined(Q_OS_WIN)
 #  include <winsock2.h>
@@ -29,6 +32,51 @@
 #endif
 
 namespace loftail {
+
+SocketWait awaitSocketConnected(QTcpSocket &socket, int timeoutMs, int sliceMs,
+                                const std::function<bool()> &abandoned)
+{
+    QElapsedTimer elapsed;
+    elapsed.start();
+
+    for (;;) {
+        // Asked FIRST, so a socket that connected or failed synchronously — a loopback
+        // peer, a literal address, a name lookup already in the cache — never enters a
+        // loop it would have to be woken out of.
+        switch (socket.state()) {
+        case QAbstractSocket::ConnectedState:
+            return SocketWait::Connected;
+        case QAbstractSocket::UnconnectedState:
+            // Refused, unreachable, or a name that does not resolve. Qt has phrased it.
+            return SocketWait::Failed;
+        default:
+            break;
+        }
+
+        if (abandoned && abandoned())
+            return SocketWait::Abandoned;
+
+        const qint64 left = qint64(timeoutMs) - elapsed.elapsed();
+        if (left <= 0)
+            return SocketWait::TimedOut;
+
+        // The two signals are what makes a healthy connect cost one turn of this loop
+        // rather than a whole slice, and the timer is what bounds a connect that is
+        // still in flight. `errorOccurred` does not necessarily mean the attempt is
+        // over — QAbstractSocket works through the addresses a name resolved to — so the
+        // decision is taken off state() at the top rather than off the signal that woke
+        // us.
+        QEventLoop loop;
+        const QMetaObject::Connection onConnected =
+            QObject::connect(&socket, &QTcpSocket::connected, &loop, &QEventLoop::quit);
+        const QMetaObject::Connection onError =
+            QObject::connect(&socket, &QAbstractSocket::errorOccurred, &loop, &QEventLoop::quit);
+        QTimer::singleShot(int(qMin(qint64(sliceMs), left)), &loop, &QEventLoop::quit);
+        loop.exec();
+        QObject::disconnect(onConnected);
+        QObject::disconnect(onError);
+    }
+}
 
 qintptr detachSocketFromQt(QTcpSocket &socket)
 {
