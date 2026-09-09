@@ -280,9 +280,10 @@ private slots:
     // Run selection (SPEC.md §3a). The run-start pattern changed in the Run pane:
     // store it in the format (persist it), reconfigure the document, and re-apply.
     void onRunStartChanged(const QString &pattern, bool regex, bool caseSensitive);
-    // A run was chosen in the Run pane (RunPane::kAllRuns == all runs, kLastRun ==
-    // follow the last one): restrict the view and set follow state (follow only when
-    // viewing the newest run or all runs).
+    // A run was chosen in the Run pane (RunPane::kAllRuns == all runs, anything else an
+    // ordinal): restrict the view and set follow state (follow only when viewing the
+    // newest run or all runs). Picking the run that is LAST also arms the document's
+    // follow-the-last-run mode, which Document::selectRun() decides, not this.
     void onRunSelected(int runIndex);
 
 private:

@@ -1021,11 +1021,14 @@ bool Document::updateRunsAfterAppend(int oldRecordCount)
 
 void Document::selectRun(int index)
 {
-    // An explicit pick — including "All runs" — is the user leaving the follow mode.
-    // Picking the run that happens to be last is NOT the same as following it: the
-    // whole difference is what happens when the next run turns up.
-    m_followLastRun = false;
     m_selectedRun = (index >= 0 && index < m_runs.size()) ? index : -1;
+    // PICKING THE RUN THAT IS LAST *IS* ASKING TO FOLLOW (SPEC.md §3a), and this one
+    // statement is the whole of that rule — so the Runs pane, the record menu and a
+    // restored session cannot come to mean different things by the same gesture, and
+    // the pane needs no entry of its own for it. Anything else, "All runs" included,
+    // is a pin: the reader named a stretch of the file that is not the one being
+    // written, and nothing may move them off it.
+    m_followLastRun = (m_selectedRun >= 0 && m_selectedRun == lastRunIndex());
     recomputeViewBounds();
 }
 

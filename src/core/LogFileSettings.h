@@ -33,7 +33,7 @@ namespace loftail {
 // RunRestore carried, moved into core because they are now a STORED value and not only a
 // restore hint.
 //
-// "Follow the last" is a MODE and not a run, so it is spelled as the ABSENCE of an offset —
+// Following the newest run is a MODE and not a run, so it is spelled as the ABSENCE of an offset —
 // exactly the spelling saveSession() already used, which is why carrying it needed no new
 // vocabulary and no schema anywhere had to move. A saved session could not come back
 // pinned to a run that has since finished, and neither can a saved record.

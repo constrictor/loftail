@@ -114,9 +114,8 @@ QString runTimesText(const Document::RunStats &stats, const QTimeZone &zone)
     static const QString kStamp = QStringLiteral("yyyy-MM-dd HH:mm:ss");
     static const QString kTime  = QStringLiteral("HH:mm:ss");
 
-    // "here" and not "in this run": the same line now speaks for "All runs", where the
-    // range is the whole file, and for "Follow the last", where it is whichever run is
-    // last.
+    // "here" and not "in this run": the same line speaks for "All runs" too, where the
+    // range is the whole file.
     if (stats.firstTimestamp == Record::kNoTimestamp)
         return RunPane::tr("no timestamps here");
 
@@ -130,9 +129,9 @@ QString runTimesText(const Document::RunStats &stats, const QTimeZone &zone)
 
 // Put one row's three lines on an item: the roles the delegate composes, the one-line
 // DisplayRole fallback under them, and the tooltip that carries what the row cannot fit.
-// EVERY row goes through here — the two mode rows and the runs alike — because the three
-// lines mean the same thing on all of them and a second copy is how they start disagreeing
-// about what a span or a count is. `extraTip` is what only that kind of row can say.
+// EVERY row goes through here — "All runs" and the runs alike — because the three lines
+// mean the same thing on both and a second copy is how they start disagreeing about what
+// a span or a count is. `extraTip` is what only that kind of row can say.
 void fillRow(QListWidgetItem *item, const QString &title, const Document::RunStats &stats,
              const QTimeZone &zone, const QStringList &extraTip)
 {
@@ -164,11 +163,12 @@ void fillRow(QListWidgetItem *item, const QString &title, const Document::RunSta
 }
 
 // Draws a row as three lines — its name, the span it covers, what is outstanding in it.
-// Every row a document is behind gets them, "All runs" and "Follow the last" included: those
-// answer the same question about a moving target, and a mode row that said only its own
-// name was the one row in the list a reader could learn nothing from. What still falls
-// through to the base class is a row with NO title role, which is the two mode rows with
-// no document bound — there is nothing there to report a span or a count for.
+// Every row a document is behind gets them, "All runs" included: it answers the same
+// question about a wider target, and a mode row that said only its own name was the one
+// row in the list a reader could learn nothing from. What still falls through to the base
+// class is a row with NO title role, which is "All runs" with no document bound — there
+// is nothing there to report a span or a count for. The separator is neither, and is
+// drawn by this delegate as the one thing it is: a line.
 class RunItemDelegate : public QStyledItemDelegate
 {
 public:
@@ -176,6 +176,8 @@ public:
 
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
     {
+        if (index.data(RunPane::kSeparatorRole).isValid())
+            return {0, separatorHeight(option)};
         if (!index.data(RunPane::kRunTitleRole).isValid())
             return QStyledItemDelegate::sizeHint(option, index);
         QStyleOptionViewItem o(option);
@@ -187,6 +189,11 @@ public:
     void paint(QPainter *p, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
     {
+        if (index.data(RunPane::kSeparatorRole).isValid()) {
+            paintSeparator(p, option);
+            return;
+        }
+
         const QVariant title = index.data(RunPane::kRunTitleRole);
         if (!title.isValid()) {
             QStyledItemDelegate::paint(p, option, index);
@@ -240,6 +247,29 @@ public:
     }
 
 private:
+    // The separator's whole height, and it is derived from the font rather than written
+    // down: everything else in this list is measured that way, so a written-down gap is
+    // the one part of the row that would not grow with the interface font.
+    static int separatorHeight(const QStyleOptionViewItem &o)
+    {
+        return qMax(5, QFontMetrics(o.font).height() / 2);
+    }
+
+    // A hairline across the row, inset by the same margin the text keeps, in a colour
+    // taken from the palette — mid between Base and Text — so it lands on a dark theme
+    // as well as a light one and cannot be the invisible line QPalette::Mid is free to
+    // be. No zebra band and no selection fill: the separator is not a row a reader can
+    // reach, so drawing it as one would be a fourth kind of entry in a list of three.
+    static void paintSeparator(QPainter *p, const QStyleOptionViewItem &o)
+    {
+        const QRect r = o.rect;
+        const int y = r.top() + r.height() / 2;
+        p->save();
+        p->setPen(QPen(mutedColor(o.palette), 1));
+        p->drawLine(r.left() + kHMargin, y, r.right() - kHMargin, y);
+        p->restore();
+    }
+
     // One pitch for all three lines, taken from the taller of the two faces so the
     // bold title and the plain lines under it cannot disagree — the same rule the log
     // view's own line pitch keeps, one widget over.
@@ -415,24 +445,16 @@ void RunPane::buildUi()
     connect(m_runList, &QListWidget::currentRowChanged, this, [this](int row) {
         if (m_populating || row < 0)
             return;
-        // The follow row is the LAST one and is tested first: with no runs detected the
-        // list is the two mode rows alone, so row 1 is both "the row after the runs" and
-        // "the follow row", and reading it as a run ordinal would select run 0 of a log
-        // that has none.
-        if (row == followRow())
-            emit runSelected(kLastRun);
-        else if (row == kAllRunsRow)
+        // The separator is not selectable, so it never arrives here — but a row that is
+        // not a run must not be read as one, and this is the one place that arithmetic
+        // is written down. Picking the BOTTOM run is not a case of its own: what makes
+        // it follow is Document::selectRun(), which is also what makes the record menu
+        // and a restored session mean the same thing by it.
+        if (row == kAllRunsRow)
             emit runSelected(kAllRuns);
-        else
+        else if (row >= kFirstRunRow)
             emit runSelected(row - kFirstRunRow);
     });
-}
-
-int RunPane::followRow() const
-{
-    // Always the bottom row, however many runs the log turned out to hold — which is why
-    // it is a function and the other mode row is a constant.
-    return m_runList ? m_runList->count() - 1 : -1;
 }
 
 void RunPane::applyZebraColour()
@@ -501,32 +523,29 @@ void RunPane::rebuildRunList()
     const int scroll = m_runList->verticalScrollBar()->value();
     m_runList->clear();
 
-    // Neither mode row is a run, so both are italic for the same reason AxisEditor's
-    // "Others" is: they are the entries that say something ABOUT the list rather than
-    // name a member of it, and a log may well start a run with a line that reads like
-    // either of them.
-    QFont fixedFont = m_runList->font();
-    fixedFont.setItalic(true);
+    // "All runs" is not a run, so it is italic for the same reason AxisEditor's "Others"
+    // is: it is the entry that says something ABOUT the list rather than naming a member
+    // of it, and a log may well start a run with a line that reads like it.
+    QFont modeFont = m_runList->font();
+    modeFont.setItalic(true);
 
     // The list reads in FILE order: the whole file, then its runs oldest to newest. So
-    // "All runs" opens the list and the runs follow it — and "Follow the last", which is
-    // a standing instruction rather than a run, is added at the BOTTOM once they are all
-    // in, beside the newest run it currently resolves to and where a reader watching a
-    // live log is already looking. It is still what the pane opens on, so the default
-    // selection and the newest run are now the same end of the list rather than opposite
-    // ones (SPEC.md §3a).
-    // "All runs" opens the list; the runs follow it; "Follow the last" is added at the
-    // bottom once they are all in (see above).
+    // "All runs" opens the list and the runs follow it, with a rule drawn between them
+    // where there are any — the whole file is a different kind of answer from any one
+    // run, and a run row is three lines tall, so without the rule the top entry reads as
+    // the first of a list it is not a member of.
+    //
+    // THE BOTTOM ROW IS BOTH THE NEWEST RUN AND "keep showing whichever run is newest":
+    // there is no separate follow entry, because selecting the last run IS what asking
+    // to follow means (SPEC.md §3a).
     auto *allRuns = new QListWidgetItem(tr("All runs"), m_runList);
-    allRuns->setFont(fixedFont);
+    allRuns->setFont(modeFont);
 
-    // Both mode rows say what they will SHOW, in the three lines a run row uses, because
-    // both of them resolve to a stretch of this log and a reader picking one is asking
-    // the same question they ask of a run: what does it cover and is there anything wrong
-    // in it. "All runs" reports the file; "Follow the last" reports whichever run is last
-    // — the whole file where none has been detected, which is what that row shows there.
-    // With no document there is nothing to report, so the two stay the one-line italic
-    // entries the pane opens with rather than growing a span and a count made of nothing.
+    // "All runs" says what it will SHOW, in the three lines a run row uses, because it
+    // resolves to a stretch of this log and a reader picking it is asking the same
+    // question they ask of a run: what does it cover and is there anything wrong in it.
+    // With no document there is nothing to report, so it stays the one-line italic entry
+    // the pane opens with rather than growing a span and a count made of nothing.
     const QTimeZone zone = m_document ? m_document->displayZone() : QTimeZone::utc();
     const Document::RunStats fileStats =
         m_document ? m_document->fileStats() : Document::RunStats();
@@ -537,6 +556,15 @@ void RunPane::rebuildRunList()
                   tr("%n record(s)", nullptr, int(m_document->index().records.size())) });
 
         const QVector<Document::Run> &runs = m_document->runs();
+        if (!runs.isEmpty()) {
+            // Not selectable and not enabled: a rule is not somewhere to be, and the
+            // flags are what keep the arrow keys stepping straight over it as well as
+            // the pointer — so kFirstRunRow is reachable from row 0 with one key press,
+            // exactly as it was when the rows were adjacent.
+            auto *rule = new QListWidgetItem(m_runList);
+            rule->setData(kSeparatorRole, true);
+            rule->setFlags(Qt::NoItemFlags);
+        }
         for (int i = 0; i < runs.size(); ++i) {
             const Document::Run &r = runs.at(i);
             const Document::RunStats stats = m_document->runStats(i);
@@ -550,11 +578,15 @@ void RunPane::rebuildRunList()
             if (snippet.size() > 60)
                 snippet = snippet.left(59) + QChar(0x2026); // ellipsis
             // The tooltip carries the whole of it — including the two things the three
-            // lines have no room for, the run's record count and its first line.
+            // lines have no room for, the run's record count and its first line — and,
+            // on the last run alone, what picking it additionally means.
             QStringList tip;
             tip << tr("%n record(s)", nullptr, m_document->runRecordCount(i));
             if (!r.isPreamble && !snippet.isEmpty())
                 tip << snippet;
+            if (i == runs.size() - 1)
+                tip << tr("The newest run. Selecting it keeps the view on whichever run "
+                          "is newest, switching to each new one as it starts.");
 
             auto *item = new QListWidgetItem(m_runList);
             fillRow(item, title, stats, zone, tip);
@@ -563,29 +595,14 @@ void RunPane::rebuildRunList()
         allRuns->setToolTip(tr("Show the whole file, with no run restriction."));
     }
 
-    auto *followLast = new QListWidgetItem(tr("Follow the last"), m_runList);
-    followLast->setFont(fixedFont);
     if (m_document) {
         const QVector<Document::Run> &runs = m_document->runs();
-        const Document::RunStats lastStats =
-            runs.isEmpty() ? fileStats : m_document->runStats(int(runs.size()) - 1);
-        fillRow(followLast, tr("Follow the last"), lastStats, zone,
-                { tr("Always show the newest run, switching to each new one as it "
-                     "starts. With no runs detected, the whole file.") });
-    } else {
-        followLast->setToolTip(tr("Always show the newest run, switching to each new one "
-                                  "as it starts. With no runs detected, the whole file."));
-    }
-
-    if (m_document) {
-        const QVector<Document::Run> &runs = m_document->runs();
-        // Following the last run is read off the document, never inferred from the
-        // selection matching runs().size() - 1: those two agree exactly when following
-        // is doing its job, and telling them apart is the whole feature — a run the
-        // user pinned while it was last must not silently start moving.
+        // The selection is the document's ORDINAL and nothing else. Following is no
+        // longer a row of its own, so there is nothing here to tell apart: a followed
+        // document has already re-pointed its ordinal at the run that is last now, and
+        // that run's row is the one to light.
         const int sel = m_document->selectedRun();
-        const int pinnedRow = sel >= 0 ? sel + kFirstRunRow : kAllRunsRow;
-        m_runList->setCurrentRow(m_document->followingLastRun() ? followRow() : pinnedRow);
+        m_runList->setCurrentRow(sel >= 0 ? sel + kFirstRunRow : kAllRunsRow);
         m_runList->verticalScrollBar()->setValue(scroll);
 
         // Status line under the pattern field.
@@ -599,13 +616,13 @@ void RunPane::rebuildRunList()
         else
             m_info->setText(tr("%1 run(s) detected.").arg(runs.size()));
     } else {
-        // The pane opens on the follow row, which with no log behind it is the second of
-        // the two mode rows rather than the first — the same row the document branch
-        // above selects, reached the same way.
-        m_runList->setCurrentRow(followRow());
-        // NOT cleared. The list below still shows its two mode rows — two entries that
-        // read as something to click — so the one widget here built to explain the list
-        // must not fall silent exactly when there is nothing behind it to explain.
+        // "All runs" is the only row there is with no log behind it, and it is what a
+        // document with no runs detected resolves to as well, so the pane opens on the
+        // same row either way.
+        m_runList->setCurrentRow(kAllRunsRow);
+        // NOT cleared. The list below still shows its one mode row — an entry that reads
+        // as something to click — so the one widget here built to explain the list must
+        // not fall silent exactly when there is nothing behind it to explain.
         m_info->setText(tr("No log is open. Open one to split it into runs."));
     }
     m_populating = false;

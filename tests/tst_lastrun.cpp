@@ -41,7 +41,7 @@
 
 using namespace loftail;
 
-// "Follow the last" (SPEC.md §3a): the Runs pane's bottom entry and its default, which is not a
+// Following the newest run (SPEC.md §3a): what the Runs pane opens on, which is not a
 // run but a standing instruction to show whichever run is last. The document half — the
 // sticky flag, the retarget, and the append still freezing at the boundary — is pinned
 // core-side by tst_runselect. What only a WINDOW-level test can pin is the wiring that
@@ -53,10 +53,10 @@ using namespace loftail;
 // Ticks are driven through LiveController::checkNow(), like tst_multidoc: the watcher's
 // own poll would make these wait on a timer for nothing. Widgets are found by OBJECT
 // NAME, never by visible text.
-// "Follow the last" is the BOTTOM row of the Runs pane's list (SPEC.md §3a), so its
-// index is a function of how many runs the log turned out to hold rather than a
-// constant — RunPane::followRow() is the same answer where the pane itself is in hand.
-static int followRow(const QListWidget *list) { return list ? list->count() - 1 : -1; }
+// Following whichever run is last is BEING ON the last run (SPEC.md §3a), so the row
+// that arms it is the bottom one — a function of how many runs the log turned out to
+// hold rather than a constant.
+static int lastRunRow(const QListWidget *list) { return list ? list->count() - 1 : -1; }
 
 class TestLastRun : public QObject
 {
@@ -194,12 +194,12 @@ void TestLastRun::aNewRunMovesTheViewOntoIt()
     QCOMPARE(ctx->model->rowCount(), 2); // the new banner and its one line
     QCOMPARE(doc->filtered().sourceRow(0), 3);
 
-    // ...and the pane is still on "Follow the last", not the ordinal it has landed on: the next
-    // restart has to move it again.
+    // ...and the pane's selection has moved with it, onto the run that is last NOW —
+    // which is also what keeps the mode armed for the next restart.
     QListWidget *list = runList(w);
     QVERIFY(list);
-    QCOMPARE(list->count(), 4); // "All runs" + two runs + "Follow the last"
-    QCOMPARE(list->currentRow(), followRow(list));
+    QCOMPARE(list->count(), 4); // "All runs" + rule + two runs
+    QCOMPARE(list->currentRow(), lastRunRow(list));
     QVERIFY(doc->followingLastRun());
 }
 
@@ -239,7 +239,7 @@ void TestLastRun::aBackgroundTabFollowsTheNewRunToo()
     // with this one's runs.
     QListWidget *list = runList(w);
     QVERIFY(list);
-    QCOMPARE(list->count(), 2); // tab 1 has no run pattern: the two fixed rows only
+    QCOMPARE(list->count(), 1); // tab 1 has no run pattern: "All runs" alone
 }
 
 void TestLastRun::aPinnedRunIsLeftWhereItIs()
@@ -259,18 +259,23 @@ void TestLastRun::aPinnedRunIsLeftWhereItIs()
     QVERIFY(ctx);
     Document *doc = ctx->doc.get();
 
-    // Picking the run that happens to be last is NOT the same gesture as following it,
-    // and the difference is exactly what happens next.
+    // Pinning is picking a run that is NOT the last one — the last row is how the user
+    // asks to follow (SPEC.md §3a) — so there have to be two runs before there is a pin
+    // to make.
+    appendNewRun(path);
+    tick(w, 0);
+    QCOMPARE(doc->runs().size(), 2);
+
     QListWidget *list = runList(w);
     QVERIFY(list);
-    list->setCurrentRow(RunPane::kFirstRunRow);
+    list->setCurrentRow(RunPane::kFirstRunRow); // run 0, the finished one
     QVERIFY(!doc->followingLastRun());
     QCOMPARE(doc->selectedRun(), 0);
 
     appendNewRun(path);
     tick(w, 0);
 
-    QCOMPARE(doc->runs().size(), 2); // listed...
+    QCOMPARE(doc->runs().size(), 3); // listed...
     QCOMPARE(doc->selectedRun(), 0); // ...but not switched to
     QCOMPARE(ctx->model->rowCount(), 3);
     QCOMPARE(list->currentRow(), RunPane::kFirstRunRow);
@@ -355,7 +360,7 @@ void TestLastRun::aPinnedRunOpensAtItsEnd()
     QCOMPARE(lv->verticalScrollBar()->value(), lv->verticalScrollBar()->maximum());
 }
 
-// The same for the two MODE rows — "All runs" and "Follow the last" — which is the same
+// The same for the "All runs" row, which is the same
 // question ("what happened at the end?") asked of a moving target: both open on the last
 // record of what they select and then FOLLOW it, so the end keeps moving under the
 // reader. The selected record is asserted as well as the scroll position: scrolling to
@@ -396,10 +401,11 @@ void TestLastRun::theLastRunOpensAtItsEndAndKeepsFollowing()
     QCOMPARE(ctx->model->rowCount(), 81);
     landsAtTheEnd();
 
-    // "Follow the last" is a standing instruction rather than an ordinal, and "All runs" lifts
-    // the restriction altogether — both still open on the end of what they show.
+    // The last run doubles as the standing instruction to follow whichever run is last,
+    // and "All runs" lifts the restriction altogether — both still open on the end of
+    // what they show.
     list->setCurrentRow(RunPane::kFirstRunRow);
-    list->setCurrentRow(followRow(list));
+    list->setCurrentRow(lastRunRow(list));
     QVERIFY(ctx->doc->followingLastRun());
     QCOMPARE(ctx->model->rowCount(), 81);
     landsAtTheEnd();

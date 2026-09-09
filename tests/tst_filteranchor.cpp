@@ -352,7 +352,7 @@ void TestFilterAnchor::pickingAnEarlierRunStillLandsAtItsEnd()
 
     auto *runList = w.findChild<QListWidget *>(QStringLiteral("runList"));
     QVERIFY(runList);
-    QVERIFY(runList->count() >= 4);  // "All runs" + one row per run + "Follow the last"
+    QVERIFY(runList->count() >= 4);  // "All runs" + the rule + one row per run
     runList->setCurrentRow(RunPane::kFirstRunRow); // the older of the two runs
 
     QCOMPARE(log->recordCount(), 101); // the run's banner and its 100 records

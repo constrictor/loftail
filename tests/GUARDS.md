@@ -239,7 +239,9 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The Runs pane's `Regex`/`Case sensitive` boxes are editors: only Apply and Return apply a pattern | Runs pane applies on Apply (L259) | tst_runpane |
 | `updateApplyNote()`'s three-way comparison is load-bearing, not redundant | Runs pane applies on Apply (L259) | tst_runpane |
 | `runStartRegex`/`runStartCase` carry object names because their labels are `tr()`'d prose | Runs pane applies on Apply (L259) | tst_runpane |
-| The `followLastRunIfMoved()` call sits ABOVE the ingest handler's `ctx != activeContext()` early return | Runs pane opens on Last run (L261) | tst_lastrun |
+| The `followLastRunIfMoved()` call sits ABOVE the ingest handler's `ctx != activeContext()` early return | No "Follow the last" row (L279) | tst_lastrun |
+| The separator is a hairline at half a line's height and never a blank row, drawn in a colour that is actually visible | No "Follow the last" row (L279) | tst_runpane::aRuleSeparatesTheWholeFileFromTheRunsUnderIt |
+| The mode is decided in one statement in `Document::selectRun()`, so every route in means the same thing by the same ordinal | No "Follow the last" row (L279) | tst_runpane::pickingTheRunThatIsLastIsHowYouAskToFollowIt |
 | The Find status label carries `QSizePolicy::Ignored` plus a stretch share (box 3, status 2) so its wording moves no other control | Find bar status width (L265) | tst_find::theControlsDoNotMoveWhenTheStatusTextChanges |
 | `reveal()` must move the focus, or Escape never reaches `FindBar::keyPressEvent` and the bar is closable only with the button | Find reveal precedes report (L267) | tst_find::escapeStillClosesTheBarThatFindNextRevealed |
 | Every run of one cell goes into one `QRegion` and the redraw is issued ONCE per cell, not once per match | Mark redraw once per cell (L271) | tst_logview::aMarkedCellIsRedrawnOncePerCellAndNotOncePerMatch |
@@ -684,10 +686,12 @@ to fill it in with a plausible-looking case rather than a real one.
 | `viewRowAtOrAfter()` is a binary search and means nothing over the digest; `popLastVisible()` leaves `m_ascending` alone on purpose | Five filter-anchor rules (L257) |
 | The follow guard is a FLAG, never a `QSignalBlocker`, whose `rangeChanged` connection is queued | Five filter-anchor rules (L257) |
 | `handleModelReset()` keeps its `m_estimated.clear()`, because `geom()`'s address is stable across `setVisible()` | Five filter-anchor rules (L257) |
-| "Last run" is a MODE (`Document::m_followLastRun`) and must not be inferred from `selectedRun() == runs().size() - 1` | Runs pane opens on Last run (L261) |
-| `updateRunsAfterAppend()` deliberately does not retarget; the move is `MainWindow::followLastRunIfMoved()`'s, once per tick | Runs pane opens on Last run (L261) |
-| The session saves the follow mode by saving no offset at all, so no schema version moves | Runs pane opens on Last run (L261) |
-| No runs means the whole file, not an empty view — the mode is inert until a marker turns up | Runs pane opens on Last run (L261) |
+| Following is a MODE (`Document::m_followLastRun`) and not a third value of `selectedRun()` | No "Follow the last" row (L279) |
+| `updateRunsAfterAppend()` deliberately does not retarget; the move is `MainWindow::followLastRunIfMoved()`'s, once per tick | No "Follow the last" row (L279) |
+| The session saves the follow mode by saving no offset at all, so no schema version moves | No "Follow the last" row (L279) |
+| No runs means the whole file, not an empty view — the mode is inert until a marker turns up | No "Follow the last" row (L279) |
+| `kFirstRunRow` is a constant because the separator exists only where there is something to separate | No "Follow the last" row (L279) |
+| `currentRowChanged` has no case for the last row: row 0 is `kAllRuns`, anything past `kFirstRunRow` is an ordinal | No "Follow the last" row (L279) |
 | `Tally::complete` false must render as `47+`, never as `47` | Find reports match of how many (L263) |
 | `Tally::index` 0 means the scan never reached the hit, so the bar says the count alone and never infers a position from `total` | Find reports match of how many (L263) |
 | The wrap is derived from `from`, captured BEFORE `setCurrentRecord(hit)`, or every search reports itself as a wrap | Find reports match of how many (L263) |

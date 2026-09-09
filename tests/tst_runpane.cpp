@@ -177,8 +177,9 @@ private:
 
 private slots:
     void theRunsAreAListWithTheSelectedRunOnIt();
-    void theFollowEntryIsLastAndIsNotARun();
-    void aLogWithNoRunsStillOffersLastRun();
+    void pickingTheRunThatIsLastIsHowYouAskToFollowIt();
+    void aRuleSeparatesTheWholeFileFromTheRunsUnderIt();
+    void aLogWithNoRunsIsTheWholeFileAndNothingElse();
     void theRunListTakesTheSpareHeight();
     void arrowingThroughTheListSelectsARun();
     void repopulatingTheListIsNotAChoice();
@@ -194,7 +195,7 @@ private slots:
     // the parts are asserted where the delegate reads them and the chips are read back
     // off rendered pixels, which is the only place a colour exists at all.
     void aRunRowCarriesItsNameItsSpanAndItsCounts();
-    void theTwoModeRowsSayWhatTheyWillShow();
+    void theAllRunsRowSaysWhatItWillShow();
     void aRunRowIsGivenThreeLinesOfHeight();
     void theCountsAreDrawnInTheDefaultLevelColours();
     void theRowsAlternateInABandThatIsVisibleOnThisTheme();
@@ -211,11 +212,11 @@ void TestRunPane::theRunsAreAListWithTheSelectedRunOnIt()
 
     QListWidget *list = runList(pane);
     QVERIFY(list);
-    QCOMPARE(list->count(), 6);          // "All runs" + preamble + three + "Follow the last"
-    // The newest run is what is on screen, but what is SELECTED is the standing
-    // instruction that put it there — the pane reads the mode off the document rather
-    // than inferring it from the selection being the last ordinal.
-    QCOMPARE(list->currentRow(), pane.followRow());
+    QCOMPARE(list->count(), 6);          // "All runs" + rule + preamble + three runs
+    // The newest run is what is on screen, and it is the row that is selected: there is
+    // no separate entry standing for it, because BEING on the last run is what following
+    // it means.
+    QCOMPARE(list->currentRow(), RunPane::kFirstRunRow + 3);
     QVERIFY(doc.followingLastRun());
     QCOMPARE(doc.selectedRun(), 3);
 
@@ -227,8 +228,13 @@ void TestRunPane::theRunsAreAListWithTheSelectedRunOnIt()
     QVERIFY(!list->item(5)->toolTip().isEmpty());
 }
 
-void TestRunPane::theFollowEntryIsLastAndIsNotARun()
+void TestRunPane::pickingTheRunThatIsLastIsHowYouAskToFollowIt()
 {
+    // THERE IS NO "FOLLOW THE LAST" ROW, and this is the case that says what replaced
+    // it: every row travels as an ordinal, and the document arms its follow mode from
+    // whether the ordinal named the run that is last. Two names for one answer is what
+    // the removed row was — it sat directly beside the run it resolved to, and a reader
+    // could not tell from the list which of the two they were on.
     Document doc;
     QTemporaryFile file;
     QVERIFY2(openLog(doc, file), qPrintable(doc.lastError()));
@@ -239,46 +245,118 @@ void TestRunPane::theFollowEntryIsLastAndIsNotARun()
     QVERIFY(list);
     QSignalSpy spy(&pane, &RunPane::runSelected);
 
-    // The list reads in file order and the standing instruction sits at the BOTTOM,
-    // beside the newest run it currently resolves to — so the two ends of the list are
-    // the two rows that are not runs, "All runs" at the top and this one under them.
+    // The list reads in file order and ends on the newest run — there is nothing under
+    // it — so the only row that is not a run is "All runs" at the top.
     QCOMPARE(RunPane::kAllRunsRow, 0);
-    QCOMPARE(pane.followRow(), list->count() - 1);
-    QVERIFY(pane.followRow() > RunPane::kFirstRunRow + 3); // ...below every run row
+    QCOMPARE(list->count() - 1, RunPane::kFirstRunRow + 3);
 
-    // It carries a sentinel and not the ordinal it currently resolves to: the whole
-    // point of the entry is that the ordinal changes underneath it. Selecting the run
-    // that happens to be last today is therefore a DIFFERENT gesture, and the two rows
-    // are now adjacent, which is exactly why they must not answer alike.
-    // (The pane only reports; MainWindow is what turns these into Document calls.)
-    list->setCurrentRow(RunPane::kFirstRunRow + 3); // pin the run that is last today
+    // A run in the middle is a PIN: the ordinal travels bare and the mode goes off.
+    list->setCurrentRow(RunPane::kFirstRunRow + 1);
+    QCOMPARE(spy.size(), 1);
+    QCOMPARE(spy.takeFirst().at(0).toInt(), 1);
+    doc.selectRun(1);
+    QVERIFY(!doc.followingLastRun());
+
+    // The last run carries its own ordinal too — no sentinel — and it is the DOCUMENT
+    // that reads the pick as "follow whichever run is last", so the pane, the record
+    // menu and a restored session all mean the same thing by it.
+    list->setCurrentRow(RunPane::kFirstRunRow + 3);
     QCOMPARE(spy.size(), 1);
     QCOMPARE(spy.takeFirst().at(0).toInt(), 3);
-
-    list->setCurrentRow(pane.followRow());
-    QCOMPARE(spy.size(), 1);
-    QCOMPARE(spy.takeFirst().at(0).toInt(), RunPane::kLastRun);
-
-    // ...and a pinned run puts the current row back on that run, never on the follow
-    // row — the two are indistinguishable by selectedRun() alone, which is why the pane
-    // asks the document for the mode instead.
     doc.selectRun(3);
+    QVERIFY(doc.followingLastRun());
+    QCOMPARE(doc.selectedRun(), 3);
+
+    // "All runs" is not a run and clears the mode, whatever was in force before it.
+    doc.selectRun(RunPane::kAllRuns);
+    QVERIFY(!doc.followingLastRun());
+    QCOMPARE(doc.selectedRun(), -1);
+
+    // A repopulation puts the current row back on the document's ordinal and reports
+    // nothing — neither of these is a choice.
+    doc.selectRun(1);
     pane.refresh();
-    QCOMPARE(list->currentRow(), RunPane::kFirstRunRow + 3);
+    QCOMPARE(list->currentRow(), RunPane::kFirstRunRow + 1);
     doc.selectLastRun();
     pane.refresh();
-    QCOMPARE(list->currentRow(), pane.followRow());
-    QCOMPARE(spy.size(), 0); // neither repopulation was a choice
+    QCOMPARE(list->currentRow(), RunPane::kFirstRunRow + 3);
+    QCOMPARE(spy.size(), 0);
 }
 
-void TestRunPane::aLogWithNoRunsStillOffersLastRun()
+void TestRunPane::aRuleSeparatesTheWholeFileFromTheRunsUnderIt()
 {
-    // No run-start pattern: nothing is detected, so the two mode rows are the only rows
-    // and both mean the whole file. The entry is offered all the same — it is the pane's
-    // default, and a pattern typed a moment later fills it in. This is also the one
-    // layout where the follow row is row 1 rather than "somewhere past the runs", which
-    // is why the pane tests it FIRST when a row change comes in: read as a run ordinal
-    // it would select run 0 of a log that has none.
+    // "All runs" is a different kind of answer from any one run, and a run row is three
+    // lines tall — so without a rule under it the top entry reads as the first member of
+    // a list it is not a member of. The rule is a row of the list because that is the
+    // only place a rule between two rows can be; everything else about it is arranged so
+    // that it is not one a reader can reach.
+    Document doc;
+    QTemporaryFile file;
+    QVERIFY2(openLog(doc, file), qPrintable(doc.lastError()));
+
+    RunPane pane;
+    pane.setDocument(&doc);
+    pane.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&pane));
+    QListWidget *list = runList(pane);
+    QVERIFY(list);
+    QSignalSpy spy(&pane, &RunPane::runSelected);
+
+    QListWidgetItem *rule = list->item(RunPane::kSeparatorRow);
+    QVERIFY(rule->data(RunPane::kSeparatorRole).isValid());
+    QCOMPARE(rule->flags(), Qt::NoItemFlags);
+    // It is neither a run nor a mode row, so it carries none of what the delegate
+    // composes and nothing a type-ahead or an accessibility client would read out.
+    QVERIFY(!rule->data(RunPane::kRunTitleRole).isValid());
+    QVERIFY(rule->text().isEmpty());
+
+    // ...and it is SHORTER than either kind of row it separates, which is the whole of
+    // what makes it read as a rule rather than as a blank entry — and it is actually
+    // INKED, which no assertion about geometry can see: a colour that came out equal to
+    // the list's own ground is a row of empty space, which is the thing this replaced.
+    if (!QFontDatabase::families().isEmpty()) {
+        list->resize(300, 420);
+        const QRect ruleRect = list->visualItemRect(rule);
+        const int runH = list->visualItemRect(list->item(RunPane::kFirstRunRow)).height();
+        QVERIFY2(ruleRect.height() > 0 && ruleRect.height() < runH / 2,
+                 qPrintable(QStringLiteral("rule %1 px, run row %2 px")
+                                .arg(ruleRect.height()).arg(runH)));
+
+        QImage shot(list->viewport()->size(), QImage::Format_ARGB32);
+        shot.fill(Qt::transparent);
+        list->viewport()->render(&shot);
+        // The ground is taken from INSIDE the row, at its very left edge — the line is
+        // inset by the same margin the text keeps, so x == 0 is this row's own
+        // background whatever the zebra band did with it. Comparing against the row
+        // above instead reads the band as ink and passes against a line nothing drew.
+        const int mid = ruleRect.center().y();
+        const QRgb ground = shot.pixel(0, mid);
+        int inked = 0;
+        for (int y = ruleRect.top(); y <= ruleRect.bottom() && y < shot.height(); ++y)
+            for (int x = 0; x < shot.width(); ++x)
+                if (shot.pixel(x, y) != ground)
+                    ++inked;
+        QVERIFY2(inked > shot.width() / 2,
+                 qPrintable(QStringLiteral("%1 pixels differ from the ground").arg(inked)));
+    }
+
+    // The arrow keys step straight over it — that is what the flags buy, and it is why
+    // the row above and the row below are still one key press apart.
+    list->setCurrentRow(RunPane::kFirstRunRow);
+    spy.clear();
+    list->setFocus();
+    QTest::keyClick(list, Qt::Key_Up);
+    QCOMPARE(list->currentRow(), RunPane::kAllRunsRow);
+    QCOMPARE(spy.size(), 1);
+    QCOMPARE(spy.takeFirst().at(0).toInt(), RunPane::kAllRuns);
+}
+
+void TestRunPane::aLogWithNoRunsIsTheWholeFileAndNothingElse()
+{
+    // No run-start pattern: nothing is detected, so "All runs" is the ONLY row — no rule
+    // under it, since there is nothing for it to separate, and no run row to pick. The
+    // document is still following the last run, which with no runs is the whole file,
+    // exactly as a log with no run-start pattern has always been.
     Document doc;
     QTemporaryFile file;
     QVERIFY(file.open());
@@ -292,8 +370,8 @@ void TestRunPane::aLogWithNoRunsStillOffersLastRun()
     pane.setDocument(&doc);
     QListWidget *list = runList(pane);
     QVERIFY(list);
-    QCOMPARE(list->count(), 2);
-    QCOMPARE(list->currentRow(), pane.followRow());
+    QCOMPARE(list->count(), 1);
+    QCOMPARE(list->currentRow(), RunPane::kAllRunsRow);
     QVERIFY(doc.followingLastRun());
     QCOMPARE(doc.selectedRun(), -1);
     QVERIFY(!doc.viewRestricted()); // ...which is the whole file, as it always was
@@ -352,8 +430,13 @@ void TestRunPane::arrowingThroughTheListSelectsARun()
     QSignalSpy spy(&pane, &RunPane::runSelected);
 
     // A list is walked with the arrow keys as much as it is clicked, so the selection
-    // travels on currentRowChanged rather than on a click signal.
-    list->setCurrentRow(RunPane::kFirstRunRow + 3); // the newest run, pinned
+    // travels on currentRowChanged rather than on a click signal. The pane opens on the
+    // newest run, so the move that starts this is off it.
+    QCOMPARE(list->currentRow(), RunPane::kFirstRunRow + 3);
+    list->setCurrentRow(RunPane::kFirstRunRow); // the preamble, pinned
+    QCOMPARE(spy.size(), 1);
+    spy.clear();
+    list->setCurrentRow(RunPane::kFirstRunRow + 3); // ...and back onto the newest run
     QCOMPARE(spy.size(), 1);
     spy.clear();
     list->setFocus();
@@ -384,7 +467,7 @@ void TestRunPane::repopulatingTheListIsNotAChoice()
     // reporting one would yank the view to another run while the log was merely growing.
     pane.refresh();
     QCOMPARE(spy.size(), 0);
-    QCOMPARE(list->currentRow(), pane.followRow());
+    QCOMPARE(list->currentRow(), RunPane::kFirstRunRow + 3);
 
     pane.setDocument(nullptr);
     QCOMPARE(spy.size(), 0);
@@ -581,16 +664,16 @@ void TestRunPane::tickingABoxLeavesAPinnedRunPinned()
 
 void TestRunPane::withNoLogOpenTheListStillExplainsItself()
 {
-    // The list keeps its two italic mode rows with no document bound, so it reads as
+    // The list keeps its italic "All runs" row with no document bound, so it reads as
     // something to act on; the status line under the pattern field is what says there is
-    // nothing behind them, and it must not be the one thing that falls silent here.
+    // nothing behind it, and it must not be the one thing that falls silent here.
     RunPane pane;
     pane.setDocument(nullptr);
 
     QLabel *info = label(pane, "runInfo");
     QVERIFY(info);
     QVERIFY(!info->text().isEmpty());
-    QCOMPARE(runList(pane)->count(), 2);
+    QCOMPARE(runList(pane)->count(), 1);
 }
 
 // The pane's own reading of a run: what the three lines are built from. Asserted at the
@@ -607,7 +690,7 @@ void TestRunPane::aRunRowCarriesItsNameItsSpanAndItsCounts()
     pane.setDocument(&doc);
     QListWidget *list = runList(pane);
     QVERIFY(list);
-    QCOMPARE(list->count(), 6); // "All runs" + preamble + three + "Follow the last"
+    QCOMPARE(list->count(), 6); // "All runs" + rule + preamble + three runs
 
     // The preamble is named for what it is; every other row is named by its ORDINAL,
     // which is what runSelected() carries and what the session stores.
@@ -646,15 +729,14 @@ void TestRunPane::aRunRowCarriesItsNameItsSpanAndItsCounts()
     QVERIFY(run1->toolTip().contains(QStringLiteral("2 WARN")));
 }
 
-void TestRunPane::theTwoModeRowsSayWhatTheyWillShow()
+void TestRunPane::theAllRunsRowSaysWhatItWillShow()
 {
-    // "All runs" and "Follow the last" resolve to a stretch of this log, so a reader picking
-    // one is asking exactly what they ask of a run: what does it cover, and is there
-    // anything wrong in it. They carry the same three lines, and what each one reports
-    // is what it will actually SHOW — the whole file for "All runs", whichever run is
-    // last for "Follow the last" — the difference between the two, and the whole reason
-    // both rows exist. They stay ITALIC, because saying what a row will show does not
-    // make it a run: a log may well start a run with a line that reads like either name.
+    // "All runs" resolves to a stretch of this log, so a reader picking it is asking
+    // exactly what they ask of a run: what does it cover, and is there anything wrong in
+    // it. It carries the same three lines a run row does, and what it reports is what it
+    // will actually SHOW — the whole file. It stays ITALIC, because saying what a row
+    // will show does not make it a run: a log may well start a run with a line that
+    // reads like that name.
     Document doc;
     QTemporaryFile file;
     QVERIFY2(openLog(doc, file, kNoisyLog), qPrintable(doc.lastError()));
@@ -664,18 +746,15 @@ void TestRunPane::theTwoModeRowsSayWhatTheyWillShow()
     QListWidget *list = runList(pane);
     QVERIFY(list);
 
-    QListWidgetItem *lastRun = list->item(pane.followRow());
     QListWidgetItem *allRuns = list->item(RunPane::kAllRunsRow);
-    for (QListWidgetItem *item : { lastRun, allRuns }) {
-        QVERIFY(item->data(RunPane::kRunTitleRole).isValid());
-        QVERIFY(!item->data(RunPane::kRunTimesRole).toString().isEmpty());
-        QVERIFY(item->font().italic());
-        QVERIFY(!item->text().isEmpty());
-    }
+    QVERIFY(allRuns->data(RunPane::kRunTitleRole).isValid());
+    QVERIFY(!allRuns->data(RunPane::kRunTimesRole).toString().isEmpty());
+    QVERIFY(allRuns->font().italic());
+    QVERIFY(!allRuns->text().isEmpty());
 
-    // "All runs" is the fold over the file: the ERROR and the two WARNs of run 1 and the
-    // FATAL of run 2, which is also the sum of the run rows below it — one fold behind
-    // both, so the row cannot claim a total the rows under it do not add up to.
+    // It is the fold over the file: the ERROR and the two WARNs of run 1 and the FATAL
+    // of run 2, which is also the sum of the run rows below it — one fold behind both,
+    // so the row cannot claim a total the rows under it do not add up to.
     QCOMPARE(allRuns->data(RunPane::kRunFatalRole).toInt(), 1);
     QCOMPARE(allRuns->data(RunPane::kRunErrorRole).toInt(), 1);
     QCOMPARE(allRuns->data(RunPane::kRunWarnRole).toInt(), 2);
@@ -683,32 +762,30 @@ void TestRunPane::theTwoModeRowsSayWhatTheyWillShow()
     QVERIFY2(allTimes.contains(QStringLiteral("2026-01-01 10:00:00")), qPrintable(allTimes));
     QVERIFY2(allTimes.endsWith(QStringLiteral("10:00:08")), qPrintable(allTimes));
 
-    // "Follow the last" is run 3, which has nothing above INFO — so the two rows say DIFFERENT
-    // things, which is what makes this a test of the mapping and not of "some numbers".
+    // The last run is a RUN row and says only what is in that run — run 3 has nothing
+    // above INFO — so the two rows say DIFFERENT things, which is what makes this a test
+    // of the mapping and not of "some numbers".
+    QListWidgetItem *lastRun = list->item(RunPane::kFirstRunRow + 3);
     QCOMPARE(lastRun->data(RunPane::kRunFatalRole).toInt(), 0);
     QCOMPARE(lastRun->data(RunPane::kRunErrorRole).toInt(), 0);
     QCOMPARE(lastRun->data(RunPane::kRunWarnRole).toInt(), 0);
-    QCOMPARE(lastRun->data(RunPane::kRunTimesRole).toString(),
-             list->item(RunPane::kFirstRunRow + 3)->data(RunPane::kRunTimesRole).toString());
+    // ...and only it says what selecting it additionally means, that being the one thing
+    // about the row a reader can no longer read off a row of its own.
+    QVERIFY(lastRun->toolTip().contains(QStringLiteral("newest")));
+    QVERIFY(!list->item(RunPane::kFirstRunRow + 2)->toolTip().contains(QStringLiteral("newest")));
 
-    // ...and it MOVES with the mode: pinning a run does not change what the follow row says,
-    // but a new run arriving does. Selecting run 1 leaves the row reporting run 3.
-    doc.selectRun(1);
-    pane.refresh();
-    QCOMPARE(list->item(pane.followRow())->data(RunPane::kRunWarnRole).toInt(), 0);
-
-    // With NO document there is nothing to report, so both rows fall back to the
-    // one-line italic entries the pane opens with — a span and a count made of nothing
-    // is worse than neither, and the absence of the title role is exactly how the
-    // delegate leaves such a row to the base class.
+    // With NO document there is nothing to report, so "All runs" falls back to the
+    // one-line italic entry the pane opens with — a span and a count made of nothing is
+    // worse than neither, and the absence of the title role is exactly how the delegate
+    // leaves such a row to the base class. Nothing else is in the list at all.
     pane.setDocument(nullptr);
-    for (int row : { pane.followRow(), RunPane::kAllRunsRow }) {
-        QVERIFY(!list->item(row)->data(RunPane::kRunTitleRole).isValid());
-        QVERIFY(!list->item(row)->data(RunPane::kRunTimesRole).isValid());
-        QVERIFY(list->item(row)->font().italic());
-        QVERIFY(!list->item(row)->text().isEmpty());
-        QVERIFY(!list->item(row)->toolTip().isEmpty());
-    }
+    QCOMPARE(list->count(), 1);
+    QListWidgetItem *unbound = list->item(RunPane::kAllRunsRow);
+    QVERIFY(!unbound->data(RunPane::kRunTitleRole).isValid());
+    QVERIFY(!unbound->data(RunPane::kRunTimesRole).isValid());
+    QVERIFY(unbound->font().italic());
+    QVERIFY(!unbound->text().isEmpty());
+    QVERIFY(!unbound->toolTip().isEmpty());
 }
 
 void TestRunPane::aRunRowIsGivenThreeLinesOfHeight()
@@ -729,25 +806,25 @@ void TestRunPane::aRunRowIsGivenThreeLinesOfHeight()
     list->resize(300, 420);
 
     // NOT uniform, and still not: Qt measures the FIRST item under that flag, and with no
-    // document bound the first item is a one-line mode row — so a pane that is bound
+    // document bound the first item is a one-line "All runs" row — so a pane that is bound
     // after it is shown would give every run row a third of the height it needs.
     QVERIFY(!list->uniformItemSizes());
 
     const int oneLine = QFontMetrics(list->font()).height();
-    const int modeRow = list->visualItemRect(list->item(pane.followRow())).height();
+    const int modeRow = list->visualItemRect(list->item(RunPane::kAllRunsRow)).height();
     const int runRow = list->visualItemRect(list->item(RunPane::kFirstRunRow + 1)).height();
     QVERIFY2(runRow >= 3 * oneLine,
              qPrintable(QStringLiteral("run row %1 px, one line %2 px").arg(runRow).arg(oneLine)));
-    // The mode rows are three lines too now that they report what they will show, and
-    // they are the same three lines — a list whose rows were a different height for the
-    // same content would read as two lists.
+    // "All runs" is three lines too now that it reports what it will show, and they are
+    // the same three lines — a list whose rows were a different height for the same
+    // content would read as two lists.
     QCOMPARE(modeRow, runRow);
 
-    // With no document they go back to one line, which is what the flag above is about.
+    // With no document it goes back to one line, which is what the flag above is about.
     pane.setDocument(nullptr);
-    const int unbound = list->visualItemRect(list->item(pane.followRow())).height();
+    const int unbound = list->visualItemRect(list->item(RunPane::kAllRunsRow)).height();
     QVERIFY2(unbound < 2 * oneLine,
-             qPrintable(QStringLiteral("unbound mode row %1 px, one line %2 px")
+             qPrintable(QStringLiteral("unbound All-runs row %1 px, one line %2 px")
                             .arg(unbound).arg(oneLine)));
 }
 
@@ -780,7 +857,7 @@ void TestRunPane::theCountsAreDrawnInTheDefaultLevelColours()
     QVERIFY(list);
     // Not the selected row: a selection fill is the style's and would be what is being
     // measured if the chip happened not to be drawn at all.
-    list->setCurrentRow(pane.followRow());
+    list->setCurrentRow(RunPane::kFirstRunRow + 3);
 
     const bool dark = isDarkPalette(list->palette());
     QColor errorBg;
@@ -858,7 +935,7 @@ void TestRunPane::theRowsAlternateInABandThatIsVisibleOnThisTheme()
     QVERIFY(list->alternatingRowColors());
     // Row 0 is the selected one, so the two rows compared below carry no selection fill:
     // a highlight is the style's own and would be what was measured otherwise.
-    list->setCurrentRow(pane.followRow());
+    list->setCurrentRow(RunPane::kFirstRunRow + 3);
     for (int i = 0; i < 4; ++i)
         QApplication::processEvents();
 

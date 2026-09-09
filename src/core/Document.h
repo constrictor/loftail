@@ -353,16 +353,19 @@ public:
     // Select which run restricts the view: an index into runs(), or -1 for "all
     // runs" (no restriction). Recomputes the cached view interval. The caller
     // re-applies via the model-reset path (applyFilters wrapped in a model reset).
-    // An explicit pick, so it stops following the last run.
+    //
+    // PICKING THE RUN THAT IS LAST ARMS THE FOLLOW MODE and anything else clears it,
+    // "All runs" included (SPEC.md §3a) — so this is a synonym for selectLastRun() at
+    // index == lastRunIndex(), deliberately, that being the one gesture the Runs pane
+    // offers for it now that the list has no entry of its own.
     void selectRun(int index);
 
-    // Follow the LAST run: the "Follow the last" entry the Runs pane opens on
-    // (SPEC.md §3a).
-    // Not a synonym for selectRun(runs().size() - 1) — it is STICKY, so when a new run
-    // is appended the selection moves to it rather than staying pinned to the run that
-    // was last when it was chosen. With no runs at all (no pattern, or a pattern that
-    // has matched nothing yet) it is the whole file, which is what a file with no runs
-    // has always shown.
+    // Follow the LAST run: what a log opens on, what a restored session with no run
+    // named comes back to, and what selectRun(lastRunIndex()) does (SPEC.md §3a).
+    // It is STICKY, so when a new run is appended the selection moves to it rather than
+    // staying pinned to the run that was last when it was chosen. With no runs at all
+    // (no pattern, or a pattern that has matched nothing yet) it is the whole file,
+    // which is what a file with no runs has always shown.
     void selectLastRun();
     bool followingLastRun() const { return m_followLastRun; }
     int  lastRunIndex() const { return m_runs.isEmpty() ? -1 : int(m_runs.size()) - 1; }
@@ -430,7 +433,7 @@ public:
     RunStats runStats(int i) const;
 
     // The same fold over the WHOLE file, which is what the pane's "All runs" row
-    // reports — and what "Follow the last" falls back to on a log where no run has been
+    // reports — and what following the last run falls back to on a log where no run has been
     // detected, that row being the whole file there for exactly the same reason the
     // view is (SPEC.md §3a). Memoised on the same terms and dropped through the same
     // funnel, so it cannot outlive a rescan or a re-detect: the counts are a fold over
@@ -717,10 +720,11 @@ private:
     // selected run's byte interval is cached in m_viewStart/m_viewEnd.
     QVector<Run> m_runs;
     int          m_selectedRun = -1;   // index into m_runs, or -1 == all runs
-    // "Follow the last" (SPEC.md §3a) is a MODE and not a third value of m_selectedRun: the
+    // Following the newest run (SPEC.md §3a) is a MODE and not a third value of m_selectedRun: the
     // selection has to name a concrete run for every bound, baseline and label below,
-    // so what is sticky is the rule that re-points it. Default true — the entry the
-    // Runs pane opens on. A document with no runs follows nothing and shows the file.
+    // so what is sticky is the rule that re-points it. Default true — what a log opens
+    // on, and what selectRun(lastRunIndex()) arms. A document with no runs follows
+    // nothing and shows the file.
     bool         m_followLastRun = true;
     TextMatcher  m_runStartMatcher;
     bool         m_runStartActive = false;

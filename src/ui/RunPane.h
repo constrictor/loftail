@@ -50,31 +50,35 @@ class RunPane : public QWidget
 public:
     explicit RunPane(QWidget *parent = nullptr);
 
-    // The list's two fixed rows, and the run index each carries. Neither is a run:
-    // "All runs" lifts the restriction, and "Follow the last" is a standing instruction
-    // to show whichever run is last — which is why it needs a sentinel of its own rather
-    // than the ordinal it currently means, the whole point being that the ordinal
-    // changes underneath it (SPEC.md §3a).
+    // The list's two fixed rows, and the run index each carries. "All runs" is not a
+    // run — it lifts the restriction — and the separator under it is not a row a reader
+    // can reach at all; it exists because the runs below it are three-line entries and
+    // the whole file above them is a different kind of thing from any of them.
     //
-    // The list reads in FILE order — "All runs" first, then the runs from oldest to
-    // newest — and "Follow the last" sits at the BOTTOM, beside the newest run it
-    // resolves to and where a reader watching a live log is already looking. So the two
-    // fixed rows are the two ENDS of the list and only the top one has a constant row
-    // number; the follow row is `count() - 1`, whatever the log turned out to hold, and
-    // `followRow()` is what says so to a caller (tests included) rather than each of
-    // them writing the arithmetic out.
-    static constexpr int kAllRunsRow  = 0;
-    static constexpr int kFirstRunRow = 1;   // row of runs().at(0)
-    static constexpr int kLastRun     = -2;  // runSelected() payload for the follow row
-    static constexpr int kAllRuns     = -1;  // ...and for row 0
-    int followRow() const;
+    // THERE IS NO "FOLLOW THE LAST" ROW. Following whichever run is last is what
+    // PICKING THE LAST RUN means (SPEC.md §3a): the list reads in file order — the whole
+    // file, then the runs oldest to newest — and the bottom row is both the newest run
+    // and the standing instruction to keep showing whichever run is newest. A row that
+    // says "the last run" beside the row that IS the last run is two names for one
+    // answer, and the reader has to be told which of them they are on.
+    //
+    // The separator is present only where there are runs, so `kFirstRunRow` is a
+    // constant whenever it means anything at all.
+    static constexpr int kAllRunsRow   = 0;
+    static constexpr int kSeparatorRow = 1;
+    static constexpr int kFirstRunRow  = 2;  // row of runs().at(0)
+    static constexpr int kAllRuns      = -1; // runSelected() payload for row 0
+
+    // The separator carries this role and nothing else, which is how the delegate tells
+    // it from a row it has to compose and from one it must hand to the base class.
+    static constexpr int kSeparatorRole = Qt::UserRole + 6;
 
     // A run row is drawn as THREE lines — its name in bold, the span of instants it
     // covers, and what is outstanding in it — so its parts travel as item data and the
     // delegate composes them, rather than one label string being taken apart again at
-    // paint time. The two mode rows at the ends of the list carry them too — they
-    // resolve to a stretch of this log and report what they will show — so what the
-    // absence of the title role now means is a row with no document behind it.
+    // paint time. The "All runs" row at the top carries them too — it resolves to a
+    // stretch of this log and reports what it will show — so what the absence of the
+    // title role now means is a row with no document behind it, or the separator.
     static constexpr int kRunTitleRole = Qt::UserRole + 1;  // "Run 3"
     static constexpr int kRunTimesRole = Qt::UserRole + 2;  // "10:04:11 - 10:41:57"
     static constexpr int kRunFatalRole = Qt::UserRole + 3;  // int, 0 == absent
@@ -95,9 +99,12 @@ signals:
     // FormatSettings (persisting it), reconfigures the Document, and re-applies.
     void runStartChanged(const QString &pattern, bool regex, bool caseSensitive);
 
-    // The user chose a run to view: an index into Document::runs(), kAllRuns for the
-    // explicit "All runs" entry (no restriction), or kLastRun for "whichever run is
-    // last", which keeps moving as the log grows.
+    // The user chose a run to view: an index into Document::runs(), or kAllRuns for the
+    // explicit "All runs" entry (no restriction). Picking the run that is LAST is how
+    // the user asks to follow whichever run is last, and that is decided one layer down
+    // (Document::selectRun) rather than by a sentinel on this signal — every route into
+    // a run selection, this pane's and the record menu's alike, means the same thing by
+    // it.
     void runSelected(int runIndex);
 
 protected:
@@ -137,8 +144,9 @@ private:
     int         m_noteState = -1;
     // The run list is the one thing in this pane that GROWS: it is as long as the log
     // has runs, which is unknown when the pane is built and changes while it scans.
-    // Row 0 is "All runs" and the bottom row is "Follow the last"; row i + kFirstRunRow
-    // is runs().at(i).
+    // Row 0 is "All runs", row 1 is the separator where there are runs at all, and
+    // row i + kFirstRunRow is runs().at(i) — the bottom one of which is also what
+    // following the last run means.
     QListWidget *m_runList = nullptr;
 };
 

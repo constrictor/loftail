@@ -355,10 +355,11 @@ void TestRunSelect::liveNewRunStaysOnCurrent()
     QVERIFY(openDoc(doc, path));
     doc.setRunStart(QString::fromLatin1(kMarker), false, Qt::CaseInsensitive);
     QCOMPARE(doc.selectedRun(), 1);
-    // PINNED to run 1, which is where the "stay on current run" claim lives now: the
-    // pane's default is to FOLLOW the last run, and that one moves (the test below).
-    // Picking the run that happens to be last is deliberately not the same gesture.
-    doc.selectRun(1);
+    // PINNED to run 0, which is where the "stay on current run" claim lives now. It has
+    // to be a run that is NOT the last: selecting the last run is exactly how the user
+    // asks to follow it (SPEC.md §3a), so pinning run 1 here would be asking for the
+    // behaviour the test below covers.
+    doc.selectRun(0);
     QVERIFY(!doc.followingLastRun());
     doc.applyFilters();
 
@@ -377,7 +378,7 @@ void TestRunSelect::liveNewRunStaysOnCurrent()
 
     QCOMPARE(doc.index().records.size(), 7);
     QCOMPARE(doc.runs().size(), 3);            // the new run is listed
-    QCOMPARE(doc.selectedRun(), 1);            // selection unchanged — stay on current
+    QCOMPARE(doc.selectedRun(), 0);            // selection unchanged — stay on current
     QCOMPARE(doc.filtered().recordCount(), 2); // view FROZEN at the boundary
     QVERIFY(!doc.retargetLastRun());           // ...and nothing retargets a pinned run
 
@@ -390,9 +391,10 @@ void TestRunSelect::liveNewRunStaysOnCurrent()
 
 void TestRunSelect::liveNewRunIsFollowedWhenLastRunIsSelected()
 {
-    // The other half of the decision above, and the pane's DEFAULT (SPEC.md §3a):
-    // "Follow the last" is not an ordinal but a standing instruction, so a restart moves the
-    // view onto the run that just started rather than leaving it on the finished one.
+    // The other half of the decision above, and what a log opens on (SPEC.md §3a): being
+    // ON the run that is last is a standing instruction rather than a pin, so a restart
+    // moves the view onto the run that just started rather than leaving it on the
+    // finished one.
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("livelastrun.log"));

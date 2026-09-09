@@ -3539,9 +3539,9 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
         if (ctx->pendingRunRestore->all)
             doc->selectRun(RunPane::kAllRuns);
         else if (ctx->pendingRunRestore->startOffset < 0)
-            // No offset saved with runAll false is how "Follow the last" is written: it names
-            // no run because it names none — see saveSession(), which is also why this
-            // needed no schema bump.
+            // No offset saved with runAll false is how "following the last run" is
+            // written: it names no run because it names none — see saveSession(), which
+            // is also why this needed no schema bump.
             doc->selectLastRun();
         else
             doc->selectRunByStart(ctx->pendingRunRestore->startOffset,
@@ -4305,12 +4305,11 @@ void MainWindow::onRunSelected(int runIndex)
         return;
     Document *doc = ctx->doc.get();
 
-    // "Follow the last" is not an ordinal, so it cannot travel as one: it is the standing
-    // instruction the document keeps and re-points itself by as runs appear (§3a).
-    if (runIndex == RunPane::kLastRun)
-        doc->selectLastRun();
-    else
-        doc->selectRun(runIndex);
+    // Every row travels as an ordinal, "All runs" as -1, and whether the pick also ARMS
+    // the follow mode is decided in Document::selectRun() from whether it named the run
+    // that is last (§3a) — never here, so that this pane and the record menu cannot come
+    // to mean different things by the same gesture.
+    doc->selectRun(runIndex);
     // The user PINNING a run, or letting go of one, is a choice about this log and is
     // remembered as one. Here and not in applyFiltersFor() below, which
     // followLastRunIfMoved() reaches on every ingest tick of a restarting log.
@@ -4333,24 +4332,23 @@ void MainWindow::onRunSelected(int runIndex)
     if (m_highlighterPane)
         m_highlighterPane->refreshTimeBounds();
 
-    // EVERY choice in this pane opens at the END of what it selects — a run, "All runs"
-    // or "Follow the last" alike (§3a): a run is picked because of how it went, and what went
+    // EVERY choice in this pane opens at the END of what it selects — a run or "All
+    // runs" alike (§3a): a run is picked because of how it went, and what went
     // wrong is the last thing in it, since a crash writes its stack and stops. Opening
     // at the first record put the one part nobody is looking for on screen and left the
     // reader scrolling the whole run to reach the part they are.
     //
     // The last record is SELECTED and not merely scrolled to, so the reader lands on the
     // record they came for and walks back up from it with the keyboard — and it is the
-    // same gesture for all three choices, because "what happened at the end" is the same
-    // question whichever of them was picked.
+    // same gesture for both, because "what happened at the end" is the same question
+    // whichever of them was picked.
     //
     // What still differs is only what the end is worth afterwards. The newest run (or
     // "all runs") is still being written, so it FOLLOWS: the end moves and the view goes
     // with it. A finished run has a fixed end and nothing is ever appended to it, so
     // follow is left to the view's own rule (at the bottom = following) rather than
     // forced — there is nothing there for it to follow.
-    const int newest = doc->runs().isEmpty() ? -1 : int(doc->runs().size()) - 1;
-    const bool isLive = runIndex < 0 || runIndex == newest;
+    const bool isLive = runIndex < 0 || runIndex == doc->lastRunIndex();
     for (DocumentView *v : std::as_const(ctx->views)) {
         LogView *log = v->logView();
         log->setCurrentRecord(log->recordCount() - 1);
