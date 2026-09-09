@@ -28,6 +28,7 @@ QT_BEGIN_NAMESPACE
 class QComboBox;
 class QLabel;
 class QPlainTextEdit;
+class QTimer;
 class QVBoxLayout;
 QT_END_NAMESPACE
 
@@ -113,7 +114,12 @@ public:
     // save happens with the file on screen, so it has no empty area to speak into and
     // keeps the header strip — the same split LogView makes between its placeholder and
     // the status bar. Both are cleared by setBusy(false).
-    void setBusy(bool busy, const QString &what);
+    //
+    // `retryAtMs` is when the next attempt is due, on RetryCountdown.h's clock, or 0 for
+    // a message with nothing to count down to. Given one, the page counts down IN THE
+    // SENTENCE — "Cannot reach h — Connection refused (4)" — through the same formatter a
+    // log tab renders its own wait with, so the two cannot come to word it differently.
+    void setBusy(bool busy, const QString &what, qint64 retryAtMs = 0);
     bool isBusy() const { return m_busy; }
 
     // What is drawn centred over the empty text area, LogView's peer. Empty whenever
@@ -156,6 +162,10 @@ private:
     // writer is how the two come to disagree.
     void setPlaceholder(const QString &text);
 
+    // Render the standing busy sentence, counting the seconds in if there is a deadline.
+    // Called by setBusy() and by the countdown's own tick, so there is one renderer.
+    void applyBusyText();
+
     void updatePathLabel();
     void updateSyntaxLabel();
 
@@ -171,6 +181,9 @@ private:
 
     bool         m_busy = false;
     QString      m_placeholder; // drawn centred when the buffer is empty (see setBusy)
+    QString      m_busyText;    // the standing busy sentence, WITHOUT its countdown
+    qint64       m_busyRetryAtMs = 0;
+    QTimer      *m_countdown = nullptr; // runs only while there is a deadline to count
     bool         m_existed = false;
     bool         m_syntaxChosen = false;
     bool         m_syntaxSniffed = false;

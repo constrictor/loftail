@@ -21,6 +21,7 @@
 #include "Decoder.h"
 #include "PromptRelay.h"
 #include "RemoteLocation.h"
+#include "RetryCountdown.h"
 #include "SshPrompter.h"
 #include "SshWorkerPool.h"
 
@@ -244,6 +245,14 @@ void drainConfigTransfers(int budgetMs)
 
 void ConfigTransfer::startRead(const QString &address)
 {
+    // The retry lives HERE and not at the call site, because the call site is a lambda in
+    // MainWindow that deletes the transfer on the reply — a retry expressed there would
+    // have to keep a second piece of state about whether the errand is really over.
+    attemptRead(address);
+}
+
+void ConfigTransfer::attemptRead(const QString &address)
+{
 #if !defined(LOFTAIL_HAVE_SSH)
     ConfigReadResult out;
     configAddressIsWritable(address, &out.error);
@@ -253,6 +262,10 @@ void ConfigTransfer::startRead(const QString &address)
     QPointer<ConfigTransfer> self(this);
     startSshWorker([address, shared, self]() {
         ConfigReadResult out;
+        // Set inside the errand, which runs only once a session is in hand — so this is
+        // the structural answer to "was the machine reached", and the classification can
+        // never drift with a reworded message.
+        bool reached = false;
         // LogTransport, not ExecOnly: readFileAt() and writeFileAt() branch on the mode
         // the connect settled, and SFTP is the transport this errand is entitled to on a
         // server that offers it — an ExecOnly session would have to read the config with
@@ -264,7 +277,8 @@ void ConfigTransfer::startRead(const QString &address)
         const QString error = withSshSession(
             address, &shared->relay, shared, SshSession::Need::LogTransport,
             SshErrandRepeat::Allowed,
-            [&out, &address](SshSession &session, const QString &path) {
+            [&out, &address, &reached](SshSession &session, const QString &path) {
+                reached = true;
                 QString why;
                 if (!session.readFileAt(path, &out.bytes, &out.existed, &why))
                     return why;
@@ -281,6 +295,7 @@ void ConfigTransfer::startRead(const QString &address)
         if (!error.isEmpty()) {
             out.ok = false;
             out.error = error;
+            out.retryable = !reached;
         }
         if (shared->abandoned || !QCoreApplication::instance())
             return;
@@ -289,9 +304,24 @@ void ConfigTransfer::startRead(const QString &address)
         // meantime, this simply does nothing.
         QMetaObject::invokeMethod(
             QCoreApplication::instance(),
-            [self, out]() {
-                if (self)
+            [self, out, address]() {
+                if (!self)
+                    return;
+                if (!out.retryable) {
                     emit self->readFinished(out);
+                    return;
+                }
+                // The host was not reached. Say when the next attempt is and go round
+                // again — the tab keeps its place, its notice and its buffer, exactly as
+                // a log tab on an unreachable host keeps retrying rather than being
+                // closed and reopened by hand. Unbounded on purpose, for the same
+                // reason: the machine coming back is the ordinary way out of this state.
+                const qint64 due = fetchMonotonicMs() + kRetryMs;
+                emit self->readRetryScheduled(out.error, due);
+                QTimer::singleShot(kRetryMs, self, [self, address]() {
+                    if (self && !self->m_shared->abandoned)
+                        self->attemptRead(address);
+                });
             },
             Qt::QueuedConnection);
     });

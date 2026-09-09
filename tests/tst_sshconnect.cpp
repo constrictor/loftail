@@ -19,6 +19,7 @@
 #include <QtTest>
 
 #include <QElapsedTimer>
+#include <QTemporaryDir>
 
 #include <atomic>
 
@@ -35,6 +36,9 @@
 #include <unistd.h>
 
 #include "RemoteLocation.h"
+#include "SourceFetcher.h"
+#include "SshFetcher.h"
+#include "RetryCountdown.h"
 #include "SshSession.h"
 
 using namespace loftail;
@@ -184,6 +188,7 @@ private slots:
     void aConnectSlowerThanOneSliceReachesTheHandshake();
     void aRefusedConnectIsReportedWithoutWaitingOutTheBudget();
     void aConnectNobodyStillWantsIsGivenUpOnLongBeforeTheBudget();
+    void aFetcherThatCouldNotReachItsHostPublishesWhenItWillTryAgain();
 };
 
 void TestSshConnect::aConnectSlowerThanOneSliceReachesTheHandshake()
@@ -282,6 +287,66 @@ void TestSshConnect::aConnectNobodyStillWantsIsGivenUpOnLongBeforeTheBudget()
     QVERIFY2(elapsed.elapsed() < 5000,
              qPrintable(QStringLiteral("gave up after %1 ms of a 20000 ms budget")
                             .arg(elapsed.elapsed())));
+}
+
+
+void TestSshConnect::aFetcherThatCouldNotReachItsHostPublishesWhenItWillTryAgain()
+{
+    // THE PUBLISH ITSELF, against a real SshFetcher and still with no server anywhere.
+    // The countdown a waiting tab shows is rendered from FetchStatus::retryAtMs, and
+    // everything above this line is driven through tests/FakeFetcher.h — so the one
+    // statement that fills the field in production, inside tailLoop() immediately before
+    // it sleeps, is reachable only from here and from the container harness. A refused
+    // port is enough: what is being asked is not how the connect failed but that a
+    // fetcher which is going to try again says when.
+    const int probe = ::socket(AF_INET, SOCK_STREAM, 0);
+    QVERIFY(probe >= 0);
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    QCOMPARE(::bind(probe, reinterpret_cast<sockaddr *>(&address), sizeof(address)), 0);
+    socklen_t length = sizeof(address);
+    QCOMPARE(::getsockname(probe, reinterpret_cast<sockaddr *>(&address), &length), 0);
+    const quint16 port = ntohs(address.sin_port);
+    ::close(probe); // bound and released: nothing is listening on it now
+
+    const auto location = RemoteLocation::parse(
+        QStringLiteral("ssh://127.0.0.1:%1/var/log/app.log").arg(port));
+    QVERIFY(location.has_value());
+
+    QString error;
+    auto fetcher = makeSshFetcher(*location, &error);
+    QVERIFY2(fetcher, qPrintable(error));
+
+    QTemporaryDir spoolDir;
+    QVERIFY(spoolDir.isValid());
+    QVERIFY2(fetcher->start(spoolDir.path(), &error), qPrintable(error));
+
+    // The first attempt is refused at once, and the loop then publishes its deadline
+    // before it waits. Generous, because what is being waited for is a worker thread's
+    // turn round a loop and not a network.
+    QTRY_VERIFY_WITH_TIMEOUT(fetcher->status().retryAtMs > 0, 10000);
+
+    const FetchStatus status = fetcher->status();
+    // WHAT KIND OF DEADLINE IT IS. In the future, on the clock the renderer reads, and
+    // within the slow cadence — a value taken off a wall clock or published as a
+    // remaining duration would pass none of these.
+    const qint64 now = fetchMonotonicMs();
+    QVERIFY2(status.retryAtMs > now,
+             qPrintable(QStringLiteral("deadline %1 is not ahead of now %2")
+                            .arg(status.retryAtMs)
+                            .arg(now)));
+    QVERIFY2(status.retryAtMs - now <= 15000,
+             qPrintable(QStringLiteral("deadline is %1 ms out, which is not a retry "
+                                       "cadence")
+                            .arg(status.retryAtMs - now)));
+    // And it is a state that RETRIES: a fetcher that had given up would publish none.
+    QVERIFY(status.state == FetchStatus::State::Waiting
+            || status.state == FetchStatus::State::Error);
+    QVERIFY(!status.error.isEmpty());
+
+    // Non-blocking, exactly as every other caller must treat it (SourceFetcher.h).
+    fetcher->requestStop();
 }
 
 QTEST_MAIN(TestSshConnect)

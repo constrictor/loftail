@@ -112,6 +112,11 @@ add_library(loftail_core STATIC
     # bytes are obtained sits behind SourceFetcher, keyed by the normalized path
     # string — which is what lets all of this be tested with no network.
     SourceFetcher.h
+    # How long until the next attempt, said in one place: a remote log's fetcher and a
+    # remote config file's read are two things that retry, and one formatter is what
+    # keeps a log tab and an editor tab from wording the same sentence differently.
+    RetryCountdown.cpp
+    RetryCountdown.h
     SourceSpool.cpp
     SourceSpool.h
     SpooledLogSource.cpp

@@ -1501,6 +1501,13 @@ ConfigView *MainWindow::buildConfigTab(const QString &address, int insertAt,
                     updateConfigTabTitle(view);
                     transfer->deleteLater();
                 });
+        // A HOST THAT COULD NOT BE REACHED IS TRIED AGAIN, and the tab counts down to it
+        // exactly as a log tab does (SPEC.md §4). The transfer stays alive across this —
+        // `readFinished` still means the errand is over — so nothing is deleted here.
+        connect(transfer, &ConfigTransfer::readRetryScheduled, view,
+                [view](const QString &error, qint64 retryAtMs) {
+                    view->setBusy(true, error, retryAtMs);
+                });
         // The transfer owns the relay that carries a host-key question or a password
         // prompt to this thread — see ConfigTransfer, where the lifetime argument is.
         transfer->startRead(address);

@@ -19,8 +19,8 @@
 #include "SshFetcher.h"
 
 #include "DiagnosticLog.h"
-
 #include "PromptRelay.h"
+#include "RetryCountdown.h"
 #include "SshPrompter.h"
 #include "SshRetryPolicy.h"
 #include "SshSession.h"
@@ -500,6 +500,11 @@ void SshFetcher::setState(FetchStatus::State state)
         // Waiting carries its explanation the same way Error does, so neither clears it.
         if (state != FetchStatus::State::Error && state != FetchStatus::State::Waiting)
             m_status.error.clear();
+        // A published deadline belongs to the sleep that is about to happen, and every
+        // one of these runs from INSIDE an attempt — so whatever was scheduled is being
+        // carried out right now and there is nothing left to count down to. tailLoop()
+        // is the only thing that sets one, immediately before it waits.
+        m_status.retryAtMs = 0;
     }
     if (previous != state)
         logStateChange(state, QString());
@@ -516,6 +521,7 @@ void SshFetcher::setError(const QString &message)
         changed = m_status.state != FetchStatus::State::Error || m_status.error != message;
         m_status.state = FetchStatus::State::Error;
         m_status.error = message;
+        m_status.retryAtMs = 0;
     }
     if (changed)
         logStateChange(FetchStatus::State::Error, message);
@@ -532,6 +538,7 @@ void SshFetcher::setWaiting(const QString &message)
         changed = m_status.state != FetchStatus::State::Waiting || m_status.error != message;
         m_status.state = FetchStatus::State::Waiting;
         m_status.error = message;
+        m_status.retryAtMs = 0;
     }
     if (changed)
         logStateChange(FetchStatus::State::Waiting, message);
@@ -955,7 +962,18 @@ void SshFetcher::tailLoop()
             // re-read every second on the machine being observed (invariant #5).
             if (m_session && m_session->sizeSource() == SizeSource::Wc)
                 wait = qMax(wait, kWcMinPollMs);
+            // SAY WHEN THE NEXT ATTEMPT IS, and only where it is worth saying: the slow
+            // cadence is five seconds and up, which is a number a reader can use, while
+            // a healthy tail's one-second poll is not a retry at all and would put a
+            // countdown on a log that is working. A fetcher that has been REFUSED sleeps
+            // here too and must publish nothing — it is waiting to be poked, not to try
+            // again, and a countdown there would promise an attempt that never comes.
+            m_status.retryAtMs = (slow && !refused) ? fetchMonotonicMs() + wait : 0;
             m_wake.wait_for(lock, std::chrono::milliseconds(wait));
+            // The wait is over however it ended — the deadline, a poke or a stop — so
+            // the deadline is spent. Left standing, a poked fetcher would count down
+            // through the attempt the poke asked for.
+            m_status.retryAtMs = 0;
         }
         m_poked = false;
     }

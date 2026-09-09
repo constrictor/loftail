@@ -101,6 +101,15 @@ public:
     // what SshFetcher does as it works down its ladder of ways to reach a log.
     void restateWait(const QString &message) { becomeUnavailable(message); }
 
+    // When the next attempt is due, which a real fetcher publishes immediately before it
+    // sleeps (SshFetcher::tailLoop). Set independently of the reason because that is how
+    // it moves in practice: the sentence stands still while the number counts down.
+    void setRetryAt(qint64 retryAtMs)
+    {
+        QMutexLocker lock(&m_mutex);
+        m_status.retryAtMs = retryAtMs;
+    }
+
     // The wait ended: the host came back, or the log was finally written. Publishes
     // the initial content as generation 1 and goes Live, which is what start() would
     // have done had it succeeded.

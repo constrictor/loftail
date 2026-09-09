@@ -25,6 +25,7 @@
 
 #include "FakeFetcher.h"
 #include "LogSource.h"
+#include "RetryCountdown.h"
 #include "SourceSpool.h"
 #include "SpooledLogSource.h"
 
@@ -67,6 +68,7 @@ private slots:
     void unconfiguredRemoteReportsNotBuiltIn();
     void aConnectingArchiveSaysWhatItIsOpeningRatherThanConnecting();
     void aLocalSourceDeliversByDefaultAndASpooledOneOnlyWhileItIsFetching();
+    void aWaitThatIsGoingToBeRetriedSaysHowLongUntilItIs();
 };
 
 void TestSpooledSource::readsInitialContentThroughTheSpool()
@@ -451,6 +453,57 @@ void TestSpooledSource::aLocalSourceDeliversByDefaultAndASpooledOneOnlyWhileItIs
 
     remote->becomeAvailable();
     QVERIFY(spooled->isDelivering());
+}
+
+
+// HOW LONG UNTIL THE NEXT ATTEMPT is part of the sentence, and it is the only thing that
+// tells a tab which is still trying from one that has given up (SPEC.md §3). Both are a
+// reason with nothing happening after it; the countdown is the difference.
+//
+// Asked of the formatter and of sourceStatusText() together, because each can be right
+// while the other is wrong: a formatter nothing calls says nothing, and a caller that
+// passes the wrong field counts down to something else.
+void TestSpooledSource::aWaitThatIsGoingToBeRetriedSaysHowLongUntilItIs()
+{
+    const QString reason = QStringLiteral("Cannot reach 127.0.0.1 — Connection refused");
+
+    // ROUNDED UP, so the last part-second reads "(1)". Zero is what a countdown says when
+    // it has finished, and this one has not.
+    const qint64 now = fetchMonotonicMs();
+    QCOMPARE(retryCountdownText(reason, now + 4200), reason + QStringLiteral(" (5)"));
+    QCOMPARE(retryCountdownText(reason, now + 1), reason + QStringLiteral(" (1)"));
+
+    // NOTHING SCHEDULED, ALREADY DUE and NOTHING TO SAY all give the reason back
+    // untouched — a fetcher that has been refused publishes no deadline, and an attempt
+    // that is running right now has nothing left to count. A "(0)" there would promise
+    // an attempt that is not coming.
+    QCOMPARE(retryCountdownText(reason, 0), reason);
+    QCOMPARE(retryCountdownText(reason, now - 1), reason);
+    QVERIFY(retryCountdownText(QString(), now + 5000).isEmpty());
+
+    // And through the source, which is where the number has to be picked off the status
+    // rather than out of the air.
+    FakeRemoteFarm farm;
+    auto remote = farm.at(QString::fromLatin1(kUrl));
+    remote->setInitialContent(QByteArrayLiteral("hello remote"));
+    auto src = openSource();
+    QVERIFY(src);
+
+    remote->restateWait(reason);
+    src->refreshSize();
+    QCOMPARE(sourceStatusText(*src, QString::fromLatin1(kUrl)), reason);
+
+    remote->setRetryAt(fetchMonotonicMs() + 3000);
+    src->refreshSize();
+    QCOMPARE(sourceStatusText(*src, QString::fromLatin1(kUrl)),
+             reason + QStringLiteral(" (3)"));
+
+    // A HEALTHY tail never counts, whatever is left standing in the field: the states
+    // above Error and Waiting return before the formatter is reached, which is what keeps
+    // a working log from wearing a number that means nothing.
+    remote->becomeAvailable();
+    src->refreshSize();
+    QVERIFY(sourceStatusText(*src, QString::fromLatin1(kUrl)).isEmpty());
 }
 
 QTEST_GUILESS_MAIN(TestSpooledSource)

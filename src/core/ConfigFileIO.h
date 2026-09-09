@@ -39,6 +39,16 @@ class SshPrompter;
 struct ConfigReadResult
 {
     bool       ok = false;
+    // The far end was never REACHED — a host that is down, a link that dropped, a
+    // connect that timed out. It is the one failure worth trying again on its own, so it
+    // is the one ConfigTransfer retries (SPEC.md §4): everything else is an answer the
+    // far end gave — no such file, permission denied, too large — and asking the same
+    // question every five seconds gets the same answer every five seconds.
+    //
+    // Decided STRUCTURALLY and never by reading the message: the errand's own lambda
+    // runs only once a session is in hand, so "did that lambda run" is exactly "was the
+    // machine reached", and a wording change can never silently reclassify a failure.
+    bool       retryable = false;
     // false with ok=true is the SUPPORTED "not there yet" case, not a failure: the editor
     // opens on an empty buffer and Save creates the file. Distinguishing it from a read
     // that failed is the whole reason this is not just a QByteArray.
@@ -146,6 +156,12 @@ public:
     void startRead(const QString &address);
     void startWrite(const QString &address, const QByteArray &bytes);
 
+    // How long a read waits before trying the unreachable host again. The remote log's
+    // own slow cadence (SshFetcher::tailLoop), deliberately: a config file and the log
+    // beside it are usually on the same machine, and two tabs counting down to different
+    // instants would read as two different kinds of trouble.
+    static constexpr int kRetryMs = 5000;
+
     // What the worker and the owner share: the abandon flag and the session to abort.
     // Public because the free function that runs the connect needs it, and a friend
     // declaration for one helper in one .cpp buys nothing over saying so.
@@ -154,10 +170,25 @@ public:
 signals:
     // Emitted on the application thread, exactly once, or never if the transfer was
     // abandoned first.
+    //
+    // A read that failed because the machine could not be reached emits NEITHER of
+    // these: it emits readRetryScheduled() and stays alive, so readFinished() keeps
+    // meaning "this errand is over" and its one call site keeps deleting the transfer
+    // on it. A WRITE is never retried — it is an in-place, non-atomic write to somebody
+    // else's file, and repeating one unasked after a link died mid-way is the one thing
+    // a config editor must not do on its own (SPEC.md §4).
     void readFinished(ConfigReadResult result);
     void writeFinished(ConfigWriteResult result);
 
+    // A read failed, the host was never reached, and the next attempt is due at
+    // `retryAtMs` on RetryCountdown.h's clock. `error` is the transport's own words.
+    void readRetryScheduled(QString error, qint64 retryAtMs);
+
 private:
+    // One attempt. startRead() is this plus the retry bookkeeping around it, so a retry
+    // and a first try cannot come to be two different pieces of code.
+    void attemptRead(const QString &address);
+
     std::shared_ptr<Shared> m_shared;
 };
 

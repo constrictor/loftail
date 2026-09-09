@@ -30,6 +30,7 @@
 #include "ManualFormatProvider.h"
 #include "Priority.h"
 #include "RecordIndex.h"
+#include "RetryCountdown.h"
 #include "SpooledLogSource.h"
 
 using namespace loftail;
@@ -105,6 +106,7 @@ private slots:
     // The reason is REPUBLISHED, not merely announced (§6.5).
     void aReasonThatChangesWhileWaitingIsRepublished();
     void aLocalWaitKeepsTheReasonItWasGiven();
+    void theCountdownRidesTheWaitReasonAndMovesWhileTheReasonStandsStill();
 };
 
 void TestWaitingRemote::unreachableHostOpensWaitingAndFillsInWhenItReturns()
@@ -770,6 +772,66 @@ void TestWaitingRemote::aLocalWaitKeepsTheReasonItWasGiven()
 
     QVERIFY(announced.isEmpty());
     QCOMPARE(doc.waitReason(), reason);
+}
+
+
+void TestWaitingRemote::theCountdownRidesTheWaitReasonAndMovesWhileTheReasonStandsStill()
+{
+    // WHAT THIS IS FOR. "Cannot reach web1:22 — Connection refused" with nothing after it
+    // reads the same whether loftail is about to try again or has stopped trying for
+    // good, and those are the two states a reader most needs told apart (SPEC.md §3).
+    // The countdown is the difference, and it rides the existing republish machinery
+    // rather than a timer of its own: the number is part of the sentence, so the sentence
+    // changes every second and LiveController's own guard carries it.
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(rec(1, "INFO ", "boot", "one"));
+    const QString refusal = QStringLiteral("Cannot reach web1:22 — Connection refused");
+    remote->setInitiallyUnavailable(refusal);
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.prepare(url(), provider, Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(doc.isWaiting());
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    live.setVanishGrace(0);
+    int resumes = 0;
+    wireResume(live, doc, model, &resumes);
+    int resets = 0;
+    connect(&model, &QAbstractItemModel::modelAboutToBeReset, &model, [&] { ++resets; });
+    live.start();
+
+    // With no deadline published there is no number, which is the state of a fetcher that
+    // has GIVEN UP — and the whole point of the number is that this reads differently.
+    live.checkNow();
+    QCOMPARE(doc.waitReason(), refusal);
+
+    remote->setRetryAt(fetchMonotonicMs() + 3000);
+    live.checkNow();
+    QCOMPARE(doc.waitReason(), refusal + QStringLiteral(" (3)"));
+
+    // AND IT MOVES ON ITS OWN. Nothing about the fetcher changes here — the reason and
+    // the deadline are both exactly what they were — so what makes the tab count down is
+    // the tick re-rendering a deadline against the clock. A countdown published as a
+    // remaining duration instead would stick at "(3)" for the length of the outage.
+    QTest::qWait(1100);
+    live.checkNow();
+    QCOMPARE(doc.waitReason(), refusal + QStringLiteral(" (2)"));
+
+    // Through the republish path, so still no model reset: a reset per second would drop
+    // every view's anchor and selection for the length of an outage.
+    QCOMPARE(resets, 0);
+    QCOMPARE(resumes, 0);
+    QVERIFY(doc.isWaiting());
+
+    // And the log turning up takes the whole sentence away, number and all.
+    remote->becomeAvailable();
+    live.checkNow();
+    QCOMPARE(resumes, 1);
+    QVERIFY(!doc.isWaiting());
+    QVERIFY(doc.waitReason().isEmpty());
 }
 
 QTEST_GUILESS_MAIN(TestWaitingRemote)

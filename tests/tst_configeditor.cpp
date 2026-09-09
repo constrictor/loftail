@@ -48,6 +48,7 @@
 #include "LogSettingsStore.h"
 #include "MainWindow.h"
 #include "RestartDialog.h"
+#include "RetryCountdown.h"
 #include "SessionStore.h"
 
 using namespace loftail;
@@ -85,6 +86,7 @@ private slots:
     void anEditorTabComesBackInPlaceAfterARelaunch();
     void cancellingTheUnsavedPromptAbortsTheQuitAndWritesNoSession();
     void aConnectSaysSoInTheMiddleOfTheEmptyPageAndASaveInTheStrip();
+    void aHostThatCannotBeReachedCountsDownToTheNextTry();
     void aRemoteConfigPutsItsTabUpBeforeTheFarEndAnswers();
     void closingATabMidConnectDoesNotWaitForIt();
     void aRemoteEditorTabComesBackAfterARelaunch();
@@ -764,6 +766,54 @@ void TestConfigEditor::aConnectSaysSoInTheMiddleOfTheEmptyPageAndASaveInTheStrip
 
     view.setBusy(false, QString());
     QVERIFY(view.placeholderText().isEmpty());
+}
+
+void TestConfigEditor::aHostThatCannotBeReachedCountsDownToTheNextTry()
+{
+    // A config file's read is retried when the MACHINE could not be reached, exactly as
+    // its log's is, and the page says how long until the next attempt (SPEC.md §4). The
+    // sentence goes through the same formatter a log tab renders its own wait with, so
+    // the two cannot come to word one thing differently.
+    //
+    // Driven on the page rather than over a network: what is pinned here is that the
+    // countdown is rendered and that it MOVES, which needs a deadline and a clock and no
+    // far end at all. That the transfer schedules one is ConfigTransfer's own rule, and
+    // it is asked of a real host in the ssh-live harness.
+    ConfigView view(QStringLiteral("/etc/log4cplus.properties"));
+    view.resize(600, 400);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    const QString refusal = QStringLiteral("Cannot reach 127.0.0.1 — Connection refused");
+
+    // No deadline: the sentence stands alone, which is what a failure that will NOT be
+    // tried again looks like. The distinction is the whole feature.
+    view.setBusy(true, refusal);
+    QCOMPARE(view.placeholderText(), refusal);
+
+    view.setBusy(true, refusal, fetchMonotonicMs() + 3000);
+    QCOMPARE(view.placeholderText(), refusal + QStringLiteral(" (3)"));
+
+    // AND IT MOVES WITHOUT BEING TOLD AGAIN. Nothing calls setBusy() in between — the
+    // page's own timer re-renders the standing deadline against the clock, which is what
+    // makes it a countdown rather than a number that was true once.
+    QTRY_COMPARE_WITH_TIMEOUT(view.placeholderText(),
+                              refusal + QStringLiteral(" (2)"), 2000);
+
+    auto *countdown = view.findChild<QTimer *>(QStringLiteral("configRetryCountdown"));
+    QVERIFY(countdown);
+    QVERIFY(countdown->isActive());
+
+    // A message with nothing to count down to stops the timer rather than leaving it
+    // running for the life of the tab — the page is busy either way, so the flag cannot
+    // stand in for it.
+    view.setBusy(true, QStringLiteral("Connecting to host…"));
+    QCOMPARE(view.placeholderText(), QStringLiteral("Connecting to host…"));
+    QVERIFY(!countdown->isActive());
+
+    view.setBusy(false, QString());
+    QVERIFY(view.placeholderText().isEmpty());
+    QVERIFY(!countdown->isActive());
 }
 
 void TestConfigEditor::aRemoteConfigPutsItsTabUpBeforeTheFarEndAnswers()

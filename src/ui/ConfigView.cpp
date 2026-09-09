@@ -24,6 +24,7 @@
 #include "Fonts.h"
 #include "MessageLabel.h"
 #include "RemoteLocation.h"
+#include "RetryCountdown.h"
 #include "UiColors.h"
 
 #include <QComboBox>
@@ -35,6 +36,7 @@
 #include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QTextDocument>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -377,14 +379,45 @@ void ConfigView::clearNotice()
     m_notice->hide();
 }
 
-void ConfigView::setBusy(bool busy, const QString &what)
+void ConfigView::setBusy(bool busy, const QString &what, qint64 retryAtMs)
 {
     m_busy = busy;
     m_edit->setReadOnly(busy);
-    if (!busy) {
+    m_busyText = busy ? what : QString();
+    m_busyRetryAtMs = busy ? retryAtMs : 0;
+
+    if (m_busyRetryAtMs > 0) {
+        if (!m_countdown) {
+            // Built on the first deadline and kept, rather than built in the constructor:
+            // a config page nearly always opens on a file that is right there, and a
+            // timer nothing ever starts is a timer to explain.
+            m_countdown = new QTimer(this);
+            m_countdown->setObjectName(QStringLiteral("configRetryCountdown")); // findChild
+            // Twice a second, not once: the deadline does not fall on this timer's own
+            // phase, so at one second the same number would stand for up to two seconds
+            // at a time and the count would visibly stick. Nothing else runs on it — the
+            // render is one string compare in the common case.
+            m_countdown->setInterval(500);
+            connect(m_countdown, &QTimer::timeout, this, &ConfigView::applyBusyText);
+        }
+        m_countdown->start();
+    } else if (m_countdown) {
+        m_countdown->stop();
+    }
+
+    applyBusyText();
+}
+
+void ConfigView::applyBusyText()
+{
+    if (!m_busy) {
         setPlaceholder(QString());
         return;
     }
+
+    // ONE formatter, shared with the log's own wait (RetryCountdown.h): a tab counting
+    // "(4)" beside one counting "in 4s" is two features rather than one.
+    const QString text = retryCountdownText(m_busyText, m_busyRetryAtMs);
 
     // The page's own surface rather than the status bar either way: a connect can take
     // twenty seconds, and the status bar is rewritten on every ingest tick of every log.
@@ -392,11 +425,11 @@ void ConfigView::setBusy(bool busy, const QString &what)
     // LogView's own split between its centred placeholder and everything else, and the
     // whole of what makes an editor's connect look like a log's.
     if (m_edit->document()->isEmpty()) {
-        setPlaceholder(what);
+        setPlaceholder(text);
         return;
     }
 
-    m_notice->setText(what);
+    m_notice->setText(text);
     QPalette p = m_notice->palette();
     // The ORDINARY text colour, not the error colour showNotice() uses — "connecting"
     // is not a failure, and painting it red would say the open had already gone wrong.

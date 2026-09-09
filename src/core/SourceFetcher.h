@@ -82,6 +82,25 @@ struct FetchStatus
 
     // User-facing failure text for State::Error. NEVER contains a credential.
     QString error;
+
+    // When the next attempt is due, on fetchMonotonicMs()'s clock — 0 for "nothing is
+    // scheduled", which covers every healthy state, an attempt that is running right
+    // now, and a fetcher that has given up until File ▸ Reconnect. It exists so the
+    // reader can be told how long they are waiting for (SPEC.md §3): a tab that says
+    // "Cannot reach host — Connection refused" and then sits there is indistinguishable
+    // from one that has stopped trying, and the two are the cases a reader most needs
+    // told apart.
+    //
+    // A DEADLINE and not a remaining duration, because the value is read on the GUI's
+    // own tick and any duration published from the worker is stale by an unknown amount
+    // by the time it is rendered. Published only where the wait is worth a number: the
+    // fetcher sets it for its slow (Error/Waiting) cadence and never for the ordinary
+    // one-second poll of a healthy tail, and ArchiveFetcher's hundred-millisecond await
+    // sets it at all — a countdown that reads "(0)" forever says less than no countdown.
+    //
+    // The clock and the one formatter that renders this are in RetryCountdown.h, shared
+    // with the config editor's own retry so the two cannot word one sentence differently.
+    qint64  retryAtMs = 0;
 };
 
 // The state's name for the diagnostic log, NOT for the user (DiagnosticLog.h). It is

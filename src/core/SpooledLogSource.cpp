@@ -20,6 +20,7 @@
 
 #include "ArchiveLocation.h"
 #include "RemoteLocation.h"
+#include "RetryCountdown.h"
 #include "SourceSpool.h"
 
 #include <QCoreApplication>
@@ -273,15 +274,17 @@ QString sourceStatusText(const LogSource &source, const QString &path)
         return {};
 
     case FetchStatus::State::Error:
-        return status.error;
+        return retryCountdownText(status.error, status.retryAtMs);
 
     case FetchStatus::State::Waiting:
         // The fetcher's own words where it has any — "the host is down", "no such file
         // there" — because it knows which of those it hit and this does not. The bare
         // fallback is for a fetcher that only managed to say "not there".
-        return status.error.isEmpty()
-            ? Tr::tr("waiting for %1 to appear").arg(logSourceDisplayName(path))
-            : status.error;
+        return retryCountdownText(status.error.isEmpty()
+                                      ? Tr::tr("waiting for %1 to appear")
+                                            .arg(logSourceDisplayName(path))
+                                      : status.error,
+                                  status.retryAtMs);
 
     case FetchStatus::State::Connecting: {
         // THE SAME SPLIT THE PRIMING CASE BELOW MAKES, and for the same reason: the
