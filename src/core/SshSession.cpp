@@ -1144,6 +1144,31 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
     const bool passwordOffered = available.contains(QLatin1String("password"))
         || available.contains(QLatin1String("keyboard-interactive"));
     if (!passwordOffered) {
+        // NEEDS A PERSON WHERE THE SERVER OFFERS publickey, AND Refused ONLY WHERE IT
+        // OFFERS NOTHING LOFTAIL CAN DO. The two read alike from here — neither attempt
+        // signed in — and the difference is whether anything about the far end could
+        // change without the address changing.
+        //
+        // A key-only host (`PasswordAuthentication no`, which is the hardened default and
+        // therefore the common one) that is COMING UP passes through exactly this state:
+        // sshd answers before /home is mounted and before ~/.ssh/authorized_keys can be
+        // read, so the key loftail signed in with a minute ago is refused for a few
+        // seconds. Classifying that as Refused is what made SshFetcher::reconnect() latch
+        // on the first attempt and kill the tab for the life of the session — the very
+        // case ReconnectGrace was written for (SshRetryPolicy.h), which never fired on it
+        // because the grace is gated on NeedsPerson. The same outage on a host that also
+        // offers passwords recovered on its own, so the harder a server was configured the
+        // worse loftail behaved.
+        //
+        // Refused stays for a server offering no method that could EVER work here — no
+        // publickey, no password, no keyboard-interactive — which is a standing fact about
+        // the server rather than a moment in its boot, and which retrying cannot mend. The
+        // safety of the wider reading is ReconnectGrace's own: it is bounded, and it is
+        // gated on having signed in to this host before, so a tab that has never connected
+        // still pays one attempt and stops.
+        *failure = available.contains(QLatin1String("publickey"))
+            ? SshSession::Failure::NeedsPerson
+            : SshSession::Failure::Refused;
         *error = Tr::tr(
             "Could not authenticate to %1 with an SSH agent or key, and the server "
             "offers no password method (it allows: %2).")
@@ -1655,6 +1680,29 @@ bool SshSession::openFile(QString *error, Failure *failure)
                 }
                 return false;
             }
+            // A log too big for the only measurement this server can offer is the one
+            // outcome here that does NOT mend itself, so it must not be waited for. The
+            // `stat` and `ls` rungs are absent or unparseable and `wc` reads the whole
+            // file to answer, so measuring it once a second is what invariant #5 forbids
+            // — and the file only ever gets further past the ceiling as it grows. It is a
+            // refusal that keeps its tab and says why (M17), naming the real cause: this
+            // spent a tab for ever on "it is missing, or the account cannot read it"
+            // about a file that was present, readable and growing.
+            if (probe.tooBigToMeasure()) {
+                kind = Failure::Refused;
+                if (error) {
+                    // Worded like SshFetcher's own kWcAbandonBytes message, which is
+                    // the same fence one step later — that one catches a log which grows
+                    // past 64 MB while being tailed, this one a log already too big to
+                    // settle on at all. Both name the remedy, which is one utility away.
+                    *error = Tr::tr("%1 on %2 is %3 MB, and the server offers no way to "
+                                    "measure it except by reading all of it. Installing "
+                                    "`stat` or `ls` on the server fixes this.")
+                                 .arg(d->location.path, d->location.host)
+                                 .arg((probe.sizeThatWasTooBig() + 524288) / (1024LL * 1024));
+                }
+                return false;
+            }
             // Indistinguishable from here: absent, or present and unreadable. Both are
             // things that change on their own, so both wait (§6.5) — the same answer
             // the SFTP branch gives for NO_SUCH_FILE and PERMISSION_DENIED.
@@ -1897,10 +1945,39 @@ bool SshSession::writeFileAt(const QString &path, const QByteArray &bytes, QStri
                                              size_t(bytes.size() - written));
         if (n < 0) {
             d->noteError(int(n));
+            const unsigned long fx = int(n) == SshError::kSftpProtocol
+                ? libssh2_sftp_last_error(d->sftp)
+                : 0UL;
             libssh2_sftp_close(handle);
-            return fail(Tr::tr("The connection dropped while writing %1 — it may now be "
-                               "incomplete.")
-                            .arg(path));
+            // A DROPPED LINK AND A REFUSED WRITE READ ALIKE HERE, AND ONLY ONE OF THEM IS
+            // THE NETWORK. Every negative return used to be reported as the connection
+            // dropping, so a full filesystem — the likeliest way a write fails, and one
+            // the far end states plainly — sent the user to look at their network. It
+            // matters more on this call than on any other in the class: the write
+            // truncates in place (see above), so by the time this is reported the file
+            // that decides what an application logs has already been destroyed, and the
+            // sentence is the whole of what the user has to act on.
+            //
+            // The split is taken from sshErrorEndsSession(), which is already the tree's
+            // one answer to "is this code about the link or about the request", rather
+            // than from a list of FX codes: servers disagree about which of NO_SPACE,
+            // QUOTA_EXCEEDED and the catch-all FAILURE they send for a full disk, and a
+            // list would silently mis-file whichever one it had not heard of.
+            if (sshErrorEndsSession(int(n))) {
+                return fail(Tr::tr("The connection dropped while writing %1 — it may now "
+                                   "be incomplete.")
+                                .arg(path));
+            }
+            if (fx == LIBSSH2_FX_PERMISSION_DENIED || fx == LIBSSH2_FX_WRITE_PROTECT) {
+                return fail(Tr::tr("%1 on %2 cannot be written — it may now be "
+                                   "incomplete.")
+                                .arg(path, d->location.host));
+            }
+            return fail(Tr::tr("%1 refused the write to %2 — the filesystem may be full "
+                               "or over quota. The file may now be incomplete. "
+                               "(SFTP status %3)")
+                            .arg(d->location.host, path)
+                            .arg(fx));
         }
         if (n == 0)
             break;

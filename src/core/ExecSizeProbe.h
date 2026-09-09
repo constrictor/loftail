@@ -73,6 +73,20 @@ public:
     // two-way.
     bool channelDied() const { return m_channelDied; }
 
+    // After a settle() that returned None: a rung DID answer, with a size past
+    // kWcSettleCeiling, and it was the only rung this server can offer.
+    //
+    // A THIRD OUTCOME, BECAUSE THE OTHER TWO BOTH MEND THEMSELVES AND THIS ONE DOES NOT.
+    // A dead channel is fixed by reconnecting and a missing file by the log being
+    // written, so both are waited for; a log too big for the only measurement available
+    // gets further out of reach every time it grows. Folded into "missing, or the account
+    // cannot read it" — which is where it went — the tab waited for ever on a file that
+    // was present, readable, and named in a sentence saying it was neither.
+    bool tooBigToMeasure() const { return m_tooBigToMeasure; }
+
+    // The size the ceiling was measured against, for the message that names it.
+    qint64 sizeThatWasTooBig() const { return m_tooBigSize; }
+
 private:
     bool eligible(SizeSource source) const;
 
@@ -95,6 +109,8 @@ private:
     RunCommand m_run;
     ReadAt     m_read;
     bool       m_channelDied = false;
+    bool       m_tooBigToMeasure = false;
+    qint64     m_tooBigSize = 0;
 };
 
 } // namespace loftail

@@ -1,0 +1,49 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A LOG TOO BIG FOR THE ONLY SIZE RUNG A SERVER HAS IS A THIRD
+# ANSWER"):
+#   `ExecSizeProbe::settle()` records `tooBigToMeasure()` where the `wc` rung
+#   declines on the ceiling. `wc` is the last rung, so a skip there is the whole
+#   of the answer — and without the flag it is indistinguishable from the None
+#   that means "the file is not there", which is what it was read as.
+#
+# GUARD: tst_execsizeprobe::aFileTooBigForTheLastRungIsNotAMissingFile
+#
+# SILENT WHEN BROKEN: a log over 8 MB on a server with no `stat` and no parseable
+# `ls` is reported as "it is missing, or the account cannot read it" and then
+# waited for once a second for the life of the tab — on a file that is present,
+# readable and growing, and that gets further out of reach with every byte.
+
+diff --git a/src/core/ExecSizeProbe.cpp b/src/core/ExecSizeProbe.cpp
+index 84bae6f..b021bb9 100644
+--- a/src/core/ExecSizeProbe.cpp
++++ b/src/core/ExecSizeProbe.cpp
+@@ -124,11 +124,8 @@ SizeSource ExecSizeProbe::settle(ExecAttrs *first)
+         // Recorded rather than merely skipped: `wc` is the last rung, so a skip here is
+         // the whole of the answer, and it is neither of the two things a None otherwise
+         // means (tooBigToMeasure()).
+-        if (rung == SizeSource::Wc && attrs.size > kWcSettleCeiling) {
+-            m_tooBigToMeasure = true;
+-            m_tooBigSize = attrs.size;
++        if (rung == SizeSource::Wc && attrs.size > kWcSettleCeiling)
+             continue;
+-        }
+ 
+         if (!provesReadPath(attrs.size))
+             continue;

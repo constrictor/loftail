@@ -103,6 +103,11 @@ SizeSource ExecSizeProbe::settle(ExecAttrs *first)
                                              SizeSource::Wc};
     bool attempted = false;
     bool anyRan = false;
+    // Reset per settle(), which re-runs on every openFile() so that a rotation gets a
+    // fresh choice: a stale flag would report the PREVIOUS generation's size about this
+    // one.
+    m_tooBigToMeasure = false;
+    m_tooBigSize = 0;
 
     for (const SizeSource rung : kLadder) {
         if (!eligible(rung))
@@ -116,8 +121,14 @@ SizeSource ExecSizeProbe::settle(ExecAttrs *first)
             continue;
 
         // The exactness backstop must not become a way to re-read a large log forever.
-        if (rung == SizeSource::Wc && attrs.size > kWcSettleCeiling)
+        // Recorded rather than merely skipped: `wc` is the last rung, so a skip here is
+        // the whole of the answer, and it is neither of the two things a None otherwise
+        // means (tooBigToMeasure()).
+        if (rung == SizeSource::Wc && attrs.size > kWcSettleCeiling) {
+            m_tooBigToMeasure = true;
+            m_tooBigSize = attrs.size;
             continue;
+        }
 
         if (!provesReadPath(attrs.size))
             continue;
@@ -125,6 +136,10 @@ SizeSource ExecSizeProbe::settle(ExecAttrs *first)
         if (first)
             *first = attrs;
         m_channelDied = false;
+        // A rung settled, so the ceiling a lower one hit says nothing about this file any
+        // more — and would be read as the reason for a None that never happened.
+        m_tooBigToMeasure = false;
+        m_tooBigSize = 0;
         return rung;
     }
 

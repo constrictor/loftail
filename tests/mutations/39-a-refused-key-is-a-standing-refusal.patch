@@ -1,0 +1,52 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "THE POLICY WAS RIGHT AND ITS GATE WAS WRONG"):
+#   `authenticate()`'s "no key accepted and no password method offered" branch
+#   answers `NeedsPerson` where the server offers `publickey` and `Refused` only
+#   where it offers nothing loftail can do. `ReconnectGrace` is gated on
+#   `NeedsPerson`, so this one enumerator decides whether a rebooting host is
+#   waited for or written off.
+#
+# GUARD: tst_sshlive::aKeyOnlyHostThatRefusesTheKeyIsWorthRetryingRatherThanRefused
+#
+# HARNESS: needs the containerised `badkey` server — packaging/test-ssh/run-ssh-tests.sh.
+#   Verified red there by hand: "Compared values are not the same".
+#
+# SILENT WHEN BROKEN: a key-only host (PasswordAuthentication no, the hardened
+# default) that reboots is written off on the FIRST reconnect attempt, because
+# sshd answers before ~/.ssh/authorized_keys can be read. No prompt and no
+# dialog; the tab is dead until File ▸ Reconnect. The identical outage on a host
+# that also offers passwords recovers on its own, so the harder a server is
+# configured the worse loftail behaves.
+
+diff --git a/src/core/SshSession.cpp b/src/core/SshSession.cpp
+index c62bd5e..4930bb6 100644
+--- a/src/core/SshSession.cpp
++++ b/src/core/SshSession.cpp
+@@ -1166,9 +1166,7 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
+         // safety of the wider reading is ReconnectGrace's own: it is bounded, and it is
+         // gated on having signed in to this host before, so a tab that has never connected
+         // still pays one attempt and stops.
+-        *failure = available.contains(QLatin1String("publickey"))
+-            ? SshSession::Failure::NeedsPerson
+-            : SshSession::Failure::Refused;
++        *failure = SshSession::Failure::Refused;
+         *error = Tr::tr(
+             "Could not authenticate to %1 with an SSH agent or key, and the server "
+             "offers no password method (it allows: %2).")

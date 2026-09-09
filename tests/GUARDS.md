@@ -100,7 +100,12 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The first connect to a host asks about its key before any credential is sent, and remembering it silences the second | First connect (L48) | tst_sshlive::aFirstConnectAsksAboutTheHostKeyAndRemembersIt<br>tst_sshlive::aRejectedHostKeySendsNoCredential |
 | The password rung is reached when no key answers, and the accepted password is handed to the prompter once | First connect (L48) | tst_sshlive::aFirstConnectAsksForThePasswordWhenNoKeyAnswers |
 | `SshExecCommands` and `ExecSizeProbe` are always compiled, `shellQuote()` being a security boundary | SFTP fallback (L41) | tst_sshexec<br>tst_execsizeprobe |
-| Three containerised sshd servers, because a stock sshd reaches neither the exec transport nor the lower size rungs | SSH CI (L47) | tst_sshlive |
+| Six containerised sshd servers, because a stock sshd reaches neither the exec transport nor the lower size rungs | SSH CI (L47) | tst_sshlive |
+| A key-only host that refuses the key is a MOMENT (`NeedsPerson`, so ReconnectGrace covers it) and not a standing refusal | Three more servers (L48) | tst_sshlive::aKeyOnlyHostThatRefusesTheKeyIsWorthRetryingRatherThanRefused |
+| The 20 s `Need::ExecOnly` saves, against a server that ACCEPTS the subsystem channel and answers nothing | Three more servers (L48) | tst_sshlive::anExecOnlyConnectSkipsTheSftpWaitTheLogTransportPays |
+| A log past the `wc` ceiling is a THIRD answer, not a missing file: `tooBigToMeasure()`, and `Refused` rather than `NoSuchFile` | Too big to measure (L47) | tst_execsizeprobe::aFileTooBigForTheLastRungIsNotAMissingFile<br>tst_sshlive::aLogTooBigForTheOnlySizeRungIsRefusedRatherThanCalledMissing |
+| The ceiling flag is cleared at the top of every `settle()` and again on the success path, or it outlives the file it was hit on | Too big to measure (L47) | tst_execsizeprobe::aSettledRungLeavesNoCeilingBehind |
+| A write the far end REFUSED is not a dropped link; the split comes from `sshErrorEndsSession()`, not from a list of FX codes | Refused write (L79) | tst_sshlive::aConfigWriteThatCannotFitBlamesTheFilesystemAndNotTheLink |
 | Everything above `RemoteFetcher` is covered with no network at all over `tests/FakeFetcher.h` | SSH CI (L47) | tst_spooledsource<br>tst_remotetail<br>tst_remoteopen |
 | (a) `readAt()` seeks only on a discontinuity, a seek flushing libssh2's read-ahead | SSH slow (L49) | tst_sshlive |
 | (a) `Impl::filePos` is written ONLY by `adoptFile()`, or one generation's bytes splice onto another's spool | SSH slow (L49) | tst_sshlive |

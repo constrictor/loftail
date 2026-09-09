@@ -25,13 +25,34 @@
 #
 #   packaging/test-ssh/run-ssh-tests.sh --build build
 #
-# THREE SERVERS, BECAUSE THE INTERESTING CODE IS IN THE FALLBACKS. A stock sshd only
+# SIX SERVERS, BECAUSE THE INTERESTING CODE IS IN THE FALLBACKS. A stock sshd only
 # ever exercises the SFTP path; the exec transport is reached solely by a server with no
 # working sftp-server, and the size ladder's lower rungs solely by one with no `stat`.
 #
 #   sftp     Ubuntu, stock sshd                the SFTP transport, config r/w, restart
 #   nosftp   Ubuntu, no `Subsystem sftp`       Mode::Exec, its streaming read and write
 #   busybox  Alpine, sftp but no `stat`        ExecSizeProbe's `ls -lnLd` and `wc -c`
+#
+# THREE MORE JOINED THEM, each for one fault that was invisible on all of the above —
+# every one of them found by pointing loftail at a server shaped like somebody else's
+# machine rather than like the author's:
+#
+#   blackhole Ubuntu, `Subsystem sftp /bin/cat`  the 20 s Need::ExecOnly saves. The server
+#                                                CLAUDE.md recorded as needing a real
+#                                                machine: it ACCEPTS the channel and then
+#                                                says nothing, which is what makes the
+#                                                fallback a probe and not an error code.
+#   badkey    Ubuntu, key-only, wrong key        a rebooting host whose authorized_keys is
+#                                                not readable yet. Classified Refused, so
+#                                                ReconnectGrace never fired and the tab
+#                                                died on the first attempt — the case that
+#                                                policy was written for.
+#   nosize    Ubuntu, no `stat`, no `ls`         a log past the `wc` ceiling, which used to
+#                                                be reported as a missing file and waited
+#                                                for for ever.
+#
+# The stock server also gets a 64 KB tmpfs at /tiny, which is where a config write is made
+# to fail on the FILESYSTEM rather than on the link — the third of the three.
 #
 # The test binary is run once per server, because which of its cases are reachable is
 # decided by what the server offers — and a case that SKIPS looks exactly like a case
@@ -52,7 +73,7 @@ Usage: run-ssh-tests.sh [--build DIR] [--keep] [--port-base N]
 
   --build DIR     build directory holding tests/tst_sshlive (default: build)
   --keep          leave the containers and the scratch home behind for poking at
-  --port-base N   first of the three loopback ports to publish on (default: 2200)
+  --port-base N   first of the six loopback ports to publish on (default: 2200)
   --logs DIR      copy each run's output and each server's sshd log here before
                   tearing the containers down (CI uploads this)
 
@@ -117,8 +138,12 @@ binary=$(cd -- "$(dirname -- "$binary")" && pwd)/$(basename -- "$binary")
 sftp_port=$((port_base + 1))
 nosftp_port=$((port_base + 2))
 busybox_port=$((port_base + 3))
+blackhole_port=$((port_base + 4))
+badkey_port=$((port_base + 5))
+nosize_port=$((port_base + 6))
 
-containers=(loftail-sshd-sftp loftail-sshd-nosftp loftail-sshd-busybox)
+containers=(loftail-sshd-sftp loftail-sshd-nosftp loftail-sshd-busybox
+    loftail-sshd-blackhole loftail-sshd-badkey loftail-sshd-nosize)
 scratch=$(mktemp -d)
 failed=0
 
@@ -215,17 +240,34 @@ echo "==> Building images"
 "$docker" build -t loftail-sshd-ubuntu:test -f "$here/Dockerfile.ubuntu" "$here"
 "$docker" build -t loftail-sshd-busybox:test -f "$here/Dockerfile.busybox" "$here"
 
+# $1 name, $2 image, $3 port, $4 sftp, $5 stat, $6 password. Beyond those, per-server
+# shaping is passed in the environment through the four variables named below, which the
+# entrypoint reads: keeping them out of the positional list is what stops six servers from
+# needing a nine-argument call each.
+#
+#   server_ls          "no" removes `ls` as well as `stat`
+#   server_blackhole   "yes" points Subsystem sftp at something that never answers
+#   server_pubkey      the authorized key, defaulting to this run's client key
+#   server_tmpfs       a mount spec for a tiny filesystem, or empty
 start_server()
 {
     local name=$1 image=$2 port=$3 with_sftp=$4 with_stat=$5 password=${6:-}
+    local authkey=${server_pubkey:-$pubkey}
+    local -a extra=()
+    if [ -n "${server_tmpfs:-}" ]; then
+        extra+=(--tmpfs "$server_tmpfs")
+    fi
 
     "$docker" rm -f "$name" >/dev/null 2>&1 || true
     # No --rm: a server that dies on startup must leave its logs behind to be read.
     "$docker" run -d --name "$name" \
         -p "127.0.0.1:$port:22" \
-        -e "LOFTAIL_CLIENT_PUBKEY=$pubkey" \
+        "${extra[@]+"${extra[@]}"}" \
+        -e "LOFTAIL_CLIENT_PUBKEY=$authkey" \
         -e "LOFTAIL_WITH_SFTP=$with_sftp" \
         -e "LOFTAIL_WITH_STAT=$with_stat" \
+        -e "LOFTAIL_WITH_LS=${server_ls:-yes}" \
+        -e "LOFTAIL_SFTP_BLACKHOLE=${server_blackhole:-no}" \
         -e "LOFTAIL_PASSWORD=$password" \
         "$image" >/dev/null
 
@@ -252,7 +294,7 @@ start_server()
     for _ in $(seq 60); do
         if "${run_env[@]}" ssh -p "$port" -o ConnectTimeout=5 loftail@127.0.0.1 true \
             >/dev/null 2>&1; then
-            echo "    $name ready on port $port (sftp=$with_sftp stat=$with_stat)"
+            echo "    $name ready on port $port (sftp=$with_sftp stat=$with_stat ls=${server_ls:-yes} blackhole=${server_blackhole:-no})"
             return 0
         fi
         sleep 1
@@ -269,11 +311,46 @@ start_server()
 # case here signs in with a key, and the unattended path bails before it can be reached.
 account_password=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
 
+# The key the `badkey` server authorizes: a real, well-formed key that is simply not this
+# client's. Generated per run like the client's own, and never installed anywhere else —
+# what that server stands for is a host whose authorized_keys cannot be read YET, and the
+# only way to stage that from outside is a host that does not know the key.
+ssh-keygen -q -t ed25519 -N '' -C loftail-not-our-key -f "$scratch/notours" >/dev/null
+
 echo "==> Starting servers"
-start_server loftail-sshd-sftp loftail-sshd-ubuntu:test "$sftp_port" yes yes \
+# A tiny filesystem on the stock server, for the config write that has to fail on the
+# DISK rather than on the link. 64 KB: far smaller than anything the test writes, and far
+# too small to fill by accident.
+server_tmpfs=/tiny:size=64k,mode=1777 \
+    start_server loftail-sshd-sftp loftail-sshd-ubuntu:test "$sftp_port" yes yes \
     "$account_password"
 start_server loftail-sshd-nosftp loftail-sshd-ubuntu:test "$nosftp_port" no yes
 start_server loftail-sshd-busybox loftail-sshd-busybox:test "$busybox_port" yes no
+
+# Accepts the subsystem channel and never answers on it. `no` for with_sftp as well, so
+# that a build of the entrypoint which ignored the blackhole knob would produce a server
+# with no Subsystem line at all — which the case detects and fails on, rather than passing
+# against a server that answers SFTP promptly.
+server_blackhole=yes \
+    start_server loftail-sshd-blackhole loftail-sshd-ubuntu:test "$blackhole_port" no yes
+
+# Offers publickey, and does not have ours. Its readiness probe cannot be the ordinary one
+# — no client this run has can log in to it, which is the point — so it is started with
+# the client key authorized and then handed the wrong one, which is also a closer model of
+# the thing it stands for: a host that WAS reachable and briefly is not.
+start_server loftail-sshd-badkey loftail-sshd-ubuntu:test "$badkey_port" yes yes
+"$docker" exec loftail-sshd-badkey sh -c \
+    "printf '%s\n' '$(cat "$scratch/notours.pub")' > /home/loftail/.ssh/authorized_keys"
+if "${run_env[@]}" ssh -p "$badkey_port" -o ConnectTimeout=5 loftail@127.0.0.1 true \
+    >/dev/null 2>&1; then
+    echo "::error::loftail-sshd-badkey still accepts this client's key"
+    exit 1
+fi
+echo "    loftail-sshd-badkey now refuses this client's key, as it must"
+
+# No `stat` and no `ls`, so `wc -c` is the only rung and its ceiling is reachable.
+server_ls=no \
+    start_server loftail-sshd-nosize loftail-sshd-ubuntu:test "$nosize_port" no no
 
 # --- the runs -----------------------------------------------------------------------
 
@@ -312,6 +389,16 @@ run_case()
     if [ -n "$exec_url" ]; then
         env_extra+=("LOFTAIL_TEST_SSH_EXEC_URL=$exec_url")
     fi
+    # The shaped servers, each named only for the run whose cases reach it. Set for a run
+    # that does not name the case, and nothing happens; NOT set for the run that does, and
+    # the case QSKIPs — which is why require_ran() below names every one of them.
+    local shaped
+    for shaped in BADKEY_URL NOSIZE_URL BLACKHOLE_URL FULL_DIR; do
+        local value="case_${shaped,,}"
+        if [ -n "${!value:-}" ]; then
+            env_extra+=("LOFTAIL_TEST_SSH_$shaped=${!value}")
+        fi
+    done
     # Only the run whose server was given one, and the case is gated on it: a password
     # offered to a run with no prompter is somewhere for a wedged test to hang.
     if [ -n "${case_password:-}" ]; then
@@ -332,6 +419,9 @@ run_case()
 }
 
 sftp_url="ssh://loftail@127.0.0.1:$sftp_port/tmp/loftail-test.log"
+badkey_url="ssh://loftail@127.0.0.1:$badkey_port/tmp/loftail-test.log"
+nosize_url="ssh://loftail@127.0.0.1:$nosize_port/tmp/loftail-size.log"
+blackhole_url="ssh://loftail@127.0.0.1:$blackhole_port/tmp/loftail-test.log"
 nosftp_url="ssh://loftail@127.0.0.1:$nosftp_port/tmp/loftail-test.log"
 nosftp_exec_url="ssh://loftail@127.0.0.1:$nosftp_port/tmp/loftail-exec.log"
 busybox_url="ssh://loftail@127.0.0.1:$busybox_port/tmp/loftail-test.log"
@@ -340,8 +430,19 @@ busybox_url="ssh://loftail@127.0.0.1:$busybox_port/tmp/loftail-test.log"
 # theExecStreamServesAForwardWalkFromOneChannel() (which needs BOTH: an SFTP main host
 # for the rest of the file and an SFTP-less one of its own) is reachable.
 case_password=$account_password
+# The four shaped servers are named for THIS run and no other: every case that reaches one
+# of them talks to it directly rather than through m_url, so they need an ordinary SFTP
+# host for initTestCase() and nothing else from the run they are in.
+case_badkey_url=$badkey_url
+case_nosize_url=$nosize_url
+case_blackhole_url=$blackhole_url
+case_full_dir=/tiny
 run_case sftp "$sftp_url" "$nosftp_exec_url"
 case_password=
+case_badkey_url=
+case_nosize_url=
+case_blackhole_url=
+case_full_dir=
 require_ran "$last_log" \
     connectsAndReadsTheRemoteFile \
     followsAppendsFromTheRealServer \
@@ -361,6 +462,10 @@ require_ran "$last_log" \
     abortingARemoteScriptReturnsAtOnce \
     aRestartScriptRunsOnAnExecOnlyConnect \
     aDroppedLinkIsNoticedRatherThanPolledForEver \
+    aKeyOnlyHostThatRefusesTheKeyIsWorthRetryingRatherThanRefused \
+    aLogTooBigForTheOnlySizeRungIsRefusedRatherThanCalledMissing \
+    aConfigWriteThatCannotFitBlamesTheFilesystemAndNotTheLink \
+    anExecOnlyConnectSkipsTheSftpWaitTheLogTransportPays \
     oneConnectionServesSeveralErrandsAndTheDrainLetsItGo || failed=1
 
 # Run B — the exec transport as the LOG'S OWN transport, which is the shape a user on a
@@ -397,4 +502,4 @@ if [ "$failed" -ne 0 ]; then
     echo "FAILED — see the output above."
     exit 1
 fi
-echo "All three servers passed."
+echo "All six servers passed."

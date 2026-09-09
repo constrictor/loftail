@@ -33,6 +33,7 @@
 #include "LogSource.h"
 #include "ManualFormatProvider.h"
 #include "RemoteLocation.h"
+#include "ExecSizeProbe.h"
 #include "SshExecCommands.h"
 #include "SshFetcher.h"
 
@@ -201,6 +202,17 @@ private:
 
     // Put `content` at `where.path` over the system ssh client. Used to SET UP the
     // fixture — the code under test is loftail's own libssh2 exec path.
+    // remoteShell() for a host OTHER than the one under test, which the shaped-server
+    // cases each need: three of them talk to a server the main URL does not name.
+    static bool remoteShellAt(const RemoteLocation &where, const QString &command)
+    {
+        QProcess ssh;
+        ssh.start(QStringLiteral("ssh"), sshArgsFor(where, command));
+        if (!ssh.waitForFinished(120000))
+            return false;
+        return ssh.exitStatus() == QProcess::NormalExit && ssh.exitCode() == 0;
+    }
+
     static bool writeRemoteAt(const RemoteLocation &where, const QByteArray &content,
                               bool append = false)
     {
@@ -353,6 +365,38 @@ private slots:
     // LIBSSH2_FLAG_COMPRESS: what compression a key exchange settles on is decided by the
     // server and by how this libssh2 was built, so there is nothing a fake could answer.
     void compressionIsNegotiatedWhenTheHostAsksForItAndNotOtherwise();
+
+    // THE THREE FAULTS FOUND BY RUNNING THIS AGAINST CONTAINERS THAT ARE NOT THE
+    // AUTHOR'S BOX (§6.3.1, §6.5, §6.8). Each needs a server shaped a particular way and
+    // each was silent on every server the harness had before; run-ssh-tests.sh starts
+    // the three that reach them.
+    //
+    // (1) A key-only host that reboots. sshd answers before ~/.ssh/authorized_keys can be
+    // read, so the key that worked a minute ago is refused for a few seconds — and
+    // authenticate() classified that as Refused, which ReconnectGrace does not cover, so
+    // SshFetcher latched on the FIRST attempt and the tab was dead for the session. The
+    // identical outage on a host that also offers passwords recovered by itself, so the
+    // harder a server was configured the worse loftail behaved. It is the very case
+    // SshRetryPolicy.h names first.
+    void aKeyOnlyHostThatRefusesTheKeyIsWorthRetryingRatherThanRefused();
+
+    // (2) A log past the `wc` ceiling on a server with no `stat` and no `ls`. settle()
+    // answers None, which used to mean "missing, or the account cannot read it" — so the
+    // tab waited for ever on a file that was present, readable and growing, named in a
+    // sentence saying it was neither.
+    void aLogTooBigForTheOnlySizeRungIsRefusedRatherThanCalledMissing();
+
+    // (3) A config write that runs out of room. Every negative return from
+    // libssh2_sftp_write() was reported as the connection dropping, so a full filesystem
+    // sent the user to look at their network — on the one call in the class that has
+    // already truncated the file it is writing.
+    void aConfigWriteThatCannotFitBlamesTheFilesystemAndNotTheLink();
+
+    // The twenty seconds Need::ExecOnly buys, against the server it buys them from: one
+    // that ACCEPTS the subsystem channel with nothing behind it. CLAUDE.md recorded this
+    // as needing a machine rather than a container; `Subsystem sftp /bin/cat` is that
+    // machine.
+    void anExecOnlyConnectSkipsTheSftpWaitTheLogTransportPays();
 
     // bugs.md 30 — the only execution of the dead-session latch. The classification
     // behind it is pinned without a server (tst_sshsessionhealth); that a real libssh2
@@ -1291,6 +1335,215 @@ void TestSshLive::compressionIsNegotiatedWhenTheHostAsksForItAndNotOtherwise()
     QByteArray got(body.size(), '\0');
     QCOMPARE(squeezed.readAt(0, got.data(), got.size(), &error), qint64(body.size()));
     QCOMPARE(got, body);
+}
+
+// A URL naming a server shaped for one of the cases below, or an empty string. Each of
+// the three is gated on its own, exactly as theExecStreamServesAForwardWalkFromOneChannel()
+// is on LOFTAIL_TEST_SSH_EXEC_URL and for the same reason: no client gesture can make an
+// ordinary server behave this way, so what is needed is a different server.
+static QString shapedUrl(const char *name, RemoteLocation *out)
+{
+    const QString url = QProcessEnvironment::systemEnvironment().value(
+        QString::fromLatin1(name));
+    if (url.isEmpty())
+        return QString();
+    const auto parsed = RemoteLocation::parse(url);
+    if (!parsed)
+        return QString();
+    *out = *parsed;
+    return url;
+}
+
+void TestSshLive::aKeyOnlyHostThatRefusesTheKeyIsWorthRetryingRatherThanRefused()
+{
+    // A server that offers publickey and does not have this client's key. What it stands
+    // for is a moment rather than a policy: a box on its way up, whose authorized_keys is
+    // not readable yet. From the client the two are identical, which is exactly why the
+    // classification cannot be "the key was refused, therefore give up".
+    RemoteLocation where;
+    const QString url = shapedUrl("LOFTAIL_TEST_SSH_BADKEY_URL", &where);
+    if (url.isEmpty()) {
+        QSKIP("Set LOFTAIL_TEST_SSH_BADKEY_URL=ssh://user@host/path on a KEY-ONLY server "
+              "(PasswordAuthentication no) that does not have this client's key.");
+    }
+
+    SshSession session;
+    QString error;
+    SshSession::Failure failure = SshSession::Failure::None;
+    QVERIFY2(!session.connectTo(where, nullptr, 20000, &error, &failure),
+             "the server accepted the key it was supposed to refuse");
+
+    // THE WHOLE OF THE CASE. Refused here is what killed the tab: SshFetcher::reconnect()
+    // sends NeedsPerson through ReconnectGrace and everything else straight to the latch,
+    // so this one enumerator decides whether a rebooting host is waited for or written
+    // off. Asserted as the enumerator and not as the message, because the message is
+    // tr()'d prose and this is a contract.
+    QCOMPARE(failure, SshSession::Failure::NeedsPerson);
+    // And the server really was key-only, or the case proves something else: a host that
+    // offers a password reaches a different branch, which was NeedsPerson all along.
+    QVERIFY2(error.contains(QStringLiteral("no password method")),
+             qPrintable(QStringLiteral("this server is not key-only — %1").arg(error)));
+
+    // The other half of the split, and the reason it is a split rather than a widening:
+    // a server offering nothing loftail can do is a standing fact about that server, and
+    // retrying it for five minutes buys nothing. There is no container for that shape, so
+    // what is asserted here is only that the two answers come from one place — see
+    // authenticate(), where the enumerator is chosen on `publickey` being offered.
+}
+
+void TestSshLive::aLogTooBigForTheOnlySizeRungIsRefusedRatherThanCalledMissing()
+{
+    RemoteLocation where;
+    const QString url = shapedUrl("LOFTAIL_TEST_SSH_NOSIZE_URL", &where);
+    if (url.isEmpty()) {
+        QSKIP("Set LOFTAIL_TEST_SSH_NOSIZE_URL=ssh://user@host/path on a server with NO "
+              "`stat` and NO `ls`, so that `wc -c` is the only size rung there is.");
+    }
+
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(where, nullptr, 30000, &error), qPrintable(error));
+    QCOMPARE(session.mode(), SshSession::Mode::Exec);
+
+    // Under the ceiling the same server works perfectly, which is what makes the failure
+    // above it a statement about the SIZE and not about the server. It also pins that the
+    // rung reached is `wc` — with `stat` or `ls` present nothing below is exercised.
+    const QByteArray small = "2026-07-21 00:00:01,000 [t0] INFO  logger.a - small\n";
+    QVERIFY2(writeRemoteAt(where, small), "could not write the small fixture");
+    QVERIFY2(session.openFile(&error), qPrintable(error));
+    QCOMPARE(session.sizeSource(), SizeSource::Wc);
+    session.closeFile();
+
+    // Past it. Built on the far end rather than pushed over the wire, because the point is
+    // the size and 8 MB of fixture through `cat` is a minute of the run.
+    const qint64 tooBig = ExecSizeProbe::kWcSettleCeiling + (1 << 20);
+    QVERIFY2(remoteShellAt(where, QStringLiteral("head -c %1 /dev/zero | tr '\\0' 'a' > %2")
+                                      .arg(tooBig)
+                                      .arg(shellQuote(where.path))),
+             "could not grow the fixture past the ceiling");
+
+    SshSession::Failure failure = SshSession::Failure::None;
+    QVERIFY2(!session.openFile(&error, &failure), "a log past the ceiling opened anyway");
+    // NOT NoSuchFile, which is the assertion the fix is. Everything Failure calls
+    // retryable-unattended is WAITED for, and this is the one outcome here that gets
+    // further out of reach the longer it is waited for: `wc` reads the whole file, so the
+    // answer cannot be bought at any poll rate invariant #5 permits.
+    QCOMPARE(failure, SshSession::Failure::Refused);
+    // And the sentence names what is actually wrong. Asserted on the size rather than on
+    // the wording, which is prose: what must never come back is the old claim that a file
+    // sitting right there is missing.
+    QVERIFY2(!error.contains(QStringLiteral("missing")),
+             qPrintable(QStringLiteral("still reported as a missing file — %1").arg(error)));
+    QVERIFY(error.contains(QStringLiteral("MB")));
+    // And it names the remedy, exactly as SshFetcher's own 64 MB fence does — the two are
+    // the same fence a step apart and a user meeting either wants the same sentence.
+    QVERIFY(error.contains(QStringLiteral("stat")));
+
+    remoteShellAt(where, QStringLiteral("rm -f %1").arg(shellQuote(where.path)));
+}
+
+void TestSshLive::aConfigWriteThatCannotFitBlamesTheFilesystemAndNotTheLink()
+{
+    // A directory on a filesystem far too small for what is about to be written. The
+    // failure is the server's and the link is perfectly healthy, which is the entire
+    // subject: the two used to read alike.
+    const QString dir = QProcessEnvironment::systemEnvironment().value(
+        QStringLiteral("LOFTAIL_TEST_SSH_FULL_DIR"));
+    if (dir.isEmpty()) {
+        QSKIP("Set LOFTAIL_TEST_SSH_FULL_DIR to a writable directory on a TINY filesystem "
+              "on the test host (the harness mounts a 64 KB tmpfs for it).");
+    }
+
+    const QString path = dir + QStringLiteral("/loftail-full.properties");
+    const QByteArray before = "log4cplus.rootLogger=INFO, STDOUT\n";
+    QVERIFY(remoteShell(QStringLiteral("cat > %1").arg(shellQuote(path)), before));
+
+    SshSession session;
+    QString error;
+    QVERIFY2(session.connectTo(m_location, nullptr, 20000, &error), qPrintable(error));
+    // Only over SFTP: the exec path writes through a shell redirect and reports what the
+    // shell says, which is a different sentence with a different owner.
+    QCOMPARE(session.mode(), SshSession::Mode::Sftp);
+
+    // Comfortably more than the filesystem holds, so the failure is certain rather than
+    // dependent on what else is on it.
+    const QByteArray tooMuch(4 * 1024 * 1024, 'Z');
+    QVERIFY2(!session.writeFileAt(path, tooMuch, &error),
+             "the write fitted — LOFTAIL_TEST_SSH_FULL_DIR is not on a tiny filesystem");
+
+    // THE ASSERTION. "The connection dropped" is what this said for every negative return,
+    // and it is the one thing the user cannot act on: the link is fine, the disk is not,
+    // and the file has already been truncated in place by the time they read it.
+    QVERIFY2(!error.contains(QStringLiteral("connection dropped")),
+             qPrintable(QStringLiteral("a full filesystem still blames the link — %1")
+                            .arg(error)));
+    QVERIFY(error.contains(QStringLiteral("full")) || error.contains(QStringLiteral("quota")));
+
+    // And the session is not condemned for it, which is the other half of "this is about
+    // the request": a write the far end refused says nothing about the transport, and
+    // tearing it down would cost a reconnect and a re-fetch from zero.
+    QVERIFY2(session.isConnected(), "a refused write condemned a healthy session");
+    // Proved rather than asserted from the flag: something else still works on it.
+    QVERIFY(session.statPath().valid || !session.hasFile());
+
+    remoteShell(QStringLiteral("rm -f %1").arg(shellQuote(path)));
+}
+
+void TestSshLive::anExecOnlyConnectSkipsTheSftpWaitTheLogTransportPays()
+{
+    RemoteLocation where;
+    const QString url = shapedUrl("LOFTAIL_TEST_SSH_BLACKHOLE_URL", &where);
+    if (url.isEmpty()) {
+        QSKIP("Set LOFTAIL_TEST_SSH_BLACKHOLE_URL=ssh://user@host/path on a server whose "
+              "`Subsystem sftp` line points at something that never answers.");
+    }
+
+    // A LogTransport connect pays the whole budget. libssh2 is waiting for a version
+    // packet from a channel that opened and then said nothing, and it cannot tell that
+    // from a slow server — which is why the fallback is chosen by PROBING and never by
+    // reading the error code (§6.3.1). A short budget, so the case costs its own timeout
+    // rather than the 20 s a real gesture spends.
+    constexpr int kBudgetMs = 6000;
+    SshSession transport;
+    QString error;
+    QElapsedTimer clock;
+    clock.start();
+    QVERIFY2(transport.connectTo(where, nullptr, kBudgetMs, &error), qPrintable(error));
+    const qint64 transportMs = clock.elapsed();
+    // It got there in the end, by the probe rather than by the subsystem.
+    QCOMPARE(transport.mode(), SshSession::Mode::Exec);
+    QVERIFY2(transportMs > kBudgetMs / 2,
+             qPrintable(QStringLiteral("this server answered SFTP in %1 ms, so it is not "
+                                       "a black hole and the case proves nothing")
+                            .arg(transportMs)));
+    transport.close();
+
+    // And an ExecOnly connect does not, because it never asks. This is the whole of
+    // Need::ExecOnly: File ▸ Restart App wanted an exec channel, and paid a full connect
+    // timeout for a subsystem it was never going to use.
+    SshSession errand;
+    clock.restart();
+    QVERIFY2(errand.connectTo(where, nullptr, kBudgetMs, &error, nullptr,
+                              SshSession::Need::ExecOnly),
+             qPrintable(error));
+    const qint64 errandMs = clock.elapsed();
+    QVERIFY2(errandMs < transportMs / 2,
+             qPrintable(QStringLiteral("ExecOnly took %1 ms against LogTransport's %2 — "
+                                       "the SFTP wait is being paid after all")
+                            .arg(errandMs).arg(transportMs)));
+
+    // Still a usable session, which is what makes the saving worth anything.
+    int exitCode = -1;
+    QByteArray said;
+    QVERIFY2(errand.runScript(QStringLiteral("printf ran"),
+                              [&said](const QByteArray &bytes, bool isStdErr) {
+                                  if (!isStdErr)
+                                      said += bytes;
+                              },
+                              &exitCode, &error),
+             qPrintable(error));
+    QCOMPARE(exitCode, 0);
+    QCOMPARE(said, QByteArray("ran"));
 }
 
 void TestSshLive::aDroppedLinkIsNoticedRatherThanPolledForEver()

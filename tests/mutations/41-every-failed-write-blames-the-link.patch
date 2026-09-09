@@ -1,0 +1,82 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A WRITE THE FAR END REFUSED IS NOT A DROPPED LINK"):
+#   `writeFileAt()`'s write loop splits on `sshErrorEndsSession()` — the tree's
+#   one answer to "is this code about the link or about the request" — rather
+#   than reporting every negative return as a dropped connection. Deliberately
+#   not a list of FX codes: OpenSSH answers SSH_FX_FAILURE for a full disk.
+#
+# GUARD: tst_sshlive::aConfigWriteThatCannotFitBlamesTheFilesystemAndNotTheLink
+#
+# HARNESS: needs the harness's 64 KB tmpfs at /tiny on the stock server —
+#   packaging/test-ssh/run-ssh-tests.sh. Verified red there by hand:
+#   "a full filesystem still blames the link".
+#
+# SILENT WHEN BROKEN: a config write that runs out of disk sends the user to look
+# at their network — on the one call in the class that has already truncated the
+# file it is writing, so the config deciding what their application logs has been
+# replaced by however much fitted and the sentence is all they have to act on.
+
+diff --git a/src/core/SshSession.cpp b/src/core/SshSession.cpp
+index c62bd5e..9ff87f7 100644
+--- a/src/core/SshSession.cpp
++++ b/src/core/SshSession.cpp
+@@ -1945,39 +1945,10 @@ bool SshSession::writeFileAt(const QString &path, const QByteArray &bytes, QStri
+                                              size_t(bytes.size() - written));
+         if (n < 0) {
+             d->noteError(int(n));
+-            const unsigned long fx = int(n) == SshError::kSftpProtocol
+-                ? libssh2_sftp_last_error(d->sftp)
+-                : 0UL;
+             libssh2_sftp_close(handle);
+-            // A DROPPED LINK AND A REFUSED WRITE READ ALIKE HERE, AND ONLY ONE OF THEM IS
+-            // THE NETWORK. Every negative return used to be reported as the connection
+-            // dropping, so a full filesystem — the likeliest way a write fails, and one
+-            // the far end states plainly — sent the user to look at their network. It
+-            // matters more on this call than on any other in the class: the write
+-            // truncates in place (see above), so by the time this is reported the file
+-            // that decides what an application logs has already been destroyed, and the
+-            // sentence is the whole of what the user has to act on.
+-            //
+-            // The split is taken from sshErrorEndsSession(), which is already the tree's
+-            // one answer to "is this code about the link or about the request", rather
+-            // than from a list of FX codes: servers disagree about which of NO_SPACE,
+-            // QUOTA_EXCEEDED and the catch-all FAILURE they send for a full disk, and a
+-            // list would silently mis-file whichever one it had not heard of.
+-            if (sshErrorEndsSession(int(n))) {
+-                return fail(Tr::tr("The connection dropped while writing %1 — it may now "
+-                                   "be incomplete.")
+-                                .arg(path));
+-            }
+-            if (fx == LIBSSH2_FX_PERMISSION_DENIED || fx == LIBSSH2_FX_WRITE_PROTECT) {
+-                return fail(Tr::tr("%1 on %2 cannot be written — it may now be "
+-                                   "incomplete.")
+-                                .arg(path, d->location.host));
+-            }
+-            return fail(Tr::tr("%1 refused the write to %2 — the filesystem may be full "
+-                               "or over quota. The file may now be incomplete. "
+-                               "(SFTP status %3)")
+-                            .arg(d->location.host, path)
+-                            .arg(fx));
++            return fail(Tr::tr("The connection dropped while writing %1 — it may now "
++                               "be incomplete.")
++                            .arg(path));
+         }
+         if (n == 0)
+             break;

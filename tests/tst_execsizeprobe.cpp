@@ -106,6 +106,15 @@ private slots:
     void aReadPathThatDeliversNothingIsRefused();
     void aDeadChannelIsNotAMissingFile();
     void wcWillNotTakeOnALargeFile();
+
+    // A None that is neither of the other two Nones. Found by running loftail against a
+    // container with no `stat` and no `ls` over a 20 MB log: the tab waited for ever on
+    // "it is missing, or the account cannot read it" about a file that was present,
+    // readable and growing. The other two Nones mend themselves — a channel by
+    // reconnecting, a missing file by being written — and this one only gets worse.
+    void aFileTooBigForTheLastRungIsNotAMissingFile();
+    void aSettledRungLeavesNoCeilingBehind();
+
     void aNewlineInThePathDisqualifiesLs();
 };
 
@@ -317,6 +326,55 @@ void TestExecSizeProbe::wcWillNotTakeOnALargeFile()
     auto oneByte = [](qint64, qint64) -> qint64 { return 1; };
     ExecSizeProbe under(path, tools(false, false, true), okRunner, oneByte);
     QCOMPARE(under.settle(), SizeSource::Wc);
+}
+
+void TestExecSizeProbe::aFileTooBigForTheLastRungIsNotAMissingFile()
+{
+    const QString path = m_dir.filePath(QStringLiteral("huge.log"));
+    constexpr qint64 huge = ExecSizeProbe::kWcSettleCeiling + 1;
+
+    auto bigRunner = [](const QString &command, QByteArray *out) {
+        if (command.startsWith(QStringLiteral("wc -c <")))
+            *out = QByteArray::number(huge) + "\n";
+        return true; // stat and ls run and print nothing: this server has neither
+    };
+    auto oneByte = [](qint64, qint64) -> qint64 { return 1; };
+
+    ExecSizeProbe probe(path, tools(false, false, true), bigRunner, oneByte);
+    QCOMPARE(probe.settle(), SizeSource::None);
+    // NOT a dead channel: every command ran and answered. That much was already true
+    // before, and it is exactly why the caller could not tell this apart from a log that
+    // has not been written yet.
+    QVERIFY(!probe.channelDied());
+    QVERIFY2(probe.tooBigToMeasure(),
+             "a file past the ceiling reads as a missing one all over again");
+    QCOMPARE(probe.sizeThatWasTooBig(), huge);
+}
+
+void TestExecSizeProbe::aSettledRungLeavesNoCeilingBehind()
+{
+    // settle() re-runs on every openFile() so that a rotation gets a fresh choice, so a
+    // flag left set by the PREVIOUS generation would be read as this one's answer — and
+    // it is read only when settle() returns None, which is where a stale true is
+    // indistinguishable from a real one.
+    const QString path = m_dir.filePath(QStringLiteral("rolled.log"));
+    qint64 reported = ExecSizeProbe::kWcSettleCeiling + 1;
+    auto runner = [&reported](const QString &command, QByteArray *out) {
+        if (command.startsWith(QStringLiteral("wc -c <")))
+            *out = QByteArray::number(reported) + "\n";
+        return true;
+    };
+    auto oneByte = [](qint64, qint64) -> qint64 { return 1; };
+
+    ExecSizeProbe probe(path, tools(false, false, true), runner, oneByte);
+    QCOMPARE(probe.settle(), SizeSource::None);
+    QVERIFY(probe.tooBigToMeasure());
+
+    // The log rolled and the new generation is small.
+    reported = 64;
+    QCOMPARE(probe.settle(), SizeSource::Wc);
+    QVERIFY2(!probe.tooBigToMeasure(), "the ceiling outlived the file it was hit on");
+    QCOMPARE(probe.sizeThatWasTooBig(), qint64(0));
 }
 
 void TestExecSizeProbe::aNewlineInThePathDisqualifiesLs()

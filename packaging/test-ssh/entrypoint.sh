@@ -30,6 +30,13 @@
 #   LOFTAIL_WITH_STAT      "no" deletes `stat` from every directory on PATH, which is
 #                          the stripped-down image ExecSizeProbe's ls/wc rungs exist
 #                          for (ARCHITECTURE.md §6.3.1).
+#   LOFTAIL_WITH_LS        "no" deletes `ls` as well, which leaves `wc -c` as the only
+#                          rung — the one with a size ceiling, and therefore the only
+#                          way to reach ExecSizeProbe::tooBigToMeasure() at all.
+#   LOFTAIL_SFTP_BLACKHOLE "yes" ACCEPTS the subsystem channel and puts nothing behind
+#                          it, so libssh2_sftp_init() waits for a version packet that
+#                          never comes. It is the server Need::ExecOnly exists to save
+#                          twenty seconds against, and it overrides LOFTAIL_WITH_SFTP.
 #   LOFTAIL_PASSWORD       when set, gives the account this password and turns
 #                          PasswordAuthentication on. Empty (the default) leaves the
 #                          server key-only, which is what every case with no prompter
@@ -39,6 +46,8 @@ set -eu
 : "${LOFTAIL_CLIENT_PUBKEY:?the client public key must be passed in}"
 with_sftp=${LOFTAIL_WITH_SFTP:-yes}
 with_stat=${LOFTAIL_WITH_STAT:-yes}
+with_ls=${LOFTAIL_WITH_LS:-yes}
+sftp_blackhole=${LOFTAIL_SFTP_BLACKHOLE:-no}
 password=${LOFTAIL_PASSWORD:-}
 
 home=/home/loftail
@@ -64,13 +73,20 @@ if [ -n "$password" ]; then
     printf 'loftail:%s\n' "$password" | chpasswd
 fi
 
-if [ "$with_stat" != yes ]; then
+if [ "$with_stat" != yes ] || [ "$with_ls" != yes ]; then
     # Every directory on PATH, not a written-down /usr/bin/stat: it is a coreutils
     # binary on Ubuntu and a busybox applet link on Alpine, in different places.
+    #
+    # `ls` goes only where it is asked for, and only alongside a missing `stat`: with
+    # both gone the size ladder has nothing left but `wc -c`, whose ceiling is the
+    # subject. Removing `ls` on its own would prove nothing — the `stat` rung above it
+    # answers first — and removing it from the busybox image would take the `ls -lnLd`
+    # rung that image exists to exercise.
     old_ifs=$IFS
     IFS=:
     for dir in $PATH; do
-        rm -f "$dir/stat"
+        [ "$with_stat" != yes ] && rm -f "$dir/stat"
+        [ "$with_ls" != yes ] && rm -f "$dir/ls"
     done
     IFS=$old_ifs
 fi
@@ -102,7 +118,15 @@ conf=/etc/ssh/sshd_config.loftail
     echo "PidFile /run/sshd.pid"
 } >"$conf"
 
-if [ "$with_sftp" = yes ]; then
+if [ "$sftp_blackhole" = yes ]; then
+    # `cat` reads its stdin for ever and writes nothing, so the channel opens and the
+    # SFTP version packet never arrives. This is the shape a generic sshd config on a
+    # stripped-down embedded image has — a Subsystem line pointing at a binary that is
+    # not there or does not work — and the reason connectTo() probes for the exec
+    # transport rather than reading libssh2's error code, which is a plain TIMEOUT here
+    # after a SUCCESSFUL login.
+    echo "Subsystem sftp /bin/cat" >>"$conf"
+elif [ "$with_sftp" = yes ]; then
     for candidate in /usr/lib/openssh/sftp-server /usr/lib/ssh/sftp-server \
         /usr/libexec/openssh/sftp-server /usr/libexec/sftp-server; do
         if [ -x "$candidate" ]; then
