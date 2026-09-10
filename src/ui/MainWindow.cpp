@@ -1568,7 +1568,11 @@ void MainWindow::saveConfig(ConfigView *view, std::function<void()> then)
             return;
         }
         const int sentAt = view->revision();
-        view->setBusy(true, tr("Saving %1…").arg(view->displayName()));
+        // IN RED, which the ordinary busy sentence is not: the remote write is in place
+        // and not atomic, so for as long as this stands the file on the far end is part
+        // the old content and part the new — see ConfigView::BusyTone.
+        view->setBusy(true, tr("Saving %1…").arg(view->displayName()), /*retryAtMs=*/0,
+                      ConfigView::BusyTone::Alert);
         updateActionStates();
         auto *transfer = new ConfigTransfer(view);
         connect(transfer, &ConfigTransfer::writeFinished, view,

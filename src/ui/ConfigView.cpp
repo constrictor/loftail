@@ -67,6 +67,9 @@ public:
     // through QPlainTextEdit::setPlaceholderText, which Qt draws at the top left corner
     // against the text's own margins: WHERE it appears is the whole of what is aligned.
     QString centredNotice;
+    // Invalid means "the muted one" — the ordinary case, and what keeps the tone in one
+    // place: ConfigView supplies a colour only where the sentence is not an ordinary one.
+    QColor centredNoticeColour;
 
 protected:
     void paintEvent(QPaintEvent *event) override
@@ -79,7 +82,8 @@ protected:
         if (centredNotice.isEmpty() || !document()->isEmpty())
             return;
         QPainter p(viewport());
-        p.setPen(mutedColor(palette()));
+        p.setPen(centredNoticeColour.isValid() ? centredNoticeColour
+                                              : mutedColor(palette()));
         p.drawText(viewport()->rect(), Qt::AlignCenter | Qt::TextWordWrap, centredNotice);
     }
 
@@ -379,12 +383,15 @@ void ConfigView::clearNotice()
     m_notice->hide();
 }
 
-void ConfigView::setBusy(bool busy, const QString &what, qint64 retryAtMs)
+void ConfigView::setBusy(bool busy, const QString &what, qint64 retryAtMs, BusyTone tone)
 {
     m_busy = busy;
     m_edit->setReadOnly(busy);
     m_busyText = busy ? what : QString();
     m_busyRetryAtMs = busy ? retryAtMs : 0;
+    // Cleared with the sentence rather than left standing, or the next ordinary busy
+    // message that forgets to name a tone inherits the last save's red.
+    m_busyTone = busy ? tone : BusyTone::Ordinary;
 
     if (m_busyRetryAtMs > 0) {
         if (!m_countdown) {
@@ -424,26 +431,38 @@ void ConfigView::applyBusyText()
     // WHICH surface is decided by whether there is anything on screen to speak around —
     // LogView's own split between its centred placeholder and everything else, and the
     // whole of what makes an editor's connect look like a log's.
+    // The tone is asked of BOTH surfaces and not only of the strip: a save of a buffer
+    // that has been emptied is drawn centred like any other message over nothing, and a
+    // rule that stopped at the strip would quietly leave that one save uncoloured.
+    const QColor tone = m_busyTone == BusyTone::Alert ? errorColor(palette())
+                                                      : mutedColor(palette());
+
     if (m_edit->document()->isEmpty()) {
-        setPlaceholder(text);
+        setPlaceholder(text, tone);
         return;
     }
 
     m_notice->setText(text);
     QPalette p = m_notice->palette();
-    // The ORDINARY text colour, not the error colour showNotice() uses — "connecting"
-    // is not a failure, and painting it red would say the open had already gone wrong.
-    p.setColor(QPalette::WindowText, mutedColor(palette()));
+    // Muted for an ordinary sentence: "connecting" is not a failure, and painting it red
+    // would say the open had already gone wrong. A SAVE in flight is the exception the
+    // tone exists for — see BusyTone.
+    p.setColor(QPalette::WindowText, tone);
     m_notice->setPalette(p);
     m_notice->show();
 }
 
-void ConfigView::setPlaceholder(const QString &text)
+void ConfigView::setPlaceholder(const QString &text, const QColor &colour)
 {
-    if (m_placeholder == text)
+    auto *edit = static_cast<WheelFilteringEdit *>(m_edit);
+    // The COLOUR is part of the guard, not only the string: the countdown re-renders the
+    // standing sentence twice a second, and a tone that moved under an unchanged string
+    // would never be repainted.
+    if (m_placeholder == text && edit->centredNoticeColour == colour)
         return;
     m_placeholder = text;
-    static_cast<WheelFilteringEdit *>(m_edit)->centredNotice = text;
+    edit->centredNoticeColour = colour;
+    edit->centredNotice = text;
     m_edit->viewport()->update();
 }
 

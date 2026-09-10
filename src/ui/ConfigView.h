@@ -21,6 +21,7 @@
 #include "ConfigSyntax.h"
 
 #include <QByteArray>
+#include <QColor>
 #include <QString>
 #include <QWidget>
 
@@ -119,8 +120,20 @@ public:
     // a message with nothing to count down to. Given one, the page counts down IN THE
     // SENTENCE — "Cannot reach h — Connection refused (4)" — through the same formatter a
     // log tab renders its own wait with, so the two cannot come to word it differently.
-    void setBusy(bool busy, const QString &what, qint64 retryAtMs = 0);
+    //
+    // `tone` says how the sentence is DRAWN, and the two are not interchangeable. A
+    // connect or a retry is drawn muted: it has not gone wrong, and painting it red
+    // would say it had. A SAVE is drawn in the error colour, because a remote write is
+    // in place and not atomic (ARCHITECTURE.md §6.8) — while it stands, the file on the
+    // far end is part the old content and part the new, which is the one busy state a
+    // reader must not scroll past.
+    enum class BusyTone { Ordinary, Alert };
+    void setBusy(bool busy, const QString &what, qint64 retryAtMs = 0,
+                 BusyTone tone = BusyTone::Ordinary);
     bool isBusy() const { return m_busy; }
+    // Public for the tests, which can read an enumerator and cannot read a painted
+    // colour off a label whose palette the theme also has a say in.
+    BusyTone busyTone() const { return m_busyTone; }
 
     // What is drawn centred over the empty text area, LogView's peer. Empty whenever
     // there is text on screen, which is what keeps it from ever painting over the file.
@@ -160,7 +173,9 @@ private:
     // The one way the centred notice moves — it lives in two places (here, for the
     // tests and for the change guard, and on the edit, which paints it), and a second
     // writer is how the two come to disagree.
-    void setPlaceholder(const QString &text);
+    // An invalid colour means the ordinary muted one, which is every caller but the
+    // busy renderer's.
+    void setPlaceholder(const QString &text, const QColor &colour = {});
 
     // Render the standing busy sentence, counting the seconds in if there is a deadline.
     // Called by setBusy() and by the countdown's own tick, so there is one renderer.
@@ -182,6 +197,7 @@ private:
     bool         m_busy = false;
     QString      m_placeholder; // drawn centred when the buffer is empty (see setBusy)
     QString      m_busyText;    // the standing busy sentence, WITHOUT its countdown
+    BusyTone     m_busyTone = BusyTone::Ordinary;
     qint64       m_busyRetryAtMs = 0;
     QTimer      *m_countdown = nullptr; // runs only while there is a deadline to count
     bool         m_existed = false;

@@ -50,6 +50,7 @@
 #include "RestartDialog.h"
 #include "RetryCountdown.h"
 #include "SessionStore.h"
+#include "UiColors.h"
 
 using namespace loftail;
 
@@ -86,6 +87,7 @@ private slots:
     void anEditorTabComesBackInPlaceAfterARelaunch();
     void cancellingTheUnsavedPromptAbortsTheQuitAndWritesNoSession();
     void aConnectSaysSoInTheMiddleOfTheEmptyPageAndASaveInTheStrip();
+    void aSaveInFlightSaysSoInRedAndAConnectDoesNot();
     void aHostThatCannotBeReachedCountsDownToTheNextTry();
     void aRemoteConfigPutsItsTabUpBeforeTheFarEndAnswers();
     void closingATabMidConnectDoesNotWaitForIt();
@@ -766,6 +768,46 @@ void TestConfigEditor::aConnectSaysSoInTheMiddleOfTheEmptyPageAndASaveInTheStrip
 
     view.setBusy(false, QString());
     QVERIFY(view.placeholderText().isEmpty());
+}
+
+void TestConfigEditor::aSaveInFlightSaysSoInRedAndAConnectDoesNot()
+{
+    // A SAVE THAT TAKES TIME IS DRAWN IN THE ERROR COLOUR AND EVERY OTHER BUSY SENTENCE
+    // IS NOT. A remote write is in place and not atomic (ARCHITECTURE.md 6.8), so while
+    // "Saving x..." stands the file on the far end is part the old content and part the
+    // new — the one busy state that is worth interrupting a reader over. "Connecting" is
+    // not a failure and stays muted, or the tone would say nothing by saying it always.
+    ConfigView view(QStringLiteral("/etc/log4cplus.properties"));
+    view.resize(600, 400);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto *notice = view.findChild<QLabel *>(QStringLiteral("configNotice"));
+    QVERIFY(notice);
+    view.setContents(QByteArray("one=1\n"), /*existed=*/true);
+
+    const QColor muted = mutedColor(view.palette());
+    const QColor red = errorColor(view.palette());
+    // The claim is only worth making where the two colours differ at all, which every
+    // ordinary palette makes true and which a test may not simply assume.
+    QVERIFY(red != muted);
+
+    view.setBusy(true, QStringLiteral("Saving app.properties..."), /*retryAtMs=*/0,
+                 ConfigView::BusyTone::Alert);
+    QVERIFY(notice->isVisible());
+    QCOMPARE(view.busyTone(), ConfigView::BusyTone::Alert);
+    QCOMPARE(notice->palette().color(QPalette::WindowText), red);
+
+    // AND THE TONE IS CLEARED WITH THE SENTENCE. Left standing, the next ordinary busy
+    // message that does not name a tone would inherit this save's red.
+    view.setBusy(false, QString());
+    QCOMPARE(view.busyTone(), ConfigView::BusyTone::Ordinary);
+
+    view.setBusy(true, QStringLiteral("Connecting to host..."));
+    QVERIFY(notice->isVisible());
+    QCOMPARE(notice->palette().color(QPalette::WindowText), muted);
+
+    view.setBusy(false, QString());
 }
 
 void TestConfigEditor::aHostThatCannotBeReachedCountsDownToTheNextTry()
