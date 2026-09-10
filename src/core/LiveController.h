@@ -31,6 +31,10 @@ QT_END_NAMESPACE
 namespace loftail {
 
 class Document;
+// WaitCause is Document's, and beginWaiting() carries one through to it. Forward-
+// declared with its underlying type rather than including Document.h: this header is
+// moc'd and included widely, and the enum is all that is wanted from it.
+enum class WaitCause;
 class LogModel;
 
 // What made the bytes we had indexed stop being the bytes in the file (SPEC.md §3).
@@ -256,7 +260,10 @@ private:
     // when answering destroyed this controller, which the owner does when the format
     // the dialog settled on is a different one; the caller must then touch nothing.
     bool settleFirstBytes();
-    void beginWaiting(const QString &reason);
+    // `whenAbsent` is what an absence MEANS for the wait being entered, remembered on
+    // the document so republishWaitReason() can re-derive the sentence as the answer
+    // changes without turning "is no longer there" into "has not appeared yet".
+    void beginWaiting(const QString &reason, WaitCause whenAbsent);
     // Enter or leave the stale state and announce it. beginStale() is idempotent and
     // re-announces only when the sentence has actually changed, because it is reached
     // from every tick of an outage that may last hours.

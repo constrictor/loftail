@@ -254,7 +254,7 @@ bool ArchiveFetcher::start(const QString &spoolDir, QString *error)
         // that names no host, a dependency that is not built in, a cache directory that
         // cannot be created — and SshFetcher::start() itself cannot fail.
         if (!RemoteLocation::isRemote(m_location.container)) {
-            if (logSourcePresence(m_location.container) == LogPresence::Absent) {
+            if (logPresenceMayAppear(logSourcePresence(m_location.container))) {
                 setWaiting(waitingForContainer());
                 m_worker = std::make_unique<Worker>(this);
                 m_worker->start();
@@ -521,14 +521,26 @@ QString ArchiveFetcher::waitingForContainer() const
     // so the display name would strip a single-stream container's suffix and say it was
     // waiting for "app.log" while the thing that is missing is `app.log.gz`. Only a
     // local container ever reaches here (start()), so a file name is the whole answer.
-    const QString name = QFileInfo(m_location.container).fileName();
-    return Tr::tr("waiting for %1 to appear")
-        .arg(name.isEmpty() ? logSourceDisplayPath(m_location.container) : name);
+    const QFileInfo info(m_location.container);
+    const QString name = info.fileName();
+    const QString shown = name.isEmpty() ? logSourceDisplayPath(m_location.container) : name;
+    // WHICH ABSENCE, exactly as a plain log says it (Document::waitingForText): a
+    // container under a folder that is not there is most often a mistyped directory, and
+    // naming the container alone sends the reader to look inside a tree that does not
+    // exist. Asked of the presence rather than tested here, so the two cannot disagree.
+    if (logSourcePresence(m_location.container) == LogPresence::NoDirectory) {
+        return Tr::tr("waiting for %1 — there is no folder %2 either")
+            .arg(shown, info.absolutePath());
+    }
+    return Tr::tr("waiting for %1 to appear").arg(shown);
 }
 
 ArchiveFetcher::Attempt ArchiveFetcher::openAbsentContainer()
 {
-    if (logSourcePresence(m_location.container) == LogPresence::Absent) {
+    // mayAppear, never `== Absent`: a container under a folder that has not been created
+    // is exactly as much a wait as one whose folder is there, and the two were one answer
+    // until the folder became a sentence of its own.
+    if (logPresenceMayAppear(logSourcePresence(m_location.container))) {
         // Restated every pass rather than latched at the transition, so the sentence on
         // screen keeps naming what is actually being waited for.
         setWaiting(waitingForContainer());

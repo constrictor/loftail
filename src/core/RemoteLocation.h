@@ -276,18 +276,37 @@ QString logSourceDisplayPath(const QString &path);
 
 // What is at an address, as far as can be told WITHOUT I/O beyond an attribute query.
 //
-// Absent and Unreadable are not the same thing to a user, and folding them together is
-// what made a log the user can see in their file manager report that it "has not
-// appeared yet". Both WAIT rather than fail — a permission is granted as readily as a
-// file is written — but each says its own sentence (SPEC.md §3), and one of them is a
+// THESE ARE FIVE DIFFERENT SENTENCES AND FOLDING ANY TWO OF THEM TOGETHER IS THE DEFECT
+// THIS ENUM EXISTS AGAINST. Absent and Unreadable were one bit once, which is what made a
+// log the user can see in their file manager report that it "has not appeared yet"; a log
+// under a folder that does not exist reported the same, sending the reader to look for a
+// file when what is missing is the tree above it. Three of the five WAIT rather than fail
+// — a permission is granted as readily as a file is written, and a folder is created as
+// readily as either — but each says its own sentence (SPEC.md §3), and two of them are a
 // reason to stop retrying a container that will never open (§6.4).
+//
+// It is also the vocabulary the SSH transport classifies into (PathTrouble.h), so that
+// what loftail can say about a log on another machine and what it can say about one on
+// this machine cannot drift apart.
 enum class LogPresence {
-    Present,    // it is there, and this process may read it
-    Absent,     // there is nothing at the address
-    Unreadable, // something is there and this process may not read it
+    Present,     // it is there, and this process may read it
+    Absent,      // there is nothing at the address, but its folder is there
+    NoDirectory, // the folder that would hold it is not there either
+    Unreadable,  // something is there and this process may not read it
+    NotAFile,    // a folder — or something else that is not a file — is at the address
 };
 
-// Which of the three `path` is. NON-BLOCKING, and deliberately optimistic for a remote
+// Whether a log at this address could still TURN UP on its own, which is the whole of
+// what separates a wait from a refusal that keeps its tab and says why (M17).
+//
+// Absent and NoDirectory only. Unreadable waits too, but for a DIFFERENT reason — it is
+// there, so nothing has to appear — and a NotAFile never resolves at all: a folder does
+// not become a log, so polling for one is polling for something that cannot happen.
+// Callers ask this rather than comparing against Absent, or a value added here becomes a
+// wait that never ends at whichever call site was not updated.
+bool logPresenceMayAppear(LogPresence presence);
+
+// Which of the five `path` is. NON-BLOCKING, and deliberately optimistic for a remote
 // path — Present, always: answering it truthfully would mean a network round trip, and
 // this is called during session restore where a stall would be a hang. For an archived
 // path this asks about the CONTAINER, because opening the archive to confirm the member
@@ -297,6 +316,9 @@ LogPresence logSourcePresence(const QString &path);
 // Whether opening `path` is worth attempting: logSourcePresence() == Present, and the
 // same non-blocking, remote-optimistic answer. Kept as its own name because most
 // callers only ever want the one bit.
+//
+// A NotAFile answers FALSE here and must not therefore be waited for: Document::prepare()
+// refuses it by name ABOVE the wait branch, which is gated on this function.
 bool logSourceAvailable(const QString &path);
 
 // Whether `path` NAMES A LOG AT ALL — pure string work, no I/O, and a much weaker

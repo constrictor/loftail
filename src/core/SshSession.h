@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "PathTrouble.h"
 #include "RemoteLocation.h"
 #include "SshExecCommands.h" // SizeSource, kUnknownMtime — no libssh2, always compiled
 
@@ -262,6 +263,22 @@ public:
     bool openFile(QString *error, Failure *failure = nullptr);
     void closeFile();
     bool hasFile() const;
+
+    // WHY the file this session connected for cannot be read: absent, absent along with
+    // its folder, there and unreadable, or not a file at all (PathTrouble.h).
+    //
+    // ASKED ONLY ON THE FAILURE PATH — after an open or a stat has already come back
+    // empty-handed — and it costs ONE round trip: an SFTP stat of the parent, or one
+    // `test` command on a server doing the exec fallback. A log that is being read
+    // normally never reaches it, and a waiting one asks at the slow retry cadence, which
+    // is five seconds and up (SshFetcher::tailLoop). It is re-asked every time rather
+    // than latched, so a folder that gets created or a permission that gets fixed shows
+    // up on the next poll like any other change.
+    //
+    // Never condemns the session: a request the far end refused says nothing about the
+    // link (sshErrorEndsSession()), and tearing one down here would cost a reconnect and
+    // a re-fetch from zero over a file that is merely not there.
+    RemotePathReport classifyPath() const;
 
     // Attributes of the NAME (re-resolved every call).
     Attrs statPath() const;

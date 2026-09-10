@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include "RemoteLocation.h"
+
 #include <QByteArray>
 #include <QList>
 #include <QPair>
@@ -186,6 +188,33 @@ QString configReadCommand(const QString &path);
 // creating something. The marker is there for lastNonEmptyLine()'s reason: on these
 // machines stdout is not private, and a login banner would otherwise be the answer.
 QString configExistsCommand(const QString &path);
+
+// WHY `path` cannot be read, on a server that will not do SFTP: absent, absent along
+// with the folder that would hold it, there and unreadable, or not a file at all.
+//
+// The exec transport had no way to ask this, so it said "it is missing, or the account
+// cannot read it" — both answers at once, about a file the server would have told it
+// which of the two, had anything asked. This is that question, and it is asked ONLY on
+// the failure path: a log that is being read normally never runs it (SshSession).
+//
+// Marked like configExistsCommand() and for the same reason — on these machines stdout
+// is not private — with a marker of its own, so a reply about existence and a reply
+// about trouble cannot be read for each other on a reused channel. One line, read back
+// through lastNonEmptyLine().
+//
+// `test -e` is false for a DANGLING SYMLINK, so a link whose target is gone reads as an
+// absence. That is the true thing to say about the log; naming the link instead would
+// cost a second round trip to say something the reader cannot act on either.
+QString pathTroubleCommand(const QString &path);
+
+// Read what pathTroubleCommand() printed. False for anything unparseable — a shell
+// error, a restricted account, a missing marker — which the caller must not fold into
+// any of the answers below: "the server did not say" is its own outcome, and inventing
+// one for it is the defect this whole pair exists against.
+//
+// `LogPresence::Present` here means the path is there and readable, which is a real
+// answer and not a failure to get one: it happens when the trouble was somewhere else.
+bool parsePathTroubleOutput(const QByteArray &output, LogPresence *presence);
 
 // Take stdin and put it in `path`, creating it if it is not there.
 //

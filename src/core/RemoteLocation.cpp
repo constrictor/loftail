@@ -368,8 +368,22 @@ LogPresence plainPresence(const QString &path)
         return RemoteLocation::parse(path) ? LogPresence::Present : LogPresence::Absent;
     }
     const QFileInfo info(path);
-    if (!info.exists())
-        return LogPresence::Absent;
+    if (!info.exists()) {
+        // WHICH ABSENCE, and the extra stat is paid only by a log that is not there. A
+        // path under a folder that has not been created says so rather than saying the
+        // FILE has not appeared: mistyping a directory is how most of these arise, and
+        // "app.log has not appeared yet" sends the reader to look at a tree that is not
+        // there to look at. absolutePath() rather than dir(), so a relative path is
+        // resolved once here rather than being asked about relative to somewhere else.
+        return QFileInfo(info.absolutePath()).isDir() ? LogPresence::Absent
+                                                      : LogPresence::NoDirectory;
+    }
+    // A DIRECTORY IS READABLE, so without this it answers Present, the open then fails,
+    // and the reason the user gets is whatever the file layer made of being handed a
+    // folder. It is the one answer here that never resolves on its own, which is why it
+    // is a refusal and not a wait — see logPresenceMayAppear().
+    if (info.isDir())
+        return LogPresence::NotAFile;
     // exists() and isReadable() were one answer until M-archive-wait, and the conflation
     // was visible: a file whose mode is 000 was reported as one that "has not appeared
     // yet", sending the reader looking for a file they can see. isReadable() is an
@@ -647,6 +661,11 @@ LogPresence logSourcePresence(const QString &path)
     if (const auto loc = ArchiveLocation::split(path))
         return plainPresence(loc->container);
     return plainPresence(path);
+}
+
+bool logPresenceMayAppear(LogPresence presence)
+{
+    return presence == LogPresence::Absent || presence == LogPresence::NoDirectory;
 }
 
 bool logSourceAvailable(const QString &path)

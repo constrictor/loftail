@@ -63,6 +63,7 @@ private slots:
     void anAddressHoldingANulIsRefusedRatherThanRekeyed();
     void availabilityIsOptimisticForRemote();
     void presenceTellsAnAbsentLogFromAnUnreadableOne();
+    void presenceTellsAMissingFolderAndAFolderFromBothOfThem();
     void settingsKeyIsWorkingDirectoryIndependent();
     void theSettingsTreeRoundTripsARemotePath();
     void aWholePathPatternSeesTheAddressAsAPersonWouldTypeIt();
@@ -690,6 +691,26 @@ void TestRemoteLocation::presenceTellsAnAbsentLogFromAnUnreadableOne()
     QCOMPARE(logSourcePresence(present), LogPresence::Present);
     QCOMPARE(logSourcePresence(dir.filePath(QStringLiteral("gone.log"))), LogPresence::Absent);
 
+    // A MISSING FOLDER IS ITS OWN ANSWER, and was Absent until it became one: "app.log
+    // has not appeared yet" about a mistyped directory sends the reader to look inside a
+    // tree that is not there to look in.
+    QCOMPARE(logSourcePresence(dir.filePath(QStringLiteral("nosuch/deeper/app.log"))),
+             LogPresence::NoDirectory);
+    // A DIRECTORY IS READABLE, so without an answer of its own it reports Present, the
+    // open then fails, and the sentence is whatever the file layer made of being handed
+    // a folder. It is the one answer here that never resolves on its own, which is what
+    // logPresenceMayAppear() is for: everything that waits must be able to stop.
+    QCOMPARE(logSourcePresence(dir.path()), LogPresence::NotAFile);
+
+    QVERIFY(logPresenceMayAppear(LogPresence::Absent));
+    QVERIFY(logPresenceMayAppear(LogPresence::NoDirectory));
+    QVERIFY(!logPresenceMayAppear(LogPresence::Present));
+    QVERIFY(!logPresenceMayAppear(LogPresence::NotAFile));
+    // Unreadable waits too, but for a DIFFERENT reason — it is there, so nothing has to
+    // appear — and folding it in here would make an unreadable archive container get
+    // polled eighty times a minute for the life of the tab (ArchiveFetcher).
+    QVERIFY(!logPresenceMayAppear(LogPresence::Unreadable));
+
     // Optimistic for remote, exactly as availability is, and therefore NEVER Unreadable:
     // that answer would cost a round trip, and this runs during session restore.
     QCOMPARE(logSourcePresence(QStringLiteral("ssh://web1/var/log/app.log")),
@@ -708,6 +729,19 @@ void TestRemoteLocation::presenceTellsAnAbsentLogFromAnUnreadableOne()
     QVERIFY(QFile::setPermissions(present,
                                   QFileDevice::ReadOwner | QFileDevice::WriteOwner));
 #endif
+}
+
+void TestRemoteLocation::presenceTellsAMissingFolderAndAFolderFromBothOfThem()
+{
+    // The remote half of the same rule: still OPTIMISTIC, so neither of the two new
+    // answers may leak into a remote address. Answering either truthfully costs a round
+    // trip, and this runs during session restore where a stall would be a hang — the
+    // transport asks the real question on its own failure path (SshSession::classifyPath).
+    for (const QString &address : {QStringLiteral("ssh://web1/no/such/dir/app.log"),
+                                   QStringLiteral("ssh://web1/"),
+                                   QStringLiteral("ssh://web1/var/log")}) {
+        QCOMPARE(logSourcePresence(address), LogPresence::Present);
+    }
 }
 
 void TestRemoteLocation::settingsKeyIsWorkingDirectoryIndependent()

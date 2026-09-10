@@ -106,6 +106,12 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | A log past the `wc` ceiling is a THIRD answer, not a missing file: `tooBigToMeasure()`, and `Refused` rather than `NoSuchFile` | Too big to measure (L47) | tst_execsizeprobe::aFileTooBigForTheLastRungIsNotAMissingFile<br>tst_sshlive::aLogTooBigForTheOnlySizeRungIsRefusedRatherThanCalledMissing |
 | The ceiling flag is cleared at the top of every `settle()` and again on the success path, or it outlives the file it was hit on | Too big to measure (L47) | tst_execsizeprobe::aSettledRungLeavesNoCeilingBehind |
 | A write the far end REFUSED is not a dropped link; the split comes from `sshErrorEndsSession()`, not from a list of FX codes | Refused write (L79) | tst_sshlive::aConfigWriteThatCannotFitBlamesTheFilesystemAndNotTheLink |
+| "Not there" is FIVE answers and each gets its own sentence; an absence never describes itself as unreadable | Five answers (L139) | tst_pathtrouble::everyReasonGetsItsOwnSentenceAndNoneOfThemSaysUnreadable |
+| The exec transport can ASK which of them it is, and `-d` comes before `-r` because a directory is readable | Five answers (L139) | tst_sshexec::theTroubleCommandTellsMissingFromDeniedFromNoFolder |
+| A log under a folder that is not there names the FOLDER, and restates itself when the folder appears | Five answers (L139) | tst_waiting::aLogUnderAFolderThatIsNotThereSaysTheFolderIsMissing |
+| A folder opened as a log is REFUSED, its check above the wait branch, or the wait can never end | Five answers (L139) | tst_waiting::aFolderOpenedAsALogIsRefusedRatherThanWaitedFor |
+| A real sftp-server tells absent from no-folder from denied from a directory, and only a real one can | Five answers (L139) | tst_sshlive::aMissingRemoteLogSaysItIsMissingRatherThanUnreadable |
+| The exec fallback does the same against the one server that reaches it | Five answers (L139) | tst_sshlive::theExecFallbackTellsMissingFromDenied |
 | Everything above `RemoteFetcher` is covered with no network at all over `tests/FakeFetcher.h` | SSH CI (L47) | tst_spooledsource<br>tst_remotetail<br>tst_remoteopen |
 | (a) `readAt()` seeks only on a discontinuity, a seek flushing libssh2's read-ahead | SSH slow (L49) | tst_sshlive |
 | (a) `Impl::filePos` is written ONLY by `adoptFile()`, or one generation's bytes splice onto another's spool | SSH slow (L49) | tst_sshlive |

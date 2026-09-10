@@ -197,6 +197,14 @@ add_test(NAME tst_configlocation COMMAND tst_configlocation)
 # reason: a wrong answer there writes a file at a path nobody asked for, a wrong answer
 # here RUNS A SCRIPT on a machine nobody asked for. UNGATED, so the answer cannot depend
 # on which optional dependencies were compiled in.
+# WHY a log on another machine is not there, in the one place that words it. UNGATED for
+# tst_sshexec's reason: a build with no libssh2 says these sentences too — a restored
+# session naming a remote log reaches them — and four surfaces used to word this for
+# themselves, which is exactly how they came to disagree.
+qt_add_executable(tst_pathtrouble tst_pathtrouble.cpp)
+target_link_libraries(tst_pathtrouble PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_pathtrouble COMMAND tst_pathtrouble)
+
 qt_add_executable(tst_restarttarget tst_restarttarget.cpp)
 target_link_libraries(tst_restarttarget PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_restarttarget COMMAND tst_restarttarget)

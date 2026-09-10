@@ -463,6 +463,8 @@ require_ran "$last_log" \
     aFirstConnectAsksForThePasswordWhenNoKeyAnswers \
     theExecFallbackReadsTheSameBytes \
     theExecFallbackSizesWithoutStat \
+    aMissingRemoteLogSaysItIsMissingRatherThanUnreadable \
+    theExecFallbackTellsMissingFromDenied \
     theExecStreamServesAForwardWalkFromOneChannel \
     sequentialReadsLandWhereTheyAskedWithNoSeekBetweenThem \
     aConfigFileIsReadAndWrittenWholeOverSftp \

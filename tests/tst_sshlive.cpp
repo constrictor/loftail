@@ -32,6 +32,7 @@
 #include "LogModel.h"
 #include "LogSource.h"
 #include "ManualFormatProvider.h"
+#include "PathTrouble.h"
 #include "RemoteLocation.h"
 #include "ExecSizeProbe.h"
 #include "SshExecCommands.h"
@@ -336,6 +337,12 @@ private slots:
     void aFirstConnectAsksAboutTheHostKeyAndRemembersIt();
     void aRejectedHostKeySendsNoCredential();
     void aFirstConnectAsksForThePasswordWhenNoKeyAnswers();
+    // WHY a remote log cannot be read — absent, absent along with its folder, there
+    // and unreadable, or a folder. The transport used to fold the first three into
+    // one sentence and print a bare status number for the rest, and no fake can
+    // reach any of it: what is being tested is what a real sftp-server answers.
+    void aMissingRemoteLogSaysItIsMissingRatherThanUnreadable();
+    void theExecFallbackTellsMissingFromDenied();
     void theExecFallbackReadsTheSameBytes();
     void theExecFallbackSizesWithoutStat();
 
@@ -535,6 +542,164 @@ void TestSshLive::theExecFallbackWritesTheSameBytes()
     QCOMPARE(got, body);
 
     QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(cfg)));
+}
+
+// A URL naming a server shaped for one of the cases that need one, or an empty string.
+// Each is gated on its own, exactly as theExecStreamServesAForwardWalkFromOneChannel()
+// is on LOFTAIL_TEST_SSH_EXEC_URL and for the same reason: no client gesture can make
+// an ordinary server behave that way, so what is needed is a different server.
+static QString shapedUrl(const char *name, RemoteLocation *out)
+{
+    const QString url = QProcessEnvironment::systemEnvironment().value(
+        QString::fromLatin1(name));
+    if (url.isEmpty())
+        return QString();
+    const auto parsed = RemoteLocation::parse(url);
+    if (!parsed)
+        return QString();
+    *out = *parsed;
+    return url;
+}
+
+namespace {
+// Connect to `where` with `path` substituted, and ask the one question. A session
+// classifies the path IT connected for, so each answer needs its own session — which is
+// also how the transport itself reaches this, once per failing poll.
+RemotePathReport classifyAt(const RemoteLocation &base, const QString &path, QString *error,
+                            SshSession::Mode *mode = nullptr)
+{
+    RemoteLocation where = base;
+    where.path = path;
+    SshSession session;
+    if (!session.connectTo(where, nullptr, 30000, error, nullptr))
+        return {};
+    if (mode)
+        *mode = session.mode();
+    // The open has to be attempted first on the SFTP path, exactly as the transport does
+    // it: classifyPath() is what the FAILURE branch asks, and asking it of a session that
+    // never tried to open anything would be testing a call nobody makes.
+    QString ignored;
+    session.openFile(&ignored);
+    return session.classifyPath();
+}
+} // namespace
+
+void TestSshLive::aMissingRemoteLogSaysItIsMissingRatherThanUnreadable()
+{
+    // THE REPORTED DEFECT, against a real sftp-server. "Cannot read X on H — it is
+    // missing, or the account cannot read it" was said about every one of these, and a
+    // bare "(2)" about the rest; the reader acts on that sentence and nothing on screen
+    // corrects it.
+    const QString dir = m_remotePath + QStringLiteral(".dir");
+    QVERIFY(remoteShell(QStringLiteral("rm -rf %1 && mkdir -p %1").arg(dir)));
+
+    QString error;
+    SshSession::Mode mode = SshSession::Mode::Sftp;
+
+    // Not there, but its folder is.
+    const RemotePathReport gone =
+        classifyAt(m_location, dir + QStringLiteral("/gone.log"), &error, &mode);
+    QVERIFY2(gone.known, qPrintable(error));
+    if (mode != SshSession::Mode::Sftp)
+        QSKIP("this server does not offer SFTP; the exec half is its own case");
+    QCOMPARE(gone.presence, LogPresence::Absent);
+
+    // Not there, and neither is the folder — the mistyped-directory case, which the old
+    // sentence sent the reader to look inside a tree that does not exist about.
+    const RemotePathReport noFolder =
+        classifyAt(m_location, dir + QStringLiteral("/nosuch/deeper/app.log"), &error);
+    QVERIFY2(noFolder.known, qPrintable(error));
+    QCOMPARE(noFolder.presence, LogPresence::NoDirectory);
+
+    // A DIRECTORY IS STAT-ABLE AND UNOPENABLE, which is exactly the pair that used to
+    // come back as a bare status number.
+    const RemotePathReport folder = classifyAt(m_location, dir, &error);
+    QVERIFY2(folder.known, qPrintable(error));
+    QCOMPARE(folder.presence, LogPresence::NotAFile);
+
+    // There, and the account cannot read it. Root reads everything, so on a container
+    // running as root the distinction is unobservable — tst_waiting's own rule.
+    const QString shut = dir + QStringLiteral("/shut.log");
+    QVERIFY(remoteShell(QStringLiteral("printf x > %1 && chmod 000 %1").arg(shut)));
+    if (remoteShellOutput(QStringLiteral("cat %1 2>/dev/null; echo done").arg(shut))
+            .trimmed()
+        == QByteArray("xdone")) {
+        // Signed in as somebody who can read a mode-000 file. SAID OUT LOUD rather than
+        // passed over: this is the half of the case that separates the two sentences, so
+        // a run that silently skipped it would look like a run that proved it.
+        qWarning("running as a user who can read a mode-000 file: the permission half of "
+                 "this case did not run");
+    } else {
+        const RemotePathReport denied = classifyAt(m_location, shut, &error);
+        QVERIFY2(denied.known, qPrintable(error));
+        QCOMPARE(denied.presence, LogPresence::Unreadable);
+        // AND THE SENTENCE SEPARATES THEM, which is the whole point: an absence must not
+        // describe itself as something that cannot be read.
+        const QString absentText = remotePathTroubleText(gone, dir + QStringLiteral("/gone.log"),
+                                                         m_location.host);
+        const QString deniedText = remotePathTroubleText(denied, shut, m_location.host);
+        QVERIFY2(absentText != deniedText, qPrintable(absentText));
+        QVERIFY2(!absentText.contains(QStringLiteral("read")), qPrintable(absentText));
+    }
+
+    QVERIFY(remoteShell(QStringLiteral("chmod 700 %1 && rm -rf %1").arg(dir)));
+}
+
+void TestSshLive::theExecFallbackTellsMissingFromDenied()
+{
+    // The same four questions on the transport that had NO WAY TO ASK THEM. Gated on
+    // LOFTAIL_TEST_SSH_EXEC_URL for theExecStreamServesAForwardWalkFromOneChannel()'s
+    // reason: nothing a client can do makes libssh2_sftp_init() fail against a server
+    // that has a working sftp-server, so this needs one that does not.
+    RemoteLocation where;
+    const QString url = shapedUrl("LOFTAIL_TEST_SSH_EXEC_URL", &where);
+    if (url.isEmpty()) {
+        QSKIP("Set LOFTAIL_TEST_SSH_EXEC_URL=ssh://user@host/tmp/disposable.log, where the "
+              "host's sshd has NO working sftp-server, to exercise the exec transport's "
+              "classification. Nothing else reaches it.");
+    }
+
+    const QString dir = where.path + QStringLiteral(".dir");
+    QVERIFY(remoteShellAt(where, QStringLiteral("rm -rf %1 && mkdir -p %1")
+                                     .arg(shellQuote(dir))));
+
+    QString error;
+    SshSession::Mode mode = SshSession::Mode::Sftp;
+    const RemotePathReport gone =
+        classifyAt(where, dir + QStringLiteral("/gone.log"), &error, &mode);
+    // WITHOUT THIS THE REST PROVES NOTHING: a host that turned out to speak SFTP would
+    // run every assertion below through the other branch and pass.
+    QCOMPARE(mode, SshSession::Mode::Exec);
+    QVERIFY2(gone.known, qPrintable(error));
+    QCOMPARE(gone.presence, LogPresence::Absent);
+
+    const RemotePathReport noFolder =
+        classifyAt(where, dir + QStringLiteral("/nosuch/deeper/app.log"), &error);
+    QVERIFY2(noFolder.known, qPrintable(error));
+    QCOMPARE(noFolder.presence, LogPresence::NoDirectory);
+
+    const RemotePathReport folder = classifyAt(where, dir, &error);
+    QVERIFY2(folder.known, qPrintable(error));
+    QCOMPARE(folder.presence, LogPresence::NotAFile);
+
+    // There, and the account cannot read it — the half this case is named for, and the
+    // one the folded sentence made unsayable. Unobservable as root, and said out loud
+    // rather than passed over when it is.
+    const QString shut = dir + QStringLiteral("/shut.log");
+    QVERIFY(remoteShellAt(where, QStringLiteral("printf x > %1 && chmod 000 %1")
+                                     .arg(shellQuote(shut))));
+    if (remoteShellAt(where, QStringLiteral("test -r %1").arg(shellQuote(shut)))) {
+        qWarning("running as a user who can read a mode-000 file: the permission half of "
+                 "this case did not run");
+    } else {
+        const RemotePathReport denied = classifyAt(where, shut, &error);
+        QVERIFY2(denied.known, qPrintable(error));
+        QCOMPARE(denied.presence, LogPresence::Unreadable);
+        QVERIFY(remotePathTroubleText(denied, shut, where.host)
+                != remotePathTroubleText(gone, shut, where.host));
+    }
+
+    remoteShellAt(where, QStringLiteral("chmod -R 700 %1; rm -rf %1").arg(shellQuote(dir)));
 }
 
 void TestSshLive::theExecFallbackReadsTheSameBytes()
@@ -1335,23 +1500,6 @@ void TestSshLive::compressionIsNegotiatedWhenTheHostAsksForItAndNotOtherwise()
     QByteArray got(body.size(), '\0');
     QCOMPARE(squeezed.readAt(0, got.data(), got.size(), &error), qint64(body.size()));
     QCOMPARE(got, body);
-}
-
-// A URL naming a server shaped for one of the cases below, or an empty string. Each of
-// the three is gated on its own, exactly as theExecStreamServesAForwardWalkFromOneChannel()
-// is on LOFTAIL_TEST_SSH_EXEC_URL and for the same reason: no client gesture can make an
-// ordinary server behave this way, so what is needed is a different server.
-static QString shapedUrl(const char *name, RemoteLocation *out)
-{
-    const QString url = QProcessEnvironment::systemEnvironment().value(
-        QString::fromLatin1(name));
-    if (url.isEmpty())
-        return QString();
-    const auto parsed = RemoteLocation::parse(url);
-    if (!parsed)
-        return QString();
-    *out = *parsed;
-    return url;
 }
 
 void TestSshLive::aKeyOnlyHostThatRefusesTheKeyIsWorthRetryingRatherThanRefused()

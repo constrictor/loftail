@@ -98,6 +98,11 @@ private slots:
     void aConfigFileIsReadWholeAndWrittenWhole();
     void writingInPlaceKeepsTheFilesPermissions();
     void existenceTellsAnEmptyFileFromAMissingOne();
+
+    // WHY a log cannot be read, on the transport that had no way to ask. It used
+    // to answer "it is missing, or the account cannot read it" — both at once,
+    // about a file the server would have said which of.
+    void theTroubleCommandTellsMissingFromDeniedFromNoFolder();
     void aHostileConfigPathCannotRunAnything();
     void theProbeReportsWhichToolsExist();
 
@@ -710,6 +715,56 @@ void TestSshExec::existenceTellsAnEmptyFileFromAMissingOne()
     QVERIFY(!parseConfigExistsOutput(QByteArray("loftail-cfg maybe\n"), &exists));
 }
 
+void TestSshExec::theTroubleCommandTellsMissingFromDeniedFromNoFolder()
+{
+    if (!haveShell())
+        QSKIP("no /bin/sh to prove the commands against");
+
+    const auto ask = [this](const QString &path) {
+        LogPresence answer = LogPresence::Present;
+        const bool parsed = parsePathTroubleOutput(runSh(pathTroubleCommand(path)), &answer);
+        return parsed ? answer : LogPresence::Present;
+    };
+
+    const QString there = write(QStringLiteral("there.log"), QByteArrayLiteral("x\n"));
+    QCOMPARE(ask(there), LogPresence::Present);
+
+    // Not there, but its folder is: it is the FILE that has not appeared.
+    QCOMPARE(ask(m_dir.filePath(QStringLiteral("gone.log"))), LogPresence::Absent);
+
+    // Not there, and neither is the folder — the mistyped-directory case, which the old
+    // sentence sent the reader to look inside a tree that does not exist about.
+    QCOMPARE(ask(m_dir.filePath(QStringLiteral("nosuch/deeper/app.log"))),
+             LogPresence::NoDirectory);
+
+    // A DIRECTORY IS READABLE, so it has to be caught before the readable rung or it
+    // answers "fine" and the transport reports a folder as a log.
+    QCOMPARE(ask(m_dir.path()), LogPresence::NotAFile);
+
+    // There, and the account cannot read it. Root reads everything, so the distinction
+    // this case exists for is unobservable as root — tst_waiting's own rule.
+    const QString shut = write(QStringLiteral("shut.log"), QByteArrayLiteral("x\n"));
+    QVERIFY(QFile::setPermissions(shut, QFileDevice::WriteOwner));
+    if (QFileInfo(shut).isReadable()) {
+        QVERIFY(QFile::setPermissions(shut, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    } else {
+        QCOMPARE(ask(shut), LogPresence::Unreadable);
+        QVERIFY(QFile::setPermissions(shut, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    }
+
+    // A banner ahead of the answer does not become the answer, and a word nobody wrote
+    // is NOT an answer: "the server did not say" is its own outcome, and folding it into
+    // one of the five is exactly the defect this pair exists against.
+    LogPresence parsed = LogPresence::Present;
+    QVERIFY(parsePathTroubleOutput(QByteArray("Welcome to the box\nloftail-why nodir\n"), &parsed));
+    QCOMPARE(parsed, LogPresence::NoDirectory);
+    QVERIFY(!parsePathTroubleOutput(QByteArray("Welcome to the box\n"), &parsed));
+    QVERIFY(!parsePathTroubleOutput(QByteArray("loftail-why perhaps\n"), &parsed));
+    // And its marker is its own: a reply about existence must not be read as one about
+    // trouble on a channel that carried both.
+    QVERIFY(!parsePathTroubleOutput(QByteArray("loftail-cfg 1\n"), &parsed));
+}
+
 void TestSshExec::aHostileConfigPathCannotRunAnything()
 {
     if (!haveShell())
@@ -724,7 +779,7 @@ void TestSshExec::aHostileConfigPathCannotRunAnything()
         m_dir.filePath(QStringLiteral("x'; touch %1; echo '").arg(canary));
 
     for (const QString &command : {configReadCommand(hostile), configExistsCommand(hostile),
-                                   configWriteCommand(hostile)}) {
+                                   configWriteCommand(hostile), pathTroubleCommand(hostile)}) {
         int code = 0;
         runSh(command, &code);
         QVERIFY2(!QFileInfo::exists(canary), qPrintable(command));

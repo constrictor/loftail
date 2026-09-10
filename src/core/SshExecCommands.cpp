@@ -18,6 +18,8 @@
 
 #include "SshExecCommands.h"
 
+#include "PathTrouble.h"
+
 #include <QList>
 
 #include <ranges>
@@ -131,6 +133,46 @@ QString configWriteCommand(const QString &path)
     return QStringLiteral("cat > %1").arg(shellQuote(path));
 }
 
+namespace {
+// pathTroubleCommand()'s own marker, configMarker()'s rule: two questions about a path
+// must not be able to answer each other.
+QByteArray troubleMarker()
+{
+    return QByteArrayLiteral("loftail-why");
+}
+} // namespace
+
+QString pathTroubleCommand(const QString &path)
+{
+    const QString p = shellQuote(path);
+    // remoteParentFolderOf(), shared with the sentence that reports the answer and with
+    // the SFTP transport's own stat of the parent (PathTrouble.h): three places have to
+    // agree about which folder is being asked about, or loftail says one folder is
+    // missing having looked at another. An empty answer means a relative path, whose
+    // folder is wherever the far end's shell starts — `.` is the true thing to test.
+    const QString folder = remoteParentFolderOf(path);
+    const QString parent = shellQuote(folder.isEmpty() ? QStringLiteral(".") : folder);
+    const QString m = QString::fromLatin1(troubleMarker());
+    // ORDER IS THE WHOLE ANSWER, and every rung is reached only because the ones above it
+    // said no:
+    //   -d P   a folder AT the path. First, because a folder is readable and would
+    //          otherwise answer `ok` on the next line and be reported as a file.
+    //   -r P   there and readable — which means the trouble was somewhere else.
+    //   -e P   there, and not readable: the account, not the file.
+    //   -d D   not there, but the folder is, so it is the FILE that has not appeared.
+    //   else   the folder is not there either, which is what a mistyped directory looks
+    //          like and the case a plain "it is missing" sends the reader to the wrong
+    //          place about.
+    // `test`, not `[`, and no `-a`/`-o`: this transport exists for the userlands that
+    // leave things out, and these five are the ones POSIX guarantees.
+    return QStringLiteral("if test -d %1; then echo %3 notafile; "
+                          "elif test -r %1; then echo %3 ok; "
+                          "elif test -e %1; then echo %3 denied; "
+                          "elif test -d %2; then echo %3 missing; "
+                          "else echo %3 nodir; fi")
+        .arg(p, parent, m);
+}
+
 QString restartScriptCommand(const QString &script,
                              const QList<QPair<QString, QString>> &variables)
 {
@@ -177,6 +219,31 @@ bool parseConfigExistsOutput(const QByteArray &output, bool *exists)
         return false;
     if (exists)
         *exists = tail == "1";
+    return true;
+}
+
+bool parsePathTroubleOutput(const QByteArray &output, LogPresence *presence)
+{
+    const QByteArray line = lastNonEmptyLine(output);
+    const QByteArray head = troubleMarker() + ' ';
+    if (!line.startsWith(head))
+        return false;
+    const QByteArray word = line.mid(head.size()).trimmed();
+    LogPresence answer = LogPresence::Present;
+    if (word == "ok")
+        answer = LogPresence::Present;
+    else if (word == "missing")
+        answer = LogPresence::Absent;
+    else if (word == "nodir")
+        answer = LogPresence::NoDirectory;
+    else if (word == "denied")
+        answer = LogPresence::Unreadable;
+    else if (word == "notafile")
+        answer = LogPresence::NotAFile;
+    else
+        return false; // a word nobody wrote: not an answer, and must not become one
+    if (presence)
+        *presence = answer;
     return true;
 }
 

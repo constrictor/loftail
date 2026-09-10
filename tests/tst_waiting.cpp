@@ -19,6 +19,7 @@
 #include <QtTest>
 
 #include <QByteArray>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
@@ -31,6 +32,7 @@
 #include "ManualFormatProvider.h"
 #include "Priority.h"
 #include "RecordIndex.h"
+#include "RemoteLocation.h"
 
 using namespace loftail;
 
@@ -149,6 +151,8 @@ private slots:
     void theGracePeriodIsElapsedTimeNotACheckCount();
     void aBrokenAddressStillFailsOutright();
     void anUnreadableLogWaitsButIsNotDescribedAsMissing();
+    void aLogUnderAFolderThatIsNotThereSaysTheFolderIsMissing();
+    void aFolderOpenedAsALogIsRefusedRatherThanWaitedFor();
 };
 
 void TestWaiting::absentPathOpensWaitingAndSettlesFormatOnArrival()
@@ -605,6 +609,77 @@ void TestWaiting::anUnreadableLogWaitsButIsNotDescribedAsMissing()
     live.checkNow();
     QVERIFY(!doc.isWaiting());
     QCOMPARE(doc.index().records.size(), 1);
+}
+
+void TestWaiting::aLogUnderAFolderThatIsNotThereSaysTheFolderIsMissing()
+{
+    // A MISTYPED DIRECTORY IS THE COMMONEST WAY A LOG IS NOT THERE, and "app.log has not
+    // appeared yet" sends the reader to look inside a tree that does not exist to look
+    // in. Both are waits — a folder is created as readily as a file is written — so this
+    // is about the sentence, which SPEC.md §3 says is the whole of what the tab is for.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString folder = dir.filePath(QStringLiteral("nosuch"));
+    const QString path = folder + QStringLiteral("/app.log");
+
+    QCOMPARE(logSourcePresence(path), LogPresence::NoDirectory);
+    QVERIFY(logPresenceMayAppear(logSourcePresence(path)));
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.prepare(path, provider, Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(doc.isWaiting());
+    QCOMPARE(doc.waitReason(), waitingForText(path, WaitCause::NoDirectory));
+    QVERIFY2(doc.waitReason() != waitingForText(path, WaitCause::NotYet),
+             qPrintable(doc.waitReason()));
+    // NAMES THE FOLDER, which is the whole of what the sentence adds: a reader being told
+    // to look one level up needs telling which level.
+    QVERIFY2(doc.waitReason().contains(QFileInfo(path).absolutePath()),
+             qPrintable(doc.waitReason()));
+
+    // And it is a wait all the same: creating the folder and then the log ends it, which
+    // is why this is a wording defect and not a refusal.
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    QObject::connect(&live, &LiveController::resumeRequested, &live, [&doc, &model] {
+        ManualFormatProvider p(QString::fromLatin1(kPattern));
+        model.beginFilterReset();
+        doc.resume(p);
+        model.endFilterReset();
+    });
+    live.start();
+    live.checkNow();
+    QVERIFY(doc.isWaiting());
+
+    QVERIFY(QDir().mkpath(folder));
+    live.checkNow();
+    QVERIFY(doc.isWaiting()); // the folder is there; the log still is not
+    QCOMPARE(doc.waitReason(), waitingForText(path, WaitCause::NotYet));
+
+    QVERIFY(writeWhole(path, rec(1, "INFO ", "app.core", "first")));
+    live.checkNow();
+    QVERIFY(!doc.isWaiting());
+    QCOMPARE(doc.index().records.size(), 1);
+}
+
+void TestWaiting::aFolderOpenedAsALogIsRefusedRatherThanWaitedFor()
+{
+    // A FOLDER NEVER BECOMES A LOG, so it is the one answer here that is a refusal. The
+    // check sits ABOVE the wait branch in Document::prepare(), which is gated on
+    // logSourceAvailable() — an answer a directory now gives — so without it this open
+    // starts a wait that cannot end: a tab that sits on "has not appeared yet" for the
+    // life of the session about something the reader is looking straight at.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QCOMPARE(logSourcePresence(dir.path()), LogPresence::NotAFile);
+    QVERIFY(!logPresenceMayAppear(logSourcePresence(dir.path())));
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(!doc.prepare(dir.path(), provider, Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(!doc.isWaiting());
+    QVERIFY2(doc.lastError().contains(QStringLiteral("folder")), qPrintable(doc.lastError()));
+    QVERIFY2(doc.lastError().contains(dir.path()), qPrintable(doc.lastError()));
 }
 
 QTEST_GUILESS_MAIN(TestWaiting)

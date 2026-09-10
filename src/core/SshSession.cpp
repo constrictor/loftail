@@ -1633,6 +1633,37 @@ void SshSession::close()
     d->teardown();
 }
 
+namespace {
+// An SFTP status with its name where there is one, for the sentence that quotes what the
+// server said (PathTrouble.h). NOT a classification — the codes loftail acts on are
+// tested by name at the call sites — just the difference between "the server said: 4
+// (failure)" and "the server said: 4", on the one path where loftail has nothing of its
+// own to add.
+//
+// Only the codes RFC 4254's SFTP v3 defines, which is what every server this transport
+// meets speaks. Anything past them is printed as a bare number rather than guessed at.
+QString sftpStatusText(unsigned long code)
+{
+    const char *name = nullptr;
+    switch (code) {
+    case LIBSSH2_FX_EOF:                   name = "end of file"; break;
+    case LIBSSH2_FX_NO_SUCH_FILE:          name = "no such file"; break;
+    case LIBSSH2_FX_PERMISSION_DENIED:     name = "permission denied"; break;
+    case LIBSSH2_FX_FAILURE:               name = "failure"; break;
+    case LIBSSH2_FX_BAD_MESSAGE:           name = "bad message"; break;
+    case LIBSSH2_FX_NO_CONNECTION:         name = "no connection"; break;
+    case LIBSSH2_FX_CONNECTION_LOST:       name = "connection lost"; break;
+    case LIBSSH2_FX_OP_UNSUPPORTED:        name = "operation unsupported"; break;
+    default:                               break;
+    }
+    if (!name)
+        return Tr::tr("SFTP status %1").arg(code);
+    // The NAME is the server's protocol vocabulary, not prose, so it is not translated —
+    // SshExecCommands' rule for the same kind of string. What surrounds it is.
+    return Tr::tr("SFTP status %1 (%2)").arg(code).arg(QLatin1String(name));
+}
+} // namespace
+
 bool SshSession::openFile(QString *error, Failure *failure)
 {
     Failure ignored = Failure::None;
@@ -1703,15 +1734,21 @@ bool SshSession::openFile(QString *error, Failure *failure)
                 }
                 return false;
             }
-            // Indistinguishable from here: absent, or present and unreadable. Both are
-            // things that change on their own, so both wait (§6.5) — the same answer
-            // the SFTP branch gives for NO_SUCH_FILE and PERMISSION_DENIED.
-            kind = Failure::NoSuchFile;
-            if (error) {
-                *error = Tr::tr("Cannot read %1 on %2 — it is missing, or the "
-                                        "account cannot read it.")
-                             .arg(d->location.path, d->location.host);
-            }
+            // WHICH OF THEM, asked of the server rather than guessed at. This used to
+            // read "it is missing, or the account cannot read it" — both answers at once
+            // about a file the server would have said which of, had anything asked — and
+            // that sentence is the whole of what the reader has to act on, so it sent
+            // them to look in the wrong place half the time. One `test` command, on the
+            // failure path only (SshSession::classifyPath).
+            const RemotePathReport report = classifyPath();
+            // A folder does not become a log, so it is REFUSED rather than waited for:
+            // a tab that keeps its place and says why (M17), where everything else here
+            // mends itself and is worth another poll.
+            kind = (report.known && report.presence == LogPresence::NotAFile)
+                ? Failure::Refused
+                : Failure::NoSuchFile;
+            if (error)
+                *error = remotePathTroubleText(report, d->location.path, d->location.host);
             return false;
         }
         d->execSize = source;
@@ -1744,14 +1781,24 @@ bool SshSession::openFile(QString *error, Failure *failure)
         // — a log gets written, a permission gets fixed — and both are what a LOCAL
         // path answers "unavailable" to, so they wait for the same reason (§6.5).
         // Anything else is the server saying something we did not ask about.
-        kind = (sftpError == LIBSSH2_FX_NO_SUCH_FILE || sftpError == LIBSSH2_FX_NO_SUCH_PATH
-                || sftpError == LIBSSH2_FX_PERMISSION_DENIED)
-            ? Failure::NoSuchFile
-            : Failure::Refused;
+        // The code was already read here and then thrown away: what reached the user was
+        // the bare number. classifyPath() turns it into which of the four this is —
+        // absent, absent along with its folder, unreadable, or a folder — at the cost of
+        // one stat on a path already known to be unopenable.
+        const RemotePathReport report = classifyPath();
+        // A folder never becomes a log and a status nobody recognised will not change its
+        // mind either, so both are refusals that keep their tab and say why (M17).
+        // Everything else mends itself and waits, exactly as it did before.
+        kind = (report.known && report.presence != LogPresence::NotAFile) ? Failure::NoSuchFile
+                                                                          : Failure::Refused;
         if (error) {
-            *error = Tr::tr("Cannot open %1 on %2 (%3)")
-                         .arg(d->location.path, d->location.host)
-                         .arg(sftpError);
+            // The classification is what is REPORTED; the raw code stays the fallback for
+            // a server that refused the open and then answered the stat, which says the
+            // trouble was something other than the path.
+            RemotePathReport reported = report;
+            if (!reported.known && reported.detail.isEmpty())
+                reported.detail = sftpStatusText(sftpError);
+            *error = remotePathTroubleText(reported, d->location.path, d->location.host);
         }
         return false;
     }
@@ -2015,6 +2062,93 @@ void SshSession::closeFile()
     // at offsets an indexer is walking, silently (see Impl::readStream).
     d->adoptReadStream(nullptr, 0);
     d->adoptFile(nullptr);
+}
+
+RemotePathReport SshSession::classifyPath() const
+{
+    RemotePathReport out;
+
+    // An ExecOnly session settled no transport, so there is nothing here that could ask.
+    // Refused by name, like every other operation on such a session, rather than
+    // answering "not there" about a file nobody looked at.
+    if (d->notForExecOnly("classifyPath"))
+        return out;
+
+    if (d->mode == Mode::Exec) {
+        QByteArray output;
+        int exitCode = 0;
+        // TWO-WAY, and the two must not be folded: a command that RAN and printed an
+        // answer is a fact about the file, while a channel that would not open is a fact
+        // about the link — and the caller above is already reporting the second one for
+        // itself. `known` stays false for the second, which is what makes the sentence
+        // quote the server rather than claim one of the four.
+        if (!d->runCommand(pathTroubleCommand(d->location.path), &output, &exitCode))
+            return out;
+        LogPresence answer = LogPresence::Present;
+        if (!parsePathTroubleOutput(output, &answer))
+            return out;
+        out.known = true;
+        out.presence = answer;
+        return out;
+    }
+
+    if (!d->sftp)
+        return out;
+
+    const QByteArray raw = d->location.path.toUtf8();
+    LIBSSH2_SFTP_ATTRIBUTES attrs{};
+    const bool there = libssh2_sftp_stat_ex(d->sftp, raw.constData(),
+                                            static_cast<unsigned int>(raw.size()),
+                                            LIBSSH2_SFTP_STAT, &attrs)
+        == 0;
+    if (there) {
+        out.known = true;
+        // A DIRECTORY IS READABLE, so it must be caught before anything asks whether the
+        // open could have succeeded: the open failed, the path is there, and the only
+        // thing left that explains both is what kind of thing is at it.
+        if ((attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS)
+            && LIBSSH2_SFTP_S_ISDIR(attrs.permissions)) {
+            out.presence = LogPresence::NotAFile;
+            return out;
+        }
+        // There, and something refused it. A stat needs only the FOLDER's permissions, so
+        // a file whose own mode is against us is stat-able and unopenable, which is
+        // exactly this case.
+        out.presence = LogPresence::Unreadable;
+        return out;
+    }
+
+    const unsigned long code = libssh2_sftp_last_error(d->sftp);
+    if (code == LIBSSH2_FX_PERMISSION_DENIED) {
+        // The stat itself was refused, so the FOLDER is against us and nothing can be
+        // said about whether the file is there. "Cannot read it" is true either way and
+        // is the sentence that sends the reader to the right place.
+        out.known = true;
+        out.presence = LogPresence::Unreadable;
+        return out;
+    }
+    if (code != LIBSSH2_FX_NO_SUCH_FILE && code != LIBSSH2_FX_NO_SUCH_PATH) {
+        // Something we did not ask about. Quoted rather than guessed at.
+        out.detail = sftpStatusText(code);
+        return out;
+    }
+
+    // Not there — and WHICH absence is one more stat, of the folder that would hold it.
+    // Paid only here, on a path that is already known to be missing.
+    out.known = true;
+    const QString parent = remoteParentFolderOf(d->location.path);
+    if (parent.isEmpty()) {
+        out.presence = LogPresence::Absent;
+        return out;
+    }
+    const QByteArray rawParent = parent.toUtf8();
+    LIBSSH2_SFTP_ATTRIBUTES parentAttrs{};
+    const bool folderThere = libssh2_sftp_stat_ex(d->sftp, rawParent.constData(),
+                                                  static_cast<unsigned int>(rawParent.size()),
+                                                  LIBSSH2_SFTP_STAT, &parentAttrs)
+        == 0;
+    out.presence = folderThere ? LogPresence::Absent : LogPresence::NoDirectory;
+    return out;
 }
 
 SshSession::Attrs SshSession::statPath() const

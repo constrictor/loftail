@@ -40,15 +40,18 @@ namespace loftail {
 
 class IFormatProvider;
 
-// Why a document is waiting. The three read differently to a user and must not be
-// conflated: one log has never existed, one was being read a moment ago, and one is
-// sitting there in plain sight with its permissions against us. Saying the wrong one
-// sends the reader looking in the wrong place (SPEC.md §3), which is exactly what a
-// file with mode 000 used to do — it reported itself as one that had not appeared yet.
+// Why a document is waiting. The four read differently to a user and must not be
+// conflated: one log has never existed, one was being read a moment ago, one is sitting
+// there in plain sight with its permissions against us, and one is under a folder that
+// does not exist. Saying the wrong one sends the reader looking in the wrong place
+// (SPEC.md §3), which is exactly what a file with mode 000 used to do — it reported
+// itself as one that had not appeared yet — and what a mistyped directory did, sending
+// somebody to look for a file in a tree that was not there to look in.
 enum class WaitCause {
-    NotYet,   // it has not been written yet, or the host holding it is unreachable
-    Gone,     // it was open and has been deleted
-    NoAccess, // it is there and this process may not read it
+    NotYet,      // it has not been written yet, or the host holding it is unreachable
+    Gone,        // it was open and has been deleted
+    NoAccess,    // it is there and this process may not read it
+    NoDirectory, // the folder that would hold it is not there either
 };
 
 // The user-facing sentence for a waiting document, e.g.
@@ -57,11 +60,13 @@ enum class WaitCause {
 // it does in a tab title.
 QString waitingForText(const QString &path, WaitCause cause);
 
-// Which of the three `path` deserves, given what an ABSENCE would mean here: NotYet for
+// Which of the four `path` deserves, given what an ABSENCE would mean here: NotYet for
 // a log that has never been read, Gone for one that was open a moment ago. An
-// unreadable log is NoAccess either way, because it is there and neither sentence about
-// whether it exists is true of it. Non-blocking — logSourcePresence() is an attribute
-// query, and optimistic for a remote address, which therefore never reads as NoAccess.
+// unreadable log is NoAccess either way, and one whose folder is not there is
+// NoDirectory either way, because in both cases the sentence about whether the FILE
+// exists is the wrong thing to be saying. Non-blocking — logSourcePresence() is an
+// attribute query, and optimistic for a remote address, which therefore never reads as
+// anything but the caller's own `whenAbsent`.
 WaitCause waitCauseFor(const QString &path, WaitCause whenAbsent);
 
 // All per-file state for one open log (invariant #7, ARCHITECTURE.md §12). The
@@ -170,6 +175,17 @@ public:
     // Empty when not waiting.
     const QString &waitReason() const { return m_waitReason; }
 
+    // What an ABSENCE means for the wait this document is in — NotYet for a log that has
+    // never been read, Gone for one that was open a moment ago.
+    //
+    // Kept so the sentence can be RE-DERIVED as the answer changes, which it does while
+    // the wait stands: a folder somebody creates takes a log from "there is no folder X
+    // either" to "has not appeared yet", and a permission somebody fixes takes it the
+    // other way. Without this the restating would have to guess which of the two bases it
+    // was, and guessing wrong turns "is no longer there" into "has not appeared yet"
+    // about a log the user was reading a moment ago.
+    WaitCause waitWhenAbsent() const { return m_waitWhenAbsent; }
+
     // DISCONNECTED, BUT STILL SHOWING WHAT IT FETCHED. The other half of "the log is
     // not there": a SPOOLED log whose far end has gone while records of it are already
     // indexed keeps them on screen instead of emptying the tab (SPEC.md §3). The bytes
@@ -211,7 +227,10 @@ public:
     // the format, decoder, zones, filters and highlighters — those are per-file state
     // and the file is coming back (invariant #7). The caller wraps this in a model
     // reset, exactly as it wraps rescan().
-    void enterWaiting(const QString &reason);
+    // `whenAbsent` is what an absence MEANS here and is remembered, not rendered: the
+    // sentence is the caller's, because a spooled wait's reason is the transport's own
+    // words and not derived from a cause at all.
+    void enterWaiting(const QString &reason, WaitCause whenAbsent = WaitCause::NotYet);
 
     // Restate why, WITHOUT re-entering the state. The reason a document waits for is
     // not fixed at the transition: a spooled log opens on "connecting…" and the worker
@@ -686,6 +705,7 @@ private:
     QString                    m_path;
     QString                    m_lastError;
     QString                    m_waitReason;
+    WaitCause                  m_waitWhenAbsent = WaitCause::NotYet;
     QString                    m_staleReason;
     bool                       m_waiting = false;
     bool                       m_stale = false;

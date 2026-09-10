@@ -29,6 +29,7 @@
 #include "TimestampParser.h"
 
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QRegularExpression>
 
 #include <algorithm>
@@ -81,6 +82,14 @@ QString waitingForText(const QString &path, WaitCause cause)
         return Tr::tr("%1 is no longer there — waiting for it to reappear").arg(name);
     case WaitCause::NoAccess:
         return Tr::tr("%1 cannot be read — waiting for permission to read it").arg(name);
+    case WaitCause::NoDirectory:
+        // NAMES THE FOLDER, which is the whole of what this sentence adds: the reader is
+        // being told to look one level up, and a sentence that does not say which level
+        // is no better than the one about the file. The folder is taken from the path
+        // rather than from the display name — a display name is a leaf by construction
+        // (RemoteLocation.h), so it can never carry a parent.
+        return Tr::tr("%1 has not appeared yet — there is no folder %2 either")
+            .arg(name, QFileInfo(path).absolutePath());
     case WaitCause::NotYet:
         break;
     }
@@ -89,8 +98,20 @@ QString waitingForText(const QString &path, WaitCause cause)
 
 WaitCause waitCauseFor(const QString &path, WaitCause whenAbsent)
 {
-    return logSourcePresence(path) == LogPresence::Unreadable ? WaitCause::NoAccess
-                                                             : whenAbsent;
+    // Only the two answers that are about something OTHER than whether the file exists
+    // override the caller. A NotAFile never reaches here: it is refused rather than
+    // waited for (Document::prepare), because a folder does not become a log.
+    switch (logSourcePresence(path)) {
+    case LogPresence::Unreadable:
+        return WaitCause::NoAccess;
+    case LogPresence::NoDirectory:
+        return WaitCause::NoDirectory;
+    case LogPresence::Present:
+    case LogPresence::Absent:
+    case LogPresence::NotAFile:
+        break;
+    }
+    return whenAbsent;
 }
 
 QTimeZone Document::inferSourceZone(const LogFormat &format)
@@ -168,6 +189,16 @@ bool Document::prepare(const QString &rawPath,
         // refused host key, a dependency that is not built in — is still a failure
         // with no document to show.
         //
+        // A FOLDER IS NOT A LOG AND NEVER BECOMES ONE, so it is refused here rather
+        // than falling into the wait below — which is gated on logSourceAvailable(), an
+        // answer a directory now gives, so without this the open would start a wait that
+        // could not end. Said by name, because the alternative is whatever the file layer
+        // makes of being handed a directory, reported as "Cannot open file: /var/log".
+        if (logSourcePresence(path) == LogPresence::NotAFile) {
+            m_lastError = Tr::tr("%1 is a folder, not a log file.").arg(path);
+            m_path.clear();
+            return false;
+        }
         // BOTH halves are needed. logSourceAvailable() alone says false for `ssh://`,
         // which names no log and never will, and a tab waiting forever for it would be
         // a typo turned into a hang.
@@ -178,7 +209,8 @@ bool Document::prepare(const QString &rawPath,
             // us is waited for exactly as an absent one is — a mode is changed as
             // readily as a file is written — but it must not be described as one that
             // has not appeared, because the reader can see it.
-            enterWaiting(waitingForText(path, waitCauseFor(path, WaitCause::NotYet)));
+            enterWaiting(waitingForText(path, waitCauseFor(path, WaitCause::NotYet)),
+                         WaitCause::NotYet);
             return true; // waiting, not open — see isWaiting()
         }
         // A remote failure phrases itself ("host unreachable", "not built in"); a
@@ -279,10 +311,11 @@ void Document::clearIndex()
     m_index.rebuildBlockSums(); // an empty index still has a valid (zero) total
 }
 
-void Document::enterWaiting(const QString &reason)
+void Document::enterWaiting(const QString &reason, WaitCause whenAbsent)
 {
     m_waiting = true;
     m_waitReason = reason;
+    m_waitWhenAbsent = whenAbsent;
     // The two are exclusive: stale means "there are records and the link went", waiting
     // means "there are none". Clearing it here rather than asking every caller to is
     // what keeps that true through the one path that can go from the first to the
@@ -428,7 +461,8 @@ bool Document::reopen()
         // error: the live seam brings it back the moment it reappears (§6.5), instead
         // of leaving a null source and an error string nobody reads.
         if (!logSourceAvailable(m_path)) {
-            enterWaiting(waitingForText(m_path, waitCauseFor(m_path, WaitCause::Gone)));
+            enterWaiting(waitingForText(m_path, waitCauseFor(m_path, WaitCause::Gone)),
+                         WaitCause::Gone);
             return false;
         }
         clearIndex();
@@ -477,7 +511,8 @@ bool Document::reformat(IFormatProvider &provider,
     QString openError;
     if (!openAndSettleFormat(provider, OpenPolicy::Reuse, &openError)) {
         if (!logSourceAvailable(m_path)) {
-            enterWaiting(waitingForText(m_path, waitCauseFor(m_path, WaitCause::Gone)));
+            enterWaiting(waitingForText(m_path, waitCauseFor(m_path, WaitCause::Gone)),
+                         WaitCause::Gone);
             return false;
         }
         clearIndex();

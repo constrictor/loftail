@@ -19,6 +19,7 @@
 #include "SshFetcher.h"
 
 #include "DiagnosticLog.h"
+#include "PathTrouble.h"
 #include "PromptRelay.h"
 #include "RetryCountdown.h"
 #include "SshPrompter.h"
@@ -346,8 +347,13 @@ bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *
 
     const SshSession::Attrs attrs = m_session->statPath();
     if (!attrs.valid) {
-        if (error)
-            *error = Tr::tr("Cannot read %1 on %2.").arg(m_location.path, m_location.host);
+        // Opened and then unstattable, which is odd enough to be worth asking the server
+        // about rather than reporting as a bare "cannot read": one round trip, on a path
+        // that has already gone wrong.
+        if (error) {
+            *error = remotePathTroubleText(m_session->classifyPath(), m_location.path,
+                                           m_location.host);
+        }
         // Connected, authenticated, opened — and then could not stat it. Whatever that
         // is, it is about the file rather than the trust, so it is worth trying again.
         *failure = SshSession::Failure::NoSuchFile;
@@ -712,8 +718,15 @@ void SshFetcher::pollOnce()
         // been removed on the far end. Either way it is a WAIT — the next poll
         // resolves a rotation, and a removal is what the document upstream shows as
         // waiting (§6.5). Nothing is torn down either way.
-        setWaiting(Tr::tr("%1 is not readable on %2 right now.")
-                       .arg(m_location.path, m_location.host));
+        //
+        // WHY, not "is not readable right now", which is what this said about a file that
+        // was simply absent — the reported shape of this defect, and the sentence a tab
+        // then repeats for as long as the outage lasts. Re-asked EVERY poll rather than
+        // latched, which is what makes a folder somebody creates, or a permission
+        // somebody fixes, show up on the next turn like any other change; the cost is one
+        // O(1) round trip at the slow cadence, which is five seconds and up (tailLoop).
+        setWaiting(remotePathTroubleText(m_session->classifyPath(), m_location.path,
+                                         m_location.host));
         return;
     }
 

@@ -142,6 +142,7 @@ private slots:
     void aBareCompressedStreamDoesTheSame();
     void theReasonNamesTheContainerAndComesFromTheFetcher();
     void anUnreadableContainerRefusesAndSaysSoRatherThanSayingItIsMissing();
+    void aContainerUnderAFolderThatIsNotThereNamesTheFolder();
     void anAddressNeedingAMemberStillFailsOutright();
 
 private:
@@ -230,6 +231,30 @@ void TestArchiveWaiting::theReasonNamesTheContainerAndComesFromTheFetcher()
     // republishable: LiveController::republishWaitReason() asks the source on every
     // tick, and returns immediately when there is no source — which is why the reason
     // used to freeze at whatever the open happened to say.
+    QVERIFY(doc.source());
+    QCOMPARE(doc.waitReason(), sourceStatusText(*doc.source(), address));
+}
+
+void TestArchiveWaiting::aContainerUnderAFolderThatIsNotThereNamesTheFolder()
+{
+    // The archive half of the local rule: a container under a folder that has not been
+    // created is still a WAIT — which it is only because ArchiveFetcher asks
+    // logPresenceMayAppear() rather than comparing against Absent, and comparing is what
+    // it used to do — and the sentence has to name the folder, because a mistyped
+    // directory is how most of these arise and "waiting for bundle.tar.gz" sends the
+    // reader to look inside a tree that is not there.
+    const QString folder = path(QStringLiteral("nosuch"));
+    const QString container = folder + QStringLiteral("/later.tar.gz");
+    const QString address = container + QStringLiteral("/var/log/app.log");
+
+    Document doc;
+    QVERIFY2(openDoc(doc, address), qPrintable(doc.lastError()));
+    QVERIFY(doc.isWaiting());
+    QVERIFY2(doc.waitReason().contains(QStringLiteral("later.tar.gz")),
+             qPrintable(doc.waitReason()));
+    QVERIFY2(doc.waitReason().contains(folder), qPrintable(doc.waitReason()));
+
+    // Still the fetcher's own sentence, so it is still republished as the answer moves.
     QVERIFY(doc.source());
     QCOMPARE(doc.waitReason(), sourceStatusText(*doc.source(), address));
 }

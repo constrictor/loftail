@@ -267,6 +267,12 @@ target_sources(loftail_core PRIVATE
     # in CI at all.
     SshRetryPolicy.cpp
     SshRetryPolicy.h
+    # WHY a log on another machine is not there, in one sentence written in one place.
+    # Always compiled for the fifth time on the same argument, and here it is the whole
+    # point: the four surfaces this replaces each worded it for themselves, and the one
+    # of them that a build without libssh2 can reach is none of them.
+    PathTrouble.cpp
+    PathTrouble.h
     # Whether a libssh2 error code means the SESSION is finished, and the latch that
     # remembers the answer. Always compiled for the fourth time on the same argument,
     # with one addition: the situation it decides — a machine going away under a tab

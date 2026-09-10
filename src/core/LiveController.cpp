@@ -306,7 +306,7 @@ void LiveController::checkNow()
             publishSourceStatus();
             return;
         }
-        beginWaiting(reason);
+        beginWaiting(reason, WaitCause::Gone);
         return;
     }
     m_vanishedSince.invalidate();
@@ -504,7 +504,7 @@ bool LiveController::settleFirstBytes()
     return true;
 }
 
-void LiveController::beginWaiting(const QString &reason)
+void LiveController::beginWaiting(const QString &reason, WaitCause whenAbsent)
 {
     // A stale document that ends up here has lost the records it was showing them for —
     // a reconnect that came back to an empty log, a rescan that failed. Take the strip
@@ -520,7 +520,7 @@ void LiveController::beginWaiting(const QString &reason)
     // A full model reset: the visible set is being emptied wholesale, which is the same
     // signal doRescan() uses for the same reason.
     m_model->beginFilterReset();
-    m_document->enterWaiting(reason);
+    m_document->enterWaiting(reason, whenAbsent);
     m_model->endFilterReset();
 
     m_lastSize = 0;
@@ -596,8 +596,24 @@ void LiveController::endStale()
 void LiveController::republishWaitReason()
 {
     LogSource *src = m_document->source();
-    if (!src)
-        return; // a LOCAL wait: nothing to ask, and the transition's sentence stands
+    if (!src) {
+        // A LOCAL WAIT ANSWERS FOR ITSELF. This used to return here, on the argument that
+        // a local wait's reason cannot change while it is true — which held while there
+        // were three causes and stopped holding the moment a missing FOLDER became one of
+        // them: creating the folder takes the sentence from "there is no folder X either"
+        // to "has not appeared yet", and fixing a permission takes it the other way,
+        // while the wait itself stands throughout. The base cause is the document's, not
+        // this function's, or a log that was open and deleted would be restated as one
+        // that has never appeared.
+        const QString derived = waitingForText(
+            m_document->path(),
+            waitCauseFor(m_document->path(), m_document->waitWhenAbsent()));
+        if (derived == m_document->waitReason())
+            return;
+        m_document->restateWaitReason(derived);
+        emit waitingChanged(true, derived);
+        return;
+    }
 
     const QString text = sourceStatusText(*src, m_document->path());
     // NEVER an empty one. sourceStatusText() is empty for every healthy state, and the
