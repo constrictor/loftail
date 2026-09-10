@@ -26,7 +26,10 @@
 #include <QFile>
 #include <QLabel>
 #include <QMainWindow>
+#include <QMenuBar>
+#include <QSettings>
 #include <QSpinBox>
+#include <QStatusBar>
 #include <QPushButton>
 #include <QTabBar>
 #include <QTableWidget>
@@ -96,6 +99,29 @@ private:
         return titles;
     }
 
+    // THE GESTURE, not the menu item. trigger() on the action starts halfway through the
+    // story: the subject is what the window does with Tab pressed while somebody is
+    // reading, and Tab reaching a window-scoped QAction at all is the risky half of the
+    // feature — `tst_find`'s pressFindNext() records the same rule for F3.
+    static void pressTab(MainWindow &w) { QTest::keyClick(&w, Qt::Key_Tab); }
+
+    static QAction *hidePanesAction(const MainWindow &w)
+    {
+        return w.findChild<QAction *>(QStringLiteral("hidePanesAction"));
+    }
+
+    // The pane group's own tab bar, told from the document tab bar by its count. The
+    // idiom is tabbedPanesSuppressTheirTitleText()'s and the reason is the same: Qt's
+    // QMainWindowTabBar is private, so this is the only handle on it.
+    static QTabBar *paneTabBar(const MainWindow &w)
+    {
+        for (QTabBar *bar : w.findChildren<QTabBar *>()) {
+            if (bar->count() == paneDockNames().size())
+                return bar;
+        }
+        return nullptr;
+    }
+
 private slots:
     void tabbedPanesSuppressTheirTitleText();
     void aPaneAloneKeepsItsTitleText();
@@ -105,6 +131,13 @@ private slots:
     void theClearFiltersItemFollowsTheTabInFront();
     void theHighlightersTabIsMarkedOnlyOnceTheRulesAreNotTheSeededOnes();
     void aRunClickOrATimestampModeChangeIsNotAnEditToTheRules();
+    void tabTakesThePanesAwayAndTabBringsThemBack();
+    void thePanesComeBackToTheSameTabWithTheSameOneInFront();
+    void aPaneClosedBeforeTabIsStillClosedAfterIt();
+    void openingOnePaneWhileTheyAreHiddenLeavesTheRestAway();
+    void tabDoesNothingWhenNoPaneIsOpen();
+    void theHideItemIsAlwaysLive();
+    void panesHiddenAtQuitAreBackAtTheNextLaunch();
 };
 
 void TestPaneChrome::tabbedPanesSuppressTheirTitleText()
@@ -562,6 +595,237 @@ void TestPaneChrome::aRunClickOrATimestampModeChangeIsNotAnEditToTheRules()
         QVERIFY2(doc->highlighters().rules == HighlighterSet::defaults().rules, name);
         QVERIFY2(highlighters->windowTitle() == plain, name);
     }
+}
+
+// --- Tab: clear the panes off the screen (SPEC.md §8) -----------------------
+//
+// One gesture, and what it must put back is the ARRANGEMENT and not merely the panes:
+// the widths, the tab group and which pane was in front. That is why the window stashes
+// a saveState() blob rather than a list of which docks were open — the pane in front of
+// a tab group has no public getter, so a list-and-show implementation has to guess, and
+// the shipped layout is all of them tabbed together, so it guesses wrong.
+
+void TestPaneChrome::tabTakesThePanesAwayAndTabBringsThemBack()
+{
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+    QTest::qWait(50);
+
+    const QStringList names = paneDockNames();
+    for (const QString &name : names)
+        QVERIFY2(paneDock(w, name) && paneDock(w, name)->isVisible(), qPrintable(name));
+
+    pressTab(w);
+    QTest::qWait(50);
+    for (const QString &name : names)
+        QVERIFY2(!paneDock(w, name)->isVisible(), qPrintable(name));
+    QVERIFY(hidePanesAction(w)->isChecked());
+
+    // Only the panes. The window's own chrome and the document well are what the reader
+    // is left with, and taking any of it would be a different feature.
+    QVERIFY(w.menuBar()->isVisible());
+    QVERIFY(w.statusBar()->isVisible());
+
+    pressTab(w);
+    QTest::qWait(50);
+    for (const QString &name : names)
+        QVERIFY2(paneDock(w, name)->isVisible(), qPrintable(name));
+    QVERIFY(!hidePanesAction(w)->isChecked());
+}
+
+void TestPaneChrome::thePanesComeBackToTheSameTabWithTheSameOneInFront()
+{
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+    QTest::qWait(50);
+
+    // Not the one the window raises for itself: a restore that simply showed the docks
+    // again would leave whichever Qt re-tabbed last in front, and Filters is that by
+    // default — so the case has to move off it before it can see the difference.
+    QDockWidget *runs = paneDock(w, QStringLiteral("runsDock"));
+    QVERIFY(runs);
+    runs->raise();
+    QTest::qWait(50);
+
+    QTabBar *bar = paneTabBar(w);
+    QVERIFY(bar);
+    const int wasCurrent = bar->currentIndex();
+    const QString wasCurrentText = bar->tabText(wasCurrent);
+
+    // A width the reader chose, so the restore has something of its own to put back:
+    // hiding four docks collapses the area, and showing them again re-lays out from size
+    // hints, which is roughly half the window.
+    QDockWidget *filters = paneDock(w, QStringLiteral("filtersDock"));
+    QVERIFY(filters);
+    w.resizeDocks({filters}, {w.width() / 4}, Qt::Horizontal);
+    QTest::qWait(50);
+    const int wasWidth = filters->width();
+
+    pressTab(w);
+    QTest::qWait(50);
+    pressTab(w);
+    QTest::qWait(100);
+
+    QTabBar *back = paneTabBar(w);
+    QVERIFY(back);
+    QCOMPARE(back->tabText(back->currentIndex()), wasCurrentText);
+    for (const QString &name : paneDockNames())
+        QVERIFY2(PaneTitleStyle::isTabbedWithAnother(paneDock(w, name)), qPrintable(name));
+    // The window has not been resized in between, so this is an equality and not a
+    // proportion. A pixel of slack for the style's own rounding of a splitter position.
+    QVERIFY2(qAbs(filters->width() - wasWidth) <= 1,
+             qPrintable(QStringLiteral("width came back %1, was %2")
+                            .arg(filters->width())
+                            .arg(wasWidth)));
+}
+
+void TestPaneChrome::aPaneClosedBeforeTabIsStillClosedAfterIt()
+{
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+    QTest::qWait(50);
+
+    QDockWidget *runs = paneDock(w, QStringLiteral("runsDock"));
+    QVERIFY(runs);
+    runs->toggleViewAction()->trigger(); // the menu item, which is how a pane is closed
+    QTest::qWait(50);
+    QVERIFY(!runs->isVisible());
+
+    pressTab(w);
+    QTest::qWait(50);
+    pressTab(w);
+    QTest::qWait(100);
+
+    // "As they were" includes what was already away. A restore that showed every pane
+    // would hand back one the reader had closed on purpose.
+    QVERIFY(!runs->isVisible());
+    for (const QString &name : paneDockNames()) {
+        if (name != QLatin1String("runsDock"))
+            QVERIFY2(paneDock(w, name)->isVisible(), qPrintable(name));
+    }
+}
+
+void TestPaneChrome::openingOnePaneWhileTheyAreHiddenLeavesTheRestAway()
+{
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+    QTest::qWait(50);
+
+    pressTab(w);
+    QTest::qWait(50);
+
+    QDockWidget *runs = paneDock(w, QStringLiteral("runsDock"));
+    QVERIFY(runs);
+    runs->toggleViewAction()->trigger();
+    QTest::qWait(50);
+
+    // The reader named one pane, so that is what they get: restoring the others would be
+    // the window arguing with the gesture, and the mode is over.
+    QVERIFY(runs->isVisible());
+    for (const QString &name : paneDockNames()) {
+        if (name != QLatin1String("runsDock"))
+            QVERIFY2(!paneDock(w, name)->isVisible(), qPrintable(name));
+    }
+    QVERIFY(!hidePanesAction(w)->isChecked());
+
+    // And the next Tab snapshots what is on screen NOW rather than reinstating the
+    // layout the reader has just contradicted.
+    pressTab(w);
+    QTest::qWait(50);
+    QVERIFY(!runs->isVisible());
+    pressTab(w);
+    QTest::qWait(100);
+    QVERIFY(runs->isVisible());
+    for (const QString &name : paneDockNames()) {
+        if (name != QLatin1String("runsDock"))
+            QVERIFY2(!paneDock(w, name)->isVisible(), qPrintable(name));
+    }
+}
+
+void TestPaneChrome::tabDoesNothingWhenNoPaneIsOpen()
+{
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&w));
+    QTest::qWait(50);
+
+    for (const QString &name : paneDockNames())
+        paneDock(w, name)->toggleViewAction()->trigger();
+    QTest::qWait(50);
+
+    pressTab(w);
+    QTest::qWait(50);
+    // A toggle that ticks itself while nothing moves reports a state it is not in — and
+    // the next Tab would then "restore" a layout the reader had already emptied by hand.
+    QVERIFY(!hidePanesAction(w)->isChecked());
+    for (const QString &name : paneDockNames())
+        QVERIFY2(!paneDock(w, name)->isVisible(), qPrintable(name));
+
+    pressTab(w);
+    QTest::qWait(50);
+    QVERIFY(!hidePanesAction(w)->isChecked());
+    for (const QString &name : paneDockNames())
+        QVERIFY2(!paneDock(w, name)->isVisible(), qPrintable(name));
+}
+
+void TestPaneChrome::theHideItemIsAlwaysLive()
+{
+    MainWindow w;
+    w.resize(1000, 700);
+    w.show();
+    QTest::qWait(50);
+    // With no log open, which is where a disabled action would be most tempting: a
+    // disabled QAction swallows its shortcut with no feedback, and Tab always has an
+    // answer to give. (Find and Restart App carry the same rule.)
+    QVERIFY(hidePanesAction(w)->isEnabled());
+}
+
+void TestPaneChrome::panesHiddenAtQuitAreBackAtTheNextLaunch()
+{
+    {
+        MainWindow w;
+        w.resize(1000, 700);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        QTest::qWait(50);
+        pressTab(w);
+        QTest::qWait(50);
+        for (const QString &name : paneDockNames())
+            QVERIFY2(!paneDock(w, name)->isVisible(), qPrintable(name));
+        w.close(); // closeEvent -> saveSession, which is the seam under test
+        QTest::qWait(50);
+    }
+
+    // Tab is a gesture for clearing the screen for a minute, not a way of saying how the
+    // application opens from then on. What the session must have recorded is the layout
+    // as it stood before the panes went away.
+    {
+        MainWindow w2;
+        w2.resize(1000, 700);
+        w2.show();
+        QTest::qWait(50);
+        for (const QString &name : paneDockNames())
+            QVERIFY2(paneDock(w2, name)->isVisible(), qPrintable(name));
+        QVERIFY(!hidePanesAction(w2)->isChecked());
+    }
+
+    // This is the only case in the file that writes a session, and the cases after it
+    // build a MainWindow of their own — which would restore it. QtTest runs the functions
+    // in the order they are named (tests/shuffle_cases.py permutes them), so "after it"
+    // is not a fixed set: the case cleans up after itself rather than relying on where it
+    // sits. clearLogSettings() does NOT cover this — the session is a QSettings group.
+    QSettings settings;
+    settings.remove(QStringLiteral("session"));
+    settings.sync();
 }
 
 int main(int argc, char *argv[])

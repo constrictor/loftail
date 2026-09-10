@@ -234,6 +234,14 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The restore asks `d.highlighters.contains("rules")`, never the array's emptiness | Seeded FATAL/ERROR/WARN (L251) | tst_sessiongui::aDeletedDefaultRuleStaysDeletedAcrossARelaunch |
 | The seeded rules are ordered FATAL, ERROR, WARN because the priority axis is a minimum | Seeded FATAL/ERROR/WARN (L251) | tst_highlight |
 | Each seeded rule carries `Color` alone, so nothing serializes differently and no schema version moves | Seeded FATAL/ERROR/WARN (L251) | tst_highlight |
+| Tab puts back a `saveState()` BLOB, never a list of which docks were open — the pane in front of a tab group has no getter | Tab clears every pane (L115) | tst_panechrome::thePanesComeBackToTheSameTabWithTheSameOneInFront |
+| A pane the reader had already closed is still closed after Tab brings the rest back | Tab clears every pane (L115) | tst_panechrome::aPaneClosedBeforeTabIsStillClosedAfterIt |
+| Tab reaches a window-scoped QAction at all, and takes the panes away and back | Tab clears every pane (L115) | tst_panechrome::tabTakesThePanesAwayAndTabBringsThemBack |
+| The hidden state is NOT persisted: `persistableWindowState()` hands the session the pre-hide blob | Tab clears every pane (L115) | tst_panechrome::panesHiddenAtQuitAreBackAtTheNextLaunch |
+| Asking for one pane by name ends the mode and leaves the others away (`toggleViewAction::triggered`, never `visibilityChanged`) | Tab clears every pane (L115) | tst_panechrome::openingOnePaneWhileTheyAreHiddenLeavesTheRestAway |
+| Entering the mode with nothing visible is refused, and every branch states the checked state | Tab clears every pane (L115) | tst_panechrome::tabDoesNothingWhenNoPaneIsOpen |
+| The toggle is never disabled — a disabled QAction swallows its shortcut with no feedback | Tab clears every pane (L115) | tst_panechrome::theHideItemIsAlwaysLive |
+| Tab still indents in the config editor: QPlainTextEdit claims it through ShortcutOverride | Tab clears every pane (L115) | tst_configeditor::tabStillIndentsInTheEditorRatherThanHidingThePanes |
 | The pane docks are tabbed through a cursor (`lastTabbed`), never a written-out chain | Presets are a build option (L253) | tst_panechrome |
 | `tst_panechrome` turns on the COUNT of the pane docks as well as their names, so both come from one build-aware helper | Presets are a build option (L253) | tst_panechrome |
 | The order is selection → geometry → target line → scroll | Five filter-anchor rules (L257) | tst_logview::theWrappedSelectionIsFoldedInBeforeTheViewIsRepositioned |

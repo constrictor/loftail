@@ -637,6 +637,20 @@ private:
     // Wrap a side pane in its dock, with the areas and features every pane shares,
     // and add it to the right-hand area. Returns the dock, for tabifying.
     QDockWidget *addPaneDock(QWidget *pane, const QString &objectName, const QString &title);
+
+    // Tab: clear every pane off the screen, and put them back exactly as they were
+    // (SPEC.md §8, ARCHITECTURE.md §12.2). What comes back is a saveState() blob taken
+    // as the panes went away, not a list of which docks were open — the widths, the tab
+    // group and WHICH PANE WAS IN FRONT all ride on it, and the last of those has no
+    // public getter to read it off.
+    void toggleAllPanes();
+    // A layout blob may bring back a floating pane on a platform that cannot place one.
+    // Extracted so the session restore and the Tab restore enforce it in one shape.
+    void unfloatPanesIfPlatformForbids();
+    // What the session should record about the panes: the blob taken before they were
+    // hidden while the mode is on, and the live one otherwise. THE ONE PLACE that makes
+    // Tab a gesture rather than a preference.
+    QByteArray persistableWindowState() const;
     // Show the "no file open" notice when there are no documents and the tabs
     // otherwise; the two share the central widget through a stack.
     void updateEmptyState();
@@ -803,6 +817,12 @@ private:
 #endif
     RunPane         *m_runPane = nullptr;         // run selection side pane (§3a)
     QVector<QDockWidget *> m_paneDocks;                     // the panes above, for View ▸ Panes
+    // Tab takes every pane off the screen and Tab puts them back (SPEC.md §8). The mode
+    // is the bool, not "the blob is non-empty": saveSession() branches on the FACT, and
+    // a blob is only ever data.
+    QAction    *m_hidePanesAction = nullptr;
+    bool        m_panesHidden = false;
+    QByteArray  m_panesPreHideState;                        // saveState() as it stood
     QDockWidget *m_filtersDock = nullptr;                   // marked while filters are in force
     QDockWidget *m_highlightersDock = nullptr;              // marked while rules are present
     QAction     *m_clearFiltersAction = nullptr;
@@ -833,6 +853,11 @@ private:
 
     // True once a saved pane layout has been applied (or once first-run proportions
     // have been chosen), so the first-open sizing never overrides a restored layout.
+    //
+    // ONLY THOSE TWO MAY SET IT. toggleAllPanes()'s restore is a restoreState() as well
+    // and must not: the blob it replays may be the default layout from before any file
+    // was open, so marking the layout "decided" there suppresses the one-third sizing
+    // for the life of the window.
     bool m_layoutRestored = false;
 
     // THE SETTINGS TREE (M20, SPEC.md §4): the defaults, the ordered file patterns and

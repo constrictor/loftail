@@ -582,6 +582,7 @@ Filters, highlighters, and runs (§3) are each presented in a side pane — and 
 - **Dragging a pane moves that pane**, not the group it is tabbed with, and a pane can be dropped on the left or right side only — not as a strip above or below the log.
 - **Panes can also be floated as separate windows, where the platform supports it.** Under Wayland they stay docked: the compositor does not let an application follow the pointer outside its window or place a window under the cursor, so a torn-off pane could not be dragged or positioned — it would strand mid-drag rather than float. The same machine under XWayland does allow it.
 - **There is one of each pane, and it follows the active view.** With several logs open, the panes always show and edit whichever one is being read; moving to another log rebinds them to that log's filters and highlighters, and moving between two views of the *same* log changes nothing, because those views share them.
+- **Tab clears the panes off the screen, and Tab brings them back exactly as they were** — the same widths, the same sides, the same pane in front of the tab group, and a pane that was already closed still closed. It is *View ▸ Panes ▸ Hide All Panes* on the menu, so it can be found without knowing the key. Opening one pane from that menu while the rest are away gives you that pane and leaves the others hidden; the next Tab then hides that one too. **What it clears is not remembered:** quitting with the panes hidden and starting again brings them back where you last put them, because Tab is for clearing the screen for a minute rather than for saying how the application should open. The cost is that Tab no longer moves the keyboard focus around the main window — Shift+Tab still does, dialogs are unaffected, and Tab still indents in a config file you are editing.
 - Pane layout is part of the remembered session (§10).
 - Enabling and disabling an individual filter or highlighter is a single click within its pane — no dialog.
 
@@ -604,7 +605,7 @@ On relaunch, loftail restores:
 - Every file that was open — each reopened at its end and following, like any open (§3), so follow state is never a remembered choice
 - Every view: how many views each file had, each one's column layout and wrap mode, and which view was active
 - Saved presets, where the build has them (§9)
-- Window geometry, the order of the tabs, and the arrangement of the side panes (§5a, §8)
+- Window geometry, the order of the tabs, and the arrangement of the side panes (§5a, §8) — the *arrangement*, and never a screen you had cleared with Tab (§8): quit with the panes hidden and they come back where you put them
 - The log text size (§5)
 - Every config file that was open for editing (§4), back in the same place on the tab bar. Its **contents are re-read from disk**, never restored from the session: loftail does not hold unsaved work on your behalf, which is why quitting with unsaved changes asks rather than remembering.
 

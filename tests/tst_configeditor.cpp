@@ -21,6 +21,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QDockWidget>
 #include <QFile>
 #include <QFontDatabase>
 #include <QLabel>
@@ -73,6 +74,7 @@ private slots:
     void theEditorOpensAsATabBesideTheLog();
     void aMissingConfigFileOpensEmptyAndSayingSo();
     void theEditorUsesTheLogFontAndFollowsAZoom();
+    void tabStillIndentsInTheEditorRatherThanHidingThePanes();
     void saveIsVisibleOnlyOnAnEditorTab();
     void anEditedTabIsMarkedAndSavingClearsTheMark();
     void savingWritesTheBytesAndPreservesPermissions();
@@ -207,6 +209,69 @@ void TestConfigEditor::aMissingConfigFileOpensEmptyAndSayingSo()
     QVERIFY(notice);
     QVERIFY(notice->isVisible());
     QVERIFY(!notice->text().isEmpty());
+}
+
+// TAB IN A CONFIG FILE STILL INDENTS, and this pins QT'S behaviour rather than
+// loftail's — which is why it is worth a case at all. The window binds plain Tab to
+// View ▸ Panes ▸ Hide All Panes (SPEC.md §8), and a window-scoped QAction shortcut is
+// dispatched AHEAD of the focus widget, so on the face of it the editor loses the key.
+// It does not: Qt offers the focus widget a ShortcutOverride first and QPlainTextEdit
+// accepts it for Tab, so the key is delivered as an ordinary press and the action never
+// sees it. An explicit override in WheelFilteringEdit was written, measured to be inert,
+// and removed. If a future Qt stops claiming Tab there, this case fails and that
+// override is the fix — which is the whole reason the measurement is written down here
+// instead of in a comment beside code nobody would then be able to justify.
+void TestConfigEditor::tabStillIndentsInTheEditorRatherThanHidingThePanes()
+{
+    const QString log = writeLog(QStringLiteral("indent.log"));
+    const QString config = configPathFor(log, QStringLiteral("i.properties"));
+    {
+        QFile f(config);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write("a=1\n");
+    }
+    std::unique_ptr<MainWindow> w(openWithConfig(log, QStringLiteral("i.properties")));
+    w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
+    auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    auto *editor = qobject_cast<ConfigView *>(tabs->widget(tabs->currentIndex()));
+    QVERIFY(editor);
+    QVERIFY(QTest::qWaitForWindowExposed(w.get()));
+    QTest::qWait(50);
+
+    const QList<QDockWidget *> docks = w->findChildren<QDockWidget *>();
+    QVERIFY(!docks.isEmpty());
+    auto panesVisible = [&docks] {
+        for (QDockWidget *dock : docks) {
+            if (dock->objectName().endsWith(QLatin1String("Dock")) && !dock->isVisible())
+                return false;
+        }
+        return true;
+    };
+    QVERIFY(panesVisible());
+
+    // THROUGH THE QWindow, which is the only faithful path. QTest::keyClick on a WIDGET
+    // sends the ShortcutOverride to that widget — aimed at the edit it skips the shortcut
+    // dispatch altogether, and aimed at the window it asks the window a question Qt never
+    // asks in a real press. The QWindow overload goes through the real QPA route.
+    editor->editor()->setFocus();
+    QTest::keyClick(w->windowHandle(), Qt::Key_Tab);
+    QTest::qWait(50);
+
+    QVERIFY2(editor->editor()->toPlainText().contains(QLatin1Char('\t')),
+             "Tab did not indent in the config editor");
+    QVERIFY2(panesVisible(), "Tab in the editor cleared the panes off the screen");
+
+    // THE CONTROL, and without it the case above passes against a Tab that reached
+    // nothing at all: the same key on the same path, with the focus on the log page,
+    // must hide the panes. So what is being shown is that the editor WINS the key, not
+    // merely that the panes stayed put.
+    tabs->setCurrentIndex(0);
+    if (QWidget *page = tabs->currentWidget())
+        page->setFocus();
+    QTest::qWait(50);
+    QTest::keyClick(w->windowHandle(), Qt::Key_Tab);
+    QTest::qWait(50);
+    QVERIFY2(!panesVisible(), "Tab on the log page did not reach the pane toggle");
 }
 
 void TestConfigEditor::theEditorUsesTheLogFontAndFollowsAZoom()

@@ -955,6 +955,40 @@ void MainWindow::buildMenus()
     // back (SPEC.md §8). Qt's own toggleViewAction does the work.
     viewMenu->addSeparator();
     QMenu *panesMenu = viewMenu->addMenu(tr("&Panes"));
+
+    // Tab clears the panes off the screen and Tab puts them back, so the log has the
+    // whole window for as long as the reader wants it (SPEC.md §8).
+    //
+    // THIS ONE IS A QAction SHORTCUT, and it is the deliberate inverse of the Esc rule
+    // recorded above: Escape must NOT be an action because the Find bar and an open menu
+    // have claims on it, and Tab IS one precisely because focus traversal has a claim we
+    // are taking. Three things follow and each is easy to undo. The context is Qt's
+    // default `WindowShortcut` and must stay so — a dialog is its own top-level, so
+    // Preferences, the format editor and the prompts keep Tab traversal for free, where
+    // ApplicationShortcut would take it from all of them. `Qt::Key_Backtab` (Shift+Tab)
+    // is deliberately left UNBOUND, so backwards traversal survives and is the escape
+    // hatch for anyone driving the panes from the keyboard. And Tab still indents in the
+    // config editor, which is QT'S behaviour rather than ours: Qt offers the focus widget
+    // a ShortcutOverride before this action fires and QPlainTextEdit accepts it for Tab.
+    // An explicit override in WheelFilteringEdit was written for that, measured to be
+    // inert, and removed — tst_configeditor pins the Qt behaviour instead, so if a future
+    // Qt stops claiming the key that case fails and the override is the fix.
+    //
+    // No mnemonic collision: this submenu's other items are Qt's toggleViewAction()s,
+    // whose text is each dock's window title and carries no `&` at all. The View menu's
+    // own free letter is N, if this is ever promoted out of the submenu. Bare Tab does
+    // not collide with the Window menu's Ctrl+Tab / Ctrl+Shift+Tab — shortcut matching
+    // is exact on modifiers.
+    //
+    // NEVER DISABLED, for Find's and Restart App's reason: a disabled QAction swallows
+    // its shortcut with no feedback, and this one always has an answer to give.
+    m_hidePanesAction = panesMenu->addAction(tr("&Hide All Panes"));
+    m_hidePanesAction->setObjectName(QStringLiteral("hidePanesAction")); // findChild, for tests
+    m_hidePanesAction->setCheckable(true);
+    m_hidePanesAction->setShortcut(QKeySequence(Qt::Key_Tab));
+    connect(m_hidePanesAction, &QAction::triggered, this, &MainWindow::toggleAllPanes);
+    panesMenu->addSeparator();
+
     for (QDockWidget *dock : std::as_const(m_paneDocks))
         panesMenu->addAction(dock->toggleViewAction());
 
@@ -1096,7 +1130,85 @@ QDockWidget *MainWindow::addPaneDock(QWidget *pane, const QString &objectName,
 
     addDockWidget(Qt::RightDockWidgetArea, dock);
     m_paneDocks.append(dock);
+
+    // Asking for ONE pane while they are all hidden ends the hidden state, and leaves the
+    // others away: the reader named a pane, so restoring the other three would be the
+    // window arguing with them. The next Tab then hides whatever is on screen at that
+    // moment, and the one after brings that back.
+    //
+    // It hangs off the menu item's `triggered` and NOT off `visibilityChanged`, which
+    // also fires for a tab raise, for a minimised window and for every one of this
+    // window's own hide()/show()/restoreState() calls — i.e. it would cancel the mode
+    // from inside the very transition that entered it. `triggered` is a real activation
+    // of the menu item and nothing else.
+    connect(dock->toggleViewAction(), &QAction::triggered, this, [this](bool on) {
+        if (!on || !m_panesHidden)
+            return;
+        m_panesHidden = false;
+        m_panesPreHideState.clear();
+        // Null while the docks are built: they come before buildMenus().
+        if (m_hidePanesAction)
+            m_hidePanesAction->setChecked(false);
+    });
     return dock;
+}
+
+// Tab, and View ▸ Panes ▸ Hide All Panes (SPEC.md §8, ARCHITECTURE.md §12.2).
+void MainWindow::toggleAllPanes()
+{
+    if (m_panesHidden) {
+        m_panesHidden = false;
+        // NOT `m_layoutRestored = true` — see the member's own comment. This blob may be
+        // the layout from before any file was open.
+        if (!restoreState(m_panesPreHideState)) {
+            // Never seen. A restore that failed must still not leave the panes
+            // unreachable, so fall back to simply showing what was hidden.
+            for (QDockWidget *dock : std::as_const(m_paneDocks))
+                dock->show();
+        }
+        unfloatPanesIfPlatformForbids();
+        m_panesPreHideState.clear();
+        m_hidePanesAction->setChecked(false);
+        return;
+    }
+
+    // Nothing on screen to hide is not a mode to enter: a toggle that ticks itself while
+    // nothing moves reports a state it is not in, and the next Tab would then "restore" a
+    // layout the user had already emptied by hand.
+    const bool anyVisible = std::ranges::any_of(
+        std::as_const(m_paneDocks), [](const QDockWidget *dock) { return dock->isVisible(); });
+    if (!anyVisible) {
+        // triggered(bool) has already flipped a checkable action before this runs, so
+        // every branch has to state the answer rather than leaving it.
+        m_hidePanesAction->setChecked(false);
+        statusBar()->showMessage(tr("No panes are open."), kReloadNoticeMs);
+        return;
+    }
+
+    m_panesPreHideState = saveState(); // BEFORE anything hides
+    m_panesHidden = true;
+    for (QDockWidget *dock : std::as_const(m_paneDocks))
+        dock->hide(); // hide(), not close(): no close event, and nothing else is told
+    m_hidePanesAction->setChecked(true);
+
+    // The focus may have been inside a pane that is no longer there. Qt would move it
+    // somewhere; this is what makes "the log has the window" true for the keyboard as
+    // well as the eye, and it is cycleView()'s own one-liner — both page kinds carry a
+    // focus proxy, so it reaches the table or the text without asking which.
+    if (QWidget *page = m_tabs->currentWidget())
+        page->setFocus();
+}
+
+// A saved layout — the session's, or the one Tab took — may name a floating pane on a
+// platform that cannot place one (§12.2). One function, so the two restores cannot drift.
+void MainWindow::unfloatPanesIfPlatformForbids()
+{
+    if (panesMayFloat())
+        return;
+    for (QDockWidget *dock : std::as_const(m_paneDocks)) {
+        if (dock->isFloating())
+            dock->setFloating(false);
+    }
 }
 
 // --- Document tabs ---------------------------------------------------------
@@ -2725,7 +2837,13 @@ DocumentView *MainWindow::createView(DocumentContext *ctx)
 
     // First run only: the panes' size hints would otherwise claim about half the
     // window. A restored session brings its own proportions.
-    if (!m_layoutRestored && m_contexts.size() == 1 && !m_paneDocks.isEmpty()) {
+    //
+    // Not while the panes are hidden (Tab, SPEC.md §8): resizing a hidden dock does
+    // nothing, and the flag would then say the proportions had been chosen — so the
+    // panes would come back at their size hints, claiming half the window, which is the
+    // very thing this branch exists to prevent. Left undone, it runs at the first open
+    // that has the panes on screen.
+    if (!m_layoutRestored && !m_panesHidden && m_contexts.size() == 1 && !m_paneDocks.isEmpty()) {
         m_layoutRestored = true;
         resizeDocks({m_paneDocks.first()}, {width() / 3}, Qt::Horizontal);
     }
@@ -5360,6 +5478,21 @@ void MainWindow::announceReload(ReloadCause cause, const QString &path)
 
 // --- Session persistence ---------------------------------------------------
 
+// THE WHOLE OF "TAB DOES NOT PERSIST" (SPEC.md §8, §10). saveState() records per-dock
+// visibility verbatim, so a quit taken while the panes are hidden would come back with
+// them hidden — and Tab is a gesture for clearing the screen for a minute, not a way of
+// saying how the application should open from then on.
+//
+// It is a function rather than a line at the one call site so that a second caller cannot
+// get it wrong: the failure is silent (the panes are simply gone at the next launch) and
+// nothing on screen would say why. It is NOT answered by un-hiding in closeEvent()
+// either, which prompts about unsaved config editors first and may still refuse the
+// quit — the panes would flash back for a close the reader then cancels.
+QByteArray MainWindow::persistableWindowState() const
+{
+    return m_panesHidden ? m_panesPreHideState : saveState();
+}
+
 void MainWindow::saveSession()
 {
     // The active file's pane state lives in the widgets, not in its context, until
@@ -5372,7 +5505,7 @@ void MainWindow::saveSession()
     // floated (SPEC.md §8, §10). Only the panes are docks, so this blob no longer
     // describes the open files — those are the `views` array below. Must be taken
     // while the docks still exist, i.e. before any teardown.
-    session.windowState = saveState();
+    session.windowState = persistableWindowState();
 
     // WHICH LOGS WERE OPEN, and in the views array which view showed which — and that is
     // all the session says about a file now (invariant #7 / §12.4). Its filters, its
@@ -5496,13 +5629,9 @@ void MainWindow::restoreSession(SessionRestore restore)
         m_layoutRestored = true;
         // A layout saved where panes could float — another platform, or this one
         // before the pane got wedged mid-drag — must not bring back a window this
-        // platform cannot place. Pull any such pane back into the dock area.
-        if (!panesMayFloat()) {
-            for (QDockWidget *dock : std::as_const(m_paneDocks)) {
-                if (dock->isFloating())
-                    dock->setFloating(false);
-            }
-        }
+        // platform cannot place. Pull any such pane back into the dock area. Shared
+        // with the Tab restore, which replays a blob of exactly the same kind.
+        unfloatPanesIfPlatformForbids();
     }
 
     // A launch that named files on the command line stops here: the shell it was set up
