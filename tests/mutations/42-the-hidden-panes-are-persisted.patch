@@ -1,0 +1,45 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "TAB CLEARS EVERY PANE OFF THE SCREEN AND TAB PUTS THEM BACK"):
+#   The hidden state is a GESTURE and not a preference, and
+#   `persistableWindowState()` is the whole of that: while the panes are
+#   hidden the session is handed the blob taken BEFORE they went away, never
+#   the live saveState().
+#
+# GUARD: tst_panechrome::panesHiddenAtQuitAreBackAtTheNextLaunch
+#
+# SILENT WHEN BROKEN: saveState() records per-dock visibility verbatim, so a
+# quit taken while the panes are cleared makes that the way the application
+# opens from then on — the panes simply absent at the next launch, with nothing
+# on screen to say why or to connect it to the Tab pressed a minute earlier.
+# The reader's own arrangement, widths and all, is gone with it.
+
+diff --git a/src/ui/MainWindow.cpp b/src/ui/MainWindow.cpp
+index 6beb482..4494b28 100644
+--- a/src/ui/MainWindow.cpp
++++ b/src/ui/MainWindow.cpp
+@@ -5490,7 +5490,7 @@ void MainWindow::announceReload(ReloadCause cause, const QString &path)
+ // quit — the panes would flash back for a close the reader then cancels.
+ QByteArray MainWindow::persistableWindowState() const
+ {
+-    return m_panesHidden ? m_panesPreHideState : saveState();
++    return saveState();
+ }
+ 
+ void MainWindow::saveSession()
