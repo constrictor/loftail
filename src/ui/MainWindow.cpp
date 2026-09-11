@@ -4746,7 +4746,7 @@ void MainWindow::updateStatus()
             // Not when they are the same sentence, which for a spooled document is the
             // ordinary case rather than a coincidence: both come from sourceStatusText()
             // over the same fetcher. Every remote open would otherwise read
-            // "connecting…  |  connecting…".
+            // "Connecting…  |  Connecting…".
             text += QStringLiteral("  |  ") + ctx->sourceStatus;
         }
         m_statusLabel->setText(text);

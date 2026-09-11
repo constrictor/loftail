@@ -276,7 +276,7 @@ bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *
                                   : qMin(m_options.timeoutMs, kRetryTimeoutMs);
 
     // A retry out of Waiting stays Waiting until it actually gets somewhere. Announcing
-    // "connecting…" on every attempt would flap the state several times a minute, and
+    // "Connecting…" on every attempt would flap the state several times a minute, and
     // because originVanished() reads it, the document upstream would bounce out of the
     // waiting state and straight back into it — a flickering view for a log that has
     // not moved. "Connecting" is for the first attempt, which a person is watching.

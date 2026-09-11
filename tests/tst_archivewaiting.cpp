@@ -282,7 +282,7 @@ void TestArchiveWaiting::anUnreadableContainerRefusesAndSaysSoRatherThanSayingIt
     const QString reason = doc.waitReason();
     QVERIFY(!reason.isEmpty());
     QVERIFY2(!reason.contains(QStringLiteral("has not appeared")), qPrintable(reason));
-    QVERIFY2(!reason.contains(QStringLiteral("waiting for")), qPrintable(reason));
+    QVERIFY2(!reason.contains(QStringLiteral("aiting for")), qPrintable(reason));
 
     // And it stays refused rather than polling a permission bit for the life of the
     // tab. File ▸ Reconnect is the deliberate gesture for asking again.

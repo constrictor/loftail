@@ -403,7 +403,7 @@ void LiveController::checkWhileWaiting()
     publishSourceStatus();
     // And keep the VIEW current with it. The status bar was the only surface that
     // tracked a changing reason; the placeholder and the tab tooltip were written once,
-    // at the transition, and a spooled log transitions while it is still "connecting…".
+    // at the transition, and a spooled log transitions while it is still "Connecting…".
     republishWaitReason();
     if (!back) {
         // THE presence-retry line (DiagnosticLog.h), and the one place in loftail where
@@ -588,10 +588,10 @@ void LiveController::endStale()
 }
 
 // The reason a document is waiting for is not settled at the transition. Since M17 a
-// spooled open enters the wait on "connecting…" and the worker answers afterwards —
+// spooled open enters the wait on "Connecting…" and the worker answers afterwards —
 // refused, host down, an archive holding no such member, an SFTP subsystem that timed
 // out — and SshFetcher republishes several different reasons over the life of one wait.
-// Announcing only the first left the view saying "connecting…" for ever with nothing
+// Announcing only the first left the view saying "Connecting…" for ever with nothing
 // connecting (SPEC.md §3: the view says what it is waiting for).
 void LiveController::republishWaitReason()
 {

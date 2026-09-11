@@ -171,7 +171,7 @@ private:
     // own thread, so a remote change arrives after a delay, not instantly.
     // Longer than kSshWorkerConnectTimeoutMs (20 s), for the waits that are waiting on a
     // FETCH: a connect that goes wrong takes the whole budget to say so, and a wait that
-    // expires first reports "connecting…" — which says nothing about what went wrong.
+    // expires first reports "Connecting…" — which says nothing about what went wrong.
     static constexpr int kFetchWaitMs = 30000;
 
     static bool waitFor(const std::function<bool()> &predicate, int timeoutMs = 15000)
@@ -1259,7 +1259,7 @@ void TestSshLive::reportsAnUnreachableHostClearly()
     wireResume(live, doc, model, QStringLiteral("%m%n"));
     live.start();
     // REPUBLISHED, not merely announced: the tab is up before the far end answers, so the
-    // wait begins on "connecting…" and the refusal lands on a later tick.
+    // wait begins on "Connecting…" and the refusal lands on a later tick.
     QVERIFY2(waitFor([&] {
                  live.checkNow();
                  return doc.waitReason().contains(QStringLiteral("127.0.0.1"));

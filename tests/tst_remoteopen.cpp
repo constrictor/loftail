@@ -599,10 +599,10 @@ void TestRemoteOpen::aBackgroundResumeRaisesNoFormatDialog()
 void TestRemoteOpen::aChangedReasonReachesTheViewTheTabAndTheStatusBar()
 {
     // THREE SURFACES, and only one of them used to follow. A spooled log opens on
-    // "connecting…" because the worker has not answered yet (M17), and the answer
+    // "Connecting…" because the worker has not answered yet (M17), and the answer
     // arrives on a later poll tick. The status bar tracked it; the view placeholder and
     // the tab tooltip were written once, on the waiting transition, and stayed there
-    // for the life of the tab — so a refused archive member said "connecting…" in the
+    // for the life of the tab — so a refused archive member said "Connecting…" in the
     // middle of an empty table with no network anywhere.
     const QString address = QStringLiteral("ssh://deploy@refuse1/var/log/app.log");
     FakeRemoteFarm farm;
@@ -617,7 +617,7 @@ void TestRemoteOpen::aChangedReasonReachesTheViewTheTabAndTheStatusBar()
     QCOMPARE(tabCount(window), 1);
     auto *view = window.findChild<LogView *>(QStringLiteral("logView"));
     QVERIFY(view);
-    QVERIFY(view->placeholderText().contains(QStringLiteral("connecting")));
+    QVERIFY(view->placeholderText().contains(QStringLiteral("connecting"), Qt::CaseInsensitive));
 
     const QString refusal =
         QStringLiteral("The archive holds no member named var/log/nosuch.log.");
@@ -631,9 +631,9 @@ void TestRemoteOpen::aChangedReasonReachesTheViewTheTabAndTheStatusBar()
 
     // And the second symptom, which is the half users read first: updateStatus() only
     // joins the reason to the source status when they differ, so a reason that tracks
-    // the status collapses "connecting…  |  The archive holds no member…" back to one
+    // the status collapses "Connecting…  |  The archive holds no member…" back to one
     // sentence.
-    QVERIFY(!statusText(window).contains(QStringLiteral("connecting")));
+    QVERIFY(!statusText(window).contains(QStringLiteral("connecting"), Qt::CaseInsensitive));
     QVERIFY(!statusText(window).contains(QStringLiteral("  |  ")));
     QCOMPARE(statusText(window), refusal);
 

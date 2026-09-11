@@ -136,7 +136,7 @@ bool SpooledLogSource::notReadyYet() const
         // not open. The tab stays and says why (SPEC.md §3): the fetcher's own words
         // reach the placeholder and the status bar through sourceStatusText(), and
         // File ▸ Reconnect is how the user tries again. The refusal usually lands
-        // AFTER the wait began — the open enters it on "connecting…" — so the words
+        // AFTER the wait began — the open enters it on "Connecting…" — so the words
         // get there by LiveController::republishWaitReason() on a later tick rather
         // than by the transition that announced the wait (§6.5).
         return true;
@@ -281,7 +281,7 @@ QString sourceStatusText(const LogSource &source, const QString &path)
         // there" — because it knows which of those it hit and this does not. The bare
         // fallback is for a fetcher that only managed to say "not there".
         return retryCountdownText(status.error.isEmpty()
-                                      ? Tr::tr("waiting for %1 to appear")
+                                      ? Tr::tr("Waiting for %1 to appear")
                                             .arg(logSourceDisplayName(path))
                                       : status.error,
                                   status.retryAtMs);
@@ -292,25 +292,25 @@ QString sourceStatusText(const LogSource &source, const QString &path)
         // the path can say which of the two things this state is. Nothing connects to an
         // archive — its Connecting is ArchiveFetcher opening the container and seeking
         // to the member (§6.4) — so a log opened out of a zip on the user's own disk
-        // said "connecting…" with no network anywhere in the picture, which reads as a
+        // said "Connecting…" with no network anywhere in the picture, which reads as a
         // stall on a machine that has nothing to stall on.
         //
         // A REMOTE container takes the archive wording too, and deliberately: the
         // fetcher stays in this state for the whole of the container's download, so
-        // "opening bundle.tar.gz…" is the honest sentence there as well — the connect is
+        // "Opening bundle.tar.gz…" is the honest sentence there as well — the connect is
         // one step inside the opening rather than the thing being reported.
         const auto loc = ArchiveLocation::split(path);
         if (!loc)
-            return Tr::tr("connecting…");
-        return Tr::tr("opening %1…").arg(containerName(loc->container));
+            return Tr::tr("Connecting…");
+        return Tr::tr("Opening %1…").arg(containerName(loc->container));
     }
 
     case FetchStatus::State::Priming: {
         // Only the path can say which of the two this is: the source is a spool either
         // way, and a spool does not know who fills it.
         const QString verb = ArchiveLocation::isArchivePath(path)
-            ? Tr::tr("expanding")
-            : Tr::tr("fetching");
+            ? Tr::tr("Expanding")
+            : Tr::tr("Fetching");
         if (status.totalSize > status.committedSize) {
             return Tr::tr("%1 — %2 of %3")
                 .arg(verb, sized(status.committedSize), sized(status.totalSize));

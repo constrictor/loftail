@@ -89,7 +89,7 @@ public:
 
     // A refusal that lands AFTER start() has already returned — the ordinary shape
     // since M17, where connecting happens on the worker and the document is already
-    // waiting on "connecting…" by the time the far end answers. Nothing has been
+    // waiting on "Connecting…" by the time the far end answers. Nothing has been
     // committed, so the document stays waiting; only the REASON changes, which is the
     // one thing a fake that refuses synchronously (setConnectRefusal) cannot express.
     //

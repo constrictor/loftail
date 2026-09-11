@@ -93,9 +93,9 @@ private:
 //   "expanding — 41.2 MB of 300 MB"   an archive member being decompressed
 //   "expanding — 41.2 MB so far"      the same, where the expanded size is not recorded
 //   "fetching — 2.1 MB of 40 MB"      a remote log being primed
-//   "connecting…"                     before the first byte
+//   "Connecting…"                     before the first byte
 //   "prod-web: connection refused"    a failure, in the fetcher's own words
-//   "waiting for app.log to appear"   the input is not there; still trying (§6.5)
+//   "Waiting for app.log to appear"   the input is not there; still trying (§6.5)
 //
 // `path` decides the verb, because the LogSource alone cannot tell an expansion from a
 // download. NEVER contains a credential: the text comes from FetchStatus::error, which

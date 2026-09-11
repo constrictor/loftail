@@ -338,7 +338,7 @@ void TestSpooledSource::aConnectingArchiveSaysWhatItIsOpeningRatherThanConnectin
     // WHAT WENT WRONG. State::Connecting is shared by both fetchers — it means
     // "establishing the session" to SshFetcher and "opening the container and seeking to
     // the member" to ArchiveFetcher (§6.4) — and sourceStatusText() rendered it as the
-    // one word "connecting…" for both. So a log opened out of a zip on the user's own
+    // one word "Connecting…" for both. So a log opened out of a zip on the user's own
     // disk announced a connection, with no network anywhere in the picture, and for a
     // remote container it said so for the whole of the download rather than for the
     // handshake. The state below it, Priming, had made this exact split since M12
@@ -360,23 +360,23 @@ void TestSpooledSource::aConnectingArchiveSaysWhatItIsOpeningRatherThanConnectin
     // A plain remote log: unchanged, and it must stay unchanged — this is the state's
     // original meaning and every M17 case reads that word.
     QCOMPARE(sourceStatusText(*src, QString::fromLatin1(kUrl)),
-             QStringLiteral("connecting…"));
+             QStringLiteral("Connecting…"));
 
     // A member inside a local container names the CONTAINER, and names it as spelled:
     // logSourceDisplayName() strips a single-stream suffix, so it would report a wait on
     // `app.log` while the file being opened is `app.log.gz`.
     const QString local = QDir::rootPath() + QStringLiteral("srv/logs/bundle.tar.gz");
     QCOMPARE(sourceStatusText(*src, local + QStringLiteral("/var/log/app.log")),
-             QStringLiteral("opening bundle.tar.gz…"));
+             QStringLiteral("Opening bundle.tar.gz…"));
     QCOMPARE(sourceStatusText(*src, QDir::rootPath() + QStringLiteral("srv/app.log.gz")),
-             QStringLiteral("opening app.log.gz…"));
+             QStringLiteral("Opening app.log.gz…"));
 
     // A member inside a REMOTE container takes the archive wording too, because the
     // archive fetcher stays in this state for the whole of the container's download —
     // the connect is one step inside the opening rather than the thing being reported.
     QCOMPARE(sourceStatusText(*src, QStringLiteral(
                                         "ssh://web1/srv/bundle.tar.gz/var/log/app.log")),
-             QStringLiteral("opening bundle.tar.gz…"));
+             QStringLiteral("Opening bundle.tar.gz…"));
 
     // AND NEVER A PASSWORD. The container half of an archive address is kept verbatim
     // when it cannot be normalized, and the last component of a pathless remote address

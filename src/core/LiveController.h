@@ -200,7 +200,7 @@ signals:
     // making progress.
     //
     // ALSO EMITTED WHILE ALREADY WAITING, with `waiting` still true, whenever the
-    // reason CHANGES — a spooled log opens on "connecting…" and the worker answers
+    // reason CHANGES — a spooled log opens on "Connecting…" and the worker answers
     // afterwards, so the reason is republished and not merely announced (§6.5). The
     // receiver may therefore see true twice running and must treat this as "here is
     // the current sentence", never as a transition. It is never emitted with an EMPTY

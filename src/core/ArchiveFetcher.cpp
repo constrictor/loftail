@@ -173,7 +173,7 @@ private:
     // One try at a container start() could not open because nothing was there yet.
     // Worker thread only, and LOCAL containers only — see start().
     Attempt openAbsentContainer();
-    // "waiting for bundle.tar.gz to appear", naming the CONTAINER rather than the log
+    // "Waiting for bundle.tar.gz to appear", naming the CONTAINER rather than the log
     // inside it: the member is not what is missing and cannot be looked for.
     QString waitingForContainer() const;
     // Block until the container's transport has something to give, then beginExpansion().
@@ -529,10 +529,10 @@ QString ArchiveFetcher::waitingForContainer() const
     // naming the container alone sends the reader to look inside a tree that does not
     // exist. Asked of the presence rather than tested here, so the two cannot disagree.
     if (logSourcePresence(m_location.container) == LogPresence::NoDirectory) {
-        return Tr::tr("waiting for %1 — there is no folder %2 either")
+        return Tr::tr("Waiting for %1 — there is no folder %2 either")
             .arg(shown, info.absolutePath());
     }
-    return Tr::tr("waiting for %1 to appear").arg(shown);
+    return Tr::tr("Waiting for %1 to appear").arg(shown);
 }
 
 ArchiveFetcher::Attempt ArchiveFetcher::openAbsentContainer()

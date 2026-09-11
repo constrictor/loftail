@@ -574,7 +574,7 @@ void TestWaitingRemote::aConnectingSpoolWaitsUntilItsFirstBytes()
     // is in rather than "the log is not there", which would be wrong: nobody has looked.
     QVERIFY(doc.isWaiting());
     QVERIFY(doc.lastError().isEmpty());
-    QVERIFY(doc.waitReason().contains(QStringLiteral("connecting")));
+    QVERIFY(doc.waitReason().contains(QStringLiteral("connecting"), Qt::CaseInsensitive));
     // The format has NOT settled: settling it against the empty sample would be a guess
     // about a log nobody has seen, and resume() is the only thing that can revisit it.
     QVERIFY(!doc.formatSettled());
@@ -653,10 +653,10 @@ void TestWaitingRemote::anEmptyRemoteLogIsNotAWait()
 
 void TestWaitingRemote::aReasonThatChangesWhileWaitingIsRepublished()
 {
-    // THE DEFECT THIS PINS. Since M17 a spooled log enters the wait on "connecting…" —
+    // THE DEFECT THIS PINS. Since M17 a spooled log enters the wait on "Connecting…" —
     // the worker has not answered yet — and the answer arrives on a later tick. The
     // waiting transition was the only thing that ever announced a reason, so the view
-    // and the tab tooltip froze on "connecting…" for the life of the tab while the
+    // and the tab tooltip froze on "Connecting…" for the life of the tab while the
     // status bar alone showed the refusal. Nothing was connecting, and for an archived
     // log there was no network anywhere.
     FakeRemoteFarm farm;
@@ -669,7 +669,7 @@ void TestWaitingRemote::aReasonThatChangesWhileWaitingIsRepublished()
     QVERIFY(doc.prepare(url(), provider, Encoding::Utf8, QTimeZone::utc()));
     QVERIFY(doc.isWaiting());
     const QString connecting = doc.waitReason();
-    QVERIFY(connecting.contains(QStringLiteral("connecting")));
+    QVERIFY(connecting.contains(QStringLiteral("connecting"), Qt::CaseInsensitive));
 
     LogModel model(&doc);
     LiveController live(&doc, &model);

@@ -233,7 +233,7 @@ public:
     void enterWaiting(const QString &reason, WaitCause whenAbsent = WaitCause::NotYet);
 
     // Restate why, WITHOUT re-entering the state. The reason a document waits for is
-    // not fixed at the transition: a spooled log opens on "connecting…" and the worker
+    // not fixed at the transition: a spooled log opens on "Connecting…" and the worker
     // answers afterwards — refused, host down, no such member — so the sentence on
     // screen has to follow (ARCHITECTURE.md §6.5). This is the whole of that, and it is
     // deliberately NOT enterWaiting(): that clears the index inside a model reset, and
