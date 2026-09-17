@@ -19,6 +19,7 @@
 #include "LogSettingsStore.h"
 
 #include "AtomicJson.h"
+#include "SchemaVersion.h"
 
 #include <QDir>
 #include <QFile>
@@ -155,15 +156,31 @@ LogSettingsTree LogSettingsStore::load()
         return tree;
 
     const QJsonObject root = doc.object();
-    const int version = root.value(QLatin1String(kSchemaVersionKey)).toInt();
-    // A file from a LATER version is not read and, more importantly, not written back
-    // over: running an older build for one session must not discard the newer build's
-    // configuration. There is no migration path downwards, so this is the only safe
-    // answer. Earlier versions are migrated upward as they appear (§8).
-    if (version > kSchemaVersion) {
+    int version = 0;
+    switch (Schema::judge(root, kSchemaVersion, &version)) {
+    case Schema::Verdict::FromFuture:
+        // A file from a LATER version is not read and, more importantly, not written back
+        // over: running an older build for one session must not discard the newer build's
+        // configuration. There is no migration path downwards, so this is the only safe
+        // answer. Earlier versions are migrated upward as they appear (§8).
         m_readOnly = true;
         return tree;
+    case Schema::Verdict::Unstamped:
+        // Not a file this build wrote. Read as nothing, but NOT latched read-only: an
+        // unstamped file is damaged or foreign rather than somebody's current
+        // configuration, and standing off it for ever would leave the store unable to
+        // write again — which is the state a single hand edit would otherwise create.
+        return tree;
+    case Schema::Verdict::Usable:
+        break;
     }
+
+    // Kept once, before the first save rewrites the file at the new version, so a
+    // migration that turns out to be wrong is recoverable by hand rather than only in
+    // principle. Failure is deliberately not reported: a read-only configuration
+    // directory must not stop the settings being READ.
+    if (version < kSchemaVersion)
+        Schema::backupOnce(filePath(), version);
 
     if (root.contains(QLatin1String(kDefaultsKey)))
         tree.setDefaults(logProfileFromJson(root.value(QLatin1String(kDefaultsKey)).toObject()));

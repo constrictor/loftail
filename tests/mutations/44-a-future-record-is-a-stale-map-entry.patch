@@ -1,0 +1,48 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+#
+# RULE (CLAUDE.md, "A `schemaVersion` SAYS THREE THINGS AND TWO STORES READ IT AS TWO"):
+#   A LATER BUILD'S RECORD IS NOT A STALE MAP ENTRY. The two reach read() by
+#   different roads: a stale entry names a slot holding another log's record and
+#   is mended by dropping it, while dropping a future record unreferences a file
+#   the newer build is still using and frees its slot for the next log to
+#   overwrite. The entry stays, and save(), remove() and the eviction stand off it.
+#
+# GUARD: tst_schema::aRecordFromTheFutureKeepsItsSlotAndIsNotOverwritten
+#
+# SILENT WHEN BROKEN: entirely, and one log at a time. The log whose record a
+# newer loftail wrote opens on its inherited settings -- which is indistinguishable
+# from never having configured it -- and its slot is then handed to the next log
+# that needs one, so the record is gone rather than merely unread. Nothing on
+# screen connects the two, and the newer build finds the log unconfigured on its
+# next launch with no account of where the settings went.
+
+diff --git a/src/core/LogFileStore.cpp b/src/core/LogFileStore.cpp
+--- a/src/core/LogFileStore.cpp
++++ b/src/core/LogFileStore.cpp
+@@ -329,7 +329,8 @@ LogFileSettings LogFileStore::read(const QString &address)
+             // configuration destroyed by an older one that could not even read it. So the
+             // entry stays, the address is remembered, and save(), remove() and the
+             // eviction all stand off it.
+-            m_fromFuture.insert(empty.address);
++            m_entries.remove(i);
++            m_mapDirty = true;
+             return empty;
+         }
+         // THE FILE WINS. A map entry whose slot holds another log's record is a map that

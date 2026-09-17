@@ -56,10 +56,20 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 192 rules
+## Guarded — 202 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
+| A `schemaVersion` says THREE things; `!=` folds FromFuture together with Unstamped and destroys data | Schema versions (L253) | tst_schema::everyStoreAgreesOnWhatAStampMeans |
+| A file from the future is read as nothing AND never written over, the write half being the damage | Schema versions (L253) | tst_schema::aFileFromTheFutureIsNeitherReadNorWrittenOver |
+| An unstamped file is read as nothing but is NOT protected, or one hand edit freezes the store | Schema versions (L253) | tst_schema::anUnstampedFileIsNotReadAsIfItWereCurrent |
+| The pool's map and its records carry independent stamps, and the record's was never read | Schema versions (L253) | tst_schema::aRecordFromTheFutureKeepsItsSlotAndIsNotOverwritten |
+| A later build's record is not a stale map entry: the entry stays, and save/remove/evict stand off it | Schema versions (L253) | tst_schema::aRecordFromTheFutureKeepsItsSlotAndIsNotOverwritten |
+| An older build must not replace a newer session's tabs, editor pages and pane layout | Schema versions (L253) | tst_schema::aSessionFromTheFutureIsNotReplacedByThisBuildsTabs |
+| A file behind this build is copied aside once, named for the version it came from, existing wins | Schema versions (L253) | tst_schema::aFileBehindThisBuildIsCopiedAsideBeforeItIsMigrated |
+| The golden corpus is LITERAL bytes: every other version test writes the constant and follows a bump | Schema versions (L253) | tst_schema::theV1LogSettingsFileStillReadsAsItsAuthorMeantIt |
+| Every field in a fixture is set away from its default, or a dropped key reads as a default | Schema versions (L253) | tst_schema::theV1PoolStillReadsAsItsAuthorMeantIt |
+| Every key a fixture carries gets its own assertion, never a comparison against an assembled struct | Schema versions (L253) | tst_schema::theV1HostsFileStillReadsAsItsAuthorMeantIt |
 | Activation is `itemActivated`, never `itemDoubleClicked`, or the list is unreachable from a keyboard | Welcome screen (L11) | tst_welcome::returnOnASelectedRowOpensItToo |
 | The content column is centred by a stretch either side and carries a stretch of its own | Welcome layout (L11) | tst_welcome::theContentIsCentredRatherThanFillingTheWindow |
 | A stretch at each end of the column, so the slack is a fifth of the viewport rather than merely non-zero | Welcome layout (L11) | tst_welcome::theContentIsCentredRatherThanFillingTheWindow |

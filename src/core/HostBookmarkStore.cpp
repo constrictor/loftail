@@ -19,7 +19,9 @@
 #include "HostBookmarkStore.h"
 
 #include "AtomicJson.h"
+#include "SchemaVersion.h"
 
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -142,6 +144,23 @@ QString HostBookmarkStore::filePath() const
     return m_dir + u'/' + QLatin1String(kFileName);
 }
 
+namespace {
+
+// ONE STEP PER VERSION, APPLIED IN ORDER — SchemaVersion.h's rule. Empty today: v1 is the
+// only version there has ever been. It is here so the next bump has an obvious home, and
+// so nothing has to invent the shape of a migration under pressure.
+//
+// It takes no object because a bookmark list migrates entry by entry through fromJson();
+// a step that has to rewrite the whole array belongs in all() beside the loop.
+void migrateBookmarks(int from)
+{
+    int v = from;
+    // for (; v < 2; ++v) { ...v1 -> v2... }
+    Q_UNUSED(v);
+}
+
+} // namespace
+
 QVector<HostBookmark> HostBookmarkStore::all() const
 {
     QVector<HostBookmark> out;
@@ -154,11 +173,30 @@ QVector<HostBookmark> HostBookmarkStore::all() const
     if (!ok || !doc.isObject())
         return out;
     const QJsonObject root = doc.object();
-    // Exact-version gating with no migration, as PresetStore and SessionStore do
-    // (ARCHITECTURE.md §8): an unrecognised version yields an empty collection rather
-    // than a half-understood one.
-    if (root.value(QLatin1String(kSchemaKey)).toInt() != kSchemaVersion)
+    // THIS USED TO BE `!=`, AND `!=` WOULD HAVE DESTROYED EVERY BOOKMARK ON EVERY
+    // INSTALLATION THE FIRST TIME THE VERSION MOVED. It folded "written by a newer build"
+    // together with "not a file we wrote", and the two want opposite answers: an older
+    // file is read and migrated forward, a newer one is left alone — including, and
+    // especially, by replaceAll(), which would otherwise fold the empty list this
+    // returned into the next save and write it back over the file (SchemaVersion.h).
+    int version = 0;
+    switch (Schema::judge(root, kSchemaVersion, &version)) {
+    case Schema::Verdict::Usable:
+        break;
+    case Schema::Verdict::Unstamped:
+    case Schema::Verdict::FromFuture:
         return out;
+    }
+
+    if (version < kSchemaVersion) {
+        // Kept before the first save rewrites the file at the new version. This one holds
+        // remembered passwords where there is no keychain, so it is made private for the
+        // same reason writePrivate() exists — the copy is as sensitive as the original.
+        if (Schema::backupOnce(path, version))
+            QFile::setPermissions(Schema::backupPathFor(path, version),
+                                  QFile::ReadOwner | QFile::WriteOwner);
+        migrateBookmarks(version);
+    }
 
     const QJsonArray hosts = root.value(QLatin1String(kHostsKey)).toArray();
     out.reserve(hosts.size());
@@ -196,6 +234,15 @@ bool HostBookmarkStore::replaceAll(const QVector<HostBookmark> &bookmarks) const
 {
     const QString path = filePath();
     if (path.isEmpty())
+        return false;
+
+    // THE WRITE HALF, AND THE HALF A STATELESS STORE CANNOT KEEP IN A MEMBER. all() is
+    // const and re-reads the file on every call, so there is nowhere to latch a verdict
+    // between the read and the write — and every mutation here (save, remove, the Open
+    // Remote dialog's OK) is read-fold-write, which over a file this build refused to read
+    // means writing an empty list over somebody's whole configuration. Asked of the file
+    // itself, so it holds however the caller arrived.
+    if (Schema::fileIsFromFuture(path, kSchemaVersion))
         return false;
 
     QJsonArray hosts;

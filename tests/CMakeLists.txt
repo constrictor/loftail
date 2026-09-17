@@ -353,6 +353,14 @@ qt_add_executable(tst_logfilestore tst_logfilestore.cpp)
 target_link_libraries(tst_logfilestore PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_logfilestore COMMAND tst_logfilestore)
 
+# The golden corpus: LITERAL bytes of every store's file at every version that has ever
+# shipped, read through this build. Every other version test in the tree writes
+# kSchemaVersion -- the constant -- so a bump takes those tests with it and they go on
+# passing while saying nothing about the old format. These do not move.
+qt_add_executable(tst_schema tst_schema.cpp)
+target_link_libraries(tst_schema PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_schema COMMAND tst_schema)
+
 # The three write paths when the write does NOT work, and what a crash between two of
 # them leaves behind. AtomicJson.cpp was 60% covered and ConfigFileIO.cpp 49%, and the
 # uncovered remainder in both was exactly the failure handling; nothing anywhere tested

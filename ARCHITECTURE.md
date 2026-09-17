@@ -1499,6 +1499,100 @@ Both are now fixed in the same place. The helpers (`relativeLuminance`, `contras
 
 Two properties of *where* it is applied carry the rest, and both are in `LogView::resolveRowColors()`. The band is keyed on the **view row, which is a record** (invariant #2), and the caller fills the whole record's rect with the answer — so the alternation changes at a record boundary and not at a line. And it lives in the `else` of the highlight-rule branch, so a rule-coloured record is never tinted: two adjacent records matching one rule paint as a single unbroken block of its colour rather than as two shades of it. `tst_logview::theAlternatingBandChangesAtRecordsAndNotAtLines` renders the viewport and reads both claims back off the pixel runs down one column, which is the only place either is observable.
 
+### 8.4 Schema versions: what a stamp means, and what a bump costs
+
+Every store stamps a `schemaVersion` and always has. What they did not have is one answer
+to what a stamp *means*, and the five of them gave three different ones — which is the
+shape of a hazard that stays invisible until the first bump, because until then every
+version in the wild is the current one.
+
+**A stamp says three things, not two.** `Usable` is any version from 1 up to and including
+this build's: read it, migrating forward if it is behind. `FromFuture` is a later version:
+read nothing, **and write nothing over it**. `Unstamped` is an absent or non-integer key:
+not a file loftail wrote, so read nothing — but do *not* protect it, because standing off a
+damaged file for ever leaves the store unable to write again after one hand edit.
+`Schema::judge()` is that vocabulary and `SchemaVersion.h` is the only place it is spelled.
+
+**`HostBookmarkStore` and `PresetStore` used to fold the first and the third together** with
+`version != kSchemaVersion`, which is the reading that destroys data: the first bump of
+either would have discarded every bookmark, every remembered password and every preset on
+every installation. And discarding is only half of it — both stores are **stateless**, every
+mutation being read-fold-write over the whole file, so the empty collection the failed read
+returned would have been written straight back over the file on the next save. Reading
+nothing is harmless; it is the write afterwards that does the damage, which is why
+`Schema::fileIsFromFuture()` is asked at each write funnel rather than latched at a read
+those stores have no state to latch in.
+
+**The pool carries two independent stamps, and only one of them was ever read.** The `map`
+is an index and a slot file is the data; a bump to the shape of one says nothing about the
+other, and a pool half migrated by an interrupted upgrade is exactly the state both stamps
+describe. `LogFileSettings::toJson()` has written a record stamp since M21 and `fromJson()`
+never looked at it, so a record from a later build would have been interpreted field by
+field as though it were this one's — for the fields that decide what an application logs
+(`configPath`) and what loftail runs when asked (`restartScript`), a reading not worth
+guessing at. `fromJson()` now answers a `std::optional`, and the optional is the mechanism
+rather than a nicety: each of its three call sites goes on to decide something about the
+*map* from what comes back, so a site that does not handle the refusal does not compile.
+
+What such a site must not do is drop the map entry. **A later build's record is not a stale
+map entry**, and the two arrive at the same place by different roads: a stale entry names a
+slot holding another log's record and is mended by dropping it, while a future record is one
+this build cannot read and dropping it unreferences a file the newer build is still using,
+freeing its slot for the next log to overwrite. `m_fromFuture` is the per-address memo that
+keeps the entry, refuses `save()` and `remove()` for it, and passes over it when eviction is
+choosing a victim — per record and not per store, unlike `m_readOnly`, because one log
+configured by a newer build must not freeze the other four hundred and ninety-nine. Its
+reach is exactly the records this session has actually read: a future record nobody opened
+is invisible to it and a full pool may still evict it, which is the ordinary cost of a full
+pool rather than a hole — at 500 records something has to go and LRU is what decides.
+
+**A migration is a chain, one step per version, applied in order.** The alternative shape —
+a switch that jumps straight from any old version to the current one — rots, because the
+jump for v1 has to be rewritten at every bump and nothing fails when it is not. The steps
+are empty today: v1 is the only version any of these files has ever had. They exist so that
+the next bump has an obvious home and so the shape is settled before anybody is under
+pressure to ship one.
+
+**A file behind this build is copied aside once before it is rewritten**, as
+`<path>.vN.bak`, named for the version it was migrated *from* — so the count is bounded by
+the number of versions rather than by the number of launches, and an existing backup always
+wins over a new one. It is taken at **load**, not at the write it protects against: a load
+knows the version it read and a write does not. Three deliberate exclusions. The **slot
+files** get none: five hundred numbered files, each holding one log's settings, and a backup
+apiece would double the entry count of a directory for a recovery nobody could navigate.
+The **session** gets none: it is which tabs were open at the last quit rather than a
+configuration, and its store is `QSettings` — an INI file on Linux, the registry on Windows
+— so there is no single path to copy aside on every platform. An **exported preset** gets
+none: importing does not write to it.
+
+**Most changes still need no bump at all, and that is the first line of defence rather than
+an afterthought.** An added key is exactly what a backward read handles; a removed key is
+too. The rule the tree already follows in four places — `contains()` and never `isEmpty()`,
+because absent means "nobody ever said anything" and empty means "the user deleted it all" —
+is what makes additive evolution free. A bump is for a **reinterpretation**: a key whose
+meaning moves, a structure that is rearranged, a value that no longer means what it did. And
+it is expensive in both directions, which is why it is worth avoiding: an older build cannot
+read the new file, and — the part that is easy to forget — a bumped file is unreadable by
+every binary already shipped.
+
+**What actually catches a breakage is the golden corpus, and nothing else does.**
+`tests/tst_schema.cpp` holds the literal bytes of every store's file at every version that
+has ever shipped, and reads them through the current build. Every *other* version test in
+the tree writes `kSchemaVersion` — the constant — into the file it reads back, so a bump
+takes those tests with it: they start writing the new version, reading the new version, and
+passing while saying nothing whatever about the old one. `tst_session` is the single
+exception, and it is the exception because `SessionStore` is the one store that has actually
+bumped. Two disciplines make the corpus bite. Every field in a fixture is set **away from
+its default**, because a fixture saying `false` where the struct also defaults to `false`
+cannot tell a key that was read from one that was dropped — a rename of `startOffset` passed
+the first draft of this file for exactly that reason. And every key a fixture carries gets
+**its own assertion**, named one at a time rather than compared against a struct this build
+assembles, which would pass just as well if both sides had lost the field.
+
+At a bump: add the new version's literal beside the old one, extend that store's migration
+chain by one step, and leave every existing case alone. A case that has to be edited to keep
+passing is the bug the file exists to report.
+
 ## 9. Format autodetection
 
 Built after the manual path (M8), behind a seam that existed from the start:

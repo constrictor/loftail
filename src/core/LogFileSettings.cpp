@@ -20,6 +20,7 @@
 
 #include "Highlight.h"
 #include "MatchCriteria.h"
+#include "SchemaVersion.h"
 
 namespace loftail {
 
@@ -119,7 +120,7 @@ bool LogFileSettings::saysSomething() const
 QJsonObject LogFileSettings::toJson() const
 {
     QJsonObject o;
-    o.insert(QLatin1String(kSchemaVersionKey), 1);
+    o.insert(QLatin1String(kSchemaVersionKey), kSchemaVersion);
     o.insert(QLatin1String(kAddressKey), address);
     o.insert(QLatin1String(kProfileKey),
              profile ? QJsonValue(logProfileToJson(*profile))
@@ -148,8 +149,41 @@ QJsonObject LogFileSettings::toJson() const
     return o;
 }
 
-LogFileSettings LogFileSettings::fromJson(const QJsonObject &o)
+namespace {
+
+// ONE STEP PER VERSION, APPLIED IN ORDER, so that a record two versions behind is
+// migrated by the composition of the steps rather than by a switch that jumps straight
+// to the current shape -- which is the form that rots, because the jump for v1 has to be
+// rewritten every time a version is added and nothing fails when it is not.
+//
+// Empty today: v1 is the only version there has ever been. It is here so that the next
+// bump has one obvious home, and so that the shape of a migration is settled before
+// anybody is under pressure to ship one.
+void migrateRecord(QJsonObject &o, int from)
 {
+    int v = from;
+    // for (; v < 2; ++v) { ...v1 -> v2... }
+    Q_UNUSED(v);
+    Q_UNUSED(o);
+}
+
+} // namespace
+
+std::optional<LogFileSettings> LogFileSettings::fromJson(const QJsonObject &in)
+{
+    int version = 0;
+    // Unstamped is refused as firmly as FromFuture here, and that is not the same ruling
+    // the single-file stores take. A slot file is one of five hundred numbered files in a
+    // directory loftail owns outright: nothing else writes there, so a record with no
+    // stamp is a damaged one rather than somebody's hand-written configuration, and
+    // reading it would mean guessing which of its fields survived.
+    if (Schema::judge(in, kSchemaVersion, &version) != Schema::Verdict::Usable)
+        return std::nullopt;
+
+    QJsonObject o = in;
+    if (version < kSchemaVersion)
+        migrateRecord(o, version);
+
     LogFileSettings s;
     s.address = o.value(QLatin1String(kAddressKey)).toString();
 
