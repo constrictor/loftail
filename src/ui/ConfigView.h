@@ -27,8 +27,10 @@
 
 QT_BEGIN_NAMESPACE
 class QComboBox;
+class QFrame;
 class QLabel;
 class QPlainTextEdit;
+class QPushButton;
 class QTimer;
 class QVBoxLayout;
 QT_END_NAMESPACE
@@ -87,6 +89,35 @@ public:
     bool isModified() const;
     void setModified(bool modified);
     bool fileExisted() const { return m_existed; }
+
+    // --- Noticing the file change under the page (SPEC.md §4). -----------------------
+    //
+    // The BASELINE is the exact bytes this page last read off the file or last wrote to
+    // it, and it is the whole of how our own save is told from somebody else's: a change
+    // is a difference in CONTENT, never in mtime. Every save therefore ends in
+    // markWrittenAs() with the bytes it sent, so the watch event the write itself
+    // provokes compares equal and says nothing — and a `touch`, or a far end whose clock
+    // counts in whole seconds, can neither invent a change nor hide one.
+    //
+    // setContents() sets it too; nothing else does.
+    void markWrittenAs(const QByteArray &bytes);
+
+    // What the watcher found on disk. Nothing happens if it equals the baseline. Else,
+    // with NO unsaved changes and the text NOT holding the keyboard focus, the page
+    // reloads in silence — nobody is reading or typing into it, so there is nothing to
+    // ask about; otherwise the change bar asks: Reload or Ignore. Never a modal: this
+    // arrives on a timer, about a page that may not be the one in front.
+    void externalChange(const QByteArray &bytes, bool existed);
+
+    // Bumped whenever the baseline moves or the page starts a read or write of its own.
+    // A remote probe notes it when it starts and drops its answer if it moved: a probe
+    // that began before a save and lands after it is describing a file that no longer
+    // exists — or, the remote write being in place, one half written.
+    quint64 diskGeneration() const { return m_diskGeneration; }
+
+    // Whether the change bar is up. Public for the tests, which read that and never a
+    // label's text, and for the watcher, which has nothing to decide while it is.
+    bool changeBarShown() const;
 
     ConfigSyntax syntax() const;
     // Choose the grammar and say where the choice came from. `chosen` marks a syntax the
@@ -184,6 +215,12 @@ private:
     void updatePathLabel();
     void updateSyntaxLabel();
 
+    // Replace the buffer with what is on disk now, keeping the reader's place in it.
+    // BY VALUE: the Reload button passes m_pendingBytes, which setContents() clears on
+    // its way in — a reference would decode an empty buffer.
+    void reloadFrom(QByteArray bytes);
+    void hideChangeBar();
+
     QString            m_address;
     QPlainTextEdit    *m_edit = nullptr;
     FindBar           *m_findBar = nullptr;
@@ -191,6 +228,9 @@ private:
     QLabel            *m_pathLabel = nullptr;
     QLabel            *m_syntaxSource = nullptr;
     MessageLabel      *m_notice = nullptr;
+    QFrame            *m_changeBar = nullptr;
+    MessageLabel      *m_changeText = nullptr;
+    QPushButton       *m_changeReload = nullptr;
     ConfigHighlighter *m_highlighter = nullptr;
     QVBoxLayout       *m_layout = nullptr;
 
@@ -201,6 +241,17 @@ private:
     qint64       m_busyRetryAtMs = 0;
     QTimer      *m_countdown = nullptr; // runs only while there is a deadline to count
     bool         m_existed = false;
+    // The baseline — see markWrittenAs(). `m_hasBaseline` false until the first read has
+    // landed: a page whose read failed has nothing to compare against, and a change
+    // reported against an empty buffer would be every byte of the file.
+    QByteArray   m_diskBytes;
+    bool         m_diskExisted = false;
+    bool         m_hasBaseline = false;
+    quint64      m_diskGeneration = 0;
+    // What the change bar is offering. Replaced, never queued, by a second change while
+    // it stands: only the latest state of the file is worth reloading.
+    QByteArray   m_pendingBytes;
+    bool         m_pendingExisted = false;
     bool         m_syntaxChosen = false;
     bool         m_syntaxSniffed = false;
     // Replayed on save, never re-derived: see toBytes().

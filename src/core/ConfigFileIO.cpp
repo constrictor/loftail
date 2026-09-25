@@ -251,16 +251,26 @@ void ConfigTransfer::startRead(const QString &address)
     attemptRead(address);
 }
 
-void ConfigTransfer::attemptRead(const QString &address)
+void ConfigTransfer::startProbe(const QString &address)
+{
+    attemptRead(address, /*probe=*/true);
+}
+
+void ConfigTransfer::attemptRead(const QString &address, bool probe)
 {
 #if !defined(LOFTAIL_HAVE_SSH)
     ConfigReadResult out;
     configAddressIsWritable(address, &out.error);
-    QTimer::singleShot(0, this, [this, out]() { emit readFinished(out); });
+    QTimer::singleShot(0, this, [this, out, probe]() {
+        if (probe)
+            emit probeFinished(out);
+        else
+            emit readFinished(out);
+    });
 #else
     auto shared = m_shared;
     QPointer<ConfigTransfer> self(this);
-    startSshWorker([address, shared, self]() {
+    startSshWorker([address, shared, self, probe]() {
         ConfigReadResult out;
         // Set inside the errand, which runs only once a session is in hand — so this is
         // the structural answer to "was the machine reached", and the classification can
@@ -304,9 +314,13 @@ void ConfigTransfer::attemptRead(const QString &address)
         // meantime, this simply does nothing.
         QMetaObject::invokeMethod(
             QCoreApplication::instance(),
-            [self, out, address]() {
+            [self, out, address, probe]() {
                 if (!self)
                     return;
+                if (probe) {
+                    emit self->probeFinished(out);
+                    return;
+                }
                 if (!out.retryable) {
                     emit self->readFinished(out);
                     return;

@@ -27,6 +27,7 @@
 #include "ConfigLocation.h"
 #include "RestartDialog.h"
 #include "RestartTarget.h"
+#include "ConfigChangeWatcher.h"
 #include "ConfigView.h"
 #include "CopyHighlightersDialog.h"
 #include "DocumentView.h"
@@ -1586,6 +1587,11 @@ ConfigView *MainWindow::buildConfigTab(const QString &address, int insertAt,
     updateConfigTabTitle(view);
     updateEmptyState();
 
+    // BOTH branches, so a session-restored page is watched exactly as an opened one is.
+    // Remote, it holds its first probe while the page's own read is in flight (the page
+    // is busy); locally the read above has already set the baseline.
+    new ConfigChangeWatcher(view);
+
     if (remote) {
         // THE TAB IS UP BEFORE THE FAR END ANSWERS, which is M17's rule for a log and is
         // the same rule here: a connect is up to twenty seconds and may stop to ask for a
@@ -1688,11 +1694,14 @@ void MainWindow::saveConfig(ConfigView *view, std::function<void()> then)
         updateActionStates();
         auto *transfer = new ConfigTransfer(view);
         connect(transfer, &ConfigTransfer::writeFinished, view,
-                [this, view, transfer, sentAt, then](const ConfigWriteResult &result) {
+                [this, view, transfer, sentAt, then, payload](const ConfigWriteResult &result) {
                     view->setBusy(false, QString());
                     if (!result.ok) {
                         view->showNotice(result.error);
                     } else {
+                        // The bytes SENT, not the buffer now: that is what is on the far
+                        // end, and the next probe must find it unchanged.
+                        view->markWrittenAs(payload);
                         if (view->revision() == sentAt)
                             view->setModified(false);
                         view->clearNotice();
@@ -1726,6 +1735,9 @@ void MainWindow::saveConfig(ConfigView *view, std::function<void()> then)
         view->showNotice(result.error);
         return;
     }
+    // BEFORE control returns to the event loop, which is where the watch event this
+    // write provokes will be delivered — so it finds these bytes and says nothing.
+    view->markWrittenAs(payload);
     view->setModified(false);
     updateConfigTabTitle(view);
     if (!result.error.isEmpty()) {
@@ -1820,6 +1832,7 @@ bool MainWindow::confirmDiscard(ConfigView *view)
             view->showNotice(result.error);
             return false;
         }
+        view->markWrittenAs(payload);
         view->setModified(false);
         return true;
     }

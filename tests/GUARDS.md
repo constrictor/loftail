@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 203 rules
+## Guarded — 210 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -149,6 +149,13 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | `SshFetcher::tailLoop()` publishes the deadline it is about to sleep for, on the slow cadence only | Retry countdown (L128) | tst_sshconnect::aFetcherThatCouldNotReachItsHostPublishesWhenItWillTryAgain |
 | A config page counts down to its own retry, and a message with no deadline stops the timer | Retry countdown (L128) | tst_configeditor::aHostThatCannotBeReachedCountsDownToTheNextTry |
 | A config write that cannot be finished is REPORTED, and the file keeps what it had | Config write (L69) | tst_writefailure::aConfigWriteThatCannotBeFinishedIsReportedAndKeepsThePreviousContents |
+| Every save site ends in `markWrittenAs()` with the bytes it sent, so our own save is not an external change | Config external change (L81) | tst_configeditor::ourOwnSaveIsNotAnExternalChange |
+| A clean page whose text does not hold the focus reloads silently, keeping its place | Config external change (L81) | tst_configeditor::anUnfocusedCleanPageReloadsSilentlyAndKeepsItsPlace |
+| The text holding the focus asks instead; `reloadFrom()` takes its bytes by value | Config external change (L81) | tst_configeditor::aPageHoldingTheFocusAsksBeforeReloading |
+| Unsaved edits always ask; Ignore takes the change as the baseline and marks the buffer modified | Config external change (L81) | tst_configeditor::unsavedEditsAreNeverReloadedOverAndIgnoreKeepsThem |
+| A deleted file is never reloaded into an empty buffer | Config external change (L81) | tst_configeditor::aDeletedFileIsReportedAndNeverReloadedIntoNothing |
+| A probe is dropped if `diskGeneration()` moved while it was in flight | Config external change (L81) | tst_configeditor::aProbeThatStartedBeforeASaveIsDiscarded |
+| The remote probe answers `probeFinished()` once, with what is on the far end now | Config external change (L81) | tst_sshlive::aConfigProbeSeesAChangeMadeOnTheFarEnd |
 | "Not there" and "there and shut" are different sentences, and only the first is the supported empty-editor case | Presence not emptiness (L207) | tst_writefailure::aConfigThatIsThereAndShutIsNotDescribedAsOneThatIsNotThere |
 | The libssh2 half of the config write now runs on every push against real servers | Config write in CI (L73) | tst_sshlive::aConfigFileIsReadAndWrittenWholeOverSftp<br>tst_sshlive::writingAConfigKeepsItsPermissions<br>tst_sshlive::theExecFallbackWritesTheSameBytes |
 | `logAnchorOf()` and `SshWorkerPool` were EXTRACTED rather than copied, the untouched suites being the evidence | M23 (L75) | tst_configlocation<br>tst_configeditor |
