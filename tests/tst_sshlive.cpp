@@ -27,6 +27,7 @@
 
 #include <functional>
 
+#include "ConfigFileIO.h"
 #include "Document.h"
 #include "LiveController.h"
 #include "LogModel.h"
@@ -41,6 +42,7 @@
 // std::thread and not QThread: ARCHITECTURE.md §13.1 — a QThread join goes through a
 // QWaitCondition, which breaks TSan's happens-before chain at the unannotated system Qt.
 #include <chrono>
+#include <limits>
 #include <thread>
 #include "SourceSpool.h"
 #include "SshPrompter.h"
@@ -358,6 +360,7 @@ private slots:
     void sequentialReadsLandWhereTheyAskedWithNoSeekBetweenThem();
     void aConfigFileIsReadAndWrittenWholeOverSftp();
     void writingAConfigKeepsItsPermissions();
+    void aConfigProbeSeesAChangeMadeOnTheFarEnd();
     void theExecFallbackWritesTheSameBytes();
 
     // M23 — the restart script over a real link. The only place SshSession::runScript()
@@ -482,6 +485,71 @@ void TestSshLive::aConfigFileIsReadAndWrittenWholeOverSftp()
     QCOMPARE(remoteShellOutput(QStringLiteral("cat %1").arg(cfg)), shorter);
 
     QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(cfg)));
+}
+
+void TestSshLive::aConfigProbeSeesAChangeMadeOnTheFarEnd()
+{
+    // What the config editor's remote watch runs every five seconds (SPEC.md §4), against
+    // a real server: ConfigTransfer::startProbe(). The decision about the page lives in
+    // ConfigView and is pinned in tst_configeditor with no network; what only a server
+    // can say is that a probe goes out through the whole libssh2 path, answers with what
+    // is on the far end NOW, and answers exactly once — probeFinished() and never the
+    // read's own signals, whose one call site deletes the transfer on them.
+    const QString cfg = m_remotePath + QStringLiteral(".probe");
+    QVERIFY(remoteShell(QStringLiteral("printf 'a=1\n' > %1").arg(shellQuote(cfg))));
+    RemoteLocation where = m_location;
+    where.path = cfg;
+    const QString address = where.toString();
+
+    const auto probe = [&address](ConfigReadResult *out) {
+        ConfigTransfer transfer;
+        int answers = 0;
+        bool readSignal = false;
+        QObject::connect(&transfer, &ConfigTransfer::probeFinished,
+                         [&](const ConfigReadResult &r) {
+                             *out = r;
+                             ++answers;
+                         });
+        QObject::connect(&transfer, &ConfigTransfer::readFinished,
+                         [&](const ConfigReadResult &) { readSignal = true; });
+        QObject::connect(&transfer, &ConfigTransfer::readRetryScheduled,
+                         [&](const QString &, qint64) { readSignal = true; });
+        transfer.startProbe(address);
+        const bool answered = waitFor([&answers] { return answers > 0; }, kFetchWaitMs);
+        return answered && answers == 1 && !readSignal;
+    };
+
+    ConfigReadResult first;
+    QVERIFY(probe(&first));
+    QVERIFY2(first.ok, qPrintable(first.error));
+    QVERIFY(first.existed);
+    QCOMPARE(first.bytes, QByteArray("a=1\n"));
+
+    // Changed behind loftail's back — by another client, the case the watch is for.
+    QVERIFY(remoteShell(QStringLiteral("printf 'a=2\nb=3\n' > %1").arg(shellQuote(cfg))));
+    ConfigReadResult second;
+    QVERIFY(probe(&second));
+    QVERIFY2(second.ok, qPrintable(second.error));
+    QCOMPARE(second.bytes, QByteArray("a=2\nb=3\n"));
+
+    // And deleted: a success saying it is not there, which is what the page turns into
+    // "was deleted" rather than a reload into nothing.
+    QVERIFY(remoteShell(QStringLiteral("rm -f %1").arg(shellQuote(cfg))));
+    ConfigReadResult third;
+    QVERIFY(probe(&third));
+    QVERIFY2(third.ok, qPrintable(third.error));
+    QVERIFY(!third.existed);
+
+    // The probes went through the idle cache and left their connection in it, which is
+    // the point in production (a warm session every five seconds) and a leak into the next
+    // case here: oneConnectionServesSeveralErrandsAndTheDrainLetsItGo counts that cache
+    // from zero. EMPTIED rather than closed — close() latches for the process, which is
+    // that case's to do — by a checkout whose clock is past every deadline, since the
+    // checkout's own sweep is the one public way an entry leaves without a latch.
+    sshSessionCache().checkOut(QStringLiteral("nobody@nowhere:22"),
+                               SshSessionRole::Transport,
+                               std::numeric_limits<qint64>::max() / 2);
+    QCOMPARE(sshSessionCache().size(), 0);
 }
 
 void TestSshLive::writingAConfigKeepsItsPermissions()

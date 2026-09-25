@@ -85,6 +85,10 @@ add_library(loftail_ui STATIC
     # and the log font.
     ConfigView.cpp
     ConfigView.h
+    # Notices the page's file changing on disk — a watch locally, a quiet probe over SSH
+    # — and hands what is there now to the page, which decides whether to ask.
+    ConfigChangeWatcher.cpp
+    ConfigChangeWatcher.h
     # M4 — the Filters side pane and the Find bar. The five axis controls themselves
     # live in AxisEditor, shared with the per-rule editor in the Highlighters pane so
     # filtering and highlighting offer the same criteria and cannot drift apart.
