@@ -694,9 +694,13 @@ private:
     void saveCloseAndRestart();
     // Take an editor page down with no prompt. Callers settle the buffer first.
     void closeEditorPage(ConfigView *editor);
-    // Ask about one editor's unsaved changes. False means the user cancelled, and every
-    // caller must abandon what it was doing — including quitting.
-    bool confirmDiscard(ConfigView *view);
+    // Ask about one editor's unsaved changes. False means "not now", and every caller
+    // must abandon what it was doing — including quitting. That is a Cancel, a save that
+    // failed, or a REMOTE save that has been started: the prompt answers synchronously
+    // and a remote write is a round trip on a worker thread, so Save there starts the
+    // write and answers false, and `retry` — the caller's own gesture, repeated — runs
+    // queued once the write has landed, when the buffer is clean and nothing asks again.
+    bool confirmDiscard(ConfigView *view, std::function<void()> retry);
     void updateConfigTabTitle(ConfigView *view);
 
     // Build the editor page for `address` and start whatever reading it needs — the local

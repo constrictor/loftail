@@ -1802,10 +1802,16 @@ void MainWindow::saveCloseAndRestart()
     saveConfig(view, then);
 }
 
-bool MainWindow::confirmDiscard(ConfigView *view)
+bool MainWindow::confirmDiscard(ConfigView *view, std::function<void()> retry)
 {
     if (!view || !view->isModified())
         return true;
+    // A remote save of this very buffer is already in flight — started by an earlier
+    // answer to this prompt, or by Ctrl+S. Asking again would offer a second write racing
+    // the first over an in-place, non-atomic file; the gesture waits instead, and the
+    // red "Saving…" on the page says why nothing happened.
+    if (view->isBusy())
+        return false;
     QMessageBox box(this);
     box.setIcon(QMessageBox::Warning);
     box.setWindowTitle(tr("Unsaved changes"));
@@ -1816,6 +1822,17 @@ bool MainWindow::confirmDiscard(ConfigView *view)
     box.setEscapeButton(QMessageBox::Cancel);
     switch (box.exec()) {
     case QMessageBox::Save: {
+        if (configAddressIsRemote(view->address())) {
+            // THE SAVE GOES THE WAY EVERY REMOTE SAVE GOES — writeConfigFile() is the
+            // local writer and refuses an ssh:// address outright, which is what this
+            // branch used to call, so Save here wrote nothing, said "must be written over
+            // SSH" and cancelled the close. saveConfig() refuses lossy bytes before any
+            // round trip, shows the save in red, keeps the tab and the reason on failure,
+            // and runs `retry` QUEUED and only on success — so the re-issued close never
+            // runs inside a slot of the page it may delete.
+            saveConfig(view, std::move(retry));
+            return false;
+        }
         QByteArray payload;
         QString lossy;
         if (!view->bytesToSave(&payload, &lossy)) {
@@ -1848,8 +1865,13 @@ void MainWindow::closeViewAt(int index)
     // An editor page is closed here too. Without this branch the qobject_cast below
     // fails, the function returns, and the tab's own ✕ button silently does nothing.
     if (auto *editor = qobject_cast<ConfigView *>(m_tabs->widget(index))) {
-        if (!confirmDiscard(editor))
-            return; // the reader cancelled: the tab stays, with its edits
+        const QPointer<ConfigView> guard(editor);
+        // By POINTER, never by the index: the tabs may move while a remote save is out.
+        if (!confirmDiscard(editor, [this, guard]() {
+                if (guard)
+                    closeViewAt(m_tabs->indexOf(guard));
+            }))
+            return; // cancelled, failed, or saving remotely: the tab stays, with its edits
         closeEditorPage(editor);
         return;
     }
@@ -2387,7 +2409,7 @@ void MainWindow::closeAllDocuments(Prompt prompt)
     if (prompt == Prompt::Ask) {
         const QVector<ConfigView *> editors = m_editors;
         for (ConfigView *editor : editors) {
-            if (!confirmDiscard(editor))
+            if (!confirmDiscard(editor, [this, prompt]() { closeAllDocuments(prompt); }))
                 return;
         }
     }
@@ -5407,7 +5429,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // In tab order, so the questions arrive left to right the way the tabs read.
     for (int i = 0; i < m_tabs->count(); ++i) {
         if (auto *editor = qobject_cast<ConfigView *>(m_tabs->widget(i))) {
-            if (!confirmDiscard(editor)) {
+            // The retry is close() itself, which comes back through here — so the other
+            // editors are still asked, and still before saveSession().
+            if (!confirmDiscard(editor, [this]() { close(); })) {
                 event->ignore();
                 return;
             }

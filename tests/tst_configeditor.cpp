@@ -96,6 +96,7 @@ private slots:
     void closingATabMidConnectDoesNotWaitForIt();
     void aRemoteEditorTabComesBackAfterARelaunch();
     void aRestoredRemoteEditorNamesTheDependencyThatIsMissing();
+    void saveInTheClosePromptWritesARemoteConfigOverSsh();
 
     void anUnfocusedCleanPageReloadsSilentlyAndKeepsItsPlace();
     void aPageHoldingTheFocusAsksBeforeReloading();
@@ -1480,6 +1481,69 @@ void TestConfigEditor::aProbeThatStartedBeforeASaveIsDiscarded()
     // While bytes that differ are one.
     view.externalChange("a=3\n", true);
     QVERIFY(view.changeBarShown());
+}
+
+void TestConfigEditor::saveInTheClosePromptWritesARemoteConfigOverSsh()
+{
+    // SAVE IN THE PROMPT USED TO CALL THE LOCAL WRITER, which refuses an ssh:// address
+    // by name, so for a config on another machine it wrote nothing, said "must be
+    // written over SSH" and cancelled the close. It now starts the ordinary remote save
+    // and defers the close until the write lands. A black-hole host never answers, so
+    // what this case can see is the half before the far end: the save STARTED (busy, in
+    // the save's own red) and the refusal is nowhere — which is exactly what fails on
+    // the old code. The half after it is the live harness's.
+#if !defined(LOFTAIL_HAVE_SSH)
+    QSKIP("SSH support is not built into this copy");
+#else
+    std::unique_ptr<MainWindow> w(new MainWindow);
+    w->show();
+    auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    ConfigView *view = w->openConfigAt(blackHoleConfig());
+    QVERIFY(view);
+    // As though the read had landed: the page's own reply does exactly these two things,
+    // and the host is one that never replies.
+    view->setBusy(false, QString());
+    view->setContents("a=1\n", true);
+    QTextCursor typing = view->editor()->textCursor();
+    typing.movePosition(QTextCursor::End);
+    typing.insertText(QStringLiteral("b=2\n"));
+    QVERIFY(view->isModified());
+
+    bool prompted = false;
+    QTimer::singleShot(0, [&prompted] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            prompted = true;
+            box->button(QMessageBox::Save)->click();
+        }
+    });
+    QMetaObject::invokeMethod(tabs, "tabCloseRequested", Q_ARG(int, tabs->indexOf(view)));
+    QVERIFY(prompted);
+
+    // The close waits for the write, so the tab is still here with its edits.
+    QCOMPARE(tabs->indexOf(view) >= 0, true);
+    QVERIFY(view->isModified());
+    // And the write STARTED, the remote way — in the save's own red.
+    QVERIFY(view->isBusy());
+    QCOMPARE(view->busyTone(), ConfigView::BusyTone::Alert);
+    auto *notice = view->findChild<QLabel *>(QStringLiteral("configNotice"));
+    QVERIFY(notice);
+    QVERIFY2(!notice->text().contains(QStringLiteral("must be written over SSH")),
+             qPrintable(notice->text()));
+
+    // A second close while that write is out asks NOTHING: a second Save would race the
+    // first over an in-place, non-atomic file.
+    bool promptedAgain = false;
+    QTimer::singleShot(0, [&promptedAgain] {
+        if (QWidget *modal = QApplication::activeModalWidget()) {
+            promptedAgain = true;
+            QTest::keyClick(modal, Qt::Key_Escape);
+        }
+    });
+    QMetaObject::invokeMethod(tabs, "tabCloseRequested", Q_ARG(int, tabs->indexOf(view)));
+    QTest::qWait(50);
+    QVERIFY(!promptedAgain);
+    QVERIFY(tabs->indexOf(view) >= 0);
+#endif
 }
 
 int main(int argc, char *argv[])
