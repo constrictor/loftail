@@ -154,6 +154,9 @@ private slots:
         s.remove(QStringLiteral("session"));
         s.sync();
         clearLogSettings();
+        // A saved host renames every remote tab on it, so one left behind by a case
+        // would move the next case's tab titles.
+        QVERIFY(HostBookmarkStore(HostBookmarkStore::defaultDir()).replaceAll({}));
     }
 
     void opensARemoteUrlAsATab();
@@ -171,6 +174,7 @@ private slots:
     void aBackgroundResumeRaisesNoFormatDialog();
     void aChangedReasonReachesTheViewTheTabAndTheStatusBar();
     void aDisconnectKeepsTheRecordsAndSaysSoBesideThem();
+    void aSavedHostNamesTheTabRatherThanItsAddress();
 };
 
 void TestRemoteOpen::opensARemoteUrlAsATab()
@@ -183,11 +187,9 @@ void TestRemoteOpen::opensARemoteUrlAsATab()
     settle();
 
     QCOMPARE(tabCount(window), 1);
-    // The host is what tells two same-named logs from different machines apart — so a
-    // TAB carries it only when there is another tab to be told from (TabLabels.h), and
-    // with one log open there is not. The title bar and the status line are not a set
-    // of anything, so they name the log in full and always have.
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log"));
+    // A remote tab always says which machine it is reading, alone or not
+    // (TabLabels.h). The title bar and the status line name the log in full.
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log (web1)"));
     QCOMPARE(window.windowTitle(), QStringLiteral("loftail — app.log (web1)"));
     QVERIFY(statusText(window).contains(QStringLiteral("app.log (web1)")));
     QVERIFY(statusText(window).contains(QStringLiteral("2 records")));
@@ -234,7 +236,7 @@ void TestRemoteOpen::dropOfAnSshUrlOpens()
     settle();
 
     QCOMPARE(tabCount(window), 1);
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log"));
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log (web1)"));
 }
 
 void TestRemoteOpen::remoteOpenIsRemembered()
@@ -281,7 +283,7 @@ void TestRemoteOpen::sessionRoundTripsARemoteDocument()
         MainWindow window; // the constructor restores the session
         settle();
         QCOMPARE(tabCount(window), 1);
-        QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log"));
+        QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log (web1)"));
         QVERIFY(statusText(window).contains(QStringLiteral("2 records")));
     }
 }
@@ -376,7 +378,7 @@ void TestRemoteOpen::unreachableRemoteOpensAWaitingTab()
 
     QCOMPARE(tabCount(window), 1);
     // Marked in the tab bar, so a log that is not there is tellable from an empty one.
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log"));
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log (web1)"));
     QVERIFY(statusText(window).contains(QStringLiteral("Connection refused")));
 
     auto *view = window.findChild<LogView *>(QStringLiteral("logView"));
@@ -388,7 +390,7 @@ void TestRemoteOpen::unreachableRemoteOpensAWaitingTab()
     // brings the log in with no reopening and no dialog.
     remote->becomeAvailable();
     QTRY_VERIFY_WITH_TIMEOUT(view->recordCount() > 0, 5000);
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log"));
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log (web1)"));
     QVERIFY(statusText(window).contains(QStringLiteral("2 records")));
 }
 
@@ -475,7 +477,7 @@ void TestRemoteOpen::aTransportRefusalKeepsTheTabAndSaysWhy()
     settle(200);
 
     QCOMPARE(tabCount(window), 1);
-    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log"));
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("◦ app.log (web1)"));
     QVERIFY(statusText(window).contains(QStringLiteral("Authentication")));
 
     auto *view = window.findChild<LogView *>(QStringLiteral("logView"));
@@ -701,6 +703,38 @@ void TestRemoteOpen::aDisconnectKeepsTheRecordsAndSaysSoBesideThem()
     QVERIFY(!tabs(window)->tabText(0).startsWith(QString::fromUtf8("⊘ ")));
     QVERIFY(!statusText(window).contains(gone));
     QCOMPARE(view->recordCount(), before);
+}
+
+// The name a host was saved under in File ▸ Remote Hosts is what its tabs call it — which
+// is the whole point of naming a host whose address is an IP nobody reads a tab by. The
+// match is the connection's identity (user, host, port), so the bookmark must name the
+// same account the address does.
+void TestRemoteOpen::aSavedHostNamesTheTabRatherThanItsAddress()
+{
+    // The farm FIRST: it switches QStandardPaths into test mode, which moves
+    // HostBookmarkStore::defaultDir(), so a host saved before it is saved somewhere the
+    // window never reads.
+    FakeRemoteFarm farm;
+    farm.at(url())->setInitialContent(sampleLog());
+
+    HostBookmarkStore store(HostBookmarkStore::defaultDir());
+    HostBookmark web1;
+    web1.user = QStringLiteral("deploy");
+    web1.host = QStringLiteral("web1");
+    web1.label = QStringLiteral("Production");
+    QVERIFY(store.replaceAll({web1}));
+
+    MainWindow window;
+    window.openFile(url(), QString::fromLatin1(kPattern));
+    settle();
+
+    QCOMPARE(tabCount(window), 1);
+    QCOMPARE(tabs(window)->tabText(0), QStringLiteral("app.log (Production)"));
+    // The tooltip is still the full address: the name says which machine, the address
+    // says exactly where.
+    QVERIFY(tabs(window)->tabToolTip(0).startsWith(RemoteLocation::normalize(url())));
+
+    QVERIFY(store.replaceAll({})); // inside the farm's test mode, where it was written
 }
 
 int main(int argc, char *argv[])

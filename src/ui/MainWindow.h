@@ -21,6 +21,7 @@
 #include "ConfigSyntax.h"
 #include "DocumentContext.h"
 #include "FormatSettings.h"
+#include "HostBookmarkStore.h"
 #include "LogFileStore.h"
 #include "LogSettingsStore.h"
 #include "LogView.h"
@@ -878,6 +879,12 @@ private:
     // function whose whole definition is "the set of open logs changed" — hands it the
     // pinned set, and nothing else does.
     LogFileStore     m_fileStore{LogFileStore::defaultDir()};
+    // The saved hosts as refreshRemoteHostsMenu() last read them, which is what names a
+    // remote tab's machine (relabelTabs()). A COPY rather than a fresh read because
+    // relabelTabs() runs on every open and close and hosts.json is re-parsed on every
+    // HostBookmarkStore::all() — and refreshRemoteHostsMenu() is already called at every
+    // point the list can move, so this is never older than the menu beside it.
+    QVector<HostBookmark> m_hostBookmarks;
     // View ▸ Line Wrap. Held so the checked entry can be made to track the ACTIVE view,
     // which matters now that the mode a log opens in is its own (M20) rather than one
     // window-wide choice: each action carries its WrapMode in QAction::data().

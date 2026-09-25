@@ -18,6 +18,7 @@
 
 #include <QtTest>
 
+#include "RemoteLocation.h"
 #include "TabLabels.h"
 
 using namespace loftail;
@@ -44,7 +45,7 @@ private slots:
     void twoLogsWithOneNameAreToldApartByTheirDeviceFirst();
     void twoLogsWithOneNameAreToldApartByTheirDeviceFirst_data();
 
-    void aDeviceEveryLogSharesIsNotSpelledOut();
+    void aDeviceEveryLogSharesIsStillSpelledOut();
     void aThirdLogOnAnotherHostBringsTheDeviceBack();
 
     void anArchiveContainerQualifiesOnlyWhenItIsWhatDiffers();
@@ -68,6 +69,13 @@ private slots:
     void theDegenerateAddressesStillGetANonEmptyLabel();
     void theOrderOutIsTheOrderIn();
 
+    void aSavedHostIsNamedByItsNameRatherThanItsAddress();
+    void aHostWithNoSavedNameFallsBackToItsAddress();
+    void aLocalLogNeverAsksForADeviceName();
+    void aRemoteArchiveIsNamedByItsSavedHostToo();
+    void twoHostsSavedUnderOneNameAreStillToldApartByPath();
+    void savedNamesCanSeparateWhatTheAddressCouldNot();
+
     void theRecentMenuKeepsTheOlderPrefixRule();
     void theRecentMenuKeepsTheOlderPrefixRule_data();
     void aRecentEntryWithAnEnormousDirectoryIsElidedInItsMiddle();
@@ -81,8 +89,8 @@ static void run(const QStringList &addresses, const QStringList &expected)
 }
 
 // A bracket is what a log grows to be told from the tabs beside it, so a log with
-// nothing beside it answering to its name never grows one — a remote or archived log
-// included, which is the visible change from the rule this replaced.
+// nothing beside it answering to its name never grows one — an archived log included.
+// A REMOTE log is the one exception: which machine it is on is always said.
 void TestTabLabels::aLogWhoseNameNoOneSharesCarriesNoQualifierAtAll_data()
 {
     QTest::addColumn<QStringList>("addresses");
@@ -101,10 +109,12 @@ void TestTabLabels::aLogWhoseNameNoOneSharesCarriesNoQualifierAtAll_data()
         << QStringList{QStringLiteral("/srv/a/app.log"), QStringLiteral("/srv/b/db.log")}
         << QStringList{QStringLiteral("app.log"), QStringLiteral("db.log")};
 
-    // The host is a way of telling two logs apart, not a decoration on every remote one.
+    // ...except the machine: a remote tab always says which one it is reading, because
+    // a remote tab that reads exactly like a local one is how the wrong machine gets
+    // acted on.
     QTest::newRow("a remote log on its own")
         << QStringList{QStringLiteral("ssh://host-a/var/log/app.log")}
-        << QStringList{QStringLiteral("app.log")};
+        << QStringList{QStringLiteral("app.log (host-a)")};
 
     QTest::newRow("an archived log on its own")
         << QStringList{QStringLiteral("/srv/bundle.zip/var/log/db.log")}
@@ -151,14 +161,14 @@ void TestTabLabels::twoLogsWithOneNameAreToldApartByTheirDeviceFirst()
     run(addresses, expected);
 }
 
-// An axis is spent only where it BUYS a distinction. A host every log in the group is on
-// tells none of them apart, so it is left out and the directories do the work — which is
-// the whole of "if both files are on the same device, find the path element".
-void TestTabLabels::aDeviceEveryLogSharesIsNotSpelledOut()
+// The device is the one axis spent whether or not it buys anything: a remote tab always
+// names its machine. The directories are then spent because they DO buy something, and
+// read after it — device, then path.
+void TestTabLabels::aDeviceEveryLogSharesIsStillSpelledOut()
 {
     run({QStringLiteral("ssh://host-a/var/log/svc-a/app.log"),
          QStringLiteral("ssh://host-a/var/log/svc-b/app.log")},
-        {QStringLiteral("app.log (svc-a)"), QStringLiteral("app.log (svc-b)")});
+        {QStringLiteral("app.log (host-a, svc-a)"), QStringLiteral("app.log (host-a, svc-b)")});
 }
 
 // ...and it comes back the moment it starts telling something apart. The two components
@@ -295,17 +305,17 @@ void TestTabLabels::aRunAboveAnArchiveContinuesIntoIt()
 
 // Two accounts on one host reading one path, and two ports on one host: nothing in the
 // address's axes can separate them — displayHost() carries neither user nor port — and
-// inventing a marker would say something the address does not. Both keep the shared name
-// and the tooltip carries the full address.
+// inventing a marker would say something the address does not. Both keep the shared
+// label and the tooltip carries the full address.
 void TestTabLabels::addressesThatNothingCanSeparateKeepTheirSharedName()
 {
     run({QStringLiteral("ssh://alice@host-a/var/log/app.log"),
          QStringLiteral("ssh://bob@host-a/var/log/app.log")},
-        {QStringLiteral("app.log"), QStringLiteral("app.log")});
+        {QStringLiteral("app.log (host-a)"), QStringLiteral("app.log (host-a)")});
 
     run({QStringLiteral("ssh://host-a:2222/var/log/app.log"),
          QStringLiteral("ssh://host-a/var/log/app.log")},
-        {QStringLiteral("app.log"), QStringLiteral("app.log")});
+        {QStringLiteral("app.log (host-a)"), QStringLiteral("app.log (host-a)")});
 }
 
 void TestTabLabels::anEnormousPathRunIsElidedInTheMiddleAndTheLogsOwnNameIsKeptWhole()
@@ -498,6 +508,89 @@ void TestTabLabels::aRecentEntryWithAnEnormousDirectoryIsElidedInItsMiddle()
         QVERIFY(l.startsWith(QStringLiteral("logs-for"))); // head kept
         QVERIFY(l.size() <= kMaxTabQualifierChars + int(qstrlen("app.log")));
     }
+}
+
+// --- Saved host names -------------------------------------------------------
+
+// What File ▸ Remote Hosts would answer: the name a host was saved under, keyed here on
+// host and port, since the namer is handed the parsed location.
+static DeviceNamer namerFor(const QHash<QString, QString> &names)
+{
+    return [names](const RemoteLocation &location) {
+        return names.value(QStringLiteral("%1:%2").arg(location.host).arg(location.port));
+    };
+}
+
+void TestTabLabels::aSavedHostIsNamedByItsNameRatherThanItsAddress()
+{
+    const DeviceNamer namer = namerFor({{QStringLiteral("10.0.0.5:22"), QStringLiteral("prod-db")},
+                                        {QStringLiteral("10.0.0.6:22"), QStringLiteral("staging")}});
+    QCOMPARE(tabLabelsFor({QStringLiteral("ssh://10.0.0.5/var/log/app.log")},
+                          kMaxTabQualifierChars, namer),
+             QStringList{QStringLiteral("app.log (prod-db)")});
+    QCOMPARE(tabLabelsFor({QStringLiteral("ssh://10.0.0.5/var/log/app.log"),
+                           QStringLiteral("ssh://10.0.0.6/var/log/app.log")},
+                          kMaxTabQualifierChars, namer),
+             (QStringList{QStringLiteral("app.log (prod-db)"), QStringLiteral("app.log (staging)")}));
+}
+
+// An empty answer — no bookmark, or one saved with no name — is not a name, and the
+// address's own host stands in. A blank answer is trimmed to the same thing.
+void TestTabLabels::aHostWithNoSavedNameFallsBackToItsAddress()
+{
+    const DeviceNamer namer = namerFor({{QStringLiteral("10.0.0.6:22"), QStringLiteral("  ")}});
+    QCOMPARE(tabLabelsFor({QStringLiteral("ssh://10.0.0.5/var/log/app.log"),
+                           QStringLiteral("ssh://10.0.0.6/var/log/db.log")},
+                          kMaxTabQualifierChars, namer),
+             (QStringList{QStringLiteral("app.log (10.0.0.5)"), QStringLiteral("db.log (10.0.0.6)")}));
+}
+
+void TestTabLabels::aLocalLogNeverAsksForADeviceName()
+{
+    int asked = 0;
+    const DeviceNamer namer = [&asked](const RemoteLocation &) {
+        ++asked;
+        return QStringLiteral("nope");
+    };
+    QCOMPARE(tabLabelsFor({QStringLiteral("/var/log/app.log"),
+                           QStringLiteral("/srv/bundle.zip/var/log/db.log")},
+                          kMaxTabQualifierChars, namer),
+             (QStringList{QStringLiteral("app.log"), QStringLiteral("db.log")}));
+    QCOMPARE(asked, 0);
+}
+
+// A member inside a remote container is on the container's machine, and is named by it.
+void TestTabLabels::aRemoteArchiveIsNamedByItsSavedHostToo()
+{
+    const DeviceNamer namer = namerFor({{QStringLiteral("10.0.0.5:22"), QStringLiteral("prod-db")}});
+    QCOMPARE(tabLabelsFor({QStringLiteral("ssh://10.0.0.5/srv/bundle.zip/var/log/db.log")},
+                          kMaxTabQualifierChars, namer),
+             QStringList{QStringLiteral("db.log (prod-db)")});
+}
+
+// A saved name is a label, not an identity: two hosts saved under one name read alike on
+// that axis, and the directories then do the telling exactly as for one shared host.
+void TestTabLabels::twoHostsSavedUnderOneNameAreStillToldApartByPath()
+{
+    const DeviceNamer namer = namerFor({{QStringLiteral("10.0.0.5:22"), QStringLiteral("web")},
+                                        {QStringLiteral("10.0.0.6:22"), QStringLiteral("web")}});
+    QCOMPARE(tabLabelsFor({QStringLiteral("ssh://10.0.0.5/var/log/svc-a/app.log"),
+                           QStringLiteral("ssh://10.0.0.6/var/log/svc-b/app.log")},
+                          kMaxTabQualifierChars, namer),
+             (QStringList{QStringLiteral("app.log (web, svc-a)"),
+                          QStringLiteral("app.log (web, svc-b)")}));
+}
+
+// Two ports on one host share displayHost(), so the address alone cannot tell them apart
+// (addressesThatNothingCanSeparateKeepTheirSharedName) — but two SAVED hosts can.
+void TestTabLabels::savedNamesCanSeparateWhatTheAddressCouldNot()
+{
+    const DeviceNamer namer = namerFor({{QStringLiteral("host-a:22"), QStringLiteral("blue")},
+                                        {QStringLiteral("host-a:2222"), QStringLiteral("green")}});
+    QCOMPARE(tabLabelsFor({QStringLiteral("ssh://host-a:2222/var/log/app.log"),
+                           QStringLiteral("ssh://host-a/var/log/app.log")},
+                          kMaxTabQualifierChars, namer),
+             (QStringList{QStringLiteral("app.log (green)"), QStringLiteral("app.log (blue)")}));
 }
 
 QTEST_MAIN(TestTabLabels)

@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 202 rules
+## Guarded — 203 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -85,6 +85,7 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The early return is after the `restoreState()` block and before `beginBulkRestore()`, and calls `updateEmptyState()` | Named-file launch (L15) | tst_tabsession::namedFilesReplaceTheSessionsTabsAndKeepItsShell |
 | The decision is the constructor's parameter, not a close-everything pass in `main()` | Named-file launch (L15) | tst_tabsession::namedFilesReplaceTheSessionsTabsAndKeepItsShell |
 | The old tab set is deliberately not preserved anywhere | Named-file launch (L15) | tst_tabsession::namedFilesReplaceTheSessionsTabsAndKeepItsShell |
+| The device axis is always spent for a remote log, named by its saved Remote Hosts name where it has one | Tab labels (L17) | tst_tablabels::aSavedHostIsNamedByItsNameRatherThanItsAddress<br>tst_remoteopen::aSavedHostNamesTheTabRatherThanItsAddress |
 | Every address has a non-empty display name, falling back to the deepest segment, then the scheme word, then `(unnamed)` | Display name (L19) | tst_remotelocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath |
 | The fallback must stay a SEGMENT and never a path, or `prefixedLabelsFor()` stops grouping | Display name (L19) | tst_remotelocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath |
 | `logSourceBareName()` is the name with the bracket off and is `tabLabelsFor()`'s grouping key, so it may not hold a path | Display name (L19) | tst_remotelocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath |

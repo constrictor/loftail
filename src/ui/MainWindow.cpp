@@ -2322,6 +2322,14 @@ void MainWindow::refreshRemoteHostsMenu()
 
     if (m_welcome)
         m_welcome->setRemotes(welcome);
+
+    // A THIRD rendering of the same enumeration: a remote tab names its machine by the
+    // name it was saved under, so adding, renaming or removing a host relabels the tabs
+    // already open on it. Only with tabs to relabel: the constructor calls this before
+    // the tab widget and the actions relabelTabs() reaches exist.
+    m_hostBookmarks = hosts;
+    if (!m_contexts.empty())
+        relabelTabs();
 }
 
 void MainWindow::openRemoteBookmark(const QString &hostName, const QString &path)
@@ -3585,7 +3593,19 @@ void MainWindow::relabelTabs()
 
     // One pass over the whole set: what a log is called depends on which others are
     // open, so closing one of two app.logs has to shorten the survivor back again.
-    const QStringList labels = tabLabelsFor(addresses);
+    //
+    // A remote log's machine is named by what it was saved under in File ▸ Remote Hosts,
+    // where it was saved under anything; the address's own host otherwise. The match is
+    // HostBookmarkStore::find()'s — user, host and port, the connection's identity — and
+    // `label` rather than displayName(), which falls back to the bookmark's host and
+    // would name `ssh://h:2222/...` after a bookmark's `h` spelled differently.
+    const QStringList labels = tabLabelsFor(
+        addresses, kMaxTabQualifierChars, [this](const RemoteLocation &location) {
+            bool found = false;
+            const HostBookmark host =
+                HostBookmarkStore::find(m_hostBookmarks, location, &found);
+            return found ? host.label : QString();
+        });
     for (int i = 0; i < labels.size(); ++i) {
         if (m_contexts[i]->tabLabel == labels.at(i))
             continue;
