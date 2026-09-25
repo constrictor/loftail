@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 209 rules
+## Guarded — 210 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -155,6 +155,7 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | A deleted file is never reloaded into an empty buffer | Config external change (L81) | tst_configeditor::aDeletedFileIsReportedAndNeverReloadedIntoNothing |
 | A probe is dropped if `diskGeneration()` moved while it was in flight | Config external change (L81) | tst_configeditor::aProbeThatStartedBeforeASaveIsDiscarded |
 | The remote probe answers `probeFinished()` once, with what is on the far end now | Config external change (L81) | tst_sshlive::aConfigProbeSeesAChangeMadeOnTheFarEnd |
+| The unsaved-changes prompt's Save writes a remote config the remote way and defers the close until it lands | Config external change (L81) | tst_configeditor::saveInTheClosePromptWritesARemoteConfigOverSsh |
 | "Not there" and "there and shut" are different sentences, and only the first is the supported empty-editor case | Presence not emptiness (L207) | tst_writefailure::aConfigThatIsThereAndShutIsNotDescribedAsOneThatIsNotThere |
 | The libssh2 half of the config write now runs on every push against real servers | Config write in CI (L73) | tst_sshlive::aConfigFileIsReadAndWrittenWholeOverSftp<br>tst_sshlive::writingAConfigKeepsItsPermissions<br>tst_sshlive::theExecFallbackWritesTheSameBytes |
 | `logAnchorOf()` and `SshWorkerPool` were EXTRACTED rather than copied, the untouched suites being the evidence | M23 (L75) | tst_configlocation<br>tst_configeditor |
