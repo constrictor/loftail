@@ -86,11 +86,17 @@ QStringList parentSegments(const QString &path)
 }
 
 // The directories above an address that may be remote, and the host if it is one.
-void takeLocation(const QString &address, QStringList *segments, QString *device)
+void takeLocation(const QString &address, const DeviceNamer &deviceName,
+                  QStringList *segments, QString *device)
 {
     if (const auto url = RemoteLocation::parse(address)) {
         *segments = parentSegments(url->path);
-        *device = url->displayHost();
+        // The name the host was saved under, where it has one; the address's own host
+        // otherwise. Never empty for a parsed address, which is what keeps every remote
+        // tab carrying its machine.
+        *device = deviceName ? deviceName(*url).trimmed() : QString();
+        if (device->isEmpty())
+            *device = url->displayHost();
         return;
     }
     // A remote-shaped address that did NOT parse still has to give up its segments, and
@@ -104,12 +110,12 @@ void takeLocation(const QString &address, QStringList *segments, QString *device
     device->clear();
 }
 
-Parts partsOf(const QString &address)
+Parts partsOf(const QString &address, const DeviceNamer &deviceName)
 {
     Parts p;
     p.bare = logSourceBareName(address);
     if (const auto loc = ArchiveLocation::split(address)) {
-        takeLocation(loc->container, &p.outer, &p.device);
+        takeLocation(loc->container, deviceName, &p.outer, &p.device);
         // Only a NAMED member has directories of its own inside the container. Where
         // none is named the bare name IS the container's, so naming it again would read
         // "bundle.zip (bundle.zip)".
@@ -120,7 +126,7 @@ Parts partsOf(const QString &address)
             p.container = name;
         return p;
     }
-    takeLocation(address, &p.outer, &p.device);
+    takeLocation(address, deviceName, &p.outer, &p.device);
     return p;
 }
 
@@ -308,41 +314,43 @@ QVector<QVector<int>> groupsBy(const QStringList &keys)
 
 } // namespace
 
-QStringList tabLabelsFor(const QStringList &addresses, int maxQualifierChars)
+QStringList tabLabelsFor(const QStringList &addresses, int maxQualifierChars,
+                         const DeviceNamer &deviceName)
 {
     QVector<Parts> parts;
     parts.reserve(addresses.size());
     QStringList keys;
     keys.reserve(addresses.size());
     for (const QString &a : addresses) {
-        parts.append(partsOf(a));
+        parts.append(partsOf(a, deviceName));
         keys.append(parts.last().bare);
     }
 
     QStringList labels;
     labels.resize(addresses.size());
     for (const QVector<int> &members : groupsBy(keys)) {
-        // A log nothing else answers to keeps its plain name. This is the whole of "the
-        // bracket appears only when there is something to be told from": a solitary
-        // remote log reads `app.log`, not `app.log (web1)`.
+        // The DEVICE is always spent: a remote log carries its machine whether or not
+        // anything else is open, and a local log has none, so for one this changes
+        // nothing — a local log nothing else answers to keeps its plain name.
+        bool use[AxisCount] = {true, false, false};
         if (members.size() == 1) {
-            labels[members.first()] = parts.at(members.first()).bare;
+            labels[members.first()] =
+                labelFor(parts.at(members.first()), QString(), use, maxQualifierChars);
             continue;
         }
 
         const QStringList runs = pathRuns(parts, members);
 
-        // One axis at a time, in priority order, and an axis is kept only when it BUYS
-        // something. That is what leaves the host out of a group whose members all share
-        // one — `app.log (svc-a)` rather than `app.log (host-a, svc-a)` — and what
-        // settles a group no axis can separate: they keep the shared name, and the
-        // tooltip, which is always the full address, does the telling.
+        // The remaining axes one at a time, in priority order, and each is kept only when
+        // it BUYS something. That settles a group no axis can separate: they keep the
+        // shared label, and the tooltip, which is always the full address, does the
+        // telling.
         //
         // The comparison is on the label AS SHOWN, elision included, so a run that
         // elides down to one string cannot quietly hand two logs one label again.
-        bool use[AxisCount] = {false, false, false};
-        int best = 1; // what no axis achieves: one label for the whole group
-        for (int axis = 0; axis < AxisCount && best < int(members.size()); ++axis) {
+        int best = distinctLabels(parts, members, runs, use, maxQualifierChars);
+        for (int axis = AxisContainer; axis < AxisCount && best < int(members.size());
+             ++axis) {
             use[axis] = true;
             const int distinct = distinctLabels(parts, members, runs, use, maxQualifierChars);
             if (distinct > best)

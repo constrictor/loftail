@@ -18,6 +18,8 @@
 
 #include "SessionStore.h"
 
+#include "SchemaVersion.h"
+
 #include <QJsonDocument>
 #include <QSettings>
 
@@ -47,10 +49,16 @@ Session SessionStore::load(QSettings &settings)
     settings.beginGroup(QLatin1String(kGroup));
 
     // A schema version from the future (or an absent one) yields an empty session
-    // rather than a half-read one — a clean first launch (§8). Versions 1 and 2 are
-    // read and migrated; anything else is discarded.
+    // rather than a half-read one — a clean first launch (§8). Every version from 1 up
+    // is read and migrated forward; only a later one is discarded.
+    //
+    // A RANGE AND NOT A LIST OF EQUALITIES. The list was correct and had to be extended
+    // by hand at every bump — a step nothing fails for missing, since a forgotten version
+    // reads as a clean first launch and the user's tabs are simply gone. Schema::judge()
+    // is the same question the four JSON stores ask, so a version added here is readable
+    // the moment kSchemaVersion moves.
     const int version = settings.value(QLatin1String(kSchema), 0).toInt();
-    if (version != kSchemaVersion && version != 1 && version != 2 && version != 3) {
+    if (Schema::judge(version, kSchemaVersion) != Schema::Verdict::Usable) {
         settings.endGroup();
         return session;
     }
@@ -150,6 +158,22 @@ void SessionStore::save(QSettings &settings, const Session &session)
 {
     settings.beginGroup(QLatin1String(kGroup));
 
+    // ASKED OF THE STORE AND NOT CARRIED IN THE Session, because a quit builds a fresh
+    // Session out of the open tabs rather than editing the one it loaded — a flag set at
+    // load would have to be plumbed through MainWindow to arrive here, which is a wire to
+    // forget. Re-reading the stamp costs one QSettings lookup on the quit path.
+    //
+    // A session is the most disposable thing loftail stores, so this protects less than
+    // its equivalents elsewhere; it is here because the alternative is an older build
+    // silently replacing a newer one's tab list, editor pages and pane layout with a
+    // shape the newer build will then discard in turn — the two fighting over one key on
+    // every launch, which is the state nobody diagnoses.
+    if (Schema::judge(settings.value(QLatin1String(kSchema), 0).toInt(), kSchemaVersion)
+        == Schema::Verdict::FromFuture) {
+        settings.endGroup();
+        return;
+    }
+
     // Clear the arrays first so a shrunk list leaves no stale indices
     // (QSettings::beginWriteArray does not remove entries beyond the new size).
     settings.remove(QLatin1String(kDocuments));
@@ -157,6 +181,11 @@ void SessionStore::save(QSettings &settings, const Session &session)
     settings.remove(QLatin1String(kEditors));
     settings.remove(QLatin1String(kActiveDocumentV1)); // superseded by activeView
 
+    // NO BACKUP COPY IS TAKEN HERE, unlike the four JSON stores. A session is not a
+    // configuration: it is which tabs were open at the last quit, rebuilt by opening them
+    // again, and the store is QSettings — an INI file on Linux, the registry on Windows —
+    // so there is no single path to copy aside on every platform. A migration that goes
+    // wrong costs the tab list of one launch.
     settings.setValue(QLatin1String(kSchema), kSchemaVersion);
     settings.setValue(QLatin1String(kGeometry), session.geometry);
     settings.setValue(QLatin1String(kWindowState), session.windowState);

@@ -27,6 +27,7 @@
 #include "ConfigLocation.h"
 #include "RestartDialog.h"
 #include "RestartTarget.h"
+#include "ConfigChangeWatcher.h"
 #include "ConfigView.h"
 #include "CopyHighlightersDialog.h"
 #include "DocumentView.h"
@@ -1619,6 +1620,11 @@ ConfigView *MainWindow::buildConfigTab(const QString &address, int insertAt,
     updateConfigTabTitle(view);
     updateEmptyState();
 
+    // BOTH branches, so a session-restored page is watched exactly as an opened one is.
+    // Remote, it holds its first probe while the page's own read is in flight (the page
+    // is busy); locally the read above has already set the baseline.
+    new ConfigChangeWatcher(view);
+
     if (remote) {
         // THE TAB IS UP BEFORE THE FAR END ANSWERS, which is M17's rule for a log and is
         // the same rule here: a connect is up to twenty seconds and may stop to ask for a
@@ -1721,11 +1727,14 @@ void MainWindow::saveConfig(ConfigView *view, std::function<void()> then)
         updateActionStates();
         auto *transfer = new ConfigTransfer(view);
         connect(transfer, &ConfigTransfer::writeFinished, view,
-                [this, view, transfer, sentAt, then](const ConfigWriteResult &result) {
+                [this, view, transfer, sentAt, then, payload](const ConfigWriteResult &result) {
                     view->setBusy(false, QString());
                     if (!result.ok) {
                         view->showNotice(result.error);
                     } else {
+                        // The bytes SENT, not the buffer now: that is what is on the far
+                        // end, and the next probe must find it unchanged.
+                        view->markWrittenAs(payload);
                         if (view->revision() == sentAt)
                             view->setModified(false);
                         view->clearNotice();
@@ -1759,6 +1768,9 @@ void MainWindow::saveConfig(ConfigView *view, std::function<void()> then)
         view->showNotice(result.error);
         return;
     }
+    // BEFORE control returns to the event loop, which is where the watch event this
+    // write provokes will be delivered — so it finds these bytes and says nothing.
+    view->markWrittenAs(payload);
     view->setModified(false);
     updateConfigTabTitle(view);
     if (!result.error.isEmpty()) {
@@ -1823,10 +1835,16 @@ void MainWindow::saveCloseAndRestart()
     saveConfig(view, then);
 }
 
-bool MainWindow::confirmDiscard(ConfigView *view)
+bool MainWindow::confirmDiscard(ConfigView *view, std::function<void()> retry)
 {
     if (!view || !view->isModified())
         return true;
+    // A remote save of this very buffer is already in flight — started by an earlier
+    // answer to this prompt, or by Ctrl+S. Asking again would offer a second write racing
+    // the first over an in-place, non-atomic file; the gesture waits instead, and the
+    // red "Saving…" on the page says why nothing happened.
+    if (view->isBusy())
+        return false;
     QMessageBox box(this);
     box.setIcon(QMessageBox::Warning);
     box.setWindowTitle(tr("Unsaved changes"));
@@ -1837,6 +1855,17 @@ bool MainWindow::confirmDiscard(ConfigView *view)
     box.setEscapeButton(QMessageBox::Cancel);
     switch (box.exec()) {
     case QMessageBox::Save: {
+        if (configAddressIsRemote(view->address())) {
+            // THE SAVE GOES THE WAY EVERY REMOTE SAVE GOES — writeConfigFile() is the
+            // local writer and refuses an ssh:// address outright, which is what this
+            // branch used to call, so Save here wrote nothing, said "must be written over
+            // SSH" and cancelled the close. saveConfig() refuses lossy bytes before any
+            // round trip, shows the save in red, keeps the tab and the reason on failure,
+            // and runs `retry` QUEUED and only on success — so the re-issued close never
+            // runs inside a slot of the page it may delete.
+            saveConfig(view, std::move(retry));
+            return false;
+        }
         QByteArray payload;
         QString lossy;
         if (!view->bytesToSave(&payload, &lossy)) {
@@ -1853,6 +1882,7 @@ bool MainWindow::confirmDiscard(ConfigView *view)
             view->showNotice(result.error);
             return false;
         }
+        view->markWrittenAs(payload);
         view->setModified(false);
         return true;
     }
@@ -1868,8 +1898,13 @@ void MainWindow::closeViewAt(int index)
     // An editor page is closed here too. Without this branch the qobject_cast below
     // fails, the function returns, and the tab's own ✕ button silently does nothing.
     if (auto *editor = qobject_cast<ConfigView *>(m_tabs->widget(index))) {
-        if (!confirmDiscard(editor))
-            return; // the reader cancelled: the tab stays, with its edits
+        const QPointer<ConfigView> guard(editor);
+        // By POINTER, never by the index: the tabs may move while a remote save is out.
+        if (!confirmDiscard(editor, [this, guard]() {
+                if (guard)
+                    closeViewAt(m_tabs->indexOf(guard));
+            }))
+            return; // cancelled, failed, or saving remotely: the tab stays, with its edits
         closeEditorPage(editor);
         return;
     }
@@ -2355,6 +2390,14 @@ void MainWindow::refreshRemoteHostsMenu()
 
     if (m_welcome)
         m_welcome->setRemotes(welcome);
+
+    // A THIRD rendering of the same enumeration: a remote tab names its machine by the
+    // name it was saved under, so adding, renaming or removing a host relabels the tabs
+    // already open on it. Only with tabs to relabel: the constructor calls this before
+    // the tab widget and the actions relabelTabs() reaches exist.
+    m_hostBookmarks = hosts;
+    if (!m_contexts.empty())
+        relabelTabs();
 }
 
 void MainWindow::refreshSerialMenu()
@@ -2557,7 +2600,7 @@ void MainWindow::closeAllDocuments(Prompt prompt)
     if (prompt == Prompt::Ask) {
         const QVector<ConfigView *> editors = m_editors;
         for (ConfigView *editor : editors) {
-            if (!confirmDiscard(editor))
+            if (!confirmDiscard(editor, [this, prompt]() { closeAllDocuments(prompt); }))
                 return;
         }
     }
@@ -3790,7 +3833,19 @@ void MainWindow::relabelTabs()
 
     // One pass over the whole set: what a log is called depends on which others are
     // open, so closing one of two app.logs has to shorten the survivor back again.
-    const QStringList labels = tabLabelsFor(addresses);
+    //
+    // A remote log's machine is named by what it was saved under in File ▸ Remote Hosts,
+    // where it was saved under anything; the address's own host otherwise. The match is
+    // HostBookmarkStore::find()'s — user, host and port, the connection's identity — and
+    // `label` rather than displayName(), which falls back to the bookmark's host and
+    // would name `ssh://h:2222/...` after a bookmark's `h` spelled differently.
+    const QStringList labels = tabLabelsFor(
+        addresses, kMaxTabQualifierChars, [this](const RemoteLocation &location) {
+            bool found = false;
+            const HostBookmark host =
+                HostBookmarkStore::find(m_hostBookmarks, location, &found);
+            return found ? host.label : QString();
+        });
     for (int i = 0; i < labels.size(); ++i) {
         if (m_contexts[i]->tabLabel == labels.at(i))
             continue;
@@ -5579,7 +5634,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // In tab order, so the questions arrive left to right the way the tabs read.
     for (int i = 0; i < m_tabs->count(); ++i) {
         if (auto *editor = qobject_cast<ConfigView *>(m_tabs->widget(i))) {
-            if (!confirmDiscard(editor)) {
+            // The retry is close() itself, which comes back through here — so the other
+            // editors are still asked, and still before saveSession().
+            if (!confirmDiscard(editor, [this]() { close(); })) {
                 event->ignore();
                 return;
             }

@@ -145,7 +145,9 @@ void TstLogFileStore::aRecordRoundTripsWhole()
     s.run.startOffset = 4096;
     s.run.startTimestamp = 1700000000000LL;
 
-    const LogFileSettings back = LogFileSettings::fromJson(s.toJson());
+    const std::optional<LogFileSettings> read = LogFileSettings::fromJson(s.toJson());
+    QVERIFY(read.has_value());
+    const LogFileSettings back = *read;
     QCOMPARE(back, s);
     QVERIFY(back.profile.has_value());
     QCOMPARE(back.profile->format.encoding, Encoding::Utf16LE);
@@ -169,7 +171,9 @@ void TstLogFileStore::anInheritedProfileIsAMarkAndNotAnAbsence()
     QVERIFY(o.contains(QStringLiteral("profile")));
     QCOMPARE(o.value(QStringLiteral("profile")).toString(), QStringLiteral("inherited"));
 
-    QVERIFY(!LogFileSettings::fromJson(o).profile.has_value());
+    const std::optional<LogFileSettings> back = LogFileSettings::fromJson(o);
+    QVERIFY(back.has_value());
+    QVERIFY(!back->profile.has_value());
 }
 
 void TstLogFileStore::everySectionThatFallsIntoLineIsDropped()
@@ -206,15 +210,18 @@ void TstLogFileStore::aStoredEmptyRuleListIsAnAnswerAndSurvives()
     QVERIFY(s.highlighters->isEmpty());
     QVERIFY(s.saysSomething());
 
-    const LogFileSettings back = LogFileSettings::fromJson(s.toJson());
-    QVERIFY(back.highlighters.has_value());
-    QVERIFY(back.highlighters->isEmpty());
+    const std::optional<LogFileSettings> back = LogFileSettings::fromJson(s.toJson());
+    QVERIFY(back.has_value());
+    QVERIFY(back->highlighters.has_value());
+    QVERIFY(back->highlighters->isEmpty());
 
     // And the other side of the same coin: a record that never spoke about rules must
     // come back silent, not empty, or the caller cannot tell the two apart.
     LogFileSettings quiet;
     quiet.address = s.address;
-    QVERIFY(!LogFileSettings::fromJson(quiet.toJson()).highlighters.has_value());
+    const std::optional<LogFileSettings> silent = LogFileSettings::fromJson(quiet.toJson());
+    QVERIFY(silent.has_value());
+    QVERIFY(!silent->highlighters.has_value());
 }
 
 void TstLogFileStore::aPristinePaneOverAnIndexedLogSaysNothing()

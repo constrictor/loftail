@@ -469,6 +469,7 @@ require_ran "$last_log" \
     sequentialReadsLandWhereTheyAskedWithNoSeekBetweenThem \
     aConfigFileIsReadAndWrittenWholeOverSftp \
     writingAConfigKeepsItsPermissions \
+    aConfigProbeSeesAChangeMadeOnTheFarEnd \
     aRestartScriptRunsOnTheFarEndAndKeepsItsStderr \
     aRestartScriptOutlivesTheConnectTimeout \
     abortingARemoteScriptReturnsAtOnce \

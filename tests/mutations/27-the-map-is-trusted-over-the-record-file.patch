@@ -31,16 +31,17 @@
 # Served fails under this patch too.
 
 diff --git a/src/core/LogFileStore.cpp b/src/core/LogFileStore.cpp
-index 43d106a..7da3a74 100644
 --- a/src/core/LogFileStore.cpp
 +++ b/src/core/LogFileStore.cpp
-@@ -294,8 +294,7 @@ LogFileSettings LogFileStore::read(const QString &address)
-         const LogFileSettings s = LogFileSettings::fromJson(doc.object());
+@@ -333,10 +333,9 @@ LogFileSettings LogFileStore::read(const QString &address)
+             m_fromFuture.insert(empty.address);
+             return empty;
+         }
          // THE FILE WINS. A map entry whose slot holds another log's record is a map that
          // is out of date, not a record that belongs to this address — see the header.
--        if (s.address == empty.address)
--            return s;
-+        return s;
+-        if (record->address == empty.address)
+-            return *record;
++        return *record;
      }
  
      m_entries.remove(i);

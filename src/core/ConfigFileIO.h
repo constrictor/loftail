@@ -155,6 +155,12 @@ public:
     // sshPrompter() inside each marshalled call — so one per transfer costs nothing.
     void startRead(const QString &address);
     void startWrite(const QString &address, const QByteArray &bytes);
+    // ONE quiet read, for noticing that the file changed on the far end (SPEC.md §4). It
+    // is startRead() with the retry taken out and nothing else: a probe that cannot
+    // reach the host answers probeFinished() with the failure and the watcher simply
+    // asks again on its next tick, because a poll that counted down in the page's own
+    // strip would be announcing trouble about an errand the reader never started.
+    void startProbe(const QString &address);
 
     // How long a read waits before trying the unreachable host again. The remote log's
     // own slow cadence (SshFetcher::tailLoop), deliberately: a config file and the log
@@ -184,10 +190,14 @@ signals:
     // `retryAtMs` on RetryCountdown.h's clock. `error` is the transport's own words.
     void readRetryScheduled(QString error, qint64 retryAtMs);
 
+    // startProbe()'s answer, exactly once, whatever it was — retryable or not.
+    void probeFinished(ConfigReadResult result);
+
 private:
     // One attempt. startRead() is this plus the retry bookkeeping around it, so a retry
-    // and a first try cannot come to be two different pieces of code.
-    void attemptRead(const QString &address);
+    // and a first try cannot come to be two different pieces of code — and startProbe()
+    // is this with `probe` true, for the same reason.
+    void attemptRead(const QString &address, bool probe = false);
 
     std::shared_ptr<Shared> m_shared;
 };

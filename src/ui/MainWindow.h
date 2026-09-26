@@ -21,6 +21,7 @@
 #include "ConfigSyntax.h"
 #include "DocumentContext.h"
 #include "FormatSettings.h"
+#include "HostBookmarkStore.h"
 #include "LogFileStore.h"
 #include "LogSettingsStore.h"
 #include "LogView.h"
@@ -708,9 +709,13 @@ private:
     void saveCloseAndRestart();
     // Take an editor page down with no prompt. Callers settle the buffer first.
     void closeEditorPage(ConfigView *editor);
-    // Ask about one editor's unsaved changes. False means the user cancelled, and every
-    // caller must abandon what it was doing — including quitting.
-    bool confirmDiscard(ConfigView *view);
+    // Ask about one editor's unsaved changes. False means "not now", and every caller
+    // must abandon what it was doing — including quitting. That is a Cancel, a save that
+    // failed, or a REMOTE save that has been started: the prompt answers synchronously
+    // and a remote write is a round trip on a worker thread, so Save there starts the
+    // write and answers false, and `retry` — the caller's own gesture, repeated — runs
+    // queued once the write has landed, when the buffer is clean and nothing asks again.
+    bool confirmDiscard(ConfigView *view, std::function<void()> retry);
     void updateConfigTabTitle(ConfigView *view);
 
     // Build the editor page for `address` and start whatever reading it needs — the local
@@ -894,6 +899,12 @@ private:
     // function whose whole definition is "the set of open logs changed" — hands it the
     // pinned set, and nothing else does.
     LogFileStore     m_fileStore{LogFileStore::defaultDir()};
+    // The saved hosts as refreshRemoteHostsMenu() last read them, which is what names a
+    // remote tab's machine (relabelTabs()). A COPY rather than a fresh read because
+    // relabelTabs() runs on every open and close and hosts.json is re-parsed on every
+    // HostBookmarkStore::all() — and refreshRemoteHostsMenu() is already called at every
+    // point the list can move, so this is never older than the menu beside it.
+    QVector<HostBookmark> m_hostBookmarks;
     // View ▸ Line Wrap. Held so the checked entry can be made to track the ACTIVE view,
     // which matters now that the mode a log opens in is its own (M20) rather than one
     // window-wide choice: each action carries its WrapMode in QAction::data().

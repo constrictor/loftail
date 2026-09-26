@@ -56,10 +56,20 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 192 rules
+## Guarded — 211 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
+| A `schemaVersion` says THREE things; `!=` folds FromFuture together with Unstamped and destroys data | Schema versions (L253) | tst_schema::everyStoreAgreesOnWhatAStampMeans |
+| A file from the future is read as nothing AND never written over, the write half being the damage | Schema versions (L253) | tst_schema::aFileFromTheFutureIsNeitherReadNorWrittenOver |
+| An unstamped file is read as nothing but is NOT protected, or one hand edit freezes the store | Schema versions (L253) | tst_schema::anUnstampedFileIsNotReadAsIfItWereCurrent |
+| The pool's map and its records carry independent stamps, and the record's was never read | Schema versions (L253) | tst_schema::aRecordFromTheFutureKeepsItsSlotAndIsNotOverwritten |
+| A later build's record is not a stale map entry: the entry stays, and save/remove/evict stand off it | Schema versions (L253) | tst_schema::aRecordFromTheFutureKeepsItsSlotAndIsNotOverwritten |
+| An older build must not replace a newer session's tabs, editor pages and pane layout | Schema versions (L253) | tst_schema::aSessionFromTheFutureIsNotReplacedByThisBuildsTabs |
+| A file behind this build is copied aside once, named for the version it came from, existing wins | Schema versions (L253) | tst_schema::aFileBehindThisBuildIsCopiedAsideBeforeItIsMigrated |
+| The golden corpus is LITERAL bytes: every other version test writes the constant and follows a bump | Schema versions (L253) | tst_schema::theV1LogSettingsFileStillReadsAsItsAuthorMeantIt |
+| Every field in a fixture is set away from its default, or a dropped key reads as a default | Schema versions (L253) | tst_schema::theV1PoolStillReadsAsItsAuthorMeantIt |
+| Every key a fixture carries gets its own assertion, never a comparison against an assembled struct | Schema versions (L253) | tst_schema::theV1HostsFileStillReadsAsItsAuthorMeantIt |
 | Activation is `itemActivated`, never `itemDoubleClicked`, or the list is unreachable from a keyboard | Welcome screen (L11) | tst_welcome::returnOnASelectedRowOpensItToo |
 | The content column is centred by a stretch either side and carries a stretch of its own | Welcome layout (L11) | tst_welcome::theContentIsCentredRatherThanFillingTheWindow |
 | A stretch at each end of the column, so the slack is a fifth of the viewport rather than merely non-zero | Welcome layout (L11) | tst_welcome::theContentIsCentredRatherThanFillingTheWindow |
@@ -75,6 +85,7 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The early return is after the `restoreState()` block and before `beginBulkRestore()`, and calls `updateEmptyState()` | Named-file launch (L15) | tst_tabsession::namedFilesReplaceTheSessionsTabsAndKeepItsShell |
 | The decision is the constructor's parameter, not a close-everything pass in `main()` | Named-file launch (L15) | tst_tabsession::namedFilesReplaceTheSessionsTabsAndKeepItsShell |
 | The old tab set is deliberately not preserved anywhere | Named-file launch (L15) | tst_tabsession::namedFilesReplaceTheSessionsTabsAndKeepItsShell |
+| The device axis is always spent for a remote log, named by its saved Remote Hosts name where it has one | Tab labels (L17) | tst_tablabels::aSavedHostIsNamedByItsNameRatherThanItsAddress<br>tst_remoteopen::aSavedHostNamesTheTabRatherThanItsAddress |
 | Every address has a non-empty display name, falling back to the deepest segment, then the scheme word, then `(unnamed)` | Display name (L19) | tst_remotelocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath |
 | The fallback must stay a SEGMENT and never a path, or `prefixedLabelsFor()` stops grouping | Display name (L19) | tst_remotelocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath |
 | `logSourceBareName()` is the name with the bracket off and is `tabLabelsFor()`'s grouping key, so it may not hold a path | Display name (L19) | tst_remotelocation::everyAddressGetsANonEmptyNameAndNoNameIsAPath |
@@ -138,6 +149,14 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | `SshFetcher::tailLoop()` publishes the deadline it is about to sleep for, on the slow cadence only | Retry countdown (L128) | tst_sshconnect::aFetcherThatCouldNotReachItsHostPublishesWhenItWillTryAgain |
 | A config page counts down to its own retry, and a message with no deadline stops the timer | Retry countdown (L128) | tst_configeditor::aHostThatCannotBeReachedCountsDownToTheNextTry |
 | A config write that cannot be finished is REPORTED, and the file keeps what it had | Config write (L69) | tst_writefailure::aConfigWriteThatCannotBeFinishedIsReportedAndKeepsThePreviousContents |
+| Every save site ends in `markWrittenAs()` with the bytes it sent, so our own save is not an external change | Config external change (L81) | tst_configeditor::ourOwnSaveIsNotAnExternalChange |
+| A clean page whose text does not hold the focus reloads silently, keeping its place | Config external change (L81) | tst_configeditor::anUnfocusedCleanPageReloadsSilentlyAndKeepsItsPlace |
+| The text holding the focus asks instead; `reloadFrom()` takes its bytes by value | Config external change (L81) | tst_configeditor::aPageHoldingTheFocusAsksBeforeReloading |
+| Unsaved edits always ask; Ignore takes the change as the baseline and marks the buffer modified | Config external change (L81) | tst_configeditor::unsavedEditsAreNeverReloadedOverAndIgnoreKeepsThem |
+| A deleted file is never reloaded into an empty buffer | Config external change (L81) | tst_configeditor::aDeletedFileIsReportedAndNeverReloadedIntoNothing |
+| A probe is dropped if `diskGeneration()` moved while it was in flight | Config external change (L81) | tst_configeditor::aProbeThatStartedBeforeASaveIsDiscarded |
+| The remote probe answers `probeFinished()` once, with what is on the far end now | Config external change (L81) | tst_sshlive::aConfigProbeSeesAChangeMadeOnTheFarEnd |
+| The unsaved-changes prompt's Save writes a remote config the remote way and defers the close until it lands | Config external change (L81) | tst_configeditor::saveInTheClosePromptWritesARemoteConfigOverSsh |
 | "Not there" and "there and shut" are different sentences, and only the first is the supported empty-editor case | Presence not emptiness (L207) | tst_writefailure::aConfigThatIsThereAndShutIsNotDescribedAsOneThatIsNotThere |
 | The libssh2 half of the config write now runs on every push against real servers | Config write in CI (L73) | tst_sshlive::aConfigFileIsReadAndWrittenWholeOverSftp<br>tst_sshlive::writingAConfigKeepsItsPermissions<br>tst_sshlive::theExecFallbackWritesTheSameBytes |
 | `logAnchorOf()` and `SshWorkerPool` were EXTRACTED rather than copied, the untouched suites being the evidence | M23 (L75) | tst_configlocation<br>tst_configeditor |

@@ -1,0 +1,47 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+#
+# RULE (CLAUDE.md, "A `schemaVersion` SAYS THREE THINGS AND TWO STORES READ IT AS TWO"):
+#   Reading nothing is harmless; the WRITE is the damage. HostBookmarkStore and
+#   PresetStore are STATELESS -- every mutation is read-fold-write over the whole
+#   file -- so the empty collection a refused read hands back goes straight over
+#   the file on the next save. Schema::fileIsFromFuture() is asked at the write
+#   funnel, not latched at a read those stores have no state to latch in.
+#
+# GUARD: tst_schema::aFileFromTheFutureIsNeitherReadNorWrittenOver
+#
+# SILENT WHEN BROKEN: completely, and only for somebody who has run a newer
+# loftail. all() still answers an empty list, which looks like a first launch;
+# the very next bookmark saved, host removed or OK pressed in the Open Remote
+# dialog then writes that empty list over every bookmark and every remembered
+# password the newer build had. Nothing reports it, and the file it replaced is
+# the one thing that could have.
+
+diff --git a/src/core/HostBookmarkStore.cpp b/src/core/HostBookmarkStore.cpp
+--- a/src/core/HostBookmarkStore.cpp
++++ b/src/core/HostBookmarkStore.cpp
+@@ -224,8 +224,6 @@ bool HostBookmarkStore::replaceAll(const QVector<HostBookmark> &bookmarks) const
+     // Remote dialog's OK) is read-fold-write, which over a file this build refused to read
+     // means writing an empty list over somebody's whole configuration. Asked of the file
+     // itself, so it holds however the caller arrived.
+-    if (Schema::fileIsFromFuture(path, kSchemaVersion))
+-        return false;
+ 
+     QJsonArray hosts;
+     bool anySecret = false;

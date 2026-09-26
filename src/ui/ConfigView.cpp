@@ -29,6 +29,9 @@
 
 #include <QComboBox>
 #include <QEvent>
+#include <QFrame>
+#include <QPushButton>
+#include <QScrollBar>
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -168,6 +171,46 @@ ConfigView::ConfigView(QString address, QWidget *parent)
     m_notice->hide();
     m_layout->addWidget(m_notice, 0);
 
+    // --- The file changed under the page. Built like DocumentView's stale strip — a
+    // framed row, the sentence and the gestures on it — because it is the same kind of
+    // statement: what is on screen and what is on disk have come apart. Inline and never
+    // a modal, for M17's reason: it arrives on a timer, about a page that may be a
+    // background tab.
+    m_changeBar = new QFrame(this);
+    m_changeBar->setObjectName(QStringLiteral("configChangedBar")); // test contract
+    m_changeBar->setFrameShape(QFrame::StyledPanel);
+    auto *changeRow = new QHBoxLayout(m_changeBar);
+    changeRow->setContentsMargins(8, 4, 4, 4);
+    changeRow->setSpacing(6);
+    m_changeText = new MessageLabel(m_changeBar);
+    m_changeText->setObjectName(QStringLiteral("configChangedText")); // test contract
+    m_changeReload = new QPushButton(tr("Reload"), m_changeBar);
+    m_changeReload->setObjectName(QStringLiteral("configChangedReload")); // test contract
+    m_changeReload->setToolTip(tr("Replace the text here with what is in the file now."));
+    auto *ignore = new QPushButton(tr("Ignore"), m_changeBar);
+    ignore->setObjectName(QStringLiteral("configChangedIgnore")); // test contract
+    ignore->setToolTip(tr("Keep the text here. Saving will overwrite the other change."));
+    changeRow->addWidget(m_changeText, 1);
+    changeRow->addWidget(m_changeReload, 0, Qt::AlignTop);
+    changeRow->addWidget(ignore, 0, Qt::AlignTop);
+    m_changeBar->setVisible(false);
+    m_layout->addWidget(m_changeBar, 0);
+    connect(m_changeReload, &QPushButton::clicked, this, [this]() {
+        reloadFrom(m_pendingBytes);
+    });
+    connect(ignore, &QPushButton::clicked, this, [this]() {
+        // The change is SEEN, so the same change must not ask again: it becomes the
+        // baseline. And the buffer is now a version of the file the disk does not hold,
+        // which is exactly what "modified" means — so the tab wears its mark, and a close
+        // asks before the reader's version is lost, where an unmodified buffer would have
+        // been dropped in silence with the disk quietly holding somebody else's.
+        m_diskBytes = m_pendingBytes;
+        m_diskExisted = m_pendingExisted;
+        ++m_diskGeneration;
+        hideChangeBar();
+        setModified(true);
+    });
+
     // --- The text itself.
     auto *edit = new WheelFilteringEdit(this);
     edit->onZoomStep = [this](int steps) { emit zoomStepRequested(steps); };
@@ -242,6 +285,13 @@ QString ConfigView::displayName() const
 void ConfigView::setContents(const QByteArray &bytes, bool existed)
 {
     m_existed = existed;
+    // This IS what is on disk now, so it is the baseline, and whatever the change bar
+    // was offering has just been taken or overtaken.
+    m_diskBytes = bytes;
+    m_diskExisted = existed;
+    m_hasBaseline = true;
+    ++m_diskGeneration;
+    hideChangeBar();
     // The page is about to have a file in it, so whatever it was saying about not having
     // one yet is spent. Cleared here as well as in setBusy() because this is the one
     // place the buffer stops being empty without anybody having asked it to.
@@ -329,6 +379,98 @@ void ConfigView::setModified(bool modified)
     m_edit->document()->setModified(modified);
 }
 
+void ConfigView::markWrittenAs(const QByteArray &bytes)
+{
+    // The bytes that were SENT, not toBytes() asked again now: a remote save lands on a
+    // later turn of the event loop, and anything typed meanwhile is not on disk.
+    m_diskBytes = bytes;
+    m_diskExisted = true;
+    m_hasBaseline = true;
+    m_existed = true;
+    ++m_diskGeneration;
+    // A save made while the bar stood has overwritten the change it was offering, which
+    // is the answer to its question.
+    hideChangeBar();
+}
+
+bool ConfigView::changeBarShown() const
+{
+    return !m_changeBar->isHidden();
+}
+
+void ConfigView::hideChangeBar()
+{
+    m_pendingBytes.clear();
+    m_pendingExisted = false;
+    m_changeText->clear();
+    m_changeBar->setVisible(false);
+}
+
+void ConfigView::externalChange(const QByteArray &bytes, bool existed)
+{
+    if (!m_hasBaseline)
+        return;
+    // CONTENT, never a timestamp — which is what excludes our own save (markWrittenAs).
+    // A file that is merely absent still compares on `existed`: an empty file and no
+    // file are two different states of the disk even though both read as no bytes.
+    if (existed == m_diskExisted && bytes == m_diskBytes) {
+        // Back to what the page last saw — somebody put it back, or a probe caught the
+        // middle of a write and then its end — so there is nothing left to offer.
+        if (changeBarShown())
+            hideChangeBar();
+        return;
+    }
+
+    // SILENTLY, where nobody is reading or typing into the text and there is nothing of
+    // the reader's to lose. hasFocus() is the editor's own keyboard focus, which Qt also
+    // answers false for while the window is not the active one — so a page open in a
+    // window the reader has left reloads too. A file that has GONE is never "reloaded"
+    // into an empty buffer: that would throw the text away on the strength of a delete
+    // that may be half of somebody's rename, and the bar says so instead.
+    if (existed && !isModified() && !m_edit->hasFocus()) {
+        reloadFrom(bytes);
+        return;
+    }
+
+    m_pendingBytes = bytes;
+    m_pendingExisted = existed;
+    const QString path = logSourceDisplayPath(m_address);
+    if (existed) {
+        m_changeText->setText(isModified()
+            ? tr("%1 was changed by another program, and this page has unsaved changes "
+                 "of its own.").arg(path)
+            : tr("%1 was changed by another program.").arg(path));
+    } else {
+        m_changeText->setText(tr("%1 was deleted by another program. Saving will "
+                                 "create it again.").arg(path));
+    }
+    // Nothing to reload from a file that is not there.
+    m_changeReload->setVisible(existed);
+    // A WARNING and not an error, the stale strip's reasoning: nothing has failed yet.
+    // Taken from the current palette every time so it follows a theme change.
+    QPalette p = m_changeText->palette();
+    p.setColor(QPalette::WindowText, warningColor(palette()));
+    m_changeText->setPalette(p);
+    m_changeBar->setVisible(true);
+}
+
+void ConfigView::reloadFrom(QByteArray bytes)
+{
+    // THE READER'S PLACE SURVIVES. setPlainText() puts the cursor at the top and the view
+    // with it, which is what a reader glancing at a page that updated itself would least
+    // expect; both are put back, clamped to the new text.
+    const int position = m_edit->textCursor().position();
+    const int scroll = m_edit->verticalScrollBar()->value();
+    setContents(bytes, /*existed=*/true);
+    QTextCursor c(m_edit->document());
+    c.setPosition(qBound(0, position, m_edit->document()->characterCount() - 1));
+    m_edit->setTextCursor(c);
+    m_edit->verticalScrollBar()->setValue(scroll);
+    // Whatever the strip said was about the text this has just replaced — "does not exist
+    // yet", or a save that failed — and none of it is true of the file now on screen.
+    clearNotice();
+}
+
 ConfigSyntax ConfigView::syntax() const
 {
     return m_highlighter->syntax();
@@ -385,6 +527,9 @@ void ConfigView::clearNotice()
 
 void ConfigView::setBusy(bool busy, const QString &what, qint64 retryAtMs, BusyTone tone)
 {
+    // A read or a write of the page's own is starting or ending: a probe in flight across
+    // either is describing a file that is about to change under it.
+    ++m_diskGeneration;
     m_busy = busy;
     m_edit->setReadOnly(busy);
     m_busyText = busy ? what : QString();

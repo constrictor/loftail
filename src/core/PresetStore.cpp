@@ -19,6 +19,7 @@
 #include "PresetStore.h"
 
 #include "AtomicJson.h"
+#include "SchemaVersion.h"
 
 #include <QDir>
 #include <QJsonArray>
@@ -63,6 +64,22 @@ bool PresetStore::kindFromString(const QString &s, Kind *kind)
     return false;
 }
 
+namespace {
+
+// ONE STEP PER VERSION, APPLIED IN ORDER — SchemaVersion.h's rule. Empty today: v1 is the
+// only version there has ever been. `presets` is the name -> content map, which is the
+// object both the collection file and an exported file hold their content in, so one step
+// serves both directions.
+void migratePresets(QJsonObject &presets, int from)
+{
+    int v = from;
+    // for (; v < 2; ++v) { ...v1 -> v2... }
+    Q_UNUSED(v);
+    Q_UNUSED(presets);
+}
+
+} // namespace
+
 QString PresetStore::fileFor(Kind kind) const
 {
     const QString base = kind == Kind::Filters ? QStringLiteral("filter-presets.json")
@@ -72,19 +89,39 @@ QString PresetStore::fileFor(Kind kind) const
 
 QJsonObject PresetStore::readCollection(Kind kind) const
 {
+    const QString path = fileFor(kind);
     bool ok = false;
-    const QJsonDocument doc = AtomicJson::read(fileFor(kind), &ok);
+    const QJsonDocument doc = AtomicJson::read(path, &ok);
     if (!ok || !doc.isObject())
         return QJsonObject();
     const QJsonObject root = doc.object();
-    // Ignore a file whose schema we do not understand rather than mangling it (§8).
-    if (root.value(QLatin1String(kKeySchema)).toInt(0) != kSchemaVersion)
+    // `>` AND NOT `!=`, WHICH IS THE WHOLE OF WHAT "a preset shared today still imports
+    // after the format evolves" REQUIRES (see the header, which has claimed it since M5).
+    // An older collection is read and migrated forward; only a later one is stood off —
+    // and stood off by writeCollection() as well, since every mutation here is
+    // read-fold-write and would otherwise replace it with what this build could not read.
+    int version = 0;
+    switch (Schema::judge(root, kSchemaVersion, &version)) {
+    case Schema::Verdict::Usable:
+        break;
+    case Schema::Verdict::Unstamped:
+    case Schema::Verdict::FromFuture:
         return QJsonObject();
-    return root.value(QLatin1String(kKeyPresets)).toObject();
+    }
+
+    QJsonObject presets = root.value(QLatin1String(kKeyPresets)).toObject();
+    if (version < kSchemaVersion) {
+        Schema::backupOnce(path, version);
+        migratePresets(presets, version);
+    }
+    return presets;
 }
 
 bool PresetStore::writeCollection(Kind kind, const QJsonObject &presets)
 {
+    if (Schema::fileIsFromFuture(fileFor(kind), kSchemaVersion))
+        return false;
+
     QJsonObject root;
     root.insert(QLatin1String(kKeySchema), kSchemaVersion);
     root.insert(QLatin1String(kKeyKind), kindToString(kind));
@@ -156,7 +193,12 @@ bool PresetStore::importPreset(const QString &file, Kind *kindOut, QString *name
     if (!ok || !doc.isObject())
         return false;
     const QJsonObject root = doc.object();
-    if (root.value(QLatin1String(kKeySchema)).toInt(0) != kSchemaVersion)
+    // An EXPORTED file is the one thing here that travels between installations, so it is
+    // the one most likely to arrive stamped below this build — which is exactly the case
+    // the exact-version test refused. No backup: this file is the user's own, named by
+    // them in a file dialog, and importing does not write to it.
+    int version = 0;
+    if (Schema::judge(root, kSchemaVersion, &version) != Schema::Verdict::Usable)
         return false;
 
     Kind kind;
@@ -165,7 +207,15 @@ bool PresetStore::importPreset(const QString &file, Kind *kindOut, QString *name
     const QString name = root.value(QLatin1String(kKeyName)).toString();
     if (name.isEmpty())
         return false;
-    const QJsonObject content = root.value(QLatin1String(kKeyContent)).toObject();
+    QJsonObject content = root.value(QLatin1String(kKeyContent)).toObject();
+    if (version < kSchemaVersion) {
+        // Migrated as a one-entry collection, through the same step the collection file
+        // takes, so an imported preset and a stored one of the same age cannot diverge.
+        QJsonObject one;
+        one.insert(name, content);
+        migratePresets(one, version);
+        content = one.value(name).toObject();
+    }
 
     if (kindOut)
         *kindOut = kind;

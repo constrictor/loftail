@@ -195,6 +195,18 @@ private:
     QString        m_dir;
     QVector<Entry> m_entries;
     QSet<QString>  m_pinned;
+    // Addresses whose SLOT FILE this build must not interpret -- stamped by a later
+    // version of the record format (LogFileSettings::kSchemaVersion). Per record and not
+    // per store, unlike m_readOnly, which answers for the map: one log configured by a
+    // newer build must not freeze the other four hundred and ninety-nine.
+    //
+    // Populated as records are actually READ, which is the whole of its reach: a future
+    // record this session never opened is invisible here, and a full pool may therefore
+    // still evict it. That is the ordinary cost of a full pool rather than a hole -- at
+    // 500 records something must go, and LRU is what decides -- so the set buys a
+    // preference, not a guarantee, and it buys the guarantee only where it matters, which
+    // is the record somebody is looking at.
+    QSet<QString>  m_fromFuture;
     qint64         m_tick = 0;
     bool           m_mapDirty = false;
     bool           m_readOnly = false;

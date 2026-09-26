@@ -20,7 +20,11 @@
 
 #include <QStringList>
 
+#include <functional>
+
 namespace loftail {
+
+struct RemoteLocation;
 
 // What an open log is CALLED, decided for the WHOLE set at once (SPEC.md §5a,
 // ARCHITECTURE.md §12.4).
@@ -58,27 +62,37 @@ inline constexpr int kMaxRecentPrefixChars = 40;
 // accepts — a local path, an `ssh://` URL and a path inside an archive — by asking
 // RemoteLocation/ArchiveLocation what the parts are rather than cutting up the string.
 //
-// A log whose name no other open log answers to wears that name and nothing else. Where
-// two or more DO share a name — the ordinary case for anyone tailing one service across
-// hosts or deployments — each grows a bracket holding the most prominent thing that
+// A LOCAL log whose name no other open log answers to wears that name and nothing else.
+// A REMOTE log always carries its machine in the bracket, alone or not — which host a
+// tab is reading is never something to hover for, since the same log on two machines is
+// the ordinary case and a remote tab that looks exactly like a local one invites acting
+// on the wrong machine. Beyond that, where two or more logs share a name — the ordinary
+// case for anyone tailing one service across hosts or deployments — each grows what
 // tells it from the others, in this order:
 //
 //   1. the DEVICE it is on: the host of an `ssh://` address, nothing for a local log.
+//      Always spent where there is one; see above.
 //   2. the archive CONTAINER it is in.
 //   3. the PATH RUN: its parent directories with the ones EVERY member of the group
 //      carries stripped from both ends — the common root and the common tail — and all
 //      of what is left, outermost first, joined by `/`.
 //
-// An axis is spent only where it BUYS a distinction, so a group whose logs are all on
-// one host is told apart by its directories alone and never says the host. The
-// components that are spent read in that order inside one parenthesis, separated by
-// ", ": `app.log (host-a, svc-a)`.
+// Axes 2 and 3 are spent only where they BUY a distinction. The components that are
+// spent read in that order inside one parenthesis, separated by ", ":
+// `app.log (host-a, svc-a)`.
+//
+// The device is spelled by `deviceName` when one is given and it answers non-empty — the
+// name the host was saved under in File ▸ Remote Hosts — and by the address's own host
+// otherwise, which for most remote hosts is an IP address nobody reads a tab by.
 //
 // Addresses that stay ambiguous after all three — two users on one host naming one path,
 // two ports on one host — keep their duplicate labels rather than growing something
 // invented. The tooltip carries the full address in every case.
+using DeviceNamer = std::function<QString(const RemoteLocation &)>;
+
 QStringList tabLabelsFor(const QStringList &addresses,
-                         int maxQualifierChars = kMaxTabQualifierChars);
+                         int maxQualifierChars = kMaxTabQualifierChars,
+                         const DeviceNamer &deviceName = {});
 
 // The older rule, kept for File ▸ Open Recent: the log's own name as
 // logSourceDisplayName() spells it — with a remote host or an archive container already

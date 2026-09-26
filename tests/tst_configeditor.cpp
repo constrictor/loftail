@@ -29,6 +29,7 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QTextCursor>
 #include <QSettings>
 #include <QTabWidget>
@@ -95,6 +96,14 @@ private slots:
     void closingATabMidConnectDoesNotWaitForIt();
     void aRemoteEditorTabComesBackAfterARelaunch();
     void aRestoredRemoteEditorNamesTheDependencyThatIsMissing();
+    void saveInTheClosePromptWritesARemoteConfigOverSsh();
+
+    void anUnfocusedCleanPageReloadsSilentlyAndKeepsItsPlace();
+    void aPageHoldingTheFocusAsksBeforeReloading();
+    void unsavedEditsAreNeverReloadedOverAndIgnoreKeepsThem();
+    void ourOwnSaveIsNotAnExternalChange();
+    void aDeletedFileIsReportedAndNeverReloadedIntoNothing();
+    void aProbeThatStartedBeforeASaveIsDiscarded();
 
     void saveCloseRestartCarriesCtrlDAndLivesOnlyOnAnEditorTab();
     void saveCloseRestartWritesTheFileClosesTheTabAndRunsTheScript();
@@ -108,6 +117,12 @@ private:
     // Put a restart script at the DEFAULTS level, where the config path already goes.
     static bool setDefaultRestartScript(const QString &script);
     static bool haveShell() { return QFileInfo::exists(QStringLiteral("/bin/sh")); }
+    // Open `configName` beside a fresh log, holding `contents`, as the editor tab in front.
+    ConfigView *openEditorOn(std::unique_ptr<MainWindow> &w, const QString &configName,
+                             const QByteArray &contents);
+    // Replace the file the way an editor saving through a rename does — a new inode at
+    // the path, which is the case a watch on the file alone loses.
+    static bool writeExternally(const QString &path, const QByteArray &bytes);
 
     QTemporaryDir m_dir;
 };
@@ -1262,6 +1277,273 @@ void TestConfigEditor::withNoRestartScriptTheGestureDoesNothingAtAll()
     QVERIFY(written.open(QIODevice::ReadOnly));
     QVERIFY2(!QString::fromUtf8(written.readAll()).contains(QStringLiteral("b=2")),
              "the file was written for a gesture that could not finish");
+}
+
+// --- Noticing that the file changed under the page ---------------------------------
+//
+// Every case asserts on the BAR and on the TEXT together: a page that reloaded behind a
+// bar still asking, or a bar over text that never moved, are each wrong in a way only one
+// of the two would show.
+
+ConfigView *TestConfigEditor::openEditorOn(std::unique_ptr<MainWindow> &w,
+                                           const QString &configName,
+                                           const QByteArray &contents)
+{
+    const QString log = writeLog(configName + QStringLiteral(".log"));
+    if (log.isEmpty() || !writeExternally(configPathFor(log, configName), contents))
+        return nullptr;
+    w.reset(openWithConfig(log, configName));
+    w->findChild<QAction *>(QStringLiteral("openConfigAction"))->trigger();
+    auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    return qobject_cast<ConfigView *>(tabs->currentWidget());
+}
+
+bool TestConfigEditor::writeExternally(const QString &path, const QByteArray &bytes)
+{
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly))
+        return false;
+    f.write(bytes);
+    return f.commit();
+}
+
+static QPushButton *changeButton(ConfigView *view, const char *name)
+{
+    return view->findChild<QPushButton *>(QLatin1String(name));
+}
+
+// The focus somewhere on the page that is NOT the text — the one fact the rule turns on,
+// set explicitly rather than trusted to whatever the offscreen platform did with the
+// window's activation.
+static void focusAwayFromTheText(ConfigView *view)
+{
+    view->findChild<QComboBox *>(QStringLiteral("configSyntax"))->setFocus();
+}
+
+void TestConfigEditor::anUnfocusedCleanPageReloadsSilentlyAndKeepsItsPlace()
+{
+    std::unique_ptr<MainWindow> w;
+    QByteArray original;
+    for (int i = 0; i < 60; ++i)
+        original += "key" + QByteArray::number(i) + "=value\n";
+    ConfigView *view = openEditorOn(w, QStringLiteral("silent.properties"), original);
+    QVERIFY(view);
+    // The reader's place: a cursor well down the file.
+    QTextCursor c = view->editor()->textCursor();
+    c.setPosition(int(original.indexOf("key40")));
+    view->editor()->setTextCursor(c);
+    const int block = view->editor()->textCursor().blockNumber();
+    QCOMPARE(block, 40);
+    focusAwayFromTheText(view);
+    QVERIFY(!view->editor()->hasFocus());
+
+    QVERIFY(writeExternally(m_dir.filePath(QStringLiteral("silent.properties")),
+                            original + "added=1\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        view->editor()->toPlainText().contains(QStringLiteral("added=1")), 5000);
+    QVERIFY(!view->changeBarShown());
+    QVERIFY(!view->isModified());
+    QCOMPARE(view->editor()->textCursor().blockNumber(), block);
+}
+
+void TestConfigEditor::aPageHoldingTheFocusAsksBeforeReloading()
+{
+    std::unique_ptr<MainWindow> w;
+    ConfigView *view = openEditorOn(w, QStringLiteral("focused.properties"), "a=1\n");
+    QVERIFY(view);
+    w->activateWindow();
+    if (!QTest::qWaitForWindowActive(w.get()))
+        QSKIP("The platform will not activate the window, so nothing can hold the focus.");
+    view->editor()->setFocus();
+    QTRY_VERIFY(view->editor()->hasFocus());
+
+    QVERIFY(writeExternally(m_dir.filePath(QStringLiteral("focused.properties")),
+                            "a=2\nb=3\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(view->changeBarShown(), 5000);
+    // Asked, and NOT done: clean as the buffer is, the reader is in it.
+    QCOMPARE(view->editor()->toPlainText(), QStringLiteral("a=1\n"));
+    QPushButton *reload = changeButton(view, "configChangedReload");
+    QVERIFY(reload && reload->isVisible());
+    reload->click();
+    QCOMPARE(view->editor()->toPlainText(), QStringLiteral("a=2\nb=3\n"));
+    QVERIFY(!view->changeBarShown());
+    QVERIFY(!view->isModified());
+}
+
+void TestConfigEditor::unsavedEditsAreNeverReloadedOverAndIgnoreKeepsThem()
+{
+    std::unique_ptr<MainWindow> w;
+    ConfigView *view = openEditorOn(w, QStringLiteral("dirty.properties"), "a=1\n");
+    QVERIFY(view);
+    QTextCursor typing = view->editor()->textCursor();
+    typing.movePosition(QTextCursor::End);
+    typing.insertText(QStringLiteral("mine=1\n"));
+    // NOT holding the focus: unsaved edits alone are reason enough to ask.
+    focusAwayFromTheText(view);
+    QVERIFY(!view->editor()->hasFocus());
+
+    const QString path = m_dir.filePath(QStringLiteral("dirty.properties"));
+    QVERIFY(writeExternally(path, "theirs=1\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(view->changeBarShown(), 5000);
+    QVERIFY(view->editor()->toPlainText().contains(QStringLiteral("mine=1")));
+
+    QPushButton *ignore = changeButton(view, "configChangedIgnore");
+    QVERIFY(ignore);
+    ignore->click();
+    QVERIFY(!view->changeBarShown());
+    QVERIFY(view->editor()->toPlainText().contains(QStringLiteral("mine=1")));
+    QVERIFY(view->isModified());
+
+    // The SAME change does not ask twice — two poll ticks and more.
+    QTest::qWait(1600);
+    QVERIFY(!view->changeBarShown());
+
+    // A NEW one does.
+    QVERIFY(writeExternally(path, "theirs=2\nmore=1\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(view->changeBarShown(), 5000);
+    QVERIFY(view->editor()->toPlainText().contains(QStringLiteral("mine=1")));
+}
+
+void TestConfigEditor::ourOwnSaveIsNotAnExternalChange()
+{
+    std::unique_ptr<MainWindow> w;
+    ConfigView *view = openEditorOn(w, QStringLiteral("own.properties"), "a=1\n");
+    QVERIFY(view);
+    // Every condition a silent reload asks for, so a save mistaken for somebody else's
+    // change would move the text rather than merely raise a bar.
+    focusAwayFromTheText(view);
+    QTextCursor typing = view->editor()->textCursor();
+    typing.movePosition(QTextCursor::End);
+    typing.insertText(QStringLiteral("b=2\n"));
+    view->editor()->setTextCursor(typing);
+    const int position = view->editor()->textCursor().position();
+    QVERIFY(position > 0);
+    // Straight after the save, and again after two poll ticks: the save's rename
+    // provokes a directory event and a stat that moved, and both have had every chance.
+    w->findChild<QAction *>(QStringLiteral("saveConfigAction"))->trigger();
+    QVERIFY(!view->isModified());
+    QTest::qWait(1600);
+    QVERIFY(!view->changeBarShown());
+    QVERIFY(!view->isModified());
+    QCOMPARE(view->editor()->toPlainText(), QStringLiteral("a=1\nb=2\n"));
+    QCOMPARE(view->editor()->textCursor().position(), position);
+    // THE DISCRIMINATING HALF. A silent reload of our own bytes puts back the same text
+    // and, by design, the same cursor — so neither of the two above can see one. What it
+    // cannot put back is the undo history, which setContents() starts afresh: the edit
+    // typed before the save must still be undoable.
+    QVERIFY(view->editor()->document()->isUndoAvailable());
+
+    // And the watch is still live after the save replaced the file's inode.
+    typing = view->editor()->textCursor();
+    typing.insertText(QStringLiteral("c=3\n"));
+    QVERIFY(writeExternally(m_dir.filePath(QStringLiteral("own.properties")), "x=9\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(view->changeBarShown(), 5000);
+}
+
+void TestConfigEditor::aDeletedFileIsReportedAndNeverReloadedIntoNothing()
+{
+    std::unique_ptr<MainWindow> w;
+    ConfigView *view = openEditorOn(w, QStringLiteral("gone.properties"), "a=1\n");
+    QVERIFY(view);
+    // Clean and unfocused — everything a silent reload asks for — and still it asks,
+    // because an empty buffer is not "the file now".
+    focusAwayFromTheText(view);
+    QVERIFY(QFile::remove(m_dir.filePath(QStringLiteral("gone.properties"))));
+    QTRY_VERIFY_WITH_TIMEOUT(view->changeBarShown(), 5000);
+    QCOMPARE(view->editor()->toPlainText(), QStringLiteral("a=1\n"));
+    QPushButton *reload = changeButton(view, "configChangedReload");
+    QVERIFY(reload && reload->isHidden());
+}
+
+void TestConfigEditor::aProbeThatStartedBeforeASaveIsDiscarded()
+{
+    // The REMOTE watcher's discard rule, stated where it can be reached with no server:
+    // the generation a probe notes moves under a read, a write and a reconciliation of
+    // the page's own, and under nothing the reader merely types.
+    ConfigView view(QStringLiteral("/etc/log4cplus.properties"));
+    view.setContents("a=1\n", true);
+    quint64 g = view.diskGeneration();
+    view.setBusy(true, QStringLiteral("Saving…"));
+    QVERIFY(view.diskGeneration() != g);
+    g = view.diskGeneration();
+    view.setBusy(false, QString());
+    QVERIFY(view.diskGeneration() != g);
+    g = view.diskGeneration();
+    view.markWrittenAs("a=2\n");
+    QVERIFY(view.diskGeneration() != g);
+    g = view.diskGeneration();
+    view.setModified(true);
+    QCOMPARE(view.diskGeneration(), g);
+
+    // And the bytes it wrote are the baseline: finding them on disk is no change.
+    view.externalChange("a=2\n", true);
+    QVERIFY(!view.changeBarShown());
+    // While bytes that differ are one.
+    view.externalChange("a=3\n", true);
+    QVERIFY(view.changeBarShown());
+}
+
+void TestConfigEditor::saveInTheClosePromptWritesARemoteConfigOverSsh()
+{
+    // SAVE IN THE PROMPT USED TO CALL THE LOCAL WRITER, which refuses an ssh:// address
+    // by name, so for a config on another machine it wrote nothing, said "must be
+    // written over SSH" and cancelled the close. It now starts the ordinary remote save
+    // and defers the close until the write lands. A black-hole host never answers, so
+    // what this case can see is the half before the far end: the save STARTED (busy, in
+    // the save's own red) and the refusal is nowhere — which is exactly what fails on
+    // the old code. The half after it is the live harness's.
+#if !defined(LOFTAIL_HAVE_SSH)
+    QSKIP("SSH support is not built into this copy");
+#else
+    std::unique_ptr<MainWindow> w(new MainWindow);
+    w->show();
+    auto *tabs = w->findChild<QTabWidget *>(QStringLiteral("documentTabs"));
+    ConfigView *view = w->openConfigAt(blackHoleConfig());
+    QVERIFY(view);
+    // As though the read had landed: the page's own reply does exactly these two things,
+    // and the host is one that never replies.
+    view->setBusy(false, QString());
+    view->setContents("a=1\n", true);
+    QTextCursor typing = view->editor()->textCursor();
+    typing.movePosition(QTextCursor::End);
+    typing.insertText(QStringLiteral("b=2\n"));
+    QVERIFY(view->isModified());
+
+    bool prompted = false;
+    QTimer::singleShot(0, [&prompted] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            prompted = true;
+            box->button(QMessageBox::Save)->click();
+        }
+    });
+    QMetaObject::invokeMethod(tabs, "tabCloseRequested", Q_ARG(int, tabs->indexOf(view)));
+    QVERIFY(prompted);
+
+    // The close waits for the write, so the tab is still here with its edits.
+    QCOMPARE(tabs->indexOf(view) >= 0, true);
+    QVERIFY(view->isModified());
+    // And the write STARTED, the remote way — in the save's own red.
+    QVERIFY(view->isBusy());
+    QCOMPARE(view->busyTone(), ConfigView::BusyTone::Alert);
+    auto *notice = view->findChild<QLabel *>(QStringLiteral("configNotice"));
+    QVERIFY(notice);
+    QVERIFY2(!notice->text().contains(QStringLiteral("must be written over SSH")),
+             qPrintable(notice->text()));
+
+    // A second close while that write is out asks NOTHING: a second Save would race the
+    // first over an in-place, non-atomic file.
+    bool promptedAgain = false;
+    QTimer::singleShot(0, [&promptedAgain] {
+        if (QWidget *modal = QApplication::activeModalWidget()) {
+            promptedAgain = true;
+            QTest::keyClick(modal, Qt::Key_Escape);
+        }
+    });
+    QMetaObject::invokeMethod(tabs, "tabCloseRequested", Q_ARG(int, tabs->indexOf(view)));
+    QTest::qWait(50);
+    QVERIFY(!promptedAgain);
+    QVERIFY(tabs->indexOf(view) >= 0);
+#endif
 }
 
 int main(int argc, char *argv[])

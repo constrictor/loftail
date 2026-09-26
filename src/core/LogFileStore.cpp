@@ -20,6 +20,7 @@
 
 #include "AtomicJson.h"
 #include "RemoteLocation.h"
+#include "SchemaVersion.h"
 
 #include <QDir>
 #include <QFile>
@@ -106,6 +107,7 @@ void LogFileStore::load()
     m_tick = 0;
     m_mapDirty = false;
     m_readOnly = false;
+    m_fromFuture.clear();
 
     bool ok = false;
     const QJsonDocument doc = AtomicJson::read(mapPath(), &ok);
@@ -118,12 +120,30 @@ void LogFileStore::load()
     }
 
     const QJsonObject root = doc.object();
-    if (root.value(QLatin1String(kSchemaVersionKey)).toInt() > kSchemaVersion) {
+    int version = 0;
+    switch (Schema::judge(root, kSchemaVersion, &version)) {
+    case Schema::Verdict::FromFuture:
         // Read nothing, write nothing. There is no migration downwards, so leaving the
         // pool alone is the only answer that cannot destroy a newer build's data.
         m_readOnly = true;
         return;
+    case Schema::Verdict::Unstamped:
+        // Not a map this build wrote. The records themselves each name their own address,
+        // so the index is reconstructible from them -- which is strictly better than
+        // guessing at the shape of an unstamped one.
+        rebuildFromSlots();
+        return;
+    case Schema::Verdict::Usable:
+        break;
     }
+
+    // A copy of the map as this build found it, kept once per version it was migrated
+    // FROM, so that a migration which turns out to be wrong is recoverable by hand. The
+    // slot files deliberately get none: they are five hundred numbered files, each small
+    // and each holding one log's settings, and a backup apiece would double the entry
+    // count of the directory for a recovery nobody could navigate.
+    if (version < kSchemaVersion)
+        Schema::backupOnce(mapPath(), version);
 
     m_tick = qint64(root.value(QLatin1String(kTickKey)).toDouble());
 
@@ -212,7 +232,16 @@ int LogFileStore::adoptLegacyKey(const QString &address, const QString &key)
         return -1;
     }
 
-    LogFileSettings s = LogFileSettings::fromJson(doc.object());
+    const std::optional<LogFileSettings> record = LogFileSettings::fromJson(doc.object());
+    if (!record) {
+        // Stamped by a later build. The entry is NOT dropped and the record is NOT copied:
+        // there is nothing here this build can read, and a migration that cannot read its
+        // source has nothing to carry over. The map keeps naming it so that the build that
+        // wrote it still finds it.
+        m_fromFuture.insert(legacy);
+        return -1;
+    }
+    LogFileSettings s = *record;
     // THE FILE WINS here exactly as it does in read(): a map entry whose slot holds
     // another log's record is a stale map, not a record belonging to `legacy`.
     if (s.address != legacy) {
@@ -291,11 +320,22 @@ LogFileSettings LogFileStore::read(const QString &address)
     bool ok = false;
     const QJsonDocument doc = AtomicJson::read(slotPath(m_entries.at(i).slot), &ok);
     if (ok && doc.isObject()) {
-        const LogFileSettings s = LogFileSettings::fromJson(doc.object());
+        const std::optional<LogFileSettings> record = LogFileSettings::fromJson(doc.object());
+        if (!record) {
+            // A LATER BUILD'S RECORD IS NOT A STALE MAP ENTRY, and telling the two apart is
+            // the whole reason fromJson() answers an optional rather than a blank record.
+            // Dropping the entry here would unreference a file the newer build is still
+            // using and free its slot for the next log to overwrite -- the newer build's
+            // configuration destroyed by an older one that could not even read it. So the
+            // entry stays, the address is remembered, and save(), remove() and the
+            // eviction all stand off it.
+            m_fromFuture.insert(empty.address);
+            return empty;
+        }
         // THE FILE WINS. A map entry whose slot holds another log's record is a map that
         // is out of date, not a record that belongs to this address — see the header.
-        if (s.address == empty.address)
-            return s;
+        if (record->address == empty.address)
+            return *record;
     }
 
     m_entries.remove(i);
@@ -315,12 +355,23 @@ int LogFileStore::allocateSlot(QString *error)
     }
 
     // Full. Evict the least recently opened record that is not open in a tab.
+    //
+    // TWO PASSES, and the second is the concession rather than the rule. A record this
+    // session found stamped by a later build is passed over while there is anything else
+    // to take, because overwriting it destroys configuration this build cannot even read;
+    // but at 500 records something has to go, and refusing outright would turn one such
+    // record into a pool that can never allocate again.
     int victim = -1;
-    for (int i = 0; i < m_entries.size(); ++i) {
-        if (m_pinned.contains(m_entries.at(i).address))
-            continue;
-        if (victim < 0 || m_entries.at(i).used < m_entries.at(victim).used)
-            victim = i;
+    for (int pass = 0; pass < 2 && victim < 0; ++pass) {
+        for (int i = 0; i < m_entries.size(); ++i) {
+            const QString &address = m_entries.at(i).address;
+            if (m_pinned.contains(address))
+                continue;
+            if (pass == 0 && m_fromFuture.contains(address))
+                continue;
+            if (victim < 0 || m_entries.at(i).used < m_entries.at(victim).used)
+                victim = i;
+        }
     }
     if (victim < 0) {
         if (error) {
@@ -351,6 +402,18 @@ bool LogFileStore::save(LogFileSettings s, const LogProfile &inherited, QString 
     }
 
     s.address = logSettingsKey(s.address);
+
+    // A RECORD FROM THE FUTURE IS NOT WRITTEN OVER, which is the write half of the rule
+    // read() records. Declining to READ one and then replacing it on the next filter edit
+    // would lose it just as completely, a keystroke later.
+    if (m_fromFuture.contains(s.address)) {
+        if (error) {
+            *error = QStringLiteral(
+                "the settings for this log were written by a newer version of loftail");
+        }
+        return false;
+    }
+
     s.reduce(inherited);
 
     // Nothing left that its parents do not already say, so there is no record. This is
@@ -388,6 +451,11 @@ bool LogFileStore::save(LogFileSettings s, const LogProfile &inherited, QString 
 bool LogFileStore::remove(const QString &address)
 {
     if (m_readOnly)
+        return false;
+    // save() routes a record that has come back into line with its parents through here,
+    // so the future-record refusal has to hold on this path too or the deletion is the
+    // very thing the refusal above prevented.
+    if (m_fromFuture.contains(logSettingsKey(address)))
         return false;
     const int i = indexOf(logSettingsKey(address));
     if (i < 0)
@@ -478,7 +546,15 @@ int LogFileStore::pruneAgainst(const LogSettingsTree &tree)
             continue;
         }
 
-        LogFileSettings s = LogFileSettings::fromJson(doc.object());
+        const std::optional<LogFileSettings> record = LogFileSettings::fromJson(doc.object());
+        if (!record) {
+            // A later build's record. Left exactly as it is: the sweep decides whether a
+            // record still says something its parents do not, and this build cannot read
+            // what it says.
+            m_fromFuture.insert(address);
+            continue;
+        }
+        LogFileSettings s = *record;
         if (s.address != address) {
             // The map was stale; the file's own name settles it, exactly as read() does.
             m_entries.remove(i);

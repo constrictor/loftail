@@ -77,6 +77,19 @@ struct RunSelection
 //   run           "follow the last run", which names no run
 struct LogFileSettings
 {
+    // THE RECORD CARRIES ITS OWN STAMP, SEPARATE FROM THE MAP'S. It always did — toJson()
+    // has written `schemaVersion: 1` since M21 — but nothing ever READ it, so a record
+    // written by a later build would have been interpreted field by field as if it were
+    // this one's, which for the field that decides what an application logs is not a
+    // reading worth guessing at. fromJson() now judges it (Schema::judge) and answers
+    // nullopt for anything it must not interpret.
+    //
+    // It is deliberately NOT LogFileStore::kSchemaVersion. The map is an index and the
+    // record is the data; a bump to the shape of one says nothing about the other, and
+    // the two directories of a pool half migrated by an interrupted upgrade are exactly
+    // the state both stamps exist to describe.
+    static constexpr int kSchemaVersion = 1;
+
     // ALWAYS the logSettingsKey() form, and stored INSIDE the slot file as well as in the
     // map. That duplication is the whole of the stale-slot cure — LogFileStore.h.
     QString address;
@@ -123,8 +136,18 @@ struct LogFileSettings
     // Whether anything survives reduce(). No I/O, no allocation worth naming.
     bool saysSomething() const;
 
-    QJsonObject            toJson() const;
-    static LogFileSettings fromJson(const QJsonObject &o);
+    QJsonObject toJson() const;
+
+    // nullopt for a record this build must not interpret -- one stamped by a later
+    // version, or one carrying no stamp at all. AN OPTIONAL RATHER THAN A SECOND QUERY
+    // BESIDE IT, because the three call sites each go on to decide something about the
+    // map from what comes back, and a verdict a caller can forget to ask for is one a
+    // caller will forget to ask for: this way a site that does not handle it does not
+    // compile. What the caller must NOT do with a nullopt is drop the map entry -- see
+    // LogFileStore::read(), where telling "not this log's record" from "not this build's
+    // record" is the difference between mending a stale map and deleting a newer build's
+    // configuration.
+    static std::optional<LogFileSettings> fromJson(const QJsonObject &o);
 
     // Value equality over every field, for the change gate the writer needs. The record
     // is assembled on a tab switch, on a filter edit, on a run change and on every resume

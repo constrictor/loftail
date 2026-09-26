@@ -232,6 +232,10 @@ add_library(loftail_core STATIC
     # through it too.
     AtomicJson.cpp
     AtomicJson.h
+    # The one place the schemaVersion rule is written down, so that five stores cannot
+    # each answer it differently -- which two of them already did (ARCHITECTURE.md 8.4).
+    SchemaVersion.cpp
+    SchemaVersion.h
     SessionStore.cpp
     SessionStore.h
 )
