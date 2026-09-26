@@ -291,6 +291,46 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The scan HOLDS its records and tells the model once, at the end — a view follows the tail, so a batch per chunk read as a log being written live | Scan holds its records (L91) | tst_indexcontroller::noRowsAppearUntilTheScanFinishes<br>tst_scanprogress::theViewSaysItIsIndexingAndHoldsItsRecordsUntilItIsDone |
 | The publish runs on the CANCELLED path too — "whatever was scanned so far stays usable" is a promise about exactly those records | Scan holds its records (L91) | tst_scanprogress::pressingStopEndsTheScanShort |
 | An empty view says it is indexing through `setScanNotice()`, a second string, never the waiting machinery's `m_placeholderText` | Scan holds its records (L91) | tst_scanprogress::theViewSaysItIsIndexingAndHoldsItsRecordsUntilItIsDone |
+| A serial address is remote and says which transport, and `transportOf()` is what a caller meaning SSH asks | Serial address (M27) | tst_remotelocation::aSerialAddressIsRemoteAndSaysWhichTransport |
+| A serial address spells no port; an explicit one is refused with no I/O | Serial address (M27) | tst_remotelocation::aSerialAddressSpellsNoPortAndAnExplicitOneIsRefused |
+| `QUrl` lowercases a host, so a by-id device keeps its case and its underscores only because the branch is hand-cut | Serial address (M27) | tst_remotelocation::aByIdDeviceKeepsItsCaseAndItsUnderscores<br>tst_serialdevices::aByIdNameKeepsItsCaseAndItsUnderscores |
+| A device name outside `[A-Za-z0-9._-]` is refused, and normalizing is still idempotent | Serial address (M27) | tst_remotelocation::aDeviceNameOutsideItsCharacterSetIsRefused<br>tst_serialdevices::aNameThatCouldNotSurviveAnAddressIsRefused |
+| `target()` carries the scheme so a device cannot share a keychain entry with a host of the same name | Serial address (M27) | tst_remotelocation::aSerialTargetCannotBeConfusedWithAHost |
+| The serial login user is in the address and never in the preset; `effectiveUser()` answers empty | Serial address (M27) | tst_remotelocation::aSerialAddressNamesNoDefaultUser |
+| A serial address never emits its password, parsed or not | Serial address (M27) | tst_remotelocation::aSerialAddressNeverEmitsItsPassword |
+| An archive composes with the serial transport | Serial address (M27) | tst_remotelocation::aSerialArchiveAddressSplits |
+| The login window is a sliding BYTE window, so a prompt split across two reads is still a prompt | Login machine (M27) | tst_serialloginmachine::aPromptSplitAcrossTwoReadsIsStillAPrompt |
+| Kernel noise between the prompt and the answer is ignored | Login machine (M27) | tst_serialloginmachine::kernelNoiseBetweenThePromptAndTheAnswerIsIgnored |
+| The window is bounded, so a device that chatters for an hour is not an OOM | Login machine (M27) | tst_serialloginmachine::aWindowFullOfNoiseDoesNotGrowWithoutBound |
+| The window is cleared on every transition, or the login prompt matches twice running | Login machine (M27) | tst_serialloginmachine::theLoginPromptIsNotMatchedTwiceRunning |
+| A device already at a shell reaches Ready with no password sent | Login machine (M27) | tst_serialloginmachine::aDeviceAlreadyLoggedInReachesReadyWithNoPassword<br>tst_serialdevice::aDeviceAlreadyAtAShellNeedsNoPassword |
+| A shell is confirmed by a whole-LINE marker, so the echo of the command does not confirm it | Login machine (M27) | tst_serialloginmachine::aShellIsNotConfirmedByTheEchoOfItsOwnCommand |
+| The reboot pattern is checked in every step including Ready | Login machine (M27) | tst_serialloginmachine::theRebootRegexpFiresFromTheReadyStateToo |
+| An invalid or empty reboot pattern matches NOTHING, never everything | Login machine (M27) | tst_serialloginmachine::anInvalidRebootRegexpMatchesNothing |
+| The password reaches no unmarked write, so a transcript honouring the flag cannot leak it | Login machine (M27) | tst_serialloginmachine::aPasswordNeverReachesTheTranscriptUnmarked |
+| Every step gives up after its attempts, so a device that never answers ends in a stated failure | Login machine (M27) | tst_serialloginmachine::everyStepGivesUpAfterItsAttempts |
+| A refused password says so rather than retrying for ever | Login machine (M27) | tst_serialloginmachine::aRefusedPasswordSaysSoRatherThanRetryingForEver<br>tst_serialdevice::aWrongPasswordIsRefusedRatherThanRetriedForEver |
+| Startup commands run in order and are never resent | Login machine (M27) | tst_serialloginmachine::startupCommandsRunInOrderAndAreNeverResent |
+| The values are quoted and the command is not; the frame's stderr is discarded except for a restart script | Framing (M27) | tst_serialframing::theCommandIsNotQuotedAndItsStderrIsDiscarded<br>tst_serialframing::aRestartScriptKeepsItsStderrByAskingForIt |
+| The BEGIN marker is matched as a whole line, or the echoed command opens the frame early | Framing (M27) | tst_serialframing::theEchoOfTheCommandDoesNotOpenTheFrame |
+| A payload holding the run's own token is not truncated by it (length-delimited, not scanned) | Framing (M27) | tst_serialframing::aPayloadHoldingTheTokenIsNotTruncatedByIt |
+| A short payload is complete and says it was short, not corrupt | Framing (M27) | tst_serialframing::aShortPayloadIsCompleteAndSaysItWasShort |
+| The frame buffer cap never drops a frame that has already started | Framing (M27) | tst_serialframing::theCapNeverDropsAFrameThatHasAlreadyStarted |
+| Raw mode is verified by a round trip, never believed because `stty` exited 0 | Byte safety (M27) | tst_execbytesafety::aLineThatCarriesBytesIntactSettlesOnRaw<br>tst_execbytesafety::aLineThatMangesBytesFallsBackToBase64 |
+| A binary log with no encoder is refused rather than guessed at, because a NUL cannot be carried through a shell argument | Byte safety (M27) | tst_execbytesafety::aBinaryLogWithNoEncoderIsRefusedRatherThanGuessedAt |
+| Settling again leaves no stale verdict behind | Byte safety (M27) | tst_execbytesafety::settlingAgainLeavesNoStaleAnswerBehind |
+| A USB adapter is offered and a built-in port is not, on a vendor identifier rather than a name blacklist | Devices (M27) | tst_serialdevices::aUsbAdapterIsOffered<br>tst_serialdevices::aBuiltInPortIsNotOffered |
+| The macOS `tty.` node is excluded and its `cu.` twin kept, because `tty.` blocks on carrier detect | Devices (M27) | tst_serialdevices::theMacOsTtyNodeIsExcludedAndItsCuTwinIsKept |
+| A stable id is preferred over a port name, and the first by-id link is chosen so one device has one address | Devices (M27) | tst_serialdevices::aStableIdIsPreferredOverThePortName<br>tst_serialdevices::theFirstByIdLinkIsChosenSoOneDeviceHasOneAddress |
+| `LogProfile::operator==` sees the serial preset, or the setting is silent data loss | Serial preset (M27) | tst_logsettings::aProfileDiffersWhenAnyOneFieldOfItDoes |
+| `SerialProfile::operator==` sees every field, or an edit to the one it misses is dropped | Serial preset (M27) | tst_serialstore::anEditToOneFieldIsSeenByTheChangeComparison |
+| An added key never bumps the serial store's schema | Serial preset (M27) | tst_serialstore::anAddedKeyIsReadWithoutBumpingTheSchema |
+| A preset named by a log but missing from the file falls back rather than refusing the open | Serial preset (M27) | tst_serialstore::aMissingPresetFallsBackRatherThanRefusing |
+| The change cost is the most expensive tier any changed field implies | Serial preset (M27) | tst_serialstore::theChangeCostIsTheMostExpensiveTierAnyFieldImplies |
+| A log is read byte for byte over a real QSerialPort, and base64 rescues a mangling line | Serial transport (M27) | tst_serialdevice::aLogIsReadThroughAPtyPair<br>tst_serialdevice::aMangingLineFallsBackToBase64AndTheBytesStillMatch |
+| A reboot is noticed and signed in to again | Serial transport (M27) | tst_serialdevice::aRebootIsNoticedAndSignedInToAgain |
+| One device, one session, N logs — and a request failure on one log leaves the device usable | Serial transport (M27) | tst_serialdevice::twoLogsOnOneDeviceShareOneLogin<br>tst_serialdevice::aRequestFailureOnOneLogLeavesTheDeviceUsable |
+| The chunk and the read deadline are derived from the baud, not written down | Serial transport (M27) | tst_serialdevice::theChunkAndTheDeadlineComeFromTheBaud |
 
 ## Unguarded — 450 rules
 

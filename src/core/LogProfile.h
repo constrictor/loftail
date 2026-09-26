@@ -74,6 +74,27 @@ struct LogProfile
     // whitespace reads as unconfigured.
     QString        restartScript;
 
+    // WHICH SERIAL PRESET a log on a device is read with (SPEC.md §3, §4) — the preset's NAME,
+    // resolved through SerialProfileStore, empty meaning the built-in 115200 8N1.
+    //
+    // THIS IS THE FIELD THAT MAKES REQUIREMENT 2 WORK. The settings must not be bound to a
+    // device, and they are not: the preset is a free-standing named thing, and WHICH log uses it
+    // is answered by the ordinary three-level tree — so one `serial://*` pattern saying "every
+    // board of ours is a Linux box, use MyBoard" serves every device, while one device's own row
+    // overrides it. Nothing about the binding lives beside the presets.
+    //
+    // BESIDE FormatSettings for the same reason wrapMode, configPath and restartScript are, and
+    // it is worth restating because it is the whole of why this field is here and not one struct
+    // deeper: MainWindow diffs FormatSettings to pick what a change COSTS (an encoding rescan, a
+    // timestamp reparse, a repaint). Nothing about which preset a device is read with changes how
+    // a single record is read, so putting it inside would make editing the preset reindex the log
+    // — a wrong answer that would look like a performance bug rather than a misplaced field.
+    //
+    // A NAME THAT IS NOT IN THE STORE FALLS BACK rather than refusing the open: the two files are
+    // independently editable, so a renamed preset is an ordinary state and a log that will not
+    // open because of it is worse than one that opens on the defaults and says so.
+    QString        serialProfile;
+
     // What a log nobody has said anything about gets, before any node exists: the
     // conventional log4cplus layout, auto-detected encoding, zone inferred from the
     // pattern, no wrapping. This is the value the ROOT node is created with.
@@ -88,7 +109,7 @@ struct LogProfile
     bool operator==(const LogProfile &o) const
     {
         return format == o.format && wrapMode == o.wrapMode && configPath == o.configPath
-            && restartScript == o.restartScript;
+            && restartScript == o.restartScript && serialProfile == o.serialProfile;
     }
     bool operator!=(const LogProfile &o) const { return !(*this == o); }
 };

@@ -214,6 +214,15 @@ private slots:
     // the File ▸ Remote Hosts submenu rebuilt from the saved-host store.
     void chooseRemoteToOpen();
     void refreshRemoteHostsMenu();
+
+    // The serial devices plugged in right now, rebuilt on aboutToShow rather than from a timer —
+    // see the .cpp for why that IS the refresh schedule rather than a shortcut.
+    void refreshSerialMenu();
+    void chooseSerialSettings();
+
+    // Open a log on a device. An empty `path` is the whole of how a menu row says the device has
+    // no remembered log, and routes to the form instead — the Remote Hosts menu's own convention.
+    void openSerialDevice(const QString &deviceId, const QString &path);
     // Open a REMEMBERED log on a saved host, named by that host rather than by its
     // address. The single funnel the Remote Hosts submenu and the welcome screen both
     // go through, and it exists because the address alone is not enough: opening such a
@@ -327,6 +336,12 @@ private:
     // AppConfigLocation read inside a network auth routine, in a class whose header says
     // it knows nothing but a RemoteLocation (ARCHITECTURE.md §6.3.2).
     static void primeRemoteCredentials(const QString &path);
+
+    // Carry the device's settings to the fetcher about to be built for it. Called from
+    // openFile()'s single funnel, which is what keeps a command line, a recent-files entry and a
+    // restored session from silently getting the defaults.
+    void primeSerialProfile(const RemoteLocation &location);
+    static void rememberSerialPath(const QString &deviceId, const QString &path);
 
     void buildMenus();
     // The exclusive timestamp-display group offered on the Date column's header menu
@@ -779,6 +794,7 @@ private:
     QAction *m_clearRecentAction = nullptr;
     QAction *m_openRemoteAction = nullptr;
     QMenu   *m_remoteHostsMenu = nullptr;
+    QMenu   *m_serialMenu = nullptr;
     // Answers the questions a remote open asks (host key, password). Owned here
     // because it puts up dialogs parented to this window.
     std::unique_ptr<GuiSshPrompter> m_sshPrompter;

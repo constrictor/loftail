@@ -1,0 +1,1 @@
+serial://ttyUSB0:115200/var/log/app.log

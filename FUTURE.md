@@ -79,6 +79,34 @@ Mark records of interest and jump between them, so a spot found once can be retu
 
 **One thing M15 added to this entry:** if bookmarks ever grow a *view* mode — "show only bookmarked records" — that restriction would be non-contiguous in ordinal, which is precisely what filter context's tail-append guarantee rules out (`ARCHITECTURE.md` §7.2.1). Composing the two would then need real mid-list insertion in `FilteredIndex`. Navigating between bookmarks, which is what this entry actually proposes, has no such problem.
 
+## ~~A log on a device over a serial line~~ — shipped
+
+**Shipped in M27**, and it was never in this file — which is the fourth time that has happened and is worth recording as a pattern rather than as an oversight. The behaviour is in `SPEC.md` §3 and the design in `ARCHITECTURE.md` §6.10–§6.11.
+
+**No accommodation was named in advance, and it was additive anyway**, for the reason M13's entry already identifies: the seams absorbed it. `SourceFetcher` took a second transport with one branch in `defaultFetcher()`, `SpooledLogSource` derived every `LogSource` predicate from the same `FetchStatus`, and — the one that paid most — **`RemoteLocation::isRemote()` meaning "read through a spool" rather than "on the network"** made `logPathIsSpooled()`, the settings key, the file-pattern target, the display name, the waitable classification and archive composition all work with no edits at all.
+
+**The prediction this file would have got wrong** is where the work landed. It looks like a transport feature and mostly is not: the transport itself is small, because the exec fallback had already solved reading a log with shell commands. What the milestone actually consists of is the three things a tty lacks that an exec channel has — a login, a private stdout with an exit status, and bytes that survive the trip — and all three turned out to be *decisions* rather than plumbing, which is why they are pure classes with their own tests.
+
+**Two things it did not anticipate, both worth recording.** `QUrl` **normalises a host by lowercasing it**, so a device address routed through it parses, normalizes to a fixed point, satisfies every property the address fuzzer asserts, and names a node that does not exist — a whole class of silent failure that no existing rule in the tree predicted. And **`ARCHITECTURE.md` §6.3's "one connection per open file, which is what `scp` does anyway" is false for a UART**: a line permits one opener, so the arrangement that paragraph records as *rejected* for fetchers is the one this transport needs, and the clause that does not carry over had to be answered rather than inherited.
+
+## The restart script and the config editor over a serial console
+
+Both work over SSH and neither is offered on a serial device yet. The restart script *is* offered — see `SPEC.md` §4 — with its clean-run rule relaxed to the exit status alone, because a console carries one stream. The config-file editor's **read** works over the same framed read the log uses; its **write** needs `base64 -d` on the device, and gating it behaviourally on that being present — the ladder shape used three times already in this transport — is the remaining work.
+
+**Already accommodated:** `ExecChannel`'s framing takes a `keepStdErr` flag precisely so the restart script can ask for what every other command discards, and `framedCommand()` already carries arbitrary shell source.
+
+## A serial device list on the welcome page
+
+`File ▸ Serial` lists what is plugged in, freshly each time it is opened. The welcome page does not, and the difference is deliberate rather than an omission: that page renders the two lists the menus already keep, and a live hardware poll is a different kind of thing.
+
+**Already accommodated, and the obligation it creates is named:** `refreshRemoteHostsMenu()`'s **one enumeration, two renderings** shape is what this would follow. But a surface that is on screen *continuously* cannot be built on `aboutToShow`, so it would need a timer **with a change guard** — compare the enumerated list against the last and return early when equal, `updateTabTitles()`'s rule — or it allocates a `QAction` per device per tick for the life of the window.
+
+## One fetcher per device, serving several logs
+
+Today a device's logs share one session and take turns over it, so two logs on one board halve each other's throughput (`SPEC.md` §3). One fetcher per *device* multiplexing into several spools would read the board once and split the result.
+
+**Not yet accommodated, and the thing it changes is named:** `SourceSpool`'s one-key-one-fetcher model. `SerialDeviceRegistry` already gives a device a single owner, which is the half that exists; what does not is a fetcher that publishes more than one `FetchStatus`.
+
 ---
 
 ## Relationship to other documents

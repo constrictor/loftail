@@ -21,11 +21,13 @@
 #include "FormatEditor.h"
 #include "Fonts.h"
 #include "SectionBox.h"
+#include "SerialProfileStore.h"
 #include "UiColors.h"
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QSignalBlocker>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QPlainTextEdit>
@@ -56,6 +58,15 @@ void addWrapItems(QComboBox *c)
 }
 
 void selectData(QComboBox *c, int value)
+{
+    const int row = c->findData(value);
+    c->setCurrentIndex(row >= 0 ? row : 0);
+}
+
+// The same for a combo whose data is a NAME rather than an enumerator. Falls back to row 0,
+// which for the serial preset combo is the built-in defaults — the value an unconfigured log
+// inherits, so a name with nothing behind it reads as "not configured" rather than as nothing.
+void selectData(QComboBox *c, const QString &value)
 {
     const int row = c->findData(value);
     c->setCurrentIndex(row >= 0 ? row : 0);
@@ -180,6 +191,45 @@ LogProfileEditor::LogProfileEditor(QWidget *parent)
            "output — mycmd >/dev/null 2>&1 & — or loftail goes on waiting for it."));
     restartLayout->addWidget(m_restartScript);
     root->addWidget(restartBox);
+
+    // Which serial preset a log on a device is read with (SPEC.md §3). Its own section for the
+    // reason the two above have one, and it is a NAME rather than the settings themselves: the
+    // whole point of a preset is that it is not bound to a device, so one `serial://*` pattern
+    // can say "every board of ours is a Linux box" while one device's row overrides it.
+    auto *serialBox = new SectionBox(tr("Serial settings"), this);
+    serialBox->setObjectName(QStringLiteral("profileSerialGroup")); // findChild, for tests
+    serialBox->setFlat(true);
+    serialBox->setTitleDivider(true);
+    auto *serialForm = new QFormLayout(serialBox);
+
+    m_serialProfile = new QComboBox(serialBox);
+    m_serialProfile->setObjectName(QStringLiteral("profileSerialPreset")); // findChild
+    m_serialProfile->setEditable(false);
+    m_serialProfile->setToolTip(tr("How to talk to a device over its serial console: the line "
+                                   "settings, the login sequence, the commands to run after "
+                                   "signing in, and what a reboot looks like. A preset is not "
+                                   "bound to a device, so one entry here can serve every "
+                                   "serial log a pattern matches."));
+    serialForm->addRow(tr("Preset:"), m_serialProfile);
+    root->addWidget(serialBox);
+    refreshSerialPresets();
+}
+
+void LogProfileEditor::refreshSerialPresets()
+{
+    // REBUILT RATHER THAN CACHED, because the presets live in their own file that the Serial
+    // Settings dialog rewrites — and this combo is on screen at the same time. Read once here
+    // and the list goes stale the moment somebody adds a preset.
+    const QString chosen = m_serialProfile->currentData().toString();
+    const QSignalBlocker block(m_serialProfile);
+    m_serialProfile->clear();
+    // The first entry is the DEFAULTS and carries an empty name, which is what an unconfigured
+    // log inherits — "none" would read as "do not open a serial log", which it does not mean.
+    m_serialProfile->addItem(tr("Built-in defaults (115200 8N1)"), QString());
+    const SerialProfileStore store(SerialProfileStore::defaultDir());
+    for (const SerialProfile &preset : store.presets())
+        m_serialProfile->addItem(preset.name, preset.name);
+    selectData(m_serialProfile, chosen);
 }
 
 void LogProfileEditor::setSample(const QByteArray &sample)
@@ -210,6 +260,14 @@ void LogProfileEditor::setProfile(const LogProfile &p)
     selectData(m_wrap, int(p.wrapMode));
     m_configPath->setText(p.configPath);
     m_restartScript->setPlainText(p.restartScript);
+    refreshSerialPresets();
+    // A NAME THAT IS NOT IN THE STORE IS KEPT RATHER THAN DISCARDED. The two files are
+    // independently editable, so a preset renamed or a settings file copied from another machine
+    // leaves a name with nothing behind it — and silently resetting the field to the defaults
+    // would make that edit vanish the next time anybody opened Preferences.
+    if (!p.serialProfile.isEmpty() && m_serialProfile->findData(p.serialProfile) < 0)
+        m_serialProfile->addItem(tr("%1 (not configured)").arg(p.serialProfile), p.serialProfile);
+    selectData(m_serialProfile, p.serialProfile);
 }
 
 LogProfile LogProfileEditor::profile() const
@@ -233,6 +291,7 @@ LogProfile LogProfileEditor::profile() const
     p.restartScript = m_restartScript->toPlainText()
                           .replace(QLatin1String("\r\n"), QLatin1String("\n"))
                           .trimmed();
+    p.serialProfile = m_serialProfile->currentData().toString();
     return p;
 }
 

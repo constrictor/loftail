@@ -87,8 +87,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
     // The password as an independent reader sees it. QUrl in the same strict mode
     // parse() uses, so this is the same string the address actually carries.
     // Only for a REMOTE-SHAPED address. `sshssh://deploy:hunter2@web1/p` looks
-    // like userinfo to QUrl and is a plain local path to loftail — `ssh` and
-    // `sftp` are the only two schemes isRemote() knows — so withoutPassword()
+    // like userinfo to QUrl and is a plain local path to loftail — `ssh`, `sftp`
+    // and `serial` are the schemes isRemote() knows — so withoutPassword()
     // returns it unchanged BY DESIGN ("a local path has no userinfo"), and a
     // colon in a local file name is not a credential. Asking the question
     // outside the rule's own domain is how a property test manufactures its own
@@ -234,6 +234,14 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size
             auto again = RemoteLocation::parse(normal);
             FUZZ_CHECK(again.has_value(), "the normal form parses");
             FUZZ_CHECK(again->host == loc->host, "the normal form keeps the host");
+            // M27: and WHICH TRANSPORT, or a serial address could normalize into an ssh one —
+            // which would key it differently, connect it to a host of that name, and be a
+            // fixed point throughout.
+            FUZZ_CHECK(again->transport == loc->transport, "the transport moved");
+            // A serial normal form spells no port, or normalize() produces an address its own
+            // parse refuses and "one log, one spelling" is gone.
+            if (loc->transport == RemoteLocation::Transport::Serial)
+                FUZZ_CHECK(!normal.contains(QLatin1String(":22")), "a serial address grew a port");
             FUZZ_CHECK(again->path == loc->path, "the normal form keeps the path");
             FUZZ_CHECK(again->user == loc->user, "the normal form keeps the user");
             FUZZ_CHECK(again->port == loc->port, "the normal form keeps the port");

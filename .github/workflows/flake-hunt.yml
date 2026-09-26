@@ -83,7 +83,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
-            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev \
             fontconfig
 
       # One build for all three legs. The optional dependencies are asserted exactly as

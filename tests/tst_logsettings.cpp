@@ -669,6 +669,7 @@ void TestLogSettings::aProfileDiffersWhenAnyOneFieldOfItDoes()
     QVERIFY(differsFrom([](LogProfile &p) { p.configPath = QStringLiteral("x.properties"); }));
     QVERIFY(differsFrom(
         [](LogProfile &p) { p.restartScript = QStringLiteral("systemctl restart app"); }));
+    QVERIFY(differsFrom([](LogProfile &p) { p.serialProfile = QStringLiteral("MyBoard"); }));
 
     // And the other direction, so the comparison cannot be satisfied by always
     // answering "different": two profiles built the same way are equal, which is what

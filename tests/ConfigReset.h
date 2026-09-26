@@ -20,6 +20,8 @@
 
 #include "LogFileStore.h"
 #include "LogSettingsStore.h"
+#include "SerialFetchOptions.h"
+#include "SerialProfileStore.h"
 
 #include <QDir>
 #include <QFile>
@@ -42,6 +44,18 @@ inline void clearLogSettings()
 {
     QFile::remove(LogSettingsStore(LogSettingsStore::defaultDir()).filePath());
     QDir(LogFileStore(LogFileStore::defaultDir()).directory()).removeRecursively();
+}
+
+// The serial presets and the remembered devices (M27).
+//
+// SEPARATE FROM clearLogSettings() ON PURPOSE, because it is not part of "what this log's
+// settings are": a preset is a free-standing named thing, and the header above already records
+// that this function is not the whole reset and never was. A case that writes a preset clears it
+// itself, and a case that only reads logsettings.json need not pay for a second file removal.
+inline void clearSerialSettings()
+{
+    QFile::remove(SerialProfileStore(SerialProfileStore::defaultDir()).filePath());
+    clearSerialFetchOptions();
 }
 
 } // namespace loftail

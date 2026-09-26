@@ -27,6 +27,12 @@ add_library(loftail_ui STATIC
     # widget-side answers to the host-key and password questions.
     OpenRemoteDialog.cpp
     OpenRemoteDialog.h
+    # Which log to open on a device that has none remembered. ALWAYS COMPILED, exactly as the two
+    # dialogs above it are, so both build configurations look the same.
+    OpenSerialDialog.cpp
+    OpenSerialDialog.h
+    SerialSettingsDialog.cpp
+    SerialSettingsDialog.h
     SshPromptDialogs.cpp
     SshPromptDialogs.h
     # M23 — what the restart script did. Modal, because this is the one thing loftail

@@ -67,6 +67,20 @@ private slots:
     void settingsKeyIsWorkingDirectoryIndependent();
     void theSettingsTreeRoundTripsARemotePath();
     void aWholePathPatternSeesTheAddressAsAPersonWouldTypeIt();
+
+    // M27 — the second transport, asserted in THIS file rather than one of its own,
+    // because every claim here is a claim about both schemes and the one time this file
+    // had a gap it was exactly that: everyAddressGetsANonEmptyNameAndNoNameIsAPath had no
+    // remote row, so a display name with two separators in it contradicted its own rule
+    // for as long as the rule had existed.
+    void aSerialAddressIsRemoteAndSaysWhichTransport();
+    void aSerialAddressSpellsNoPortAndAnExplicitOneIsRefused();
+    void aByIdDeviceKeepsItsCaseAndItsUnderscores();
+    void aDeviceNameOutsideItsCharacterSetIsRefused();
+    void aSerialTargetCannotBeConfusedWithAHost();
+    void aSerialAddressNamesNoDefaultUser();
+    void aSerialAddressNeverEmitsItsPassword();
+    void aSerialArchiveAddressSplits();
 };
 
 void TestRemoteLocation::recognisesRemoteSchemes()
@@ -83,6 +97,211 @@ void TestRemoteLocation::recognisesRemoteSchemes()
     QVERIFY(!RemoteLocation::isRemote(QStringLiteral("C:/logs/a.log")));
     // Neither must a local file:// URL, which has its own handling.
     QVERIFY(!RemoteLocation::isRemote(QStringLiteral("file:///var/log/a.log")));
+}
+
+void TestRemoteLocation::aSerialAddressIsRemoteAndSaysWhichTransport()
+{
+    // isRemote() means "read through a spool", not "on the network" — which is what makes
+    // logPathIsSpooled() and every path-shaped helper work for a device with no further
+    // edits, and what makes this the highest-blast-radius line in the milestone.
+    QVERIFY(RemoteLocation::isRemote(QStringLiteral("serial://ttyUSB0/var/log/app.log")));
+    QVERIFY(RemoteLocation::isRemote(QStringLiteral("SERIAL://ttyUSB0/var/log/app.log")));
+    QVERIFY(logPathIsSpooled(QStringLiteral("serial://ttyUSB0/var/log/app.log")));
+
+    // And transportOf() is what a caller that genuinely means SSH asks instead, because
+    // otherwise it would take a device for a host name.
+    QCOMPARE(RemoteLocation::transportOf(QStringLiteral("serial://ttyUSB0/a.log")),
+             RemoteLocation::Transport::Serial);
+    QCOMPARE(RemoteLocation::transportOf(QStringLiteral("ssh://h/a.log")),
+             RemoteLocation::Transport::Ssh);
+    QCOMPARE(RemoteLocation::transportOf(QStringLiteral("sftp://h/a.log")),
+             RemoteLocation::Transport::Ssh);
+    QVERIFY(!RemoteLocation::transportOf(QStringLiteral("/var/log/a.log")).has_value());
+
+    const auto loc = RemoteLocation::parse(QStringLiteral("serial://root@ttyUSB0/var/log/app.log"));
+    QVERIFY(loc.has_value());
+    QCOMPARE(loc->transport, RemoteLocation::Transport::Serial);
+    QCOMPARE(loc->user, QStringLiteral("root"));
+    QCOMPARE(loc->host, QStringLiteral("ttyUSB0"));
+    QCOMPARE(loc->path, QStringLiteral("/var/log/app.log"));
+
+    // The display name brackets the DEVICE exactly as it brackets a host, and it is still
+    // a segment rather than a path — the two properties this file is about.
+    QCOMPARE(logSourceDisplayName(QStringLiteral("serial://ttyUSB0/var/log/app.log")),
+             QStringLiteral("app.log (ttyUSB0)"));
+    QCOMPARE(logSourceBareName(QStringLiteral("serial://ttyUSB0/var/log/app.log")),
+             QStringLiteral("app.log"));
+    QVERIFY(!logSourceBareName(QStringLiteral("serial://ttyUSB0/var/log/app.log"))
+                 .contains(u'/'));
+
+    // An address with no path names a device and no log on it, which is not a log address.
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("serial://ttyUSB0")).has_value());
+    QVERIFY(!logPathIsWellFormed(QStringLiteral("serial://ttyUSB0")));
+    // And one with no device at all.
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("serial:///var/log/app.log")).has_value());
+    // Yet the name is STILL never empty and still a segment, which is the fallback rule —
+    // the scheme word is what a bare `serial://` is called.
+    QVERIFY(!logSourceDisplayName(QStringLiteral("serial://")).isEmpty());
+    QVERIFY(!logSourceDisplayName(QStringLiteral("serial://")).contains(u'/'));
+}
+
+void TestRemoteLocation::aSerialAddressSpellsNoPortAndAnExplicitOneIsRefused()
+{
+    // A serial line has no port, so the normal form must not grow one — otherwise
+    // normalize() produces an address its own parse refuses, and "one log, one spelling"
+    // is gone.
+    const auto loc = RemoteLocation::parse(QStringLiteral("serial://ttyUSB0/a.log"));
+    QVERIFY(loc.has_value());
+    QCOMPARE(loc->toString(), QStringLiteral("serial://ttyUSB0/a.log"));
+    QVERIFY(!loc->toString().contains(QStringLiteral(":22")));
+    QCOMPARE(RemoteLocation::normalize(loc->toString()), loc->toString());
+
+    // The port FIELD keeps its default all the same, so every existing range assertion
+    // about a parsed location — the address fuzzer's included — holds for a serial address
+    // unaltered rather than needing a carve-out.
+    QCOMPARE(loc->port, RemoteLocation::kDefaultPort);
+
+    // An explicit one is refused with no I/O, which is an M17 refusal naming the address.
+    // `115200` is the case worth naming: somebody means a baud rate, and the baud belongs
+    // to the preset, which by design is not bound to a device.
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("serial://ttyUSB0:22/a.log")).has_value());
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("serial://ttyUSB0:115200/a.log")).has_value());
+    QVERIFY(!logPathIsWellFormed(QStringLiteral("serial://ttyUSB0:115200/a.log")));
+}
+
+void TestRemoteLocation::aByIdDeviceKeepsItsCaseAndItsUnderscores()
+{
+    // THE FINDING THE SERIAL BRANCH OF parse() EXISTS FOR. QUrl normalises a host and part
+    // of that is lowercasing it, so `serial://ttyUSB0/...` through QUrl comes back as
+    // `ttyusb0` — and `/dev` is case-sensitive. Such an address would parse, would
+    // normalize to a fixed point, would satisfy every property the fuzzer asserts, and
+    // would name a device node that does not exist.
+    const QString byId = QStringLiteral("usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0");
+    const QString address = QStringLiteral("serial://root@%1/var/log/app.log").arg(byId);
+
+    const auto loc = RemoteLocation::parse(address);
+    QVERIFY(loc.has_value());
+    QCOMPARE(loc->host, byId);                       // every capital, every underscore
+    QVERIFY(loc->host != loc->host.toLower());
+    QCOMPARE(loc->toString(), address);
+    QCOMPARE(RemoteLocation::normalize(address), address);
+    // And the plain port name, which is the commoner shape and folds just as badly.
+    const auto plain = RemoteLocation::parse(QStringLiteral("serial://ttyUSB0/a.log"));
+    QVERIFY(plain.has_value());
+    QCOMPARE(plain->host, QStringLiteral("ttyUSB0"));
+    // A Windows COM port, which is upper-case throughout.
+    const auto com = RemoteLocation::parse(QStringLiteral("serial://COM3/C:/logs/app.log"));
+    QVERIFY(com.has_value());
+    QCOMPARE(com->host, QStringLiteral("COM3"));
+}
+
+void TestRemoteLocation::aDeviceNameOutsideItsCharacterSetIsRefused()
+{
+    // Each of these would need encoding, and the narrow charset is what makes the branch
+    // idempotent with no encoding to get wrong. Refused with no I/O, so it fails the open
+    // and names the address rather than opening a tab that waits for a device that cannot
+    // exist.
+    const QStringList refused{
+        QStringLiteral("serial://tty USB0/a.log"),
+        QStringLiteral("serial://tty%20USB0/a.log"),
+        QStringLiteral("serial://tty?USB0/a.log"),
+        QStringLiteral("serial://[::1]/a.log"),
+    };
+    for (const QString &address : refused) {
+        QVERIFY2(!RemoteLocation::parse(address).has_value(), qUtf8Printable(address));
+        QVERIFY2(!logPathIsWellFormed(address), qUtf8Printable(address));
+        // AND IT IS STILL IDEMPOTENT, which is the property that must hold for every
+        // string and not only for the ones that parse: a refused address falls through
+        // normalize() unchanged.
+        QCOMPARE(RemoteLocation::normalize(RemoteLocation::normalize(address)),
+                 RemoteLocation::normalize(address));
+        QCOMPARE(normalizeLogPath(normalizeLogPath(address)), normalizeLogPath(address));
+    }
+}
+
+void TestRemoteLocation::aSerialTargetCannotBeConfusedWithAHost()
+{
+    // A SECURITY DECISION RATHER THAN TIDINESS. target() keys the credential cache, the
+    // keychain, the connect hold and the session cache — so a host genuinely NAMED
+    // `ttyUSB0` must not share a keychain entry with the device of that name, because that
+    // collision sends one machine's password to another.
+    const auto device = RemoteLocation::parse(QStringLiteral("serial://root@ttyUSB0/a.log"));
+    const auto host = RemoteLocation::parse(QStringLiteral("ssh://root@ttyUSB0/a.log"));
+    QVERIFY(device.has_value());
+    QVERIFY(host.has_value());
+    QVERIFY2(device->target() != host->target(),
+             qUtf8Printable(device->target() + QStringLiteral(" == ") + host->target()));
+    QCOMPARE(device->target(), QStringLiteral("serial:root@ttyUSB0"));
+    // The ssh target is LOWERCASE, and that is the very fold the serial branch had to be
+    // written around: QUrl normalises a host, which is right for a host name (DNS is
+    // case-insensitive) and fatal for a device node (`/dev` is not). The two spellings
+    // differing is incidental here; what matters is the `serial:` prefix, which is what
+    // keeps them apart even for a device and a host whose names are identical in case too.
+    QCOMPARE(host->target(), QStringLiteral("root@ttyusb0:22"));
+
+    // A device with no account named is still keyed distinctly, and still says which
+    // transport it is.
+    const auto anon = RemoteLocation::parse(QStringLiteral("serial://ttyUSB0/a.log"));
+    QVERIFY(anon.has_value());
+    QCOMPARE(anon->target(), QStringLiteral("serial:ttyUSB0"));
+}
+
+void TestRemoteLocation::aSerialAddressNamesNoDefaultUser()
+{
+    // ssh fills the local account name in absent a User directive. A DEVICE HAS NO SUCH
+    // CONVENTION — its accounts have nothing to do with this machine's — so filling one in
+    // would key the connect under an account nobody named and would send this machine's
+    // login name to somebody else's hardware.
+    const auto anon = RemoteLocation::parse(QStringLiteral("serial://ttyUSB0/a.log"));
+    QVERIFY(anon.has_value());
+    QVERIFY(anon->effectiveUser().isEmpty());
+
+    // Whereas an ssh address with no user still resolves to one, which is the behaviour
+    // this must not have disturbed.
+    const auto ssh = RemoteLocation::parse(QStringLiteral("ssh://h/a.log"));
+    QVERIFY(ssh.has_value());
+    QVERIFY(!ssh->effectiveUser().isEmpty());
+}
+
+void TestRemoteLocation::aSerialAddressNeverEmitsItsPassword()
+{
+    // The rule that binds every scheme: a password in the address is dropped on the floor
+    // by parse(), and an address parse REFUSES is filtered by withoutPassword() before it
+    // is shown. Both halves, for the new scheme.
+    const auto loc = RemoteLocation::parse(QStringLiteral("serial://root:hunter2@ttyUSB0/a.log"));
+    QVERIFY(loc.has_value());
+    QCOMPARE(loc->user, QStringLiteral("root"));
+    QVERIFY(!loc->toString().contains(QStringLiteral("hunter2")));
+    QVERIFY(!loc->toDisplayString().contains(QStringLiteral("hunter2")));
+    QVERIFY(!loc->target().contains(QStringLiteral("hunter2")));
+
+    // An address with no path does not parse, so it is shown verbatim — and this is the
+    // filter that keeps the credential out of it. withoutPassword() needed no change for
+    // the new scheme, which is worth asserting rather than assuming.
+    const QString unparseable = QStringLiteral("serial://root:hunter2@ttyUSB0");
+    QVERIFY(!RemoteLocation::parse(unparseable).has_value());
+    QVERIFY(!RemoteLocation::withoutPassword(unparseable).contains(QStringLiteral("hunter2")));
+    QVERIFY(RemoteLocation::withoutPassword(unparseable).contains(QStringLiteral("root")));
+    QVERIFY(!logSourceDisplayName(unparseable).contains(QStringLiteral("hunter2")));
+    QVERIFY(!logSourceDisplayPath(unparseable).contains(QStringLiteral("hunter2")));
+}
+
+void TestRemoteLocation::aSerialArchiveAddressSplits()
+{
+    // A transport and a file TYPE are orthogonal, and the archive address's whole design is
+    // that it has no scheme of its own — the member continues the container's path. So a
+    // rolled log inside a bundle on a device composes for free, and this is what says it
+    // did rather than leaving it to be assumed.
+    const QString address =
+        QStringLiteral("serial://ttyUSB0/srv/bundle.tar.gz/var/log/app.log");
+    QCOMPARE(logSourceBareName(address), QStringLiteral("app.log"));
+    QVERIFY(logPathIsSpooled(address));
+    QCOMPARE(normalizeLogPath(normalizeLogPath(address)), normalizeLogPath(address));
+
+    // A single compressed log on a device keeps its plain name and grows no member.
+    const QString gz = QStringLiteral("serial://ttyUSB0/var/log/app.log.1.gz");
+    QCOMPARE(normalizeLogPath(normalizeLogPath(gz)), normalizeLogPath(gz));
+    QCOMPARE(logSourceBareName(gz), QStringLiteral("app.log.1"));
 }
 
 void TestRemoteLocation::parsesFullUrl()

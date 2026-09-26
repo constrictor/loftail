@@ -18,6 +18,8 @@
 
 #include "RestartRunner.h"
 
+#include "SerialDevice.h"
+
 #include "DiagnosticLog.h"
 #include "SshExecCommands.h"
 #include "SshWorkerPool.h"
@@ -35,6 +37,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QTemporaryFile>
+#include <QThread>
 #include <QTimer>
 
 namespace loftail {
@@ -104,6 +107,13 @@ QList<QProcess *> g_reapedProcesses;
 
 RestartRunner::~RestartRunner()
 {
+    // ABANDON, NEVER JOIN: the detached serial worker checks this flag rather than this object,
+    // so going away costs nothing and waits for nothing. Set BEFORE the SSH half below, because
+    // both are the same discipline and the order between them does not matter — what matters is
+    // that neither joins.
+    if (m_serialAlive)
+        *m_serialAlive = false;
+
     // ABANDON, NEVER JOIN, on both halves. Remotely for the reason SshWorkerShared states;
     // locally because of the destructor above.
     if (m_shared)
@@ -161,10 +171,79 @@ void RestartRunner::start(const RestartTarget &target)
         return;
     }
 
-    if (target.remote)
+    // WHICH TRANSPORT, not merely "remote": the two share no machinery — no connect, no worker
+    // pool, no session cache — because a device is already signed in by the fetcher reading its
+    // log, and it is the same session.
+    const bool serial = target.remote && target.host
+        && target.host->transport == RemoteLocation::Transport::Serial;
+    if (serial)
+        startSerial(target);
+    else if (target.remote)
         startRemote(target);
     else
         startLocal(target);
+}
+
+void RestartRunner::startSerial(const RestartTarget &target)
+{
+#if !defined(LOFTAIL_HAVE_SERIAL)
+    RestartResult out;
+    restartTargetIsRunnable(target, &out.error);
+    m_running = false;
+    reportLater(out);
+#else
+    const QString command = restartScriptCommand(target.script, target.variables);
+    const QString device = target.host->host;
+    auto device_handle = SerialDeviceRegistry::instance().acquire(device);
+
+    // ABANDONED, NEVER JOINED, the discipline every errand in this tree follows: closing the
+    // dialog on a device that is not answering must not cost the deadline, and the run holds the
+    // device's own mutex meanwhile, so a wait here could be a wait on the fetcher's poll.
+    auto alive = std::make_shared<std::atomic<bool>>(true);
+    m_serialAlive = alive;
+    QPointer<RestartRunner> self(this);
+
+    auto *worker = QThread::create([self, alive, device_handle, command] {
+        QByteArray output;
+        int code = -1;
+        // ITS OWN DEADLINE, and generous: a service restart outlives any read, so a deadline
+        // derived from the line's rate would call every successful restart a dropped console.
+        const bool ran = device_handle->runScript(command, kSerialScriptDeadlineMs, &output, &code);
+        if (!*alive || !QCoreApplication::instance())
+            return;
+        QMetaObject::invokeMethod(
+            QCoreApplication::instance(),
+            [self, alive, ran, output, code, device_handle] {
+                if (!*alive || !self)
+                    return;
+                if (!output.isEmpty()) {
+                    // MERGED, so it goes in as stdout: a console carries one stream, and
+                    // pretending otherwise would set sawStdErr for every ordinary line.
+                    self->publish(output, /*isStdErr=*/false);
+                }
+                RestartResult out;
+                out.ok = ran;
+                out.exitCode = ran ? code : -1;
+                out.truncated = self->m_truncated;
+                out.sawStdErr = false;
+                // THE RELAXATION, SAID RATHER THAN SILENT (SPEC.md §4). A console cannot tell the
+                // two streams apart, so a run is judged on its exit status alone — which means a
+                // script that complains and exits 0 closes the dialog here where over SSH it
+                // would stay up. The dialog says so because of this flag.
+                out.streamsMerged = true;
+                if (!ran) {
+                    out.error = tr("Could not run the restart script on %1 — its console did "
+                                   "not answer.").arg(self->m_serialDevice);
+                }
+                self->m_running = false;
+                emit self->finished(out);
+            },
+            Qt::QueuedConnection);
+    });
+    m_serialDevice = device;
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
+#endif
 }
 
 void RestartRunner::publish(const QByteArray &bytes, bool isStdErr)
@@ -489,6 +568,25 @@ void RestartRunner::abort()
             if (proc && proc->state() != QProcess::NotRunning)
                 proc->kill();
         });
+        return;
+    }
+
+    if (m_serialAlive) {
+        // The same shape as the remote half below, and instant for the same reason: the worker
+        // reports nothing after this, so the answer is published from here. The device's own
+        // abort() is what unblocks the read it is sitting in — latched, never acted on, because
+        // the thread inside the port owns it (SessionHealth's discipline).
+        *m_serialAlive = false;
+        m_serialAlive.reset();
+#if defined(LOFTAIL_HAVE_SERIAL)
+        if (auto device = SerialDeviceRegistry::instance().acquire(m_serialDevice))
+            device->abort();
+#endif
+        RestartResult out;
+        out.aborted = true;
+        out.streamsMerged = true;
+        m_running = false;
+        reportLater(out);
         return;
     }
 

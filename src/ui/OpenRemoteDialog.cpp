@@ -513,7 +513,12 @@ void OpenRemoteDialog::updateActions()
 void OpenRemoteDialog::absorbPastedUrl(QLineEdit *field)
 {
     const QString text = field->text().trimmed();
-    if (!RemoteLocation::isRemote(text))
+    // TRANSPORT-SPECIFIC, NOT MERELY "remote". isRemote() means "read through a spool" and
+    // has answered true for `serial://` since M27, so this form — whose fields are a host,
+    // a port and an SSH account — would otherwise absorb a device address and silently
+    // produce a host named `ttyusb0`, lowercased by QUrl on the way through. A serial
+    // address belongs in the serial form; here it is left alone as any other text is.
+    if (RemoteLocation::transportOf(text) != RemoteLocation::Transport::Ssh)
         return;
     const auto location = RemoteLocation::parse(text);
     if (!location || location->host.isEmpty())

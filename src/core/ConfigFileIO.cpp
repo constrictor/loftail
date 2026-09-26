@@ -197,6 +197,25 @@ bool configAddressIsRemote(const QString &address)
 
 bool configAddressIsWritable(const QString &address, QString *reason)
 {
+    // A CONFIG FILE ON A DEVICE IS REFUSED BY NAME, and this is the only place that can say so
+    // before anything is attempted. `isRemote()` has answered true for `serial://` since M27, so
+    // without this the editor would reach ConfigTransfer, which connects with withSshSession() —
+    // and a TCP connect to a host called `ttyUSB0` fails as though the device had refused it,
+    // which is a sentence about the wrong thing entirely.
+    //
+    // WHY IT IS A REFUSAL RATHER THAN A FEATURE: the READ is the same framed read the log uses
+    // and would work, but the WRITE needs `base64 -d` on the device to carry arbitrary bytes over
+    // a console — and an editor that opens a file it cannot save is worse than one that says so.
+    // Gating the write behaviourally on that utility is what FUTURE.md carries.
+    if (RemoteLocation::transportOf(address) == RemoteLocation::Transport::Serial) {
+        if (reason) {
+            *reason = Tr::tr("%1 is on a device reached over a serial console, and loftail "
+                             "cannot edit a config file there yet.")
+                          .arg(RemoteLocation::withoutPassword(address));
+        }
+        return false;
+    }
+
 #if !defined(LOFTAIL_HAVE_SSH)
     if (RemoteLocation::isRemote(address)) {
         if (reason) {
@@ -207,10 +226,8 @@ bool configAddressIsWritable(const QString &address, QString *reason)
         }
         return false;
     }
-#else
-    Q_UNUSED(address);
-    Q_UNUSED(reason);
 #endif
+    Q_UNUSED(reason);
     return true;
 }
 

@@ -209,6 +209,73 @@ qt_add_executable(tst_restarttarget tst_restarttarget.cpp)
 target_link_libraries(tst_restarttarget PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_restarttarget COMMAND tst_restarttarget)
 
+# M27 — the serial login conversation. UNGATED, and this is the file the milestone is
+# either right or wrong in: recognising a login prompt, a password prompt and a shell in a
+# stream of somebody else's console output is the whole of what a tty adds over an exec
+# channel, and it has no analogue anywhere else in the tree.
+#
+# It needs no port, no device, no QApplication and no waiting, because the machine is a
+# pure decision with an injected clock — which is why it was written that way round rather
+# than inside the QSerialPort code it drives.
+qt_add_executable(tst_serialloginmachine tst_serialloginmachine.cpp)
+target_link_libraries(tst_serialloginmachine PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_serialloginmachine COMMAND tst_serialloginmachine)
+
+# M27 — which serial ports are worth offering and what a device is called. UNGATED for the
+# reason the struct exists at all: QSerialPortInfo cannot be constructed, so the filter and
+# the stable-id ladder are pure functions over a plain value and this is what reaches them.
+# M27 — whether a log'''s bytes survive the way back. tst_execsizeprobe's shape and its
+# argument: the decision is what can be tested, the two seams stand in for the far end, and
+# a real /bin/sh over real files is what makes the answer mean something.
+# M27 — one command on a console becomes one answer. The two cases worth the file are both
+# silent in production: a payload holding the run'''s own token (which LENGTH-delimiting is what
+# prevents truncating), and the echo of the command opening the frame early on every device
+# with echo on.
+# M27 — the serial transport against a REAL QSerialPort, with no hardware, no docker and no
+# root: openpty() gives the pair and the test is the board on the other end, handing every
+# framed line to a real /bin/sh with a PATH holding exactly the tools that board is supposed to
+# have. This is the first transport in the tree with automated coverage of its own conversation.
+#
+# Gated on serial support and on POSIX (openpty), and it carries its own caveat: A PTY IS NOT A
+# UART. Baud, parity and flow control are no-ops on one, so this proves the conversation, the
+# framing, the ladders, the byte safety, the reboot recovery and the shared session — and
+# nothing whatever about the line settings, which need a board.
+if(LOFTAIL_HAVE_SERIAL AND NOT WIN32)
+    qt_add_executable(tst_serialdevice tst_serialdevice.cpp)
+    target_link_libraries(tst_serialdevice PRIVATE loftail_core Qt6::Test util)
+    add_test(NAME tst_serialdevice COMMAND tst_serialdevice)
+    set_tests_properties(tst_serialdevice PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
+# M27 — the named presets and the remembered devices. HostBookmarkStore'''s rules asserted for the
+# store that copies them, including the two that are silent when broken: an added key must not
+# bump the schema, and SerialProfile::operator== must see every field or an edit to the one it
+# misses is dropped by every change guard that asks whether anything moved.
+# M27 — a serial log through a real MainWindow, over the fake transport. UNGATED, and it works at
+# all because isRemote() means "read through a spool" rather than "on the network": FakeRemoteFarm
+# intercepts a serial address with no change of its own, and so do the tab label, the waiting
+# state, the settings key and the refusal strip. The conversation itself is tst_serialdevice's.
+qt_add_executable(tst_serialopen tst_serialopen.cpp)
+target_link_libraries(tst_serialopen PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_serialopen COMMAND tst_serialopen)
+set_tests_properties(tst_serialopen PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+qt_add_executable(tst_serialstore tst_serialstore.cpp)
+target_link_libraries(tst_serialstore PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_serialstore COMMAND tst_serialstore)
+
+qt_add_executable(tst_serialframing tst_serialframing.cpp)
+target_link_libraries(tst_serialframing PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_serialframing COMMAND tst_serialframing)
+
+qt_add_executable(tst_execbytesafety tst_execbytesafety.cpp)
+target_link_libraries(tst_execbytesafety PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_execbytesafety COMMAND tst_execbytesafety)
+
+qt_add_executable(tst_serialdevices tst_serialdevices.cpp)
+target_link_libraries(tst_serialdevices PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_serialdevices COMMAND tst_serialdevices)
+
 # M23 — running a restart script LOCALLY. A real shell and real scripts; no ssh server,
 # no network and no libssh2, which is what the whole local branch needs and all it needs.
 # The case worth the file on its own is the backgrounded child holding stdout: with pipes
@@ -861,6 +928,8 @@ set(loftail_threading_tests
     tst_remotetail
     tst_remoteopen
     tst_waitingremote
+    tst_serialopen
+    tst_serialdevice  # serial-only
     tst_complete
     tst_livegui
     tst_runselect

@@ -271,6 +271,41 @@ else()
                    "remembered password then falls back to plain text in hosts.json)")
 endif()
 
+# --- M27: serial-line log sources, via Qt SerialPort -------------------------
+#
+# Auto-detected and never REQUIRED, for the reason §1 gives about the reference build:
+# `apt install` nothing. A dependency probe rather than a feature switch, so ON is the
+# honest default and LOFTAIL_HAVE_SERIAL is the probe's ANSWER — the same posture as SSH,
+# archive and keychain, and the opposite of the Presets block below.
+#
+# ONE find_package AND NO THREE-TIER LADDER, because SerialPort IS a Qt6 component: there is
+# no pkg-config fallback worth having and nothing to build from source, since a missing Qt
+# module cannot be FetchContent'd. The precedent is the Network line at the top of this file
+# and the LinguistTools block below, not the libssh2 block.
+#
+# AND THEREFORE NO INTERACTION WITH THE -Werror ORDERING RULE (§14). That rule exists because
+# add_compile_options only reaches directories added after it, which is what keeps a fetched
+# libssh2 or QtKeychain out of a -Werror build — this block fetches nothing, so it may sit
+# wherever it reads best.
+option(LOFTAIL_WITH_SERIAL "Build serial-line log source support (needs Qt SerialPort)" ON)
+
+set(LOFTAIL_HAVE_SERIAL OFF)
+if(LOFTAIL_WITH_SERIAL)
+    find_package(Qt6 6.4 QUIET COMPONENTS SerialPort)
+    if(TARGET Qt6::SerialPort)
+        set(LOFTAIL_SERIAL_TARGET Qt6::SerialPort)
+        set(LOFTAIL_HAVE_SERIAL ON)
+    endif()
+endif()
+
+if(LOFTAIL_HAVE_SERIAL)
+    message(STATUS "Serial log sources: ENABLED (${LOFTAIL_SERIAL_TARGET})")
+else()
+    message(STATUS "Serial log sources: DISABLED "
+                   "(Qt SerialPort not found; install qt6-serialport-dev, brew install qt, "
+                   "or vcpkg install qtserialport)")
+endif()
+
 # --- Presets (M5) -------------------------------------------------------------
 #
 # Unlike LOFTAIL_WITH_SSH/_ARCHIVE/_KEYCHAIN, this gates a FEATURE rather than a

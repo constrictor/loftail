@@ -42,6 +42,10 @@ constexpr auto kRunStartCaseKey  = "runStartCase";
 constexpr auto kWrapModeKey      = "wrapMode";
 constexpr auto kConfigPathKey    = "configPath";
 constexpr auto kRestartScriptKey = "restartScript";
+// AN ADDED KEY AND NO SCHEMA BUMP: an older binary reads an absent key as the
+// struct default, which is benign, where a bump would make it refuse the whole
+// file and freeze every setting for every log rather than lose one field.
+constexpr auto kSerialProfileKey = "serialProfile";
 } // namespace
 
 LogProfile LogProfile::builtIn()
@@ -67,6 +71,7 @@ QJsonObject logProfileToJson(const LogProfile &p)
     o.insert(QLatin1String(kWrapModeKey), int(p.wrapMode));
     o.insert(QLatin1String(kConfigPathKey), p.configPath);
     o.insert(QLatin1String(kRestartScriptKey), p.restartScript);
+    o.insert(QLatin1String(kSerialProfileKey), p.serialProfile);
     return o;
 }
 
@@ -99,6 +104,7 @@ LogProfile logProfileFromJson(const QJsonObject &o)
     // presence test to tell apart. Newlines survive JSON as \n, so a multi-line script
     // round-trips with no encoding of its own.
     p.restartScript = o.value(QLatin1String(kRestartScriptKey)).toString();
+    p.serialProfile = o.value(QLatin1String(kSerialProfileKey)).toString();
     return p;
 }
 

@@ -121,3 +121,12 @@ of it, which is why they were left rather than folded in.
   concerned, so the row is dropped from the selection while remaining the current
   record. Noticed while writing entry 33's filtered regression case, which works
   around it; it predates that work.
+- **`SshFetchOptions`' process-global hash is unsynchronised, and is correct today only
+  by accident of when it is used.** `setSshFetchOptions()` writes it from the GUI thread
+  before the fetcher exists and `sshFetchOptions()` is read once, inside `start()`, so
+  nothing races — but nothing in the type says so, and the moment anything reads it
+  again from a worker it is a data race. M27's serial equivalent DOES read its options
+  on every poll (that is what makes "change the settings on the fly" work), so
+  `SerialFetchOptions` is mutex-guarded from the start; this one is not. Found by
+  reading rather than by a failure, and no sanitizer would reach it, because no test
+  edits a saved host's poll cadence while a tab on that host is open.

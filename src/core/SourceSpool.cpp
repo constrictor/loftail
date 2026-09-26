@@ -34,6 +34,7 @@
 #include <QTimerEvent>
 
 #if defined(LOFTAIL_HAVE_SSH)
+#include "SerialFetcher.h"
 #include "SshFetcher.h"
 #endif
 
@@ -115,6 +116,24 @@ std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error
         }
         if (error)
             *error = Tr::tr("Nothing to expand in %1.").arg(address);
+        return nullptr;
+    }
+
+    // THE ONE PLACE AN ADDRESS BECOMES THE FETCHER THAT CAN FILL IT, so a second transport is
+    // one branch here and nothing else: dispatching from this function rather than from the
+    // registry is what keeps the registry ignorant of what it holds.
+    //
+    // Serial before the SSH arm, because isRemote() answers true for both — it means "read
+    // through a spool", not "on the network" — and the transport is what tells them apart.
+    if (const auto transport = RemoteLocation::transportOf(key);
+        transport == RemoteLocation::Transport::Serial) {
+        if (const auto location = RemoteLocation::parse(key))
+            return makeSerialFetcher(*location, error);
+        // An address that did not parse is shown, so the password goes first: the addresses
+        // that reach here are exactly the ones parse() refused and so never cleaned.
+        if (error)
+            *error = Tr::tr("Not a valid serial log address: %1")
+                         .arg(RemoteLocation::withoutPassword(key));
         return nullptr;
     }
 

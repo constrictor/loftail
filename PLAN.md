@@ -511,6 +511,21 @@ M25's strip could not line up with the thing it sat beside, and the reason is st
 
 ---
 
+## M27 — a log on a device over a serial line
+
+- [x] `ExecTransport` extracted out of `SshSession.cpp` — the ladder, the three-way "no rung settled" answer, the `test` classification and their sentences. Inertness proved: ungated suite unaltered **and** the six-server harness with a PASS list identical to the baseline.
+- [x] `ExecByteSafety` beside `ExecSizeProbe`, and `readCommand()` gains a `ByteSafety` parameter.
+- [x] `RemoteLocation` gains `Transport`, `serial://` and `transportOf()`; the serial branch hand-cut because `QUrl` lowercases a host.
+- [x] `SerialLoginMachine`, `SerialFraming`, `SerialDevices`, `SerialProfile` — every decision pure and always compiled.
+- [x] `SerialDevice` + `SerialDeviceRegistry` (one device, one session, N logs) and `SerialFetcher` over `ExecTransport`.
+- [x] `SerialProfileStore` (`serial.json`), `LogProfile::serialProfile` at all three levels, `File ▸ Serial`, `SerialSettingsDialog`, `OpenSerialDialog`.
+- [x] `tst_serialloginmachine`, `tst_serialframing`, `tst_serialdevices`, `tst_serialstore`, `tst_execbytesafety`, `tst_remotelocation` rows — all ungated — plus `tst_serialdevice`, a real `QSerialPort` over a pty pair with a scripted board.
+
+**Done when** a log on a board opens from `File ▸ Serial`, follows, filters, splits into runs, remembers its format and comes back with the session; a reboot signs in again on its own; and the whole suite is green with `-DLOFTAIL_WITH_SERIAL=OFF` as well as on.
+
+**Risk.** `isRemote()` answering true for a fourth scheme reaches 27 call sites and two were wrong (the Open Remote paste splitter, the saved-host prime). `QUrl` lowercasing a host would have made every device address parse, normalize and point at nothing. The two extractions touch the least-testable file in the tree and their inertness rests on a harness that needs docker. And **a pty is not a UART**: the line settings are exercised by no automated test anywhere, which is the one thing here that still needs a board.
+
+
 ## Deliberately deferred
 
 Later-release features are catalogued in `FUTURE.md` (side-by-side views, bookmarks; multi-file views shipped in M9, format autodetection in M8, SSH sources in M11, and compressed/archived sources in M12); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.

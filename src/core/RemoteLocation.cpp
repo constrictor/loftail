@@ -19,6 +19,7 @@
 #include "RemoteLocation.h"
 
 #include "ArchiveLocation.h"
+#include "SerialDevices.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -107,18 +108,123 @@ bool holdsNul(const QString &s)
     return s.contains(QChar(u'\0'));
 }
 
+// The one spelling of the serial scheme, so a second literal cannot drift from the first.
+constexpr auto kSerialScheme = "serial://";
+
 } // namespace
 
 bool RemoteLocation::isRemote(const QString &s)
 {
     return s.startsWith(QLatin1String("ssh://"), Qt::CaseInsensitive)
-        || s.startsWith(QLatin1String("sftp://"), Qt::CaseInsensitive);
+        || s.startsWith(QLatin1String("sftp://"), Qt::CaseInsensitive)
+        || s.startsWith(QLatin1String(kSerialScheme), Qt::CaseInsensitive);
 }
+
+std::optional<RemoteLocation::Transport> RemoteLocation::transportOf(const QString &s)
+{
+    if (s.startsWith(QLatin1String(kSerialScheme), Qt::CaseInsensitive))
+        return Transport::Serial;
+    if (s.startsWith(QLatin1String("ssh://"), Qt::CaseInsensitive)
+        || s.startsWith(QLatin1String("sftp://"), Qt::CaseInsensitive)) {
+        return Transport::Ssh;
+    }
+    return std::nullopt;
+}
+
+namespace {
+
+// A `serial://` address, CUT BY HAND AND DELIBERATELY NOT THROUGH QUrl.
+//
+// QUrl NORMALISES A HOST, AND PART OF THAT IS LOWERCASING IT. Measured on Qt 6.10:
+// `serial://ttyUSB0/var/log/app.log` comes back with host `ttyusb0`, and a by-id name loses
+// every capital in `usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0`. `/dev` is
+// case-sensitive, so such an address would PARSE, would normalize to a fixed point, would
+// satisfy every property the address fuzzer asserts — and would name a device node that
+// does not exist. Nothing about that failure is visible from inside the address layer,
+// which is why this branch exists rather than a `setHost()` call with a comment on it.
+//
+// Hand-cutting is not new here: withoutPassword() is hand-cut for its own reason, and
+// toDisplayString() is hand-built. The grammar is small enough to be stated in one place —
+//
+//     serial://[user[:password]@]device/path
+//
+// — and two measured facts make it safe. QUrl::toPercentEncoding/fromPercentEncoding ARE a
+// fixed point for every string tried, noncharacters included, unlike whole-URL parsing; and
+// the device charset is narrow enough (SerialDevices.h) that nothing in it needs encoding
+// in either direction.
+std::optional<RemoteLocation> parseSerial(const QString &s)
+{
+    const int schemeLength = int(qstrlen(kSerialScheme));
+    QString rest = s.mid(schemeLength);
+
+    const int slash = int(rest.indexOf(u'/'));
+    // No path at all. `serial://ttyUSB0` names a device and no log on it, which is not a
+    // log address — the same answer isValid() gives an ssh URL with no path.
+    if (slash <= 0)
+        return std::nullopt;
+
+    const QString authority = rest.left(slash);
+    const QString rawPath = rest.mid(slash);
+
+    RemoteLocation loc;
+    loc.transport = RemoteLocation::Transport::Serial;
+    // The port field keeps its default rather than being zeroed, so every existing range
+    // assertion about a parsed location — the fuzz target's included — holds unaltered for
+    // a serial address as well. toString() simply never spells it.
+    loc.port = RemoteLocation::kDefaultPort;
+
+    QString userinfo;
+    QString device = authority;
+    const int at = int(authority.lastIndexOf(u'@'));
+    if (at >= 0) {
+        userinfo = authority.left(at);
+        device = authority.mid(at + 1);
+    }
+    // A password in the address is DROPPED ON THE FLOOR, exactly as the ssh branch drops
+    // one: keeping it would put a credential into the session file and the recent-files
+    // menu the moment the address became a Document path.
+    const int colon = int(userinfo.indexOf(u':'));
+    if (colon >= 0)
+        userinfo = userinfo.left(colon);
+    loc.user = QUrl::fromPercentEncoding(userinfo.toUtf8());
+
+    // THE DEVICE IS THE ONE COMPONENT WITH A CHARACTER SET RATHER THAN AN ENCODING, and
+    // that is what makes this branch idempotent by construction. A `:` here is the case
+    // worth naming: somebody may write `serial://ttyUSB0:115200/p` meaning a baud rate, and
+    // it is refused rather than read as a password or as a port — the baud belongs to the
+    // preset, which by design is not bound to a device.
+    if (!isValidSerialDeviceName(device))
+        return std::nullopt;
+    loc.host = device;
+
+    loc.path = pathFromUrl(QUrl::fromPercentEncoding(rawPath.toUtf8()));
+    if (!loc.isValid())
+        return std::nullopt;
+
+    // THE SAME TWO REFUSALS AS THE SSH BRANCH, AND HERE THEY ARE A CONSISTENCY RULE RATHER
+    // THAN A NECESSITY. This branch's round trip IS a fixed point for a noncharacter, so
+    // nothing about idempotence needs them — but one vocabulary of accepted addresses
+    // across schemes is worth more than the paths they decline, and a reader who notices
+    // they are unnecessary here would otherwise remove them and make the two schemes
+    // disagree about what an address is.
+    if (holdsNoncharacter(loc.user) || holdsNoncharacter(loc.host)
+        || holdsNoncharacter(loc.path)) {
+        return std::nullopt;
+    }
+    if (holdsNul(loc.user) || holdsNul(loc.path))
+        return std::nullopt;
+    return loc;
+}
+
+} // namespace
 
 std::optional<RemoteLocation> RemoteLocation::parse(const QString &s)
 {
     if (!isRemote(s))
         return std::nullopt;
+
+    if (s.startsWith(QLatin1String(kSerialScheme), Qt::CaseInsensitive))
+        return parseSerial(s);
 
     const QUrl url(s, QUrl::StrictMode);
     if (!url.isValid() || url.host().isEmpty())
@@ -217,6 +323,19 @@ QString RemoteLocation::withoutPassword(const QString &s)
 
 QString RemoteLocation::toString() const
 {
+    if (transport == Transport::Serial) {
+        // Built by hand for parseSerial()'s reason — QUrl would lowercase the device — and
+        // term for term its inverse, which is what makes the pair a fixed point. NO PORT:
+        // a serial address spells none, so writing one would make normalize() produce an
+        // address its own parse refuses.
+        QString out = QLatin1String(kSerialScheme);
+        if (!user.isEmpty())
+            out += QString::fromUtf8(QUrl::toPercentEncoding(user)) + u'@';
+        out += host;
+        out += QString::fromUtf8(QUrl::toPercentEncoding(pathToUrl(path), "/~"));
+        return out;
+    }
+
     QUrl url;
     url.setScheme(QStringLiteral("ssh"));
     if (!user.isEmpty())
@@ -229,6 +348,18 @@ QString RemoteLocation::toString() const
 
 QString RemoteLocation::toDisplayString() const
 {
+    if (transport == Transport::Serial) {
+        // The serial normal form needs no decoding pass of its own for the device — its
+        // charset has nothing encodable in it — so the two differ only in the path, exactly
+        // as they do for ssh.
+        QString out = QLatin1String(kSerialScheme);
+        if (!user.isEmpty())
+            out += user + u'@';
+        out += host;
+        out += pathToUrl(path);
+        return out;
+    }
+
     // Built by hand rather than through QUrl, which has no "serialize decoded" mode:
     // QUrl::toString() rejects FullyDecoded outright, and decoding component by
     // component and re-joining is what this already is. The shape is toString()'s,
@@ -249,6 +380,13 @@ QString RemoteLocation::effectiveUser() const
 {
     if (!user.isEmpty())
         return user;
+    // A DEVICE HAS NO SUCH CONVENTION. ssh fills the local account name in absent a User
+    // directive, which is why the fall-through below exists; a board's accounts have
+    // nothing to do with this machine's, so filling one in would key the connect under an
+    // account nobody named and would silently send this machine's login name to somebody
+    // else's hardware.
+    if (transport == Transport::Serial)
+        return QString();
     // What ssh does with no User directive, and what the connect fills in — reached from
     // here so that both spell it the same way. HomeLocation rather than the environment's
     // USER: it is what Qt already answers on every platform, and it is the same value
@@ -259,6 +397,14 @@ QString RemoteLocation::effectiveUser() const
 QString RemoteLocation::target() const
 {
     const QString account = effectiveUser();
+    if (transport == Transport::Serial) {
+        // THE SCHEME IS IN THE KEY, and the header says why at length: a host genuinely
+        // named `ttyUSB0` must not share a keychain entry with the device of that name,
+        // because the collision sends one machine's password to another.
+        if (account.isEmpty())
+            return QStringLiteral("serial:%1").arg(host);
+        return QStringLiteral("serial:%1@%2").arg(account, host);
+    }
     // Still guarded, because effectiveUser() can come back empty on a machine with no
     // home directory at all — and "@host:22" would be a key that reads as a bug.
     if (account.isEmpty())

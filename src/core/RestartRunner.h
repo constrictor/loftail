@@ -56,6 +56,15 @@ struct RestartResult
     // an auto-closing dialog would hide.
     bool    sawStdErr = false;
 
+    // Whether the transport could TELL stderr from stdout at all.
+    //
+    // A SERIAL CONSOLE CARRIES ONE STREAM, so over one the answer is no: `sawStdErr` is
+    // necessarily false there, and a run is judged on its exit status alone (SPEC.md §4). That
+    // is a relaxation of this section's own rule, and it must be VISIBLE rather than silent —
+    // a script that complains and exits 0 auto-closes the dialog over a serial line where over
+    // SSH it would stay up. The dialog says so; this flag is how it knows.
+    bool    streamsMerged = false;
+
     QString error; // `ok` false only
 
     // Whether this run is one the dialog may close by itself.
@@ -104,7 +113,16 @@ signals:
 private:
     void startLocal(const RestartTarget &target);
     void startRemote(const RestartTarget &target);
+    // A device's console, over the session its log is already read through. Its own function
+    // rather than a branch inside startRemote(), because the two share no machinery at all: no
+    // connect, no worker pool, no session cache — the device is already signed in.
+    void startSerial(const RestartTarget &target);
     void reportLater(const RestartResult &result);
+
+    // A serial script outlives any read, so it gets its own budget rather than one derived from
+    // the line's rate — five minutes, longer than any service restart worth waiting for and
+    // short enough that a wedged console still ends in a sentence.
+    static constexpr qint64 kSerialScriptDeadlineMs = 300000;
     void drainLocalOutput();
     void publish(const QByteArray &bytes, bool isStdErr);
     void releaseProcess();
@@ -128,6 +146,10 @@ private:
     QTimer                          *m_pump = nullptr;
 
     std::shared_ptr<SshWorkerShared> m_shared;
+    // ABANDON, NEVER JOIN: the flag is what the detached worker checks instead of this object,
+    // so destroying the runner mid-run costs nothing and touches nothing it does not own.
+    std::shared_ptr<std::atomic<bool>> m_serialAlive;
+    QString m_serialDevice;
 };
 
 } // namespace loftail

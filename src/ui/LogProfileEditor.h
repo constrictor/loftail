@@ -69,6 +69,10 @@ public:
     LogProfile profile() const;
 
 private:
+    // Rebuilt rather than cached: the presets live in their own file, which the Serial Settings
+    // dialog rewrites while this combo is on screen.
+    void refreshSerialPresets();
+
     FormatEditor *m_format = nullptr;
     QLineEdit    *m_runStart = nullptr;
     QCheckBox    *m_runRegex = nullptr;
@@ -77,6 +81,7 @@ private:
     QComboBox    *m_wrap = nullptr;
     QLineEdit    *m_configPath = nullptr;
     QPlainTextEdit *m_restartScript = nullptr;
+    QComboBox      *m_serialProfile = nullptr;
 };
 
 } // namespace loftail

@@ -92,18 +92,33 @@ RestartTarget resolveRestartTarget(const QString &logAddress, const QString &scr
 
 bool restartTargetIsRunnable(const RestartTarget &target, QString *reason)
 {
+    // WHICH DEPENDENCY IS MISSING DEPENDS ON THE TRANSPORT, and asking one question about both
+    // would name the wrong one: a build with libssh2 and no Qt SerialPort can restart a service
+    // on a server and not on a board, and the sentence has to say which.
+    const bool serial = target.remote && target.host
+        && target.host->transport == RemoteLocation::Transport::Serial;
+
+#if !defined(LOFTAIL_HAVE_SERIAL)
+    if (serial) {
+        if (reason) {
+            *reason = Tr::tr("This build has no serial support, so a restart command cannot "
+                             "be run on a device.");
+        }
+        return false;
+    }
+#endif
 #if !defined(LOFTAIL_HAVE_SSH)
-    if (target.remote) {
+    if (target.remote && !serial) {
         if (reason) {
             *reason = Tr::tr("This build has no SSH support, so a restart command cannot "
                              "be run on another machine.");
         }
         return false;
     }
-#else
-    Q_UNUSED(target);
 #endif
+    Q_UNUSED(target);
     Q_UNUSED(reason);
+    Q_UNUSED(serial);
     return true;
 }
 

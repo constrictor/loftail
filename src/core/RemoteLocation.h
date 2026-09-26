@@ -38,14 +38,53 @@ struct RemoteLocation
 {
     static constexpr int kDefaultPort = 22;
 
+    // HOW the far end is reached. A second transport landed in M27 and this type absorbed
+    // it rather than a second value type being written beside it, because the two have the
+    // same SHAPE: a serial address names a login account, a far end and a path on it,
+    // which is user/host/path exactly. What that buys is not brevity — it is that
+    // target() keys SshCredentialCache, the keychain and SshConnectHold for both
+    // transports with no new code, so "one password prompt per far end", "a remembered
+    // password survives a restart" and every path-shaped helper below work for serial the
+    // day the enum gains its value.
+    //
+    // AN ENUM AND NOT A SCHEME STRING. toString() must be a fixed point, and a string
+    // invites `SSH://` and `sftp://` surviving into the normal form — the scheme was
+    // already an enum-of-one in effect (isRemote() accepts two spellings and toString()
+    // always writes `ssh`), so this only makes it say so.
+    enum class Transport {
+        Ssh,     // `ssh://` and `sftp://`
+        Serial,  // `serial://` — a device's login console, M27
+    };
+
+    Transport transport = Transport::Ssh;
+
     QString user; // empty means "unspecified" — resolved at connect time, not here
+    // The host name, or — for Transport::Serial — the DEVICE: a port name (`ttyUSB0`,
+    // `COM3`) or a stable id (`usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0`). Its case
+    // and its underscores are preserved exactly, which is why the serial branch of parse()
+    // does not go through QUrl at all (see the .cpp).
     QString host;
     QString path; // the remote path, decoded; "~/x.log" style paths keep their tilde
-    int     port = kDefaultPort;
+    int     port = kDefaultPort; // meaningless for Transport::Serial, which spells none
 
     // Cheap scheme test, safe to call on every path in the application. Accepts
-    // `sftp://` as well: dragging a file out of a GNOME Files SSH mount produces one.
+    // `sftp://` as well: dragging a file out of a GNOME Files SSH mount produces one, and
+    // `serial://` since M27.
+    //
+    // IT MEANS "READ THROUGH A SPOOL", NOT "ON THE NETWORK", and that is the whole of why
+    // adding a scheme here was most of adding a transport: logPathIsSpooled() is built on
+    // it, and from that follow no QFileSystemWatcher, a source kept across a wait,
+    // poll-only live watching, the settings-key branch, Document::prepare()'s waitable
+    // classification and archive composition — all of them, with no further edits. It is
+    // also the highest-risk line in that change, because every caller now sees serial
+    // addresses: a caller that genuinely means SSH must say so with transportOf().
     static bool isRemote(const QString &s);
+
+    // Which transport `s` names, or nullopt where it names none. For the call sites that
+    // mean SSH specifically rather than "not a local file" — the Open Remote dialog's
+    // paste splitter and the saved-host lookup, which would otherwise treat a device as a
+    // host name.
+    static std::optional<Transport> transportOf(const QString &s);
 
     // Parse an ssh:// or sftp:// URL. Returns nullopt for a local path, a malformed
     // URL, or one with no host. A password embedded in the URL (`ssh://u:pw@h/p`) is
@@ -63,6 +102,11 @@ struct RemoteLocation
     // default only where the address spells no port at all, so an explicit `:0` is
     // taken at face value and 0 is not a port — it would reach target(), the session
     // cache key and the connect, and be reported as though the host had refused.
+    //
+    // A `serial://` address is parsed BY HAND rather than through QUrl, and the .cpp says
+    // why at length: QUrl lowercases a host and a device node is case-sensitive. It is
+    // refused for a device name outside `[A-Za-z0-9._-]`, for a port spelled at all, and
+    // for the same noncharacter and NUL as an ssh address.
     static std::optional<RemoteLocation> parse(const QString &s);
 
     // `s` in normal form, or `s` unchanged when it is not a remote URL. Every entry
@@ -77,10 +121,13 @@ struct RemoteLocation
 
     bool isValid() const { return !host.isEmpty() && !path.isEmpty(); }
 
-    // The normal form: scheme always `ssh`, port always spelled out (so `ssh://h/p`
-    // and `ssh://h:22/p` are one string), path percent-encoded. The user is emitted
+    // The normal form. For SSH: scheme always `ssh`, port always spelled out (so
+    // `ssh://h/p` and `ssh://h:22/p` are one string), path percent-encoded. For serial:
+    // `serial://[user@]device/path`, with NO port at all — a serial address spells none,
+    // and `serial://ttyUSB0:22/p` would be nonsense written down. The user is emitted
     // only when it was given — synthesizing the local account name would be wrong for
-    // anyone whose ~/.ssh/config sets a different User for the host.
+    // anyone whose ~/.ssh/config sets a different User for the host, and meaningless for a
+    // device whose accounts have nothing to do with this machine's.
     //
     // NEVER contains a password. This string is written to the session file, the
     // recent-files list and the window title; a credential must not ride along.
@@ -116,6 +163,15 @@ struct RemoteLocation
     // spells one, the local account name otherwise — which is what ssh does absent a
     // User directive, and what SshSession::authenticate() has always filled in.
     //
+    // FOR SERIAL THERE IS NO SUCH CONVENTION and the answer is `user` verbatim, empty
+    // included. A device's accounts have nothing to do with this machine's, so filling in
+    // the local login name would key the connect under an account nobody named. The rule
+    // that follows is worth stating on its own: THE SERIAL LOGIN USER IS IN THE ADDRESS
+    // AND NEVER IN THE PRESET, even though the password, the prompts, the startup commands
+    // and the reboot pattern all are. A preset supplying a default user would key the
+    // address one way and the connect another, which is precisely the defect this function
+    // exists to have removed.
+    //
     // It exists because that fill-in used to happen INSIDE the connect, after target()
     // had already been asked, so an address with no user was keyed two different ways at
     // once: `host:22` by everything holding the parsed location, `me@host:22` by
@@ -132,10 +188,19 @@ struct RemoteLocation
     // about the key a connect is filed under, which is the connect's own answer.
     QString effectiveUser() const;
 
-    // "user@host:port" — the connection-pool key, so every file on one host shares a
-    // single SSH connection and, at restore, a single password prompt. The user half is
-    // effectiveUser(), so the key is the same string before and after a connect has
-    // filled the account in.
+    // The connection-pool key, so every file on one far end shares a single connection
+    // and, at restore, a single password prompt. The user half is effectiveUser(), so the
+    // key is the same string before and after a connect has filled the account in.
+    //
+    // "user@host:port" for SSH; "serial:user@device" for a device. THE SCHEME IS IN THE
+    // SERIAL SPELLING AND THAT IS A SECURITY DECISION, not tidiness. This string keys
+    // SshCredentialCache, the keychain through secretKeyFor(), SshConnectHold and
+    // SshSessionCache — and a host genuinely named `ttyUSB0` would otherwise share a
+    // keychain entry with the device of that name. The failure is asymmetric: a connect
+    // hold collision merely serialises two unrelated connects, while a keychain collision
+    // SENDS ONE MACHINE'S PASSWORD TO ANOTHER. Every lookup compares this string forwards
+    // (HostBookmarkStore::indexOfTarget()'s own rule), so a differently shaped spelling
+    // costs nothing and re-keys nothing already stored.
     QString target() const;
 
     // The host as shown to a person: the bare host name, no user or port.

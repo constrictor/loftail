@@ -55,6 +55,12 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include "OpenRemoteDialog.h"
+#include "OpenSerialDialog.h"
+#include "SerialDevices.h"
+#include "SerialEnumerator.h"
+#include "SerialFetchOptions.h"
+#include "SerialProfileStore.h"
+#include "SerialSettingsDialog.h"
 #include "WelcomeView.h"
 #if defined(LOFTAIL_HAVE_PRESETS)
 #include "PresetPane.h"
@@ -554,6 +560,33 @@ void MainWindow::buildMenus()
     m_remoteHostsMenu = fileMenu->addMenu(tr("Remote &Hosts"));
     m_remoteHostsMenu->setObjectName(QStringLiteral("remoteHostsMenu"));
     refreshRemoteHostsMenu();
+
+    // The serial devices plugged in right now (SPEC.md §3, requirement 1).
+    //
+    // POPULATED ON aboutToShow AND NOT FROM A TIMER, which is the whole of the refresh schedule.
+    // A timer rebuilding this once a second would allocate a QAction per device per tick for the
+    // life of the window, for a surface nobody is looking at — the dock-title and tab-bar trap
+    // says never rewrite chrome when nothing changed. Showing the menu IS the moment the list is
+    // wanted, and the enumeration is a fresh look every time it opens, so polling buys nothing a
+    // reader can see. (A surface that is on screen CONTINUOUSLY — the welcome page — would need
+    // a timer with a change guard, and that is in FUTURE.md rather than here.)
+    m_serialMenu = fileMenu->addMenu(tr("&Serial"));
+    m_serialMenu->setObjectName(QStringLiteral("serialMenu")); // findChild, for tests
+    m_serialMenu->setToolTipsVisible(true);
+    connect(m_serialMenu, &QMenu::aboutToShow, this, &MainWindow::refreshSerialMenu);
+
+#if !defined(LOFTAIL_HAVE_SERIAL)
+    {
+        // ONE BLOCK, so the menu's answer and the dialog's cannot drift — the shape the SSH gate
+        // below uses. Present and disabled with a sentence, never absent: a vanished entry reads
+        // as a feature that does not exist.
+        const QString noSerial = tr("This copy of loftail was built without serial support, so a "
+                                    "log on a device cannot be opened. Rebuild with Qt "
+                                    "SerialPort available to enable it.");
+        m_serialMenu->setEnabled(false);
+        m_serialMenu->setToolTip(noSerial);
+    }
+#endif
 
 #if !defined(LOFTAIL_HAVE_SSH)
     const QString noSsh = tr(
@@ -2324,6 +2357,164 @@ void MainWindow::refreshRemoteHostsMenu()
         m_welcome->setRemotes(welcome);
 }
 
+void MainWindow::refreshSerialMenu()
+{
+    if (!m_serialMenu)
+        return;
+
+    // ONE ENUMERATION, and it is this one. The devices are read here and nowhere else on this
+    // path; the Serial Settings dialog keeps its own list because it is on screen while this menu
+    // is not, which is the one case the "one enumeration, two renderings" rule does not cover.
+    const QList<SerialDeviceInfo> devices = availableSerialDevices();
+    const SerialProfileStore store(SerialProfileStore::defaultDir());
+    const QVector<SerialDeviceBookmark> remembered = store.devices();
+
+    m_serialMenu->clear();
+
+    if (devices.isEmpty()) {
+        QAction *none = m_serialMenu->addAction(tr("(no devices found)"));
+        none->setEnabled(false);
+        none->setToolTip(tr("Plug in a USB-to-serial adapter, or a board with a USB console. "
+                            "Built-in ports are not listed."));
+    }
+
+    for (const SerialDeviceInfo &info : devices) {
+        const QString id = stableIdFor(info);
+        QStringList paths;
+        for (const SerialDeviceBookmark &b : remembered) {
+            if (b.id == id) {
+                paths = b.paths;
+                break;
+            }
+        }
+        const QString label = serialDeviceLabel(info);
+
+        if (paths.isEmpty()) {
+            // A device with no remembered log opens the form pre-filled rather than guessing at a
+            // path. The trailing "..." is what says so, exactly as a saved host with no log does.
+            QAction *action = m_serialMenu->addAction(QStringLiteral("%1...").arg(label));
+            action->setToolTip(tr("No log remembered on %1 yet").arg(label));
+            // LOOKED UP AT ACTIVATION, NEVER CAPTURED — and here that matters more than it does
+            // for a saved host: a replug between the menu opening and the click is exactly the
+            // event this menu exists for, and a captured device may be gone or renumbered.
+            connect(action, &QAction::triggered, this, [this, id] { openSerialDevice(id, QString()); });
+            continue;
+        }
+        for (const QString &path : paths) {
+            // One flat entry per remembered log rather than a submenu per device: a board usually
+            // has one or two logs worth reopening, and a submenu that deep costs a hover and a
+            // second aim for a single click's worth of choice.
+            QString entry = QStringLiteral("%1: %2").arg(label, path);
+            entry.replace(u'&', QLatin1String("&&")); // a menu reads '&' as a mnemonic
+            QAction *action = m_serialMenu->addAction(entry);
+            action->setToolTip(QStringLiteral("serial://%1%2").arg(id, path));
+            connect(action, &QAction::triggered, this, [this, id, path] {
+                openSerialDevice(id, path);
+            });
+        }
+    }
+
+    m_serialMenu->addSeparator();
+    QAction *settings = m_serialMenu->addAction(tr("Se&ttings..."));
+    settings->setObjectName(QStringLiteral("serialSettingsAction")); // findChild, for tests
+    connect(settings, &QAction::triggered, this, &MainWindow::chooseSerialSettings);
+}
+
+void MainWindow::chooseSerialSettings()
+{
+    SerialProfileStore store(SerialProfileStore::defaultDir());
+    SerialSettingsDialog dialog(&store, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    store.replacePresets(dialog.presets());
+
+    // RE-PRIMED HERE RATHER THAN WAITED FOR, which is what "change the settings on the fly" means
+    // at this end: the fetcher re-reads its options on every poll and decides for itself whether
+    // the edit costs a reopened port, a fresh login or nothing (serialChangeCost()) — but it would
+    // not know the preset had moved until something told it, because the options hash is what it
+    // reads and this dialog writes the FILE.
+    for (const std::unique_ptr<DocumentContext> &ctx : m_contexts) {
+        if (!ctx || !ctx->doc)
+            continue;
+        const auto location = RemoteLocation::parse(ctx->doc->path());
+        if (!location || location->transport != RemoteLocation::Transport::Serial)
+            continue;
+        primeSerialProfile(*location);
+        // And poke it, so the change lands on the next turn rather than at the next poll. This is
+        // what File ▸ Reconnect already does, reaching the same place.
+        reconnectSpool(ctx.get());
+    }
+}
+
+void MainWindow::openSerialDevice(const QString &deviceId, const QString &path)
+{
+    if (deviceId.isEmpty())
+        return;
+
+    if (path.isEmpty()) {
+        OpenSerialDialog dialog(deviceId, this);
+        if (dialog.exec() != QDialog::Accepted || dialog.chosenPath().isEmpty())
+            return;
+        rememberSerialPath(deviceId, dialog.chosenPath());
+        openSerialDevice(deviceId, dialog.chosenPath());
+        return;
+    }
+
+    const auto location =
+        RemoteLocation::parse(QStringLiteral("serial://%1%2").arg(deviceId, path));
+    if (!location) {
+        reportOpenRefusal(deviceId, tr("Not a valid serial log address."));
+        return;
+    }
+    rememberSerialPath(deviceId, path);
+    primeSerialProfile(*location);
+    openFile(location->toString());
+}
+
+void MainWindow::rememberSerialPath(const QString &deviceId, const QString &path)
+{
+    const SerialProfileStore store(SerialProfileStore::defaultDir());
+    QVector<SerialDeviceBookmark> all = store.devices();
+    for (SerialDeviceBookmark &b : all) {
+        if (b.id != deviceId)
+            continue;
+        if (!b.paths.contains(path)) {
+            b.paths.prepend(path);   // the one just opened first, as a saved host's list does
+            store.saveDevice(b);
+        }
+        return;
+    }
+    SerialDeviceBookmark fresh;
+    fresh.id = deviceId;
+    fresh.paths = QStringList{path};
+    store.saveDevice(fresh);
+}
+
+void MainWindow::primeSerialProfile(const RemoteLocation &location)
+{
+    if (location.transport != RemoteLocation::Transport::Serial)
+        return;
+
+    // THE HANDOFF, AND IT IS IN openFile()'s SINGLE FUNNEL rather than only in the menu — which
+    // is the gap ARCHITECTURE.md §8 records for the network transport's own options: those reach
+    // the fetcher only from the Open Remote dialog and the Remote Hosts menu, so the same address
+    // arriving from the command line, the recent-files list or a restored session silently gets
+    // the defaults. Every way in carries it here.
+    const SerialProfileStore store(SerialProfileStore::defaultDir());
+    const LogProfile resolved = resolvedProfile(location.toString());
+    SerialFetchOptions options;
+    options.profile = store.presetNamed(resolved.serialProfile);
+    if (!resolved.serialProfile.isEmpty() && options.profile.name != resolved.serialProfile) {
+        // Named a preset that is not there. FALLS BACK RATHER THAN REFUSING, because the settings
+        // tree and serial.json are independently editable — and it says so in the one place that
+        // can be read afterwards, rather than opening on the wrong settings in silence.
+        diagLog("serial", QStringLiteral("%1: preset \"%2\" is not configured — using the "
+                                        "built-in defaults")
+                              .arg(location.toString(), resolved.serialProfile));
+    }
+    setSerialFetchOptions(location, options);
+}
+
 void MainWindow::openRemoteBookmark(const QString &hostName, const QString &path)
 {
     // The bookmark is looked up AT ACTIVATION rather than captured, because the surfaces
@@ -2423,7 +2614,14 @@ void MainWindow::closeAllDocuments(Prompt prompt)
 
 void MainWindow::primeRemoteCredentials(const QString &path)
 {
-    if (!RemoteLocation::isRemote(path))
+    // SSH ONLY, and gated on the TRANSPORT rather than on isRemote(), which has answered
+    // true for `serial://` since M27. What follows is a saved-HOST lookup, and
+    // HostBookmarkStore::find() matches on user, host and port — a serial location carries
+    // the default port and a device name in the host field, so a device called `ttyUSB0`
+    // would match a saved host of that name and be primed with its password. That is the
+    // same collision class target()'s `serial:` prefix exists to prevent one layer down,
+    // arriving from the other direction.
+    if (RemoteLocation::transportOf(path) != RemoteLocation::Transport::Ssh)
         return;
     const auto location = RemoteLocation::parse(path);
     if (!location)
@@ -2557,6 +2755,12 @@ bool MainWindow::openFile(const QString &rawPath, const QString &pattern)
     // Open Remote, the Remote Hosts menu, recent files, drag-and-drop, the command line
     // and session restore.
     primeRemoteCredentials(path);
+    // Beside it, and in the same funnel for the same reason: every way in must carry the
+    // device's settings, not only the two surfaces that happen to know about them.
+    if (const auto serial = RemoteLocation::parse(path);
+        serial && serial->transport == RemoteLocation::Transport::Serial) {
+        primeSerialProfile(*serial);
+    }
 
     // An archive naming no member cannot be opened, so ask which log is wanted —
     // EXACTLY HERE and nowhere else. Document::prepare(), rescan() and session restore
@@ -3187,6 +3391,7 @@ void MainWindow::applyProfileToActive(const LogProfile &p)
     stored.wrapMode = p.wrapMode;
     stored.configPath = p.configPath;
     stored.restartScript = p.restartScript;
+    stored.serialProfile = p.serialProfile;
     ctx->fileSettings.profile = stored;
     persistFileSettings(ctx);
     for (DocumentView *v : std::as_const(ctx->views))

@@ -300,6 +300,37 @@ target_sources(loftail_core PRIVATE
     # from SshSession.cpp rather than copied, which is the whole reason this file is here.
     ExecTransport.cpp
     ExecTransport.h
+    # Whether a log'''s bytes survive the way back. An SSH exec channel never had to ask; a
+    # login console cannot avoid it, because a tty runs what passes over it through a line
+    # discipline. Settled behaviourally rather than declared, ExecSizeProbe'''s own rule, and
+    # always compiled for its reason too.
+    ExecByteSafety.cpp
+    ExecByteSafety.h
+    # Turning one command on a console into one answer: an exec channel gives a private
+    # stdout, a separate stderr and an exit status, and a tty gives one stream carrying all
+    # of that plus whatever else the device felt like printing. The payload is
+    # LENGTH-delimited wherever its length is known, because a log may contain the token.
+    SerialFraming.cpp
+    SerialFraming.h
+    # The per-device settings a serial fetcher is built with. Always compiled exactly as
+    # SshFetchOptions.cpp is, so the UI needs no `#if` to set one — and mutex-guarded, which
+    # that one is not: a serial fetcher re-reads its options on every poll, which is what
+    # makes "change the settings on the fly" work and what would make an unsynchronised hash
+    # a cross-thread race no sanitizer would reach.
+    SerialFetchOptions.cpp
+    SerialFetchOptions.h
+    SerialEnumerator.h
+    # One device'''s console: the port, the login, and every command over it. The header names
+    # no QSerialPort type, so it is always compiled and the registry and its rules are always
+    # reachable; the .cpp is gated below, because a port is the one thing here that needs Qt.
+    SerialDevice.h
+    SerialFetcher.h
+    # The named presets and the remembered devices. HostBookmarkStore'''s shape verbatim,
+    # including the rule that an added key never bumps the schema — an older binary reads an
+    # absent key as the struct'''s default, where a bump makes it refuse the file and forget
+    # every preset the user has.
+    SerialProfileStore.cpp
+    SerialProfileStore.h
     SerialProfile.cpp
     SerialProfile.h
     SerialLoginMachine.cpp
@@ -354,6 +385,32 @@ endif()
 # Qt6::DBus in behind loftail_core, but nothing of loftail's own includes a DBus header and
 # the rule here is "never QtWidgets", not "QtCore only in the linker" — QtGui is already
 # linked below for QColor.
+# M27 — the only QSerialPort-touching translation units. Same shape as the three gates above:
+# the seam and every decision are always compiled, one implementation is conditional.
+# PUBLIC on the definition so loftail_ui and the tests see the same feature state.
+#
+# SerialEnumerator.cpp is gated although it holds NO decisions — which is the point of the
+# split: it cannot be tested, because QSerialPortInfo cannot be constructed, so everything it
+# would otherwise have decided lives in SerialDevices.cpp above.
+if(LOFTAIL_HAVE_SERIAL)
+    target_sources(loftail_core PRIVATE
+        SerialEnumerator.cpp
+        SerialDevice.cpp
+        SerialFetcher.cpp
+    )
+    target_compile_definitions(loftail_core PUBLIC LOFTAIL_HAVE_SERIAL=1)
+    target_link_libraries(loftail_core PRIVATE ${LOFTAIL_SERIAL_TARGET})
+else()
+    # The enumerator and the device both compile without the dependency and answer "no device
+    # here" — which is what makes the menu present, disabled and able to say why, rather than
+    # absent (the File menu'''s own rule about a vanished entry).
+    target_sources(loftail_core PRIVATE
+        SerialEnumerator.cpp
+        SerialDevice.cpp
+        SerialFetcher.cpp
+    )
+endif()
+
 if(LOFTAIL_HAVE_KEYCHAIN)
     target_sources(loftail_core PRIVATE
         KeychainSecretStore.cpp

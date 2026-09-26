@@ -174,6 +174,17 @@ void RestartDialog::onFinished(const RestartResult &result)
     QString text = statusSentence();
     if (result.truncated)
         text += QLatin1Char(' ') + tr("Output was longer than loftail will show; it was cut.");
+    if (result.streamsMerged && !result.aborted && result.ok) {
+        // THE RELAXATION, SAID WHERE THE JUDGEMENT IS MADE and not only in SPEC.md §4. A serial
+        // console carries one stream, so "wrote to standard error" — one of the two failure
+        // signals everywhere else — cannot be evaluated at all, and this run was judged on its
+        // exit status alone. Which means a script that complains and exits 0 closes this dialog
+        // by itself, where over SSH it would have stayed up: that difference is the reader's to
+        // know rather than to discover.
+        text += QLatin1Char('\n')
+            + tr("A serial console carries one stream, so error output could not be told from "
+                 "ordinary output; this run was judged on its exit status alone.");
+    }
     m_status->setText(text);
 
     m_abort->setVisible(false);
