@@ -1,0 +1,45 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https:#www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "`QUrl` CANNOT HOLD A DEVICE ID, AND THE WHOLE SERIAL
+# ADDRESS SCHEME IS BUILT AROUND THAT"):
+#   `target()` carries the scheme, and that is a SECURITY decision: a host
+#   genuinely named `ttyUSB0` must not share a keychain entry with the device of
+#   that name.
+#
+# GUARD: tst_remotelocation::aSerialTargetCannotBeConfusedWithAHost
+#
+# SILENT WHEN BROKEN: the collision is asymmetric. A connect-hold clash merely
+# serialises two unrelated connects; a keychain clash SENDS ONE MACHINE'S
+# PASSWORD TO ANOTHER, with nothing on either side saying so.
+
+diff --git a/src/core/RemoteLocation.cpp b/src/core/RemoteLocation.cpp
+index 9463b84..b99942c 100644
+--- a/src/core/RemoteLocation.cpp
++++ b/src/core/RemoteLocation.cpp
+@@ -402,8 +402,8 @@ QString RemoteLocation::target() const
+         // named `ttyUSB0` must not share a keychain entry with the device of that name,
+         // because the collision sends one machine's password to another.
+         if (account.isEmpty())
+-            return QStringLiteral("serial:%1").arg(host);
+-        return QStringLiteral("serial:%1@%2").arg(account, host);
++            return host;
++        return QStringLiteral("%1@%2").arg(account, host);
+     }
+     // Still guarded, because effectiveUser() can come back empty on a machine with no
+     // home directory at all — and "@host:22" would be a key that reads as a bug.

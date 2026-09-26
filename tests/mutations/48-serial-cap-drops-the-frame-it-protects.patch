@@ -1,0 +1,50 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https:#www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "THE FRAME IS LENGTH-DELIMITED FOR RAW AND SCANNED FOR
+# BASE64"):
+#   The buffer cap drops only what PRECEDES the begin marker, or it cuts off the
+#   frame it exists to protect.
+#
+# GUARD: tst_serialframing::theCapNeverDropsAFrameThatHasAlreadyStarted
+#
+# SILENT WHEN BROKEN: every later read answers Incomplete and the command times
+# out against a device that answered it correctly — reachable on a booting board,
+# which prints megabytes while a command is in flight and is the case the cap
+# exists for in the first place.
+
+diff --git a/src/core/SerialFraming.cpp b/src/core/SerialFraming.cpp
+index adcd275..e9c142b 100644
+--- a/src/core/SerialFraming.cpp
++++ b/src/core/SerialFraming.cpp
+@@ -181,14 +181,7 @@ void capFrameBuffer(QByteArray *buffer, const SerialFrame &frame)
+     // started cuts the marker off, readFramedAnswer() then answers Incomplete for ever, and
+     // the command times out on a device that answered it perfectly. Reachable on a booting
+     // board, which prints megabytes while a command is in flight — the case this exists for.
+-    const QByteArray begin = QByteArrayLiteral("LFB-") + frame.token;
+-    const qsizetype markerAt = buffer->indexOf(begin);
+-    if (markerAt > 0) {
+-        buffer->remove(0, markerAt);
+-        return;
+-    }
+-    if (markerAt == 0)
+-        return;   // nothing before it to drop; the payload's own size is the caller's bound
++    Q_UNUSED(frame);
+ 
+     // No frame in flight yet: the answer is always the newest, so the oldest noise goes.
+     buffer->remove(0, buffer->size() - kFrameBufferCap);

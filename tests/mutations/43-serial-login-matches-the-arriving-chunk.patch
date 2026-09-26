@@ -1,0 +1,44 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https:#www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "FIVE RULES IN `SerialLoginMachine` AND EVERY ONE IS SILENT
+# WHEN BROKEN"):
+#   (a) Matching is against a SLIDING WINDOW OF BYTES, never against the
+#   arriving chunk. A `login: ` prompt carries no trailing newline and a prompt
+#   split across two reads is the ORDINARY case at 115200 baud.
+#
+# GUARD: tst_serialloginmachine::aPromptSplitAcrossTwoReadsIsStillAPrompt
+#
+# SILENT WHEN BROKEN: it fails only on a SLOW LINK, and only for a prompt that
+# straddles a read — which is most of them at 115200 baud. The login simply never
+# completes; nothing anywhere says a prompt was seen and dropped, and the tab
+# sits on "waiting for the login prompt" over a device that sent one.
+
+diff --git a/src/core/SerialLoginMachine.cpp b/src/core/SerialLoginMachine.cpp
+index 395ee7d..46670c1 100644
+--- a/src/core/SerialLoginMachine.cpp
++++ b/src/core/SerialLoginMachine.cpp
+@@ -146,7 +146,7 @@ bool SerialLoginMachine::windowMatches(const QRegularExpression &re) const
+ {
+     if (!re.isValid() || re.pattern().isEmpty())
+         return false;
+-    return re.match(QString::fromLatin1(m_window)).hasMatch();
++    return re.match(QString::fromLatin1(m_window.right(48))).hasMatch();
+ }
+ 
+ bool SerialLoginMachine::windowHasMarker() const

@@ -1,0 +1,43 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https:#www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "THE FRAME IS LENGTH-DELIMITED FOR RAW AND SCANNED FOR
+# BASE64, AND THE TWO ARE NOT INTERCHANGEABLE"):
+#   A RAW payload is bounded by the byte count `| head -c L` guarantees and is
+#   never found by scanning, because a log is arbitrary bytes and may contain
+#   this run's own token.
+#
+# GUARD: tst_serialframing::aPayloadHoldingTheTokenIsNotTruncatedByIt
+#
+# SILENT WHEN BROKEN: a log that happens to mention the token TRUNCATES ITSELF
+# at that point and every record after it is absent — on exactly the logs nobody
+# thinks to test, with nothing anywhere reporting a short read.
+
+diff --git a/src/core/SerialFraming.cpp b/src/core/SerialFraming.cpp
+index adcd275..9c4fdeb 100644
+--- a/src/core/SerialFraming.cpp
++++ b/src/core/SerialFraming.cpp
+@@ -92,7 +92,7 @@ FramedAnswer readFramedAnswer(const QByteArray &buffer, const SerialFrame &frame
+ 
+     qsizetype payloadEnd = -1;
+     qsizetype searchFrom = payloadStart;
+-    if (frame.expected >= 0) {
++    if (false) {
+         // LENGTH-DELIMITED. The payload may be arbitrary bytes — a log — so it may contain
+         // this very token, and scanning it would truncate the log at that point.
+         if (buffer.size() - payloadStart < frame.expected) {

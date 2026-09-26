@@ -1,0 +1,44 @@
+# loftail — a desktop viewer for log4cplus logs.
+# Copyright (C) 2026 Valentyn Pavliuchenko
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https:#www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# RULE (CLAUDE.md, "A REBOOT IS A RECONNECT AND NOTHING MORE"):
+#   The reboot pattern is asked on every feed in EVERY step, `Ready` included —
+#   which is the only step a reboot actually happens in, so a machine that only
+#   looked during the login would be a machine that never noticed one.
+#
+# GUARD: tst_serialloginmachine::theRebootRegexpFiresFromTheReadyStateToo
+#
+# SILENT WHEN BROKEN: a board that restarts under a tab is never noticed, so the
+# tab keeps a session that no longer exists and every command afterwards fails
+# for a reason that reads as a dropped line. Which is the one event the whole
+# setting exists for.
+
+diff --git a/src/core/SerialLoginMachine.cpp b/src/core/SerialLoginMachine.cpp
+index 395ee7d..0c2c4e3 100644
+--- a/src/core/SerialLoginMachine.cpp
++++ b/src/core/SerialLoginMachine.cpp
+@@ -207,7 +207,8 @@ LoginAction SerialLoginMachine::feed(QByteArrayView arrived, qint64 nowMs)
+     // OUTRANKS EVERYTHING ELSE IN THIS FEED. Ready is the step a reboot actually happens
+     // in; a machine that only looked during the login would never notice one, which is
+     // the whole of what SPEC.md §3 promises about a device that restarts.
+-    if (m_step != LoginStep::Failed && windowMatches(m_rebootRe)) {
++    if (m_step != LoginStep::Failed && m_step != LoginStep::Ready
++        && windowMatches(m_rebootRe)) {
+         m_sawReboot = true;
+         m_window.clear();
+         LoginAction a;
