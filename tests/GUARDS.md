@@ -331,6 +331,11 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | A reboot is noticed and signed in to again | Serial transport (M27) | tst_serialdevice::aRebootIsNoticedAndSignedInToAgain |
 | One device, one session, N logs — and a request failure on one log leaves the device usable | Serial transport (M27) | tst_serialdevice::twoLogsOnOneDeviceShareOneLogin<br>tst_serialdevice::aRequestFailureOnOneLogLeavesTheDeviceUsable |
 | The chunk and the read deadline are derived from the baud, not written down | Serial transport (M27) | tst_serialdevice::theChunkAndTheDeadlineComeFromTheBaud |
+| A serial log opens as an ordinary spooled tab, waits when the device is absent, and keeps its tab on a refusal | Serial transport (M27) | tst_serialopen::aSerialLogOpensAsAnOrdinarySpooledTab<br>tst_serialopen::aDeviceThatIsNotThereOpensAWaitingTab<br>tst_serialopen::aTransportRefusalKeepsItsTabAndSaysWhy |
+| The tab is labelled with the log's own name; the device goes on the tooltip | Serial transport (M27) | tst_serialopen::theTabIsLabelledWithTheDeviceRatherThanTheAddress |
+| File ▸ Serial is populated on aboutToShow and always offers Settings | Serial menu (M27) | tst_serialopen::theFileMenuHasASerialSubmenuWithItsSettingsEntry |
+| A config file on a device is refused by name rather than attempted over SSH | Serial transport (M27) | tst_serialopen::aSerialConfigFileIsRefusedByNameRatherThanAttempted |
+| A serial tab comes back with the session, and no schema version moved | Serial transport (M27) | tst_serialopen::aSerialTabComesBackWithTheSession |
 
 ## Unguarded — 450 rules
 

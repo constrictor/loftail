@@ -92,6 +92,7 @@ private slots:
     void theFileMenuHasASerialSubmenuWithItsSettingsEntry();
     void aSerialConfigFileIsRefusedByNameRatherThanAttempted();
     void theSettingsKeyIsTheAddressAndSurvivesReopening();
+    void aSerialTabComesBackWithTheSession();
 };
 
 namespace {
@@ -268,6 +269,36 @@ void TestSerialOpen::theSettingsKeyIsTheAddressAndSurvivesReopening()
     // is what makes `serial://*` able to claim every device (SPEC.md §4).
     QCOMPARE(logMatchTarget(address, /*fullPath=*/false), QStringLiteral("app.log"));
     QCOMPARE(logMatchTarget(address, /*fullPath=*/true), address);
+}
+
+void TestSerialOpen::aSerialTabComesBackWithTheSession()
+{
+    // FOR FREE, and that is the assertion: the session stores a Document's path and nothing
+    // else about how it is reached, so a serial tab restores because `serial://…` IS a path.
+    // No schema version moved and nothing in SessionStore knows the scheme exists.
+    FakeRemoteFarm farm;
+    farm.at(addressFor())->setInitialContent(parseableLog("before the quit"));
+
+    {
+        ModalGuard guard;
+        MainWindow w;
+        QVERIFY(w.openFile(addressFor()));
+        QTRY_COMPARE(tabsOf(w)->count(), 1);
+        QTRY_COMPARE(tabsOf(w)->tabText(0), QStringLiteral("app.log"));
+        w.close();   // writes the session
+        QVERIFY2(guard.seen().isEmpty(), qUtf8Printable(guard.seen()));
+    }
+
+    ModalGuard guard;
+    MainWindow again;
+    // Restored in the constructor, before show() — which is why a refusal there goes to the
+    // message strip rather than a modal, and why this guard is worth having here too.
+    QTRY_COMPARE(tabsOf(again)->count(), 1);
+    auto *view = qobject_cast<DocumentView *>(tabsOf(again)->widget(0));
+    QVERIFY(view);
+    QCOMPARE(view->context()->doc->path(), addressFor());
+    QTRY_VERIFY(view->context()->doc->index().records.size() >= 1);
+    QVERIFY2(guard.seen().isEmpty(), qUtf8Printable(guard.seen()));
 }
 
 int main(int argc, char *argv[])
