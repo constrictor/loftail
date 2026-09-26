@@ -23,6 +23,13 @@ Three passes have been run and closed:
   previous one's fix asserting a property whole and the fuzzer answering with
   another address that is not a fixed point of its own normal form, for a reason
   having nothing to do with the one before it.
+- **2026-09-26**, entry 50 — the same chain's sixth link, found by the same fuzzer
+  within a minute of M27's `serial://` scheme existing. `RemoteLocation::parse()`'s
+  serial branch is hand-cut because `QUrl` lowercases a host, and it inherited none of
+  `QUrl::StrictMode`'s refusals: an invalid percent escape was decoded *leniently* into
+  different bytes, whose normal form then moved again on the next pass. Fixed by
+  refusing it, and the general rule is in `CLAUDE.md` — a branch written by hand in
+  place of a parser has to ask for each of that parser's refusals by name.
 
 Entry 23 is what is left, and it is not waiting on a patch: it is a standing
 product decision nobody has taken.

@@ -27,6 +27,7 @@
 #include <QLatin1String>
 #include <QStandardPaths>
 #include <QStringList>
+#include <QStringView>
 #include <QUrl>
 
 namespace loftail {
@@ -152,6 +153,38 @@ namespace {
 // fixed point for every string tried, noncharacters included, unlike whole-URL parsing; and
 // the device charset is narrow enough (SerialDevices.h) that nothing in it needs encoding
 // in either direction.
+
+// Whether every `%` in `raw` introduces a valid two-hex-digit escape.
+//
+// THE STRICTNESS THE HAND-CUT BRANCH DOES NOT GET FOR FREE, and the fuzzer found its absence
+// within a minute of the scheme existing. `QUrl(s, QUrl::StrictMode)` REFUSES a URL holding an
+// invalid escape, so the ssh branch answers nullopt for `ssh://h/~a.%U:/x` and normalize() hands
+// the string back unchanged — idempotent. `QUrl::fromPercentEncoding()` is lenient instead: it
+// decodes `%U:` to `z`, so the serial branch produced a DIFFERENT path, whose normal form then
+// moved again on the next pass. One log, two spellings — a second slot out of the pool of 500 and
+// settings written under one name and read under the other (bugs.md 44's own subject, reached by a
+// sixth route).
+//
+// Refused rather than repaired, and refused HERE, for that entry's reasons: it is decidable with
+// no I/O, so it fails the open and names the address (M17) rather than opening a tab for a log
+// whose name loftail and the user disagree about.
+bool escapesAreWellFormed(QStringView raw)
+{
+    const auto hex = [](QChar c) {
+        return (c >= u'0' && c <= u'9') || (c >= u'a' && c <= u'f') || (c >= u'A' && c <= u'F');
+    };
+    for (qsizetype i = 0; i < raw.size(); ++i) {
+        if (raw.at(i) != u'%')
+            continue;
+        if (i + 2 >= raw.size())
+            return false;
+        if (!hex(raw.at(i + 1)) || !hex(raw.at(i + 2)))
+            return false;
+        i += 2;
+    }
+    return true;
+}
+
 std::optional<RemoteLocation> parseSerial(const QString &s)
 {
     const int schemeLength = int(qstrlen(kSerialScheme));
@@ -165,6 +198,11 @@ std::optional<RemoteLocation> parseSerial(const QString &s)
 
     const QString authority = rest.left(slash);
     const QString rawPath = rest.mid(slash);
+
+    // Before anything is decoded: see escapesAreWellFormed(). The ssh branch gets this from
+    // QUrl::StrictMode and a hand-cut branch has to ask for it.
+    if (!escapesAreWellFormed(authority) || !escapesAreWellFormed(rawPath))
+        return std::nullopt;
 
     RemoteLocation loc;
     loc.transport = RemoteLocation::Transport::Serial;

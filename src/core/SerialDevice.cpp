@@ -331,6 +331,9 @@ bool SerialDevice::runLocked(const QString &command, QByteArray *stdOut, qint64 
 #if !defined(LOFTAIL_HAVE_SERIAL)
     Q_UNUSED(command); Q_UNUSED(stdOut); Q_UNUSED(expectedPayload);
     Q_UNUSED(keepStdErr); Q_UNUSED(rawPayload);
+    // EVERY parameter, and a parameter added above without a line here fails ONLY the
+    // serial-off build — which is not a configuration anybody runs while writing serial code.
+    Q_UNUSED(deadlineOverrideMs); Q_UNUSED(exitCode);
     return false;
 #else
     if (!m_port || !m_port->port.isOpen())

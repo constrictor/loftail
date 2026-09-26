@@ -33,8 +33,13 @@
 #include <QThread>
 #include <QTimerEvent>
 
-#if defined(LOFTAIL_HAVE_SSH)
+// ALWAYS, and NOT inside the SSH block below: SerialFetcher.h is always compiled — it declares a
+// factory that answers a refusal naming the missing dependency — and folding its include in with
+// libssh2's meant that a build with no SSH lost the declaration along with it. The two transports
+// are independent, and an include that says otherwise is how one gate came to control both.
 #include "SerialFetcher.h"
+
+#if defined(LOFTAIL_HAVE_SSH)
 #include "SshFetcher.h"
 #endif
 

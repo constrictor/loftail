@@ -76,6 +76,7 @@ private slots:
     void aSerialAddressIsRemoteAndSaysWhichTransport();
     void aSerialAddressSpellsNoPortAndAnExplicitOneIsRefused();
     void aByIdDeviceKeepsItsCaseAndItsUnderscores();
+    void anInvalidPercentEscapeOnASerialAddressIsRefused();
     void aDeviceNameOutsideItsCharacterSetIsRefused();
     void aSerialTargetCannotBeConfusedWithAHost();
     void aSerialAddressNamesNoDefaultUser();
@@ -193,6 +194,36 @@ void TestRemoteLocation::aByIdDeviceKeepsItsCaseAndItsUnderscores()
     const auto com = RemoteLocation::parse(QStringLiteral("serial://COM3/C:/logs/app.log"));
     QVERIFY(com.has_value());
     QCOMPARE(com->host, QStringLiteral("COM3"));
+}
+
+void TestRemoteLocation::anInvalidPercentEscapeOnASerialAddressIsRefused()
+{
+    // THE STRICTNESS THE HAND-CUT BRANCH DOES NOT GET FOR FREE, found by the fuzzer within a
+    // minute of the scheme existing. `QUrl(s, QUrl::StrictMode)` REFUSES a URL holding an
+    // invalid escape, so the ssh branch answers nullopt and normalize() hands the string back
+    // unchanged. `QUrl::fromPercentEncoding()` is lenient instead — it decodes `%U:` to `z` —
+    // so the serial branch produced a path holding bytes the address never spelled, whose own
+    // normal form then moved AGAIN on the next pass: one log, two spellings, which is a second
+    // slot out of the pool of 500 and settings written under one name and read under the other.
+    //
+    // Refused rather than repaired, and at parse() because it is decidable with no I/O.
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("serial://t/~a.%U:/../a.zzst")).has_value());
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("serial://h/a%2")).has_value());   // truncated
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("serial://h/a%")).has_value());    // bare
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("serial://h/a%GG")).has_value());  // not hex
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("serial://%Uh/a.log")).has_value()); // authority too
+
+    // The property the fuzzer asserts, stated here over the input that violated it: a refused
+    // address falls through normalize() unchanged, so it is trivially a fixed point.
+    const QString bad = QStringLiteral("serial://t/~a.%U:/../a.zzst");
+    QCOMPARE(normalizeLogPath(bad), bad);
+    QCOMPARE(normalizeLogPath(normalizeLogPath(bad)), normalizeLogPath(bad));
+
+    // And a WELL-FORMED escape still round-trips, or the refusal has taken the encoding with it.
+    const auto good = RemoteLocation::parse(QStringLiteral("serial://ttyUSB0/var/log/a%20b.log"));
+    QVERIFY(good.has_value());
+    QCOMPARE(good->path, QStringLiteral("/var/log/a b.log"));
+    QCOMPARE(RemoteLocation::normalize(good->toString()), good->toString());
 }
 
 void TestRemoteLocation::aDeviceNameOutsideItsCharacterSetIsRefused()

@@ -268,10 +268,15 @@ void TestSerialOpen::aSerialConfigFileIsRefusedByNameRatherThanAttempted()
     QVERIFY(!configAddressIsWritable(addressFor(QStringLiteral("/etc/log4cplus.properties")),
                                      &reason));
     QVERIFY2(reason.contains(QStringLiteral("serial")), qUtf8Printable(reason));
-    // And an ssh address is unaffected, or the refusal is too wide.
+    // And an ssh address is unaffected, or the refusal is too wide. GATED, because in a build
+    // with no SSH support that address is refused too — for a different and correct reason — and
+    // an ungated control would then assert the opposite of what it means.
+#if defined(LOFTAIL_HAVE_SSH)
     QString sshReason;
-    QVERIFY(configAddressIsWritable(QStringLiteral("ssh://h/etc/log4cplus.properties"),
-                                    &sshReason));
+    QVERIFY2(configAddressIsWritable(QStringLiteral("ssh://h/etc/log4cplus.properties"),
+                                     &sshReason),
+             qUtf8Printable(sshReason));
+#endif
 }
 
 void TestSerialOpen::theSettingsKeyIsTheAddressAndSurvivesReopening()
