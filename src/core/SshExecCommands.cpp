@@ -69,7 +69,7 @@ QString wcSizeCommand(const QString &path)
     return QStringLiteral("wc -c < %1").arg(shellQuote(path));
 }
 
-QString readCommand(const QString &path, qint64 offset, qint64 length)
+QString readCommand(const QString &path, qint64 offset, qint64 length, ByteSafety safety)
 {
     // +1 because `tail -c +N` is 1-BASED: +1 is the whole file, not "skip one byte".
     const qint64 from = qMax<qint64>(0, offset) + 1;
@@ -80,9 +80,50 @@ QString readCommand(const QString &path, qint64 offset, qint64 length)
     // length. And the tempting `.arg(from, quoted, length)` with the numbers left as
     // integers binds to arg(qlonglong, int fieldWidth, int base) instead, which means
     // something else entirely.
-    return QStringLiteral("tail -c +%1 %2 | head -c %3")
-        .arg(QString::number(from), shellQuote(path),
-             QString::number(qMax<qint64>(0, length)));
+    // ONE FUNCTION COMPOSES THE PIPELINE, AND THE ENCODER IS A STAGE OF IT rather than a
+    // second spelling of the whole thing somewhere else. Two spellings of this command
+    // would have to agree about the 1-based `+N`, the quoting and the bound, and would
+    // drift the first time one of them was corrected.
+    const QString base = QStringLiteral("tail -c +%1 %2 | head -c %3")
+                             .arg(QString::number(from), shellQuote(path),
+                                  QString::number(qMax<qint64>(0, length)));
+    if (safety == ByteSafety::Base64)
+        return base + QStringLiteral(" | base64");
+    return base;
+}
+
+QString base64ProbeCommand()
+{
+    // The marker is what says the encoder ran, not the exit status — probeCommand()'s rule,
+    // and for its reason: a restricted shell can exit 0 while running nothing. `bG9mdGFpbA==`
+    // is "loftail", so a far end that echoes the command back rather than running it cannot
+    // fake the answer either.
+    return QStringLiteral("printf loftail | base64 2>/dev/null");
+}
+
+bool decodeBase64Payload(const QByteArray &printed, QByteArray *out)
+{
+    // Whitespace is not an error: `base64` wraps at 76 columns by default and a tty adds
+    // carriage returns of its own, so the padding-strict decode has to see the joined text.
+    QByteArray joined;
+    joined.reserve(printed.size());
+    for (const char c : printed) {
+        if (c != '\n' && c != '\r' && c != ' ' && c != '\t')
+            joined.append(c);
+    }
+    // ABORT-ON-ERROR RATHER THAN A BEST EFFORT, and that is the whole of why this function
+    // exists instead of a bare QByteArray::fromBase64() at the call site: a lenient decode
+    // answers a short buffer for a truncated transfer, and a short read is indistinguishable
+    // from end of file one layer up — which is how a cut-off answer becomes a silently
+    // truncated log with every record after it simply absent.
+    const QByteArray::FromBase64Result decoded =
+        QByteArray::fromBase64Encoding(joined, QByteArray::Base64Encoding
+                                           | QByteArray::AbortOnBase64DecodingErrors);
+    if (!decoded)
+        return false;
+    if (out)
+        *out = *decoded;
+    return true;
 }
 
 QString streamReadCommand(const QString &path, qint64 offset)

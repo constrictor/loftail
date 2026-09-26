@@ -136,7 +136,33 @@ QString wcSizeCommand(const QString &path);
 // `tail -c +N` counts from ONE, not zero, which is the off-by-one this function exists
 // to get right in a single place. `head -c` bounds the transfer so a poll near the start
 // of a large log does not stream the whole thing.
-QString readCommand(const QString &path, qint64 offset, qint64 length);
+// HOW THE PAYLOAD SURVIVES THE WAY BACK, which is a question a socket never had to ask
+// and a tty cannot avoid (ARCHITECTURE.md §6.11). A login console runs the bytes through a
+// terminal line discipline: `\n` becomes `\r\n`, `^S`/`^Q` are eaten as flow control, and
+// depending on termios the eighth bit may be stripped. An exec channel over SSH does none
+// of that, so `Raw` is what every server rung has always used and is still the default.
+//
+// `Base64` is the answer where raw bytes do NOT survive, settled behaviourally per login by
+// ExecByteSafety — never assumed, because a `stty` that accepts `raw` and does nothing exits
+// 0 just as happily as one that works.
+enum class ByteSafety {
+    Raw,     // the bytes come back as they are
+    Base64,  // `| base64` on the way out, decoded on the way in
+};
+
+QString readCommand(const QString &path, qint64 offset, qint64 length,
+                    ByteSafety safety = ByteSafety::Raw);
+
+// Whether the far end has a base64 encoder, and how to test for one. One command, and the
+// answer is what it PRINTS rather than its exit status, for probeCommand()'s reason: a
+// restricted shell can exit 0 while running nothing.
+QString base64ProbeCommand();
+
+// Decode what a Base64 read printed. Refuses partial or corrupt input by answering false
+// rather than a short buffer, because a short read here is indistinguishable from end of
+// file one layer up — which is exactly how a truncated answer becomes a silently truncated
+// log.
+bool decodeBase64Payload(const QByteArray &printed, QByteArray *out);
 
 // Everything from `offset` (0-based) to the end of the file, on stdout, AS ONE STREAM.
 //

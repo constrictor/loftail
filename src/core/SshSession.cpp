@@ -21,6 +21,7 @@
 #include "DiagnosticLog.h"
 
 #include "ExecSizeProbe.h"
+#include "ExecTransport.h"
 #include "SshPrompter.h"
 #include "SecretStore.h"
 #include "SocketDetach.h"
@@ -286,9 +287,16 @@ struct SshSession::Impl
 
     bool              fstatTracks = false;
     SshSession::Mode  mode = SshSession::Mode::Sftp;
-    bool              execFileOpen = false; // Mode::Exec has no handle, only this flag
-    ExecTools         execTools;            // what the connect-time probe found
-    SizeSource        execSize = SizeSource::None; // settled at openFile(), per open
+    // The shell-command transport: the size ladder, the three-way "no rung answered"
+    // discrimination, the `test` classification and every sentence those produce
+    // (ExecTransport.h). EXTRACTED RATHER THAN COPIED, because M27's serial transport reads
+    // a log the same way and a second hand-written copy of that ladder is a second chance
+    // to get its three-way answer wrong.
+    //
+    // A std::optional because it is constructed from `location`, which connectTo() sets —
+    // and reset() on every connect, so a reconnect to a rotated-away file settles its
+    // rungs afresh rather than inheriting the previous generation's.
+    std::optional<ExecTransport> exec;
 
     // Mode::Exec's answer to `file`/`filePos` above: the channel a `tail -c +N` is
     // currently streaming out of, and the byte offset it stands at.
@@ -335,8 +343,8 @@ struct SshSession::Impl
     //
     // IT IS NOT AN OPTIMISATION FLAG, IT IS A REFUSAL FLAG. `mode` is set to Exec for such
     // a session, which keeps every branch in this file away from the null `d->sftp` — but
-    // it also lands the file operations on the *shell* path, where `execTools` is empty
-    // and `execSize` was never settled. Every one of them would then fail in a way the
+    // it also lands the file operations on the *shell* path, where no ExecTransport was
+    // ever built and no rung was ever settled. Every one of them would then fail in a way the
     // caller cannot tell from an ordinary answer: readAt() returns 0, which is end of
     // file; openFile() runs a ladder over tools nobody probed for and reports the log as
     // missing; readFileAt()/writeFileAt() would actually SUCCEED, over `cat`, on a server
@@ -352,18 +360,20 @@ struct SshSession::Impl
 
     ~Impl() { teardown(); }
 
-    // The ladder, wired to this session. Built fresh per use — it holds no state worth
-    // keeping and two std::functions cost nothing beside a round trip.
+    // Wire the shell transport to this session. Its two seams are the only things it needs
+    // from libssh2, and both stay HERE because they are channel mechanics rather than
+    // decisions: how a command is run, and how a long read is kept open across calls.
     //
-    // The read seam binds execRead() and NOT SshSession::readAt(), which gates on
-    // execFileOpen. Settling happens BEFORE that flag is set, so going through the
-    // public method would make every validation read return zero bytes, reject every
-    // rung, and disable the exec fallback entirely — silently, and only on the servers
-    // it exists for.
-    ExecSizeProbe sizeProbe()
+    // THE READ SEAM IS execRead() AND NEVER SshSession::readAt(), which gates on the
+    // transport's own file flag — false while the ladder is still settling, so a seam
+    // routed through the public method would read zero bytes, reject every rung and
+    // disable the fallback entirely, silently and only on the servers it exists for.
+    // ExecTransport keeps that callable private, which is what turns this comment into a
+    // fact about scope.
+    void buildExecTransport()
     {
-        return {
-            location.path, execTools,
+        exec.emplace(
+            location.path, location.host,
             [this](const QString &command, QByteArray *out) {
                 int exitCode = 0;
                 return runCommand(command, out, &exitCode);
@@ -372,7 +382,7 @@ struct SshSession::Impl
                 QByteArray buffer;
                 buffer.resize(int(length));
                 return execRead(offset, buffer.data(), length, nullptr);
-            }};
+            });
     }
 
     // Record what a libssh2 call just answered, so that isConnected() can stop testing a
@@ -1297,7 +1307,7 @@ bool SshSession::isConnected() const
 bool SshSession::hasFile() const
 {
     if (d->mode == Mode::Exec)
-        return d->execFileOpen;
+        return d->exec && d->exec->hasFile();
     return d->file != nullptr;
 }
 
@@ -1476,8 +1486,9 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
         // SFTP: every `mode == Mode::Exec` branch in this file routes away from `d->sftp`,
         // which is null here and must stay unreachable, so the binary spelling is what
         // makes the state safe rather than merely unused. What it does NOT make safe is
-        // the shell path those branches lead to — `execTools` is empty and `execSize` was
-        // never settled, because no probe ran — and that is `execOnly`'s job: the six file
+        // the shell path those branches lead to — `exec` is nullopt, because no probe ran
+        // and buildExecTransport() is only reached from the branch above — and that is
+        // `execOnly`'s job: the six file
         // operations refuse by name instead of failing silently (Impl::notForExecOnly).
         d->mode = Mode::Exec;
         // No handle exists, here or ever on this session, so the inode substitute is
@@ -1544,7 +1555,8 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
                                .arg(code)
                                .arg(QString::fromLatin1(timedOut ? ", timed out" : "")));
             d->mode = Mode::Exec;
-            d->execTools = tools;
+            d->buildExecTransport();
+            d->exec->setTools(tools);
             // No handle exists in this mode, so the inode substitute is unavailable and
             // SshFetcher's weaker mtime/head-compare rotation check is what applies.
             d->fstatTracks = false;
@@ -1620,7 +1632,7 @@ SshSession::Mode SshSession::mode() const
 
 SizeSource SshSession::sizeSource() const
 {
-    return d->execSize;
+    return d->exec ? d->exec->sizeSource() : SizeSource::None;
 }
 
 SshSession::CompressionMethods SshSession::negotiatedCompression() const
@@ -1681,80 +1693,36 @@ bool SshSession::openFile(QString *error, Failure *failure)
 
     if (d->mode == Mode::Exec) {
         // Nothing to open: every read runs its own command. "Opening" therefore means
-        // settling on a way to measure this file and confirming it answers — which is
-        // the same question the SFTP branch answers by opening a handle, and it is
-        // asked the way the poll will ask it, so a path that measures now measures later.
-        //
-        // The ladder runs FIRST and its success is the existence proof, rather than the
-        // other way round: statPath() has nothing to dispatch on until a rung is
-        // settled. That is not a compromise — "no rung answered" and "the file is not
-        // there" are the same observation from out here, and they want the same answer.
-        //
-        // Settled on EVERY open, which means on every rotation too. Settling once per
-        // session would let a rotated-to file the chosen rung cannot parse make
-        // statPath() invalid for good, and the fetcher would then report the log as
-        // waiting on every poll — indistinguishable from one that was deleted.
-        closeFile();
-        d->execSize = SizeSource::None;
-
-        ExecSizeProbe probe = d->sizeProbe();
-        const SizeSource source = probe.settle();
-        if (source == SizeSource::None) {
-            // A dead channel is not a missing file. Both are worth retrying, but only
-            // one of them is fixed by reconnecting, and SshFetcher tells them apart by
-            // this code alone.
-            if (probe.channelDied()) {
-                kind = Failure::Unreachable;
-                if (error) {
-                    *error = Tr::tr("Lost the connection to %1 while opening %2.")
-                                 .arg(d->location.host, d->location.path);
-                }
-                return false;
-            }
-            // A log too big for the only measurement this server can offer is the one
-            // outcome here that does NOT mend itself, so it must not be waited for. The
-            // `stat` and `ls` rungs are absent or unparseable and `wc` reads the whole
-            // file to answer, so measuring it once a second is what invariant #5 forbids
-            // — and the file only ever gets further past the ceiling as it grows. It is a
-            // refusal that keeps its tab and says why (M17), naming the real cause: this
-            // spent a tab for ever on "it is missing, or the account cannot read it"
-            // about a file that was present, readable and growing.
-            if (probe.tooBigToMeasure()) {
-                kind = Failure::Refused;
-                if (error) {
-                    // Worded like SshFetcher's own kWcAbandonBytes message, which is
-                    // the same fence one step later — that one catches a log which grows
-                    // past 64 MB while being tailed, this one a log already too big to
-                    // settle on at all. Both name the remedy, which is one utility away.
-                    *error = Tr::tr("%1 on %2 is %3 MB, and the server offers no way to "
-                                    "measure it except by reading all of it. Installing "
-                                    "`stat` or `ls` on the server fixes this.")
-                                 .arg(d->location.path, d->location.host)
-                                 .arg((probe.sizeThatWasTooBig() + 524288) / (1024LL * 1024));
-                }
-                return false;
-            }
-            // WHICH OF THEM, asked of the server rather than guessed at. This used to
-            // read "it is missing, or the account cannot read it" — both answers at once
-            // about a file the server would have said which of, had anything asked — and
-            // that sentence is the whole of what the reader has to act on, so it sent
-            // them to look in the wrong place half the time. One `test` command, on the
-            // failure path only (SshSession::classifyPath).
-            const RemotePathReport report = classifyPath();
-            // A folder does not become a log, so it is REFUSED rather than waited for:
-            // a tab that keeps its place and says why (M17), where everything else here
-            // mends itself and is worth another poll.
-            kind = (report.known && report.presence == LogPresence::NotAFile)
-                ? Failure::Refused
-                : Failure::NoSuchFile;
+        // settling on a way to measure this file and confirming it answers — which is the
+        // same question the SFTP branch answers by opening a handle. THE WHOLE OF THAT
+        // JUDGEMENT IS ExecTransport'S (ExecTransport.h): the ladder, its three-way answer
+        // to "no rung settled", and the sentence each one produces. What is left here is
+        // the mapping into this class's own Failure vocabulary, which is the one thing the
+        // serial transport spells differently.
+        if (!d->exec) {
+            kind = Failure::Refused;
             if (error)
-                *error = remotePathTroubleText(report, d->location.path, d->location.host);
+                *error = execOnlyRefusal();
             return false;
         }
-        d->execSize = source;
-        d->execFileOpen = true;
-        d->fstatTracks = false; // no handle exists to compare against the path
-        return true;
+        ExecTransport::Trouble trouble = ExecTransport::Trouble::None;
+        if (d->exec->openFile(&trouble, error)) {
+            d->fstatTracks = false; // no handle exists to compare against the path
+            return true;
+        }
+        switch (trouble) {
+        case ExecTransport::Trouble::LinkGone:
+            kind = Failure::Unreachable;
+            break;
+        case ExecTransport::Trouble::Refused:
+            kind = Failure::Refused;
+            break;
+        case ExecTransport::Trouble::NoSuchFile:
+        case ExecTransport::Trouble::None:
+            kind = Failure::NoSuchFile;
+            break;
+        }
+        return false;
     }
 
     if (!d->sftp) {
@@ -2053,7 +2021,8 @@ bool SshSession::writeFileAt(const QString &path, const QByteArray &bytes, QStri
 
 void SshSession::closeFile()
 {
-    d->execFileOpen = false;
+    if (d->exec)
+        d->exec->closeFile();
     // The exec transport's half of the same statement. This is the call SshFetcher makes
     // when it has decided the log rotated, and it is the first thing openFile()'s exec
     // branch does — so it is where a stream reading the file that USED to be at this path
@@ -2075,21 +2044,11 @@ RemotePathReport SshSession::classifyPath() const
         return out;
 
     if (d->mode == Mode::Exec) {
-        QByteArray output;
-        int exitCode = 0;
-        // TWO-WAY, and the two must not be folded: a command that RAN and printed an
-        // answer is a fact about the file, while a channel that would not open is a fact
-        // about the link — and the caller above is already reporting the second one for
-        // itself. `known` stays false for the second, which is what makes the sentence
-        // quote the server rather than claim one of the four.
-        if (!d->runCommand(pathTroubleCommand(d->location.path), &output, &exitCode))
-            return out;
-        LogPresence answer = LogPresence::Present;
-        if (!parsePathTroubleOutput(output, &answer))
-            return out;
-        out.known = true;
-        out.presence = answer;
-        return out;
+        // ExecTransport's, along with the two-way rule that makes it correct: a command
+        // that RAN and printed an answer is a fact about the file, while a channel that
+        // would not open is a fact about the link, and folding them is what makes a
+        // dropped link read as a missing log for ever.
+        return d->exec ? d->exec->classifyPath() : out;
     }
 
     if (!d->sftp)
@@ -2161,12 +2120,11 @@ SshSession::Attrs SshSession::statPath() const
     if (d->notForExecOnly("statPath"))
         return out;
     if (d->mode == Mode::Exec) {
+        if (!d->exec)
+            return out;
         // Whichever rung openFile() settled on. No re-validation here: that question was
         // answered once, and asking it again would double the cost of every poll.
-        if (d->execSize == SizeSource::None)
-            return out;
-        ExecSizeProbe probe = d->sizeProbe();
-        const ExecAttrs parsed = probe.query(d->execSize);
+        const ExecAttrs parsed = d->exec->statPath();
         // A rung that parsed is a command that ran, printed and came back — the exec
         // transport's evidence of life, and the mirror of the SFTP branch below.
         if (parsed.ok)
@@ -2241,8 +2199,8 @@ qint64 SshSession::readAt(qint64 offset, char *buffer, qint64 length, QString *e
 {
     if (length <= 0)
         return 0;
-    // -1 AND A REASON, never the 0 the exec branch below would answer with `execFileOpen`
-    // false: 0 from here means end of file, so an ExecOnly session let through would look
+    // -1 AND A REASON, never the 0 the exec branch below would answer with no file open:
+    // 0 from here means end of file, so an ExecOnly session let through would look
     // to the fetcher like a log that is simply empty — the exact silence that made a
     // `head` without `-c` open an empty tab and never say why (§6.3.1).
     if (d->notForExecOnly("readAt")) {
@@ -2251,7 +2209,7 @@ qint64 SshSession::readAt(qint64 offset, char *buffer, qint64 length, QString *e
         return -1;
     }
     if (d->mode == Mode::Exec)
-        return d->execFileOpen ? d->execRead(offset, buffer, length, error) : 0;
+        return (d->exec && d->exec->hasFile()) ? d->execRead(offset, buffer, length, error) : 0;
     if (!d->file)
         return 0;
 

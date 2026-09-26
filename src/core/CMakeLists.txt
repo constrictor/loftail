@@ -283,6 +283,35 @@ target_sources(loftail_core PRIVATE
 )
 target_link_libraries(loftail_core PRIVATE Qt6::Network)
 
+# M27 — the serial transport's decisions, and the SAME ARGUMENT FOR THE SIXTH TIME: these
+# are the only judgements that transport makes on its own, and a decision reachable in one
+# build configuration is a decision tested in one build configuration. Only the three
+# translation units that name a QSerialPort type are gated, below.
+#
+# The login conversation is the one worth singling out. Recognising a prompt in a stream of
+# somebody else's console output is the whole of what makes a serial log openable, it is
+# the part with no analogue anywhere else in the tree, and it is pure — so it is driven by
+# tst_serialloginmachine with no port, no device and no waiting.
+target_sources(loftail_core PRIVATE
+    # Reading a log through ordinary shell commands, and every judgement that takes: the
+    # size ladder, the three-way answer to "no rung settled", the `test` classification and
+    # the sentences those produce. ALWAYS COMPILED because two transports carry it — the
+    # libssh2 exec fallback and a device'''s serial console — and because it was EXTRACTED
+    # from SshSession.cpp rather than copied, which is the whole reason this file is here.
+    ExecTransport.cpp
+    ExecTransport.h
+    SerialProfile.cpp
+    SerialProfile.h
+    SerialLoginMachine.cpp
+    SerialLoginMachine.h
+    # Which ports are worth offering, and what a device is CALLED. Pure over a plain
+    # struct, because QSerialPortInfo cannot be constructed synthetically — so a filter
+    # written against it directly would be a filter no test could reach.
+    # SerialEnumerator.cpp is the gated half, and its only job is filling that struct in.
+    SerialDevices.cpp
+    SerialDevices.h
+)
+
 # M11 — the only libssh2-touching translation units. Same shape as the POSIX-only
 # source above: the seam is always compiled, one implementation is conditional.
 # PUBLIC on the definition so loftail_ui and the tests see the same feature state.
