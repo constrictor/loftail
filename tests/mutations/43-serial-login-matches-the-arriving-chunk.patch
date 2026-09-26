@@ -19,7 +19,7 @@
 # RULE (CLAUDE.md, "FIVE RULES IN `SerialLoginMachine` AND EVERY ONE IS SILENT
 # WHEN BROKEN"):
 #   (a) Matching is against a SLIDING WINDOW OF BYTES, never against the
-#   arriving chunk. A `login: ` prompt carries no trailing newline and a prompt
+#   ARRIVING CHUNK. A `login: ` prompt carries no trailing newline and a prompt
 #   split across two reads is the ORDINARY case at 115200 baud.
 #
 # GUARD: tst_serialloginmachine::aPromptSplitAcrossTwoReadsIsStillAPrompt
@@ -28,9 +28,14 @@
 # straddles a read — which is most of them at 115200 baud. The login simply never
 # completes; nothing anywhere says a prompt was seen and dropped, and the tab
 # sits on "waiting for the login prompt" over a device that sent one.
+#
+# NOTE ON THE MUTATION ITSELF: merely SHORTENING the window does not reproduce
+# this, and the first draft of this patch shortened it to 48 bytes and stayed
+# green — the split prompt in the guard is 17 bytes, comfortably inside that. The
+# decision is "the window or the chunk", so the mutation has to be the chunk.
 
 diff --git a/src/core/SerialLoginMachine.cpp b/src/core/SerialLoginMachine.cpp
-index 395ee7d..46670c1 100644
+index 395ee7d..164efc1 100644
 --- a/src/core/SerialLoginMachine.cpp
 +++ b/src/core/SerialLoginMachine.cpp
 @@ -146,7 +146,7 @@ bool SerialLoginMachine::windowMatches(const QRegularExpression &re) const
@@ -38,7 +43,27 @@ index 395ee7d..46670c1 100644
      if (!re.isValid() || re.pattern().isEmpty())
          return false;
 -    return re.match(QString::fromLatin1(m_window)).hasMatch();
-+    return re.match(QString::fromLatin1(m_window.right(48))).hasMatch();
++    return re.match(QString::fromLatin1(m_lastChunk)).hasMatch();
  }
  
  bool SerialLoginMachine::windowHasMarker() const
+@@ -199,6 +199,7 @@ LoginAction SerialLoginMachine::runNextStartupCommand(qint64 nowMs)
+ LoginAction SerialLoginMachine::feed(QByteArrayView arrived, qint64 nowMs)
+ {
+     // RULE (a)/(b): append to a bounded sliding window rather than matching the chunk.
++    m_lastChunk = QByteArray(arrived.data(), arrived.size());
+     m_window.append(arrived.data(), arrived.size());
+     if (m_window.size() > kWindowBytes)
+         m_window.remove(0, m_window.size() - kWindowBytes);
+diff --git a/src/core/SerialLoginMachine.h b/src/core/SerialLoginMachine.h
+index 19db72d..0388a09 100644
+--- a/src/core/SerialLoginMachine.h
++++ b/src/core/SerialLoginMachine.h
+@@ -195,6 +195,7 @@ private:
+     int        m_startupIndex = 0;
+     bool       m_sawReboot = false;
+     QString    m_failReason;
++    QByteArray m_lastChunk;
+ };
+ 
+ } // namespace loftail
