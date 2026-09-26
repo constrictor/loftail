@@ -46,6 +46,7 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstdio>
 
 #include <atomic>
@@ -99,7 +100,24 @@ private:
     {
         if (m_mangles)
             text.replace('\n', "\r\n");
-        ::write(m_master, text.constData(), size_t(text.size()));
+        // WRITTEN IN FULL, IN A LOOP, and the return value is not merely checked to satisfy a
+        // warning: the master is non-blocking, so a full pty buffer answers EAGAIN and a
+        // fire-and-forget write silently loses part of the answer — after which the frame never
+        // completes and the command times out against a board that answered it. (The Debug build
+        // did not notice; -O2 makes write() warn_unused_result, which is how this surfaced.)
+        qsizetype at = 0;
+        while (at < text.size() && m_running) {
+            const ssize_t n = ::write(m_master, text.constData() + at, size_t(text.size() - at));
+            if (n > 0) {
+                at += n;
+                continue;
+            }
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                QThread::msleep(2);   // the reader will drain it
+                continue;
+            }
+            return;   // the pair has gone; there is nothing to say it to
+        }
     }
 
     void loop()
