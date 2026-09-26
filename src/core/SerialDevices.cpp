@@ -77,6 +77,43 @@ bool isValidSerialDeviceName(const QString &name)
     return true;
 }
 
+QString shortSerialDeviceName(const QString &deviceId, const QList<SerialDeviceInfo> &devices)
+{
+    if (deviceId.isEmpty())
+        return deviceId;
+    for (const SerialDeviceInfo &info : devices) {
+        // Either spelling identifies it: the address may carry the port name or any of the stable
+        // ids, and all of them name this one port.
+        if (info.portName == deviceId || info.serialNumber == deviceId
+            || info.byIdLinks.contains(deviceId)) {
+            return info.portName;
+        }
+    }
+    // NOTHING RESOLVES — the device is unplugged, or this build cannot enumerate — AND THIS IS THE
+    // COMMON CASE RATHER THAN A CORNER: a restored session names a board that is not connected yet.
+    // So the id has to be shortened here, and it cannot be shortened downstream: TabLabels.cpp
+    // elides the path run and DELIBERATELY not the device, on the reasoning that a machine's name
+    // is short. That reasoning is true of a host name and false of a vendor string, so the namer is
+    // what must not hand one over.
+    //
+    // A by-id name has a known shape — `usb-<Vendor>_<Product>_<Serial>-if00-port0` — whose
+    // distinguishing part is the serial number, which is both short and what is printed on the
+    // adapter. Peel the fixed decorations and take it.
+    QString name = deviceId;
+    if (name.startsWith(QLatin1String("usb-")))
+        name = name.mid(4);
+    // The interface and port suffixes udev appends, which say nothing about which adapter this is.
+    static const QRegularExpression decoration(QStringLiteral("(-if[0-9A-Fa-f]+)?(-port[0-9]+)?$"));
+    name.remove(decoration);
+    if (const qsizetype at = name.lastIndexOf(u'_'); at >= 0 && at + 1 < name.size())
+        name = name.mid(at + 1);
+    if (!name.isEmpty() && name.size() < deviceId.size())
+        return name;
+    // Not a shape this recognises. The id is what the address says, so it is what is answered —
+    // the tab bracket is the caller's to bound, and a name is better than none.
+    return deviceId;
+}
+
 QString serialDeviceLabel(const SerialDeviceInfo &info)
 {
     if (info.description.isEmpty())

@@ -130,3 +130,14 @@ of it, which is why they were left rather than folded in.
   `SerialFetchOptions` is mutex-guarded from the start; this one is not. Found by
   reading rather than by a failure, and no sanitizer would reach it, because no test
   edits a saved host's poll cadence while a tab on that host is open.
+- **`remove()` on a store file from the future answers TRUE, having done nothing.**
+  `HostBookmarkStore::remove()`, `PresetStore`'s equivalent and
+  `SerialProfileStore::removePreset()`/`forgetPath()` all read the list, find no such
+  entry in what this build can see — a file from the future reads as empty by design
+  (`SchemaVersion.h`) — and return "nothing to do" without reaching a write funnel. The
+  file is correctly left alone, which is the half that matters; what is wrong is only
+  the answer, and a caller that reports success on it tells the user an entry was
+  removed while it is still there. Noticed while adding the third store to that rule
+  rather than by a failure, and deliberately NOT fixed in one store alone: two stores
+  disagreeing about one question is worse than the shared wart. The fix is the guard in
+  all of them, which wants one commit of its own.

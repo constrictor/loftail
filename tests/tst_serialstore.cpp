@@ -60,6 +60,7 @@ private slots:
     void aNameComparisonIgnoresCaseAndSurroundingSpace();
     void aMissingPresetFallsBackRatherThanRefusing();
     void anAddedKeyIsReadWithoutBumpingTheSchema();
+    void aFileFromTheFutureIsNeitherReadNorWrittenOver();
     void aDeviceRemembersItsPathsAndCanForgetOne();
     void anEditToOneFieldIsSeenByTheChangeComparison();
     void theChangeCostIsTheMostExpensiveTierAnyFieldImplies();
@@ -170,6 +171,62 @@ void TestSerialStore::anAddedKeyIsReadWithoutBumpingTheSchema()
     const QVector<SerialProfile> back = store.presets();
     QCOMPARE(back.size(), 1);
     QCOMPARE(back.first().baud, 9600);
+}
+
+void TestSerialStore::aFileFromTheFutureIsNeitherReadNorWrittenOver()
+{
+    // THE DEFECT THIS STORE SHIPPED WITH FOR ONE AFTERNOON, and the one SchemaVersion.h records
+    // for HostBookmarkStore and PresetStore before it. `version != kSchemaVersion` folds "written
+    // by a newer build" together with "not a file we wrote", and the two want OPPOSITE answers.
+    //
+    // BOTH HALVES, because declining to READ is not enough: this store is const and re-reads its
+    // file on every call, so every mutation is read-fold-write — and over a file it refused to
+    // read, that writes an empty list over the user's whole configuration on the very next
+    // gesture.
+    const SerialProfileStore store(m_dir.path());
+    QVERIFY(store.savePreset(board(QStringLiteral("MyBoard"))));
+    SerialDeviceBookmark d;
+    d.id = QStringLiteral("ttyUSB0");
+    d.paths = QStringList{QStringLiteral("/var/log/app.log")};
+    QVERIFY(store.saveDevice(d));
+
+    // Restamp it as a file from some later loftail.
+    const QString path = store.filePath();
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    const QByteArray before = f.readAll();
+    f.close();
+    QJsonObject root = QJsonDocument::fromJson(before).object();
+    root[QStringLiteral("schemaVersion")] = SerialProfileStore::kSchemaVersion + 1;
+    const QByteArray future = QJsonDocument(root).toJson();
+    QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    f.write(future);
+    f.close();
+
+    // READ NOTHING — not the presets, not the devices.
+    QVERIFY(store.presets().isEmpty());
+    QVERIFY(store.devices().isEmpty());
+
+    // AND WRITE NOTHING OVER IT. Every funnel that commits: the preset one, the device one, and
+    // the save that goes through them.
+    QVERIFY(!store.replacePresets(QVector<SerialProfile>{board(QStringLiteral("Other"))}));
+    QVERIFY(!store.savePreset(board(QStringLiteral("Other"))));
+    QVERIFY(!store.saveDevice(d));
+
+    // removePreset() and forgetPath() answer TRUE here, and that is HostBookmarkStore::remove()'s
+    // shape deliberately rather than an oversight: both read the list, find no such entry in what
+    // this build can see, and return "nothing to do" without reaching a write. The file is safe —
+    // which is what the byte comparison below actually pins — and making this one store answer
+    // false would leave the two disagreeing about one question, which is the worse defect. The
+    // residual is recorded in bugs.md rather than fixed in half the places it applies.
+    QVERIFY(store.removePreset(QStringLiteral("MyBoard")));
+    QVERIFY(store.forgetPath(d.id, QStringLiteral("/var/log/app.log")));
+
+    // The file is byte-for-byte what it was: whatever is in it is the user's current
+    // configuration, and there is no migration downwards.
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    QCOMPARE(f.readAll(), future);
+    f.close();
 }
 
 void TestSerialStore::aDeviceRemembersItsPathsAndCanForgetOne()

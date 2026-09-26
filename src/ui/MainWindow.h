@@ -22,6 +22,7 @@
 #include "DocumentContext.h"
 #include "FormatSettings.h"
 #include "HostBookmarkStore.h"
+#include "SerialProfileStore.h"
 #include "LogFileStore.h"
 #include "LogSettingsStore.h"
 #include "LogView.h"
@@ -800,6 +801,9 @@ private:
     QAction *m_openRemoteAction = nullptr;
     QMenu   *m_remoteHostsMenu = nullptr;
     QMenu   *m_serialMenu = nullptr;
+    // The remembered devices, kept so relabelTabs() needs no serial.json parse per tab change —
+    // m_hostBookmarks beside it exists for the same reason.
+    QVector<SerialDeviceBookmark> m_serialDevices;
     // Answers the questions a remote open asks (host key, password). Owned here
     // because it puts up dialogs parented to this window.
     std::unique_ptr<GuiSshPrompter> m_sshPrompter;

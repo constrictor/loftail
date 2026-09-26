@@ -19,6 +19,7 @@
 #include "SerialProfileStore.h"
 
 #include "AtomicJson.h"
+#include "SchemaVersion.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -100,10 +101,13 @@ QVector<SerialProfile> SerialProfileStore::presets() const
 {
     QVector<SerialProfile> out;
     const QJsonObject root = readDocument(filePath()).object();
-    // EXACT-VERSION GATING WITH NO MIGRATION, HostBookmarkStore's posture rather than
-    // LogSettingsStore's — there is nothing here worth carrying across a structural change, and
-    // an added KEY needs no bump at all (serialProfileFromJson()'s own rule).
-    if (root.value(QLatin1String(kSchemaKey)).toInt() != kSchemaVersion)
+    // THE THREE-WAY JUDGEMENT AND NEVER `!=` (SchemaVersion.h). This store was written with the
+    // folded two-way test, which is the very defect that header records for HostBookmarkStore and
+    // PresetStore: `!=` reads "written by a newer build" and "not a file we wrote" alike, and the
+    // two want opposite answers. Folded, the first bump of this store would have answered with an
+    // empty list AND THEN — replacePresets() being read-fold-write — written that empty list back
+    // over every preset the user has.
+    if (Schema::judge(root, kSchemaVersion) != Schema::Verdict::Usable)
         return out;
     const QJsonArray presets = root.value(QLatin1String(kPresetsKey)).toArray();
     for (const QJsonValue &v : presets) {
@@ -121,7 +125,7 @@ QVector<SerialDeviceBookmark> SerialProfileStore::devices() const
 {
     QVector<SerialDeviceBookmark> out;
     const QJsonObject root = readDocument(filePath()).object();
-    if (root.value(QLatin1String(kSchemaKey)).toInt() != kSchemaVersion)
+    if (Schema::judge(root, kSchemaVersion) != Schema::Verdict::Usable)
         return out;
     const QJsonArray devices = root.value(QLatin1String(kDevicesKey)).toArray();
     for (const QJsonValue &v : devices) {
@@ -147,6 +151,13 @@ bool SerialProfileStore::replacePresets(const QVector<SerialProfile> &presets) c
 {
     const QString path = filePath();
     if (path.isEmpty())
+        return false;
+    // THE WRITE HALF, AND THE HALF THAT IS EASY TO LEAVE OUT. Declining to READ a file from the
+    // future is not enough: this store is const and re-reads the file on every call, so every
+    // mutation is read-fold-write — and over a file this build refused to read, that means writing
+    // an empty list over somebody's whole configuration. Asked of the file itself, so it holds
+    // however the caller arrived (SchemaVersion.h).
+    if (Schema::fileIsFromFuture(path, kSchemaVersion))
         return false;
     QJsonObject root = readDocument(path).object();
     root[QLatin1String(kSchemaKey)] = kSchemaVersion;
@@ -182,6 +193,11 @@ bool SerialProfileStore::saveDevice(const SerialDeviceBookmark &device) const
 {
     const QString path = filePath();
     if (path.isEmpty() || device.id.isEmpty())
+        return false;
+    // The second write funnel, and it needs the guard for replacePresets()' reason: the presets
+    // and the devices share one file, so a device write over a future file would take the presets
+    // with it.
+    if (Schema::fileIsFromFuture(path, kSchemaVersion))
         return false;
     QVector<SerialDeviceBookmark> all = devices();
     int at = -1;

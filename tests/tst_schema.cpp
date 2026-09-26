@@ -45,6 +45,7 @@
 #include "LogProfile.h"
 #include "LogSettingsStore.h"
 #include "SchemaVersion.h"
+#include "SerialProfileStore.h"
 #include "SessionStore.h"
 
 #if defined(LOFTAIL_HAVE_PRESETS)
@@ -607,6 +608,7 @@ void TstSchema::everyStoreAgreesOnWhatAStampMeans()
     QVERIFY(LogFileSettings::kSchemaVersion >= 1);
     QVERIFY(HostBookmarkStore::kSchemaVersion >= 1);
     QVERIFY(SessionStore::kSchemaVersion >= 1);
+    QVERIFY(SerialProfileStore::kSchemaVersion >= 1);
 }
 
 QTEST_MAIN(TstSchema)

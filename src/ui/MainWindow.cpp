@@ -2411,6 +2411,11 @@ void MainWindow::refreshSerialMenu()
     const QList<SerialDeviceInfo> devices = availableSerialDevices();
     const SerialProfileStore store(SerialProfileStore::defaultDir());
     const QVector<SerialDeviceBookmark> remembered = store.devices();
+    // KEPT, for the reason upstream keeps the host bookmarks: relabelTabs() runs on every open
+    // and every close, and a serial.json parse there would be a file read per tab change.
+    // Refreshed here because this is where the list can move, exactly as the hosts are.
+    m_serialDevices = remembered;
+    relabelTabs();   // a device renamed since the last refresh retitles its open tabs
 
     m_serialMenu->clear();
 
@@ -3840,7 +3845,20 @@ void MainWindow::relabelTabs()
     // `label` rather than displayName(), which falls back to the bookmark's host and
     // would name `ssh://h:2222/...` after a bookmark's `h` spelled differently.
     const QStringList labels = tabLabelsFor(
-        addresses, kMaxTabQualifierChars, [this](const RemoteLocation &location) {
+        addresses, kMaxTabQualifierChars, [this](const RemoteLocation &location) -> QString {
+            // A DEVICE IS NAMED THE SAME WAY, AND IT NEEDS IT MORE THAN A HOST DOES. The device
+            // axis is always spent now, and a serial device's own id is a forty-character vendor
+            // string — `usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0` — which is the right thing
+            // to key settings on and an unreadable thing to put on a tab. So: the label the user
+            // gave the device, else the PORT NAME it currently resolves to (`ttyUSB0`, which is
+            // what a person recognises), else the id, which is better than nothing.
+            if (location.transport == RemoteLocation::Transport::Serial) {
+                for (const SerialDeviceBookmark &d : m_serialDevices) {
+                    if (d.id == location.host && !d.label.isEmpty())
+                        return d.label;
+                }
+                return shortSerialDeviceName(location.host, availableSerialDevices());
+            }
             bool found = false;
             const HostBookmark host =
                 HostBookmarkStore::find(m_hostBookmarks, location, &found);

@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <QList>
 #include <QString>
 #include <QStringList>
 #include <QtGlobal>
@@ -100,6 +101,18 @@ QString stableIdFor(const SerialDeviceInfo &info);
 // with no I/O and is therefore an M17 refusal naming the address rather than a tab that
 // waits for a device that cannot exist.
 bool isValidSerialDeviceName(const QString &name);
+
+// The SHORT name for a device id — what a tab bracket can afford.
+//
+// A stable id is a vendor string: `usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0` is forty-five
+// characters, which is the right thing to key settings on (it follows the hardware) and an
+// unreadable thing to put beside a log's name. This answers the PORT NAME the id currently
+// resolves to — `ttyUSB0`, which is what a person recognises and what the menu shows in brackets
+// — and falls back to the id where nothing resolves, because a long name is better than none.
+//
+// PURE, over a list the caller supplies, for the reason every decision in this header is: the
+// enumeration cannot be constructed by a test.
+QString shortSerialDeviceName(const QString &deviceId, const QList<SerialDeviceInfo> &devices);
 
 // What the menu calls this device: its description and its port name, or just the port
 // name. NOT the address — a by-id name is 40 characters of vendor string, which is the

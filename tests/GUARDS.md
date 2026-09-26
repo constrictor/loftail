@@ -344,6 +344,7 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | `LogProfile::operator==` sees the serial preset, or the setting is silent data loss | Serial preset (M27) | tst_logsettings::aProfileDiffersWhenAnyOneFieldOfItDoes |
 | `SerialProfile::operator==` sees every field, or an edit to the one it misses is dropped | Serial preset (M27) | tst_serialstore::anEditToOneFieldIsSeenByTheChangeComparison |
 | An added key never bumps the serial store's schema | Serial preset (M27) | tst_serialstore::anAddedKeyIsReadWithoutBumpingTheSchema |
+| A serial store file from the future is neither read nor written over, in BOTH halves | Serial preset (M27) | tst_serialstore::aFileFromTheFutureIsNeitherReadNorWrittenOver |
 | A preset named by a log but missing from the file falls back rather than refusing the open | Serial preset (M27) | tst_serialstore::aMissingPresetFallsBackRatherThanRefusing |
 | The change cost is the most expensive tier any changed field implies | Serial preset (M27) | tst_serialstore::theChangeCostIsTheMostExpensiveTierAnyFieldImplies |
 | A log is read byte for byte over a real QSerialPort, and base64 rescues a mangling line | Serial transport (M27) | tst_serialdevice::aLogIsReadThroughAPtyPair<br>tst_serialdevice::aMangingLineFallsBackToBase64AndTheBytesStillMatch |
@@ -352,6 +353,7 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The chunk and the read deadline are derived from the baud, not written down | Serial transport (M27) | tst_serialdevice::theChunkAndTheDeadlineComeFromTheBaud |
 | A serial log opens as an ordinary spooled tab, waits when the device is absent, and keeps its tab on a refusal | Serial transport (M27) | tst_serialopen::aSerialLogOpensAsAnOrdinarySpooledTab<br>tst_serialopen::aDeviceThatIsNotThereOpensAWaitingTab<br>tst_serialopen::aTransportRefusalKeepsItsTabAndSaysWhy |
 | The tab is labelled with the log's own name; the device goes on the tooltip | Serial transport (M27) | tst_serialopen::theTabIsLabelledWithTheDeviceRatherThanTheAddress |
+| A tab names the device but never by its id; the namer shortens, because TabLabels deliberately does not elide the device | Tab label (M27) | tst_serialdevices::aShortNameIsWhatATabBracketCanAfford |
 | File ▸ Serial is populated on aboutToShow and always offers Settings | Serial menu (M27) | tst_serialopen::theFileMenuHasASerialSubmenuWithItsSettingsEntry |
 | A config file on a device is refused by name rather than attempted over SSH | Serial transport (M27) | tst_serialopen::aSerialConfigFileIsRefusedByNameRatherThanAttempted |
 | A serial tab comes back with the session, and no schema version moved | Serial transport (M27) | tst_serialopen::aSerialTabComesBackWithTheSession |

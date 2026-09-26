@@ -63,6 +63,7 @@ private slots:
     void everyRealDeviceNameIsAValidAddressHalf();
     void aNameThatCouldNotSurviveAnAddressIsRefused();
     void theLabelNamesTheAdapterAndThePort();
+    void aShortNameIsWhatATabBracketCanAfford();
 };
 
 void TestSerialDevices::aUsbAdapterIsOffered()
@@ -245,6 +246,51 @@ void TestSerialDevices::theLabelNamesTheAdapterAndThePort()
     SerialDeviceInfo anonymous = usbAdapter();
     anonymous.description.clear();
     QCOMPARE(serialDeviceLabel(anonymous), QStringLiteral("ttyUSB0"));
+}
+
+void TestSerialDevices::aShortNameIsWhatATabBracketCanAfford()
+{
+    // A TAB BRACKET CANNOT CARRY A VENDOR STRING, and it cannot be shortened downstream either:
+    // TabLabels.cpp elides the path run and deliberately NOT the device, on the reasoning that a
+    // machine's name is short — true of a host name, false of `usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0`.
+    // So the shortening is this function's job.
+    const QString byId = QStringLiteral("usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0");
+
+    // PLUGGED IN: the port name, which is what a person recognises and what the menu brackets.
+    SerialDeviceInfo i = usbAdapter();
+    i.byIdLinks = QStringList{byId};
+    QCOMPARE(shortSerialDeviceName(byId, {i}), QStringLiteral("ttyUSB0"));
+    QCOMPARE(shortSerialDeviceName(QStringLiteral("ttyUSB0"), {i}), QStringLiteral("ttyUSB0"));
+    QCOMPARE(shortSerialDeviceName(QStringLiteral("A50285BI"), {i}), QStringLiteral("ttyUSB0"));
+
+    // NOT PLUGGED IN, WHICH IS THE COMMON CASE — a restored session names a board that is not
+    // connected yet. The serial number is peeled out of the by-id shape: short, unique, and what
+    // is printed on the adapter.
+    QCOMPARE(shortSerialDeviceName(byId, {}), QStringLiteral("A50285BI"));
+    QCOMPARE(shortSerialDeviceName(
+                 QStringLiteral("usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"),
+                 {}),
+             QStringLiteral("0001"));
+    QCOMPARE(shortSerialDeviceName(QStringLiteral("usb-1a86_USB_Single_Serial_54D2036731-if00"), {}),
+             QStringLiteral("54D2036731"));
+
+    // And it is always SHORTER than what it stands in for, which is the whole claim — asserted as
+    // a relation rather than against each spelling.
+    for (const QString &id : {byId,
+                              QStringLiteral("usb-1a86_USB_Single_Serial_54D2036731-if00"),
+                              QStringLiteral("usb-Silicon_Labs_CP2102_0001-if00-port0")}) {
+        QVERIFY2(shortSerialDeviceName(id, {}).size() < id.size(), qUtf8Printable(id));
+    }
+
+    // A plain port name is already short and comes back untouched, plugged in or not.
+    QCOMPARE(shortSerialDeviceName(QStringLiteral("ttyUSB0"), {}), QStringLiteral("ttyUSB0"));
+    QCOMPARE(shortSerialDeviceName(QStringLiteral("COM3"), {}), QStringLiteral("COM3"));
+    QCOMPARE(shortSerialDeviceName(QStringLiteral("cu.usbserial-A50285BI"), {}),
+             QStringLiteral("cu.usbserial-A50285BI"));
+    // An id this shape does not recognise is answered as itself: a name is better than none, and
+    // the bracket is the caller's to bound.
+    QCOMPARE(shortSerialDeviceName(QStringLiteral("whatever"), {}), QStringLiteral("whatever"));
+    QCOMPARE(shortSerialDeviceName(QString(), {}), QString());
 }
 
 QTEST_APPLESS_MAIN(TestSerialDevices)

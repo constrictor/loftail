@@ -208,19 +208,35 @@ void TestSerialOpen::theTabIsLabelledWithTheDeviceRatherThanTheAddress()
     MainWindow w;
     QVERIFY(w.openFile(addressFor()));
     QTRY_COMPARE(tabsOf(w)->count(), 1);
-    // The log's own name, and a forty-character by-id string is NOT it: the device belongs on the
-    // tooltip, which is the same division a remote log's host takes.
+    // THE DEVICE IS ALWAYS IN THE BRACKET — the device axis is spent unconditionally for a
+    // remote log and a serial one alike — BUT NEVER AS ITS FORTY-CHARACTER ID. A stable id is a
+    // vendor string, which is the right thing to key settings on and an unreadable thing to put
+    // beside a log's name, so what appears is the port name it resolves to, or the label the user
+    // gave the device. The id itself belongs on the tooltip.
     //
-    // QTRY, because a tab wears an `— indexing N%` suffix while it is being scanned (M-scan) —
-    // the label is only the label once the scan is done.
-    QTRY_COMPARE(tabsOf(w)->tabText(0), QStringLiteral("app.log"));
+    // QTRY, because a tab wears an `— indexing N%` suffix while it is being scanned — the label is
+    // only the label once the scan is done.
+    QTRY_VERIFY(!tabsOf(w)->tabText(0).contains(QStringLiteral("indexing")));
+    const QString label = tabsOf(w)->tabText(0);
+    QVERIFY2(label.startsWith(QStringLiteral("app.log")), qUtf8Printable(label));
+    QVERIFY2(!label.contains(QLatin1String(kDevice)),
+             qUtf8Printable(QStringLiteral("the tab wears the whole device id: %1").arg(label)));
+    // Asserted as a LENGTH relation rather than a spelling: what the bracket resolves to depends
+    // on what is plugged into the machine running the test, and the claim is only that it is short.
+    QVERIFY2(label.size() < int(qstrlen(kDevice)),
+             qUtf8Printable(QStringLiteral("the label is longer than the id it stands in for: %1")
+                                .arg(label)));
+    // The full address, id and all, is what the tooltip carries.
     QVERIFY(tabsOf(w)->tabToolTip(0).contains(QLatin1String(kDevice)));
 
-    // Two logs on one device still tell themselves apart by name alone, no bracket needed.
+    // Two logs on one device: each keeps its own name, and the device bracket does not make them
+    // read alike — which is what the distinct-label count is for.
     QVERIFY(w.openFile(addressFor(QStringLiteral("/var/log/other.log"))));
     QTRY_COMPARE(tabsOf(w)->count(), 2);
-    QTRY_COMPARE(tabsOf(w)->tabText(0), QStringLiteral("app.log"));
-    QTRY_COMPARE(tabsOf(w)->tabText(1), QStringLiteral("other.log"));
+    QTRY_VERIFY(!tabsOf(w)->tabText(1).contains(QStringLiteral("indexing")));
+    QVERIFY(tabsOf(w)->tabText(0).startsWith(QStringLiteral("app.log")));
+    QVERIFY(tabsOf(w)->tabText(1).startsWith(QStringLiteral("other.log")));
+    QVERIFY(tabsOf(w)->tabText(0) != tabsOf(w)->tabText(1));
     QVERIFY2(guard.seen().isEmpty(), qUtf8Printable(guard.seen()));
 }
 
@@ -284,7 +300,7 @@ void TestSerialOpen::aSerialTabComesBackWithTheSession()
         MainWindow w;
         QVERIFY(w.openFile(addressFor()));
         QTRY_COMPARE(tabsOf(w)->count(), 1);
-        QTRY_COMPARE(tabsOf(w)->tabText(0), QStringLiteral("app.log"));
+        QTRY_VERIFY(tabsOf(w)->tabText(0).startsWith(QStringLiteral("app.log")));
         w.close();   // writes the session
         QVERIFY2(guard.seen().isEmpty(), qUtf8Printable(guard.seen()));
     }
