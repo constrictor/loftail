@@ -74,10 +74,20 @@ public:
 
     ~SerialFetcher() override
     {
-        // The device handle goes LAST, and only once the worker has stopped touching it — the
-        // port is what the next open of this device needs back, and handing it over while a
-        // read is still in flight is what would make a reopen race the wind-down.
+        // WAITED FOR AND THEN RESET, SshFetcher's own shape and not merely its style: destroying
+        // a QThread that is still running warns and may take the process with it. The wait costs
+        // nothing, because the registry's reaper has already polled isStopped() before letting
+        // this destructor run — it is here for the case where something destroys a fetcher
+        // directly, which is exactly when the warning would be a crash.
         requestStop();
+        if (m_worker) {
+            m_worker->wait();
+            m_worker.reset();
+        }
+        // ONLY NOW is the device handle released, and the order is the point: the port is what
+        // the next open of this device needs back, and handing it over while a read is still in
+        // flight is what would make a reopen race the wind-down (spoolDirName()'s own problem).
+        m_device.reset();
     }
 
     bool start(const QString &spoolDir, QString *error) override
