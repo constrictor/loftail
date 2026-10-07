@@ -248,6 +248,22 @@ public:
     void copySelectionRaw() const;
     void copySelectionAsColumns() const;
 
+    // File ▸ Export Visible (SPEC.md §5, ARCHITECTURE.md §7.1.6). Writes EVERY row of
+    // this view — the filtered subset, context rows included — to `path` as the log's
+    // ORIGINAL BYTES: no decode and no re-encode, so the encoding and the line endings are
+    // the source's own. A source BOM is replayed first, so a UTF-16 export re-opens as
+    // UTF-16; a newline in the log's encoding is inserted only after a record that has no
+    // terminator of its own (the file's unterminated last record) and only when another
+    // follows, so records never fuse and nothing is appended to the end.
+    //
+    // Streamed through a QSaveFile record by record, never held whole in memory, and
+    // walked by the same bounded walkSelection() the copy uses — so a large export says so
+    // and can be cancelled, and a cancelled, abandoned or failed export commits nothing
+    // and leaves an existing target exactly as it was.
+    enum class ExportResult { Written, Cancelled, Failed };
+    ExportResult exportVisible(const QString &path, QString *error = nullptr,
+                               qint64 *records = nullptr) const;
+
     // How many selected records a copy may take before it says so and offers to stop
     // (SPEC.md §5). BELOW it a copy is a plain synchronous loop that processes no
     // events at all — no dialog, no re-entrancy, byte-for-byte what it always
@@ -530,8 +546,19 @@ private:
     qint64 selectedByteLength(const QVector<QPair<int, int>> &ranges) const;
     // Call `emitRow` for every selected view row in ascending order. Returns false when
     // the copy was abandoned, which is the caller's signal to leave the clipboard alone.
+    //
+    // `labels` names what the progress dialog and the abandon message say, so the export
+    // can share the walk without calling itself a copy; empty means the copy's own words.
+    struct WalkLabels
+    {
+        QString objectName; // findChild, for tests
+        QString title;
+        QString progress;   // carries %n, the row count
+        QString abandoned;
+    };
     bool walkSelection(const QVector<QPair<int, int>> &ranges, qint64 total,
-                       const std::function<void(int viewRow)> &emitRow) const;
+                       const std::function<void(int viewRow)> &emitRow,
+                       const WalkLabels &labels = {}) const;
 
     // Height, in display lines, of record r as currently rendered (folds in the
     // selected-record wrap when applicable).

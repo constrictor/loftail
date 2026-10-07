@@ -150,6 +150,12 @@ public:
     // hanging one is abortable, that a log with no script is not a refusal — cannot be
     // made through a menu item.
     void restartActiveApp();
+    // File ▸ Export Visible (SPEC.md §5): asks for a file name, then exportVisibleTo().
+    void exportVisible();
+    // The export itself, with every report it makes — public for the reason
+    // restartActiveApp() is: it is the seam a test drives, a modal QFileDialog being no
+    // place for an assertion. True when the file was written.
+    bool exportVisibleTo(const QString &path);
     // The restart target for `path`, or nothing — having ALREADY said why, in whichever
     // of the three ways the reason calls for: a refusal strip for a Refused target or a
     // build that cannot run it, and the explanatory box that offers Preferences for a log
@@ -789,6 +795,7 @@ private:
     QVector<ConfigView *> m_editors;
     QAction *m_openConfigAction = nullptr;
     QAction *m_restartAppAction = nullptr;
+    QAction *m_exportVisibleAction = nullptr;
     QAction *m_saveConfigAction = nullptr;
     QAction *m_saveCloseRestartAction = nullptr;
     DocumentView *m_activeView = nullptr;

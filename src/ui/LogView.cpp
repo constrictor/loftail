@@ -46,6 +46,7 @@
 #include <QPointer>
 #include <QProgressDialog>
 #include <QRegion>
+#include <QSaveFile>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStyle>
@@ -1703,7 +1704,8 @@ qint64 LogView::selectedByteLength(const QVector<QPair<int, int>> &ranges) const
 //     QPointers are the belt to that braces, and the reason nothing below the loop
 //     touches a member without checking them.
 bool LogView::walkSelection(const QVector<QPair<int, int>> &ranges, qint64 total,
-                            const std::function<void(int viewRow)> &emitRow) const
+                            const std::function<void(int viewRow)> &emitRow,
+                            const WalkLabels &labels) const
 {
     if (ranges.isEmpty())
         return false;
@@ -1721,11 +1723,15 @@ bool LogView::walkSelection(const QVector<QPair<int, int>> &ranges, qint64 total
     QPointer<LogModel> model(m_model);
     bool replaced = false;
 
+    const QString progress = labels.progress.isEmpty()
+        ? tr("Copying %n record(s)…", nullptr, totalRows)
+        : QString(labels.progress).replace(QLatin1String("%n"), QString::number(totalRows));
     QPointer<QProgressDialog> dlg(new QProgressDialog(
-        tr("Copying %n record(s)…", nullptr, totalRows), tr("Cancel"), 0, totalRows,
-        const_cast<LogView *>(this)));
-    dlg->setObjectName(QStringLiteral("copyProgress")); // findChild, for tests
-    dlg->setWindowTitle(tr("Copy"));
+        progress, tr("Cancel"), 0, totalRows, const_cast<LogView *>(this)));
+    dlg->setObjectName(labels.objectName.isEmpty() ? QStringLiteral("copyProgress")
+                                                   : labels.objectName); // findChild, for tests
+    const QString title = labels.title.isEmpty() ? tr("Copy") : labels.title;
+    dlg->setWindowTitle(title);
     dlg->setWindowModality(Qt::ApplicationModal);
     dlg->setMinimumDuration(0);
     // Neither auto-close nor auto-reset: reset() clears the very flag wasCanceled()
@@ -1771,9 +1777,11 @@ bool LogView::walkSelection(const QVector<QPair<int, int>> &ranges, qint64 total
     const bool abandoned = replaced;
     delete dlg.data();
     if (abandoned && self) {
-        QMessageBox::information(self, tr("Copy"),
-                                 tr("The log changed while the selection was being "
-                                    "copied, so nothing was copied."));
+        QMessageBox::information(self, title,
+                                 labels.abandoned.isEmpty()
+                                     ? tr("The log changed while the selection was being "
+                                          "copied, so nothing was copied.")
+                                     : labels.abandoned);
     }
     return ok;
 }
@@ -2327,6 +2335,92 @@ void LogView::copySelectionAsColumns() const
     if (!ok)
         return; // as above: nothing reaches the clipboard unless the whole copy did
     QApplication::clipboard()->setText(out);
+}
+
+// The export (SPEC.md §5, ARCHITECTURE.md §7.1.6). Bytes, never text: decoding and
+// re-encoding is exactly what would lose the "original format" this exists to keep.
+LogView::ExportResult LogView::exportVisible(const QString &path, QString *error,
+                                             qint64 *records) const
+{
+    if (records)
+        *records = 0;
+    const auto fail = [error](const QString &why) {
+        if (error)
+            *error = why;
+        return ExportResult::Failed;
+    };
+
+    const int rows = m_model->rowCount();
+    if (rows == 0)
+        return fail(tr("There are no visible records to export."));
+    const QVector<QPair<int, int>> ranges{{0, rows - 1}};
+    const qint64 total = rows;
+
+    const RecordIndex &idx = m_document->index();
+    const Decoder &dec = m_document->decoder();
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+        return fail(file.errorString());
+
+    // The source's own BOM bytes, so the export is detected as what it came from.
+    if (dec.bomLength() > 0) {
+        if (LogSource *src = m_document->source()) {
+            QByteArray buf;
+            const QByteArrayView bom = src->bytes(0, dec.bomLength(), buf);
+            if (file.write(bom.data(), bom.size()) != bom.size())
+                return fail(file.errorString());
+        }
+    }
+
+    const QByteArray newline = dec.encode(QStringLiteral("\n"));
+    bool needSeparator = false;
+    bool writeFailed = false;
+    qint64 written = 0;
+    const WalkLabels labels{QStringLiteral("exportProgress"), tr("Export Visible"),
+                            tr("Exporting %n record(s)…", nullptr, rows),
+                            tr("The log changed while it was being exported, so nothing "
+                               "was written.")};
+    const bool ok = walkSelection(ranges, total, [&](int viewRow) {
+        if (writeFailed)
+            return;
+        // Through the model, so the row is the record this view shows there.
+        const int r = m_model->sourceRow(viewRow);
+        if (r < 0 || r >= idx.records.size())
+            return;
+        const Record &rec = idx.records.at(r);
+        // Re-read per record: the walk can re-enter the event loop between two records.
+        LogSource *src = m_document->source();
+        if (!src)
+            return;
+        QByteArray raw; // this iteration's own storage (LogSource::bytes)
+        const QByteArrayView bytes = src->bytes(rec.offset, rec.length, raw);
+        if (needSeparator && file.write(newline) != newline.size()) {
+            writeFailed = true;
+            return;
+        }
+        if (file.write(bytes.data(), bytes.size()) != bytes.size()) {
+            writeFailed = true;
+            return;
+        }
+        needSeparator = !bytes.endsWith(QByteArrayView(newline));
+        ++written;
+    }, labels);
+
+    if (writeFailed) {
+        const QString why = file.errorString();
+        file.cancelWriting();
+        return fail(why);
+    }
+    if (!ok) {
+        file.cancelWriting();
+        return ExportResult::Cancelled;
+    }
+    if (!file.commit())
+        return fail(file.errorString());
+    if (records)
+        *records = written;
+    return ExportResult::Written;
 }
 
 // ---------------------------------------------------------------------------

@@ -84,6 +84,7 @@
 #include <QEvent>
 #include <QFileDialog>
 #include <QDesktopServices>
+#include <QDir>
 #include <QFileInfo>
 #include <QFrame>
 #include <QGuiApplication>
@@ -103,6 +104,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QStackedWidget>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QStyle>
 #include <QSystemTrayIcon>
@@ -648,6 +650,14 @@ void MainWindow::buildMenus()
             &MainWindow::saveCloseAndRestart);
 
     fileMenu->addSeparator();
+
+    // Write what the active view shows — the filtered subset, in the log's own bytes — to
+    // a file (SPEC.md §5). On onLog, as Copy is: it acts on m_activeView, and on a config
+    // editor page that is a log the reader is not looking at.
+    m_exportVisibleAction = fileMenu->addAction(tr("E&xport Visible..."));
+    m_exportVisibleAction->setObjectName(QStringLiteral("exportVisibleAction")); // findChild
+    m_exportVisibleAction->setEnabled(false);
+    connect(m_exportVisibleAction, &QAction::triggered, this, &MainWindow::exportVisible);
 
     // Restart the application that WRITES this log (SPEC.md §4). The third verb in the
     // same errand as the two above — read the log, tune what goes into it, bounce the
@@ -2072,6 +2082,8 @@ void MainWindow::updateActionStates()
         m_copyColumnsAction->setEnabled(onLog);
     if (m_selectAllAction)
         m_selectAllAction->setEnabled(onLog);
+    if (m_exportVisibleAction)
+        m_exportVisibleAction->setEnabled(onLog);
     // The config editor's own two. Save is VISIBLE only on an editor page, which is what
     // was asked for; Open Config File Editor needs a log to resolve a path against.
     if (m_openConfigAction)
@@ -2321,6 +2333,73 @@ void MainWindow::chooseFileToOpen()
                        "*.tar.xz *.txz *.tar.zst *.7z);;"
                        "All files (*)"));
     openFiles(paths);
+}
+
+void MainWindow::exportVisible()
+{
+    if (!activePageIsLog())
+        return;
+    const Document *doc = activeDocument();
+    if (!doc)
+        return;
+    // Beside the log for a local one, where the reader is already looking; the home
+    // directory for anything spooled, whose "directory" is on another machine or inside
+    // an archive. The bare name, so no host bracket reaches a file name.
+    const QString address = doc->path();
+    const QFileInfo bare(logSourceBareName(address));
+    const QString suffix = bare.suffix();
+    const QString name = bare.completeBaseName() + QStringLiteral("-filtered")
+                         + (suffix.isEmpty() ? QString() : QLatin1Char('.') + suffix);
+    const QString dir = logPathIsSpooled(address)
+                            ? QStandardPaths::writableLocation(QStandardPaths::HomeLocation)
+                            : QFileInfo(address).absolutePath();
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Visible Records"), QDir(dir).filePath(name),
+        tr("Log files (*.log *.txt);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    exportVisibleTo(path);
+}
+
+bool MainWindow::exportVisibleTo(const QString &path)
+{
+    LogView *view = activePageIsLog() ? activeLogView() : nullptr;
+    const Document *doc = activeDocument();
+    if (!view || !doc)
+        return false;
+
+    // Never over the log being read: QSaveFile would replace it with a new inode under
+    // the writer and the mapping alike — a disturbance invariant #5 forbids.
+    const QString address = doc->path();
+    if (!logPathIsSpooled(address)) {
+        const QString target = QFileInfo(path).canonicalFilePath();
+        if (!target.isEmpty() && target == QFileInfo(address).canonicalFilePath()) {
+            QMessageBox::warning(this, tr("Export Visible"),
+                                 tr("%1 is the log being exported. Choose another file.")
+                                     .arg(QDir::toNativeSeparators(path)));
+            return false;
+        }
+    }
+
+    QString error;
+    qint64 records = 0;
+    switch (view->exportVisible(path, &error, &records)) {
+    case LogView::ExportResult::Written:
+        // The transient channel, never m_statusLabel, which updateStatus() rewrites on
+        // the next ingest tick (announceReload()'s rule).
+        statusBar()->showMessage(tr("Exported %n record(s) to %1", nullptr, int(records))
+                                     .arg(QDir::toNativeSeparators(path)),
+                                 5000);
+        return true;
+    case LogView::ExportResult::Cancelled:
+        return false;
+    case LogView::ExportResult::Failed:
+        QMessageBox::warning(this, tr("Export Visible"),
+                             tr("Could not export to %1: %2")
+                                 .arg(QDir::toNativeSeparators(path), error));
+        return false;
+    }
+    return false;
 }
 
 void MainWindow::chooseRemoteToOpen()

@@ -860,6 +860,12 @@ target_link_libraries(tst_recordmenu PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_recordmenu COMMAND tst_recordmenu)
 set_tests_properties(tst_recordmenu PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# File ▸ Export Visible (SPEC.md §5): the visible rows written as the log's own bytes.
+qt_add_executable(tst_exportvisible tst_exportvisible.cpp)
+target_link_libraries(tst_exportvisible PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_exportvisible COMMAND tst_exportvisible)
+set_tests_properties(tst_exportvisible PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # What the Find bar REPORTS (SPEC.md §5): which match of how many, that a search wrapped
 # round to the other end, and that a query matched nothing. A successful find used to
 # report nothing at all, so a wrap read as a teleport. Drives a real MainWindow and finds
