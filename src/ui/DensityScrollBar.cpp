@@ -86,6 +86,22 @@ constexpr int kThumbEdgeAlpha = 130;
 // of difference between its two margins is what the whole bar reads as leaning by.
 constexpr qreal kThumbInsetPx = 1.5;
 
+// How much of the bar's own text colour is washed over the part of a lane the scan has
+// not reached. Enough to read as "not answered yet" at a glance on a bar this narrow,
+// and far too little to be mistaken for a mark: it is the absence of an answer, so it
+// must not look like one. It is drawn OVER the marks rather than under them, which is
+// what makes the boundary a straight edge across the column instead of a ragged one —
+// the bucket straddling the watermark is not fully answered either.
+constexpr int kUnscannedAlpha = 30;
+
+// The shortest wash worth drawing. A live log appends a few records per tick, which
+// leaves the lane a hair short of complete until the next slice catches up — a wash
+// with no floor is then a one-pixel grey sliver blinking at the bottom of the bar on
+// every ingest tick of every tailing log, which is the churn this exists to remove
+// arriving by another road. Below this the unanswered part of the log is too small to
+// hold anything the reader could act on anyway.
+constexpr int kMinWashPx = 6;
+
 // How far a mark's colour must stand off the bar's own ground before it is drawn as
 // itself. A rule may legitimately set Paper on a light theme or Ink on a dark one, and
 // that colour lands on a table row against text that gives it away — but a two-pixel
@@ -391,6 +407,25 @@ void DensityScrollBar::bandOf(int bucket, const QRect &track, int &top, int &bot
     bottom += track.top();
 }
 
+DensityMap::Marks DensityScrollBar::candidateRuleMask() const
+{
+    DensityMap::Marks mask = DensityMap::kNone;
+    if (!m_document || !m_model)
+        return mask;
+    // Exactly the set LogModel::matchedRule can ever answer with: an enabled rule
+    // carrying THIS model's action and matching on something. A rule that is inert for
+    // any of those reasons can never put a mark in the bar, so giving it a column would
+    // narrow the ones that can for a colour that is never coming.
+    const HighlighterSet &set = m_document->highlighters();
+    const HighlightActions action = m_model->highlightAction();
+    for (int i = 0; i < set.rules.size(); ++i) {
+        const HighlightRule &rule = set.rules.at(i);
+        if (rule.enabled && (rule.actions & action) && rule.match.anyActive())
+            mask |= DensityMap::classBit(i);
+    }
+    return mask;
+}
+
 QList<DensityScrollBar::MarkColumn> DensityScrollBar::layoutColumns() const
 {
     QList<MarkColumn> columns;
@@ -399,7 +434,13 @@ QList<DensityScrollBar::MarkColumn> DensityScrollBar::layoutColumns() const
     if (inner < kMinColumnPx || m_map.bucketCount() <= 0)
         return columns;
 
-    const DensityMap::Marks rulesMask = m_map.unionMask(DensityMap::Lane::Rules);
+    DensityMap::Marks rulesMask = m_map.unionMask(DensityMap::Lane::Rules);
+    // While the rule lane is still being scanned, a class with nothing found YET is not
+    // a class with nothing in the log, so the rules that could still turn up are given
+    // their width now rather than as the scan meets them — see the header. It collapses
+    // to what was actually found the moment the lane completes.
+    if (!m_map.complete(DensityMap::Lane::Rules))
+        rulesMask |= candidateRuleMask();
     const bool wantFind = findArmed();
 
     // The find lane is allocated on the QUERY being armed and not on its having found
@@ -531,6 +572,30 @@ void DensityScrollBar::paintColumn(QPainter &painter, const MarkColumn &column,
     }
 }
 
+void DensityScrollBar::paintUnscanned(QPainter &painter, const MarkColumn &column,
+                                      DensityMap::Lane lane) const
+{
+    // Nothing at all once the lane is whole: the wash is the rendering of a bounded
+    // answer, and a finished bar must carry no trace of how it got there.
+    if (!m_view || column.width <= 0 || m_map.complete(lane))
+        return;
+    const QRect track = trackRect();
+    if (track.height() <= 0)
+        return;
+
+    // The boundary is the first row the scan has NOT reached, placed by the same
+    // LogView::scrollFractionOfRow every mark is placed by — so the edge of the wash
+    // sits exactly where the last answered row's mark would, on a log whose records are
+    // any number of lines tall.
+    const qreal f = m_view->scrollFractionOfRow(m_map.scanned(lane));
+    const int y = track.top() + qBound(0, int(f * track.height()), track.height());
+    if (track.bottom() + 1 - y < kMinWashPx)
+        return;
+    QColor wash = palette().text().color();
+    wash.setAlpha(kUnscannedAlpha);
+    painter.fillRect(QRect(column.x, y, column.width, track.bottom() + 1 - y), wash);
+}
+
 void DensityScrollBar::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event)
@@ -556,9 +621,10 @@ void DensityScrollBar::paintEvent(QPaintEvent *event)
         // guaranteed to be distinct from every palette slot on both themes.
         const QColor findColour = palette().highlight().color();
         for (const MarkColumn &column : layoutColumns()) {
-            paintColumn(p, column,
-                        column.find ? DensityMap::Lane::Find : DensityMap::Lane::Rules,
-                        column.find ? &findColour : nullptr);
+            const DensityMap::Lane lane =
+                column.find ? DensityMap::Lane::Find : DensityMap::Lane::Rules;
+            paintColumn(p, column, lane, column.find ? &findColour : nullptr);
+            paintUnscanned(p, column, lane);
         }
     }
 

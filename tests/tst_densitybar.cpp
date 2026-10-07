@@ -689,6 +689,161 @@ private slots:
         QVERIFY2(rulesBand(s).first >= 0, "the ingest tick threw the rule lane away");
     }
 
+    // --- what an unmarked pixel MEANS while the scan is still running -------------
+    //
+    // A bar with no mark at a place says "nothing here", and while a lane is still
+    // being walked that is a claim it cannot make. On a half-million-record log most of
+    // the bar is unanswered for several seconds, so the marks arrive out of an
+    // apparently settled bar — which is the churn a reader sees and reports. The part a
+    // lane has NOT reached is washed over instead, per column and per lane, and the wash
+    // recedes as the scan converges.
+    //
+    // The half that no amount of watching it fill in would catch is the other end: the
+    // wash has to leave nothing at all behind when the lane completes, a finished bar
+    // being the rendering of a finished answer. Both ends are read off rendered pixels,
+    // because a wash is not a value any widget holds.
+    void theUnreachedPartOfALaneIsWashedAndTheWashGoesWhenItFinishes()
+    {
+        const QString path = m_dir.filePath(QStringLiteral("wash.log"));
+        constexpr int kRecords = 4000;
+        writeLog(path, kRecords, 3000);
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        openAndSettle(w, path, kRecords);
+        scrollToTop(w); // parks the thumb at the top, clear of every row measured here
+
+        DensityScrollBar *s = bar(w);
+        QVERIFY(s);
+        QVERIFY(s->map().complete(DensityMap::Lane::Rules));
+
+        const QRect track = s->trackRect();
+        const QRect column = s->ruleColumnRect(0); // the FATAL rule's own column
+        QVERIFY(!column.isNull());
+        const int x = column.center().x();
+        const QColor base = s->palette().base().color();
+
+        // A row halfway down with no FATAL in it: with the lane whole, that pixel is the
+        // bar's own ground and nothing else.
+        const int probeY = track.top()
+            + int(logView(w)->scrollFractionOfRow(kRecords / 2) * track.height());
+        QVERIFY(probeY > s->thumbRect().bottom());
+        QCOMPARE(QColor(s->grab().toImage().pixel(x, probeY)), base);
+
+        // Rewind the lane to a quarter of the way down — the same rewind a record
+        // growing in place costs, and the way to hold a half-scanned lane still: no
+        // event loop turns between here and the grab, so no slice can move it.
+        s->invalidateRows(kRecords / 4, kRecords / 4);
+        const int scanned = s->map().scanned(DensityMap::Lane::Rules);
+        QVERIFY(scanned > 0 && scanned < kRecords);
+        const int edgeY =
+            track.top() + int(logView(w)->scrollFractionOfRow(scanned) * track.height());
+        QVERIFY(edgeY - 2 > s->thumbRect().bottom());
+        QVERIFY(edgeY + 2 < probeY);
+
+        const QImage mid = s->grab().toImage();
+        QCOMPARE(s->map().scanned(DensityMap::Lane::Rules), scanned); // the grab ran no slice
+        // Above the watermark the log has been answered, and reads exactly as it did.
+        QCOMPARE(QColor(mid.pixel(x, edgeY - 2)), base);
+        // Below it the answer is still owed, and the ground says so rather than leaving
+        // an unmarked pixel to be read as "there is nothing here".
+        const QColor washed = QColor(mid.pixel(x, probeY));
+        QVERIFY2(washed != base, "the unreached part of the lane is drawn as answered");
+        QVERIFY2(washed != ruleColour(s, 0), "the wash is mistakable for a mark");
+
+        // And it is gone the moment the lane is whole again.
+        s->scanNowForTests();
+        QVERIFY(s->map().complete(DensityMap::Lane::Rules));
+        QCOMPARE(QColor(s->grab().toImage().pixel(x, probeY)), base);
+        QVERIFY2(rulesBand(s).first >= 0, "the FATAL mark went with the wash");
+    }
+
+    // The other end of the same rule, which the big-log case above cannot see. The
+    // watermark lands ON the row count when a lane finishes, and scrollFractionOfRow()
+    // clamps a row to the last one — so "scanned == rows" reads as the LAST RECORD'S OWN
+    // BAND, which a log of millions rounds away to nothing and a short one does not. A
+    // wash that is not switched off when the lane completes therefore sits over the last
+    // record of a small log for the life of the tab, and only a small log can say so.
+    void aFinishedLaneLeavesNoWashOverTheLastRecord()
+    {
+        const QString path = m_dir.filePath(QStringLiteral("short.log"));
+        constexpr int kRecords = 60;
+        // Every record 17 lines tall: few enough records that one is several pixels of
+        // bar, and enough LINES that the thumb stays out of the way at the top.
+        writeLog(path, kRecords, 40, 1, kRecords);
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        openAndSettle(w, path, kRecords);
+        scrollToTop(w);
+
+        DensityScrollBar *s = bar(w);
+        QVERIFY(s);
+        QVERIFY(s->map().complete(DensityMap::Lane::Rules));
+        const QRect track = s->trackRect();
+        const QRect column = s->ruleColumnRect(0);
+        QVERIFY(!column.isNull());
+        const int lastY =
+            track.top() + int(logView(w)->scrollFractionOfRow(kRecords - 1) * track.height());
+        // Without this the case asserts nothing: a band shorter than the wash's own floor
+        // would not be drawn even by a bar that never switched the wash off.
+        QVERIFY2(track.bottom() + 1 - lastY >= 8, "the last record's band is too short to test with");
+        QVERIFY(lastY > s->thumbRect().bottom());
+
+        const QImage img = s->grab().toImage();
+        const QColor base = s->palette().base().color();
+        for (int y = lastY + 1; y <= track.bottom(); ++y)
+            QVERIFY2(QColor(img.pixel(column.center().x(), y)) == base,
+                     "a finished lane is still drawing the wash over its last record");
+    }
+
+    // A class with nothing found YET is not a class with nothing in the log, so the
+    // columns are allocated from the rules that could still turn up while the scan is
+    // running and collapse to what was found when it finishes. Allocated from the found
+    // set throughout, the columns re-lay out every time the scan meets a new colour —
+    // the marks slide sideways under the reader for the length of the scan — and before
+    // the first mark is found there is no column at all, so there is nothing to wash on
+    // exactly the log this was reported from.
+    void aScanStillRunningGivesEveryRuleThatCouldFireAColumn()
+    {
+        const QString path = m_dir.filePath(QStringLiteral("columns.log"));
+        constexpr int kRecords = 2000;
+        writeLog(path, kRecords, 1500); // one FATAL; nothing matches ERROR or WARN
+        MainWindow w;
+        w.resize(900, 600);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        openAndSettle(w, path, kRecords);
+        scrollToTop(w); // the thumb parks at the top, clear of the row measured here
+
+        DensityScrollBar *s = bar(w);
+        QVERIFY(s);
+        // Settled: the one rule that fires has the marks to itself, which is what keeps
+        // a lone FATAL a mark somebody can see (a colour with nothing in this log gets
+        // no width).
+        const QRect settled = s->ruleColumnRect(0);
+        QVERIFY(!settled.isNull());
+        const QColor base = s->palette().base().color();
+        const QRect track = s->trackRect();
+
+        // Nothing scanned: the three seeded rules could each still turn up, so the marks
+        // area is split between them and every part of it is washed — including the two
+        // thirds that will turn out to hold nothing.
+        s->rebind();
+        QCOMPARE(s->map().scanned(DensityMap::Lane::Rules), 0);
+        const QImage fresh = s->grab().toImage();
+        const int y = track.top() + track.height() / 2;
+        QVERIFY(y > s->thumbRect().bottom());
+        int washedPx = 0;
+        for (int px = settled.left(); px <= settled.right(); ++px)
+            if (QColor(fresh.pixel(px, y)) != base)
+                ++washedPx;
+        QVERIFY2(washedPx >= settled.width() - 2,
+                 "the scan that has answered nothing draws the bar as answered");
+    }
+
     // The marks and the thumb sit CENTRED across the bar. Both used to lean left: the
     // columns were laid out from the divider with nothing kept back on the right, and
     // the thumb was inset 1.5 px on the left against 0.5 on the right.

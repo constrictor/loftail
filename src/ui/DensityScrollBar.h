@@ -170,6 +170,16 @@ private:
     // the marks sit CENTRED in the bar rather than packed against one edge. Where there
     // is not room for a column per rule the tail of them share the last column, resolved
     // per pixel by severity.
+    //
+    // While the rule lane's scan is still running the allocation also takes in every
+    // rule that could still turn up (candidateRuleMask), and it collapses back to what
+    // was actually found when the lane completes. Allocating from the found set alone
+    // re-lays the columns out each time the scan meets a new colour, so on a large log
+    // the marks slide sideways under the reader for the length of the scan — and before
+    // the first mark is found there are no columns at all, so there is nothing to wash.
+    // This is the find lane's own rule (a column on the query being ARMED, not on its
+    // having matched) applied to the lane that scans; the collapse at the end is what
+    // keeps "a colour with nothing in this log gets no width" true of the settled bar.
     QList<MarkColumn> layoutColumns() const;
     // Paint one column's marks, resolving per PIXEL rather than per bucket: several
     // buckets land on one pixel row on any large log, and each one's kMinMarkPx floor
@@ -177,6 +187,23 @@ private:
     // last win. The lowest class wins instead, which is the loudest rule.
     void paintColumn(QPainter &painter, const MarkColumn &column, DensityMap::Lane lane,
                      const QColor *fixed) const;
+    // Wash over the part of one column its lane's scan has not reached yet. An unmarked
+    // pixel means two different things while a scan is running — "nothing here" and
+    // "not looked at yet" — and on a big log the second is most of the bar for several
+    // seconds, so the bar reads as a settled answer that keeps changing. The wash says
+    // which part is still a question, and it recedes as the scan converges: nothing is
+    // drawn once the lane is complete, so a finished bar carries no chrome at all.
+    // Per COLUMN and per lane, because the two lanes converge at wildly different rates
+    // — the rule lane compares integers and the find lane decodes every column of every
+    // record — so one wash over the whole bar would report the slower lane's progress
+    // about the faster one's marks.
+    void paintUnscanned(QPainter &painter, const MarkColumn &column,
+                        DensityMap::Lane lane) const;
+    // The classes the rule lane could still turn up: every enabled rule carrying this
+    // model's action and matching on something. A class with nothing found YET is not a
+    // class with nothing in the log, so while the scan is running the columns are
+    // allocated from this as well as from what has been found — see layoutColumns().
+    DensityMap::Marks candidateRuleMask() const;
     // The colour a rule's marks are drawn in: its background where it sets one, its
     // foreground where it sets only that, and the theme's text where it sets neither —
     // a rule that colours nothing can still be the reason a record matters.
