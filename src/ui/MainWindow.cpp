@@ -2637,15 +2637,25 @@ void MainWindow::primeSerialProfile(const RemoteLocation &location)
     // the defaults. Every way in carries it here.
     const SerialProfileStore store(SerialProfileStore::defaultDir());
     const LogProfile resolved = resolvedProfile(location.toString());
+    // A SAVED TELNET HOST NAMES ITS OWN PRESET, and that wins over the settings tree: the
+    // preset is a property of how this machine signs in, which is what a saved host is. The
+    // tree still answers for a telnet address nobody saved, so `telnet://*` is one entry.
+    QString presetName = resolved.serialProfile;
+    if (location.transport == RemoteLocation::Transport::Telnet) {
+        bool found = false;
+        const HostBookmark host = HostBookmarkStore::find(m_hostBookmarks, location, &found);
+        if (found && !host.consolePreset.isEmpty())
+            presetName = host.consolePreset;
+    }
     SerialFetchOptions options;
-    options.profile = store.presetNamed(resolved.serialProfile);
-    if (!resolved.serialProfile.isEmpty() && options.profile.name != resolved.serialProfile) {
+    options.profile = store.presetNamed(presetName);
+    if (!presetName.isEmpty() && options.profile.name != presetName) {
         // Named a preset that is not there. FALLS BACK RATHER THAN REFUSING, because the settings
         // tree and serial.json are independently editable — and it says so in the one place that
         // can be read afterwards, rather than opening on the wrong settings in silence.
         diagLog("serial", QStringLiteral("%1: preset \"%2\" is not configured — using the "
                                         "built-in defaults")
-                              .arg(location.toString(), resolved.serialProfile));
+                              .arg(location.toString(), presetName));
     }
     setSerialFetchOptions(location, options);
 }
@@ -2756,8 +2766,14 @@ void MainWindow::primeRemoteCredentials(const QString &path)
     // would match a saved host of that name and be primed with its password. That is the
     // same collision class target()'s `serial:` prefix exists to prevent one layer down,
     // arriving from the other direction.
-    if (RemoteLocation::transportOf(path) != RemoteLocation::Transport::Ssh)
+    //
+    // TELNET IS PRIMED TOO (M28), and safely, because find() now compares the transport: a
+    // telnet host's saved password can only reach a telnet login on that host.
+    const auto transport = RemoteLocation::transportOf(path);
+    if (transport != RemoteLocation::Transport::Ssh
+        && transport != RemoteLocation::Transport::Telnet) {
         return;
+    }
     const auto location = RemoteLocation::parse(path);
     if (!location)
         return;

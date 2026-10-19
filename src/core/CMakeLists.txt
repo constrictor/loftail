@@ -343,6 +343,10 @@ target_sources(loftail_core PRIVATE
     # so tst_telnetprotocol and fuzz_telnetprotocol reach it with nothing listening.
     TelnetProtocol.cpp
     TelnetProtocol.h
+    # A named kind of remote: how to find machines of it on the network and how to sign in to
+    # one. Pure data plus its JSON, kept in hosts.json beside the saved hosts.
+    RemoteType.cpp
+    RemoteType.h
     TelnetSession.cpp
     TelnetSession.h
     # The named presets and the remembered devices. HostBookmarkStore'''s shape verbatim,

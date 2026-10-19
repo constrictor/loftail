@@ -24,6 +24,8 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 
+#include <functional>
+
 #include "FakeSecretStore.h"
 #include "HostBookmarkStore.h"
 #include "RemoteLocation.h"
@@ -80,6 +82,14 @@ private slots:
     void indexOfTargetMatchesTheCacheKey();
     void aKeychainKeepsThePasswordOutOfTheFile();
     void aRefusedKeychainNeverFallsBackToPlainText();
+
+    // M28 — remote types live in the same file, and a telnet host is a different connection
+    // from an SSH host at the same address.
+    void savingAHostKeepsEveryTypeAndSavingATypeKeepsEveryHost();
+    void aTypesPasswordMakesTheFileOwnerOnlyAndIsWrittenOnlyWhenAsked();
+    void aTypeDiffersWhenAnyOneFieldOfItDoes();
+    void aTelnetHostIsNotTheSshHostAtTheSameAddress();
+    void theAdvertisedPortIsUsedOnlyWhereItIsTheConnectionsOwn();
 };
 
 void TestHostBookmarks::roundTripsABookmark()
@@ -643,6 +653,157 @@ void TestHostBookmarks::aRefusedKeychainNeverFallsBackToPlainText()
     QCOMPARE(all.size(), 1);
     QVERIFY(!all.first().savePassword);
     QVERIFY(all.first().password.isEmpty());
+}
+
+namespace {
+
+RemoteType sampleType()
+{
+    RemoteType t;
+    t.name = QStringLiteral("Cameras");
+    t.discovery = RemoteType::Discovery::Bonjour;
+    t.serviceType = QStringLiteral("_ssh._tcp");
+    t.txtRe = QStringLiteral("^model=");
+    t.user = QStringLiteral("root");
+    t.defaultLogPath = QStringLiteral("/var/log/messages");
+    return t;
+}
+
+} // namespace
+
+void TestHostBookmarks::savingAHostKeepsEveryTypeAndSavingATypeKeepsEveryHost()
+{
+    // THE WRITE FUNNEL REBUILT THE ROOT FROM SCRATCH while `hosts` was its only key. With a
+    // second key beside it, that rebuild would make saving a host delete every remote type.
+    QTemporaryDir dir;
+    HostBookmarkStore store(dir.path());
+    QVERIFY(store.saveType(sampleType()));
+    QVERIFY(store.save(sample()));
+    QCOMPARE(store.types().size(), 1);
+    QCOMPARE(store.all().size(), 1);
+
+    RemoteType second = sampleType();
+    second.name = QStringLiteral("Routers");
+    QVERIFY(store.saveType(second));
+    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(store.types().size(), 2);
+    QCOMPARE(store.types().at(1), second);
+
+    // Same name, differently spelled: replaced in place, as a host is.
+    RemoteType renamed = sampleType();
+    renamed.name = QStringLiteral(" cameras ");
+    renamed.txtRe = QStringLiteral("^model=X2");
+    QVERIFY(store.saveType(renamed));
+    QCOMPARE(store.types().size(), 2);
+    QCOMPARE(store.types().at(0).txtRe, QStringLiteral("^model=X2"));
+
+    QVERIFY(store.removeType(QStringLiteral("CAMERAS")));
+    QCOMPARE(store.types().size(), 1);
+    QCOMPARE(store.all().size(), 1);
+}
+
+void TestHostBookmarks::aTypesPasswordMakesTheFileOwnerOnlyAndIsWrittenOnlyWhenAsked()
+{
+    QTemporaryDir dir;
+    HostBookmarkStore store(dir.path());
+    RemoteType t = sampleType();
+    t.password = QStringLiteral("hunter2");
+    t.savePassword = false;
+    QVERIFY(store.saveType(t));
+    {
+        QFile f(store.filePath());
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QVERIFY(!f.readAll().contains("hunter2"));
+    }
+
+    t.savePassword = true;
+    QVERIFY(store.saveType(t));
+    QCOMPARE(store.types().at(0).password, QStringLiteral("hunter2"));
+#ifdef Q_OS_UNIX
+    QVERIFY(!QFile::permissions(store.filePath()).testFlag(QFile::ReadOther));
+    // And a later HOST write, which holds no secret of its own, keeps it owner-only: the
+    // secret test runs over what is being kept as well as what is being written.
+    QVERIFY(store.save(sample()));
+    QVERIFY(!QFile::permissions(store.filePath()).testFlag(QFile::ReadOther));
+    QVERIFY(!QFile::permissions(store.filePath()).testFlag(QFile::ReadGroup));
+#endif
+}
+
+void TestHostBookmarks::aTypeDiffersWhenAnyOneFieldOfItDoes()
+{
+    // One case per field, for LogProfile::operator=='s reason: a field the comparison does not
+    // see is one an edit to is invisible to every "did anything move" guard.
+    const RemoteType base = sampleType();
+    QList<std::function<void(RemoteType &)>> edits = {
+        [](RemoteType &t) { t.name += u'x'; },
+        [](RemoteType &t) { t.discovery = RemoteType::Discovery::Onvif; },
+        [](RemoteType &t) { t.serviceType += u'x'; },
+        [](RemoteType &t) { t.domain += u'x'; },
+        [](RemoteType &t) { t.instanceRe += u'x'; },
+        [](RemoteType &t) { t.txtRe += u'x'; },
+        [](RemoteType &t) { t.scopeRe += u'x'; },
+        [](RemoteType &t) { t.connection = RemoteType::Connection::Telnet; },
+        [](RemoteType &t) { t.port = 2222; },
+        [](RemoteType &t) { t.user += u'x'; },
+        [](RemoteType &t) { t.savePassword = !t.savePassword; },
+        [](RemoteType &t) { t.password += u'x'; },
+        [](RemoteType &t) { t.defaultLogPath += u'x'; },
+        [](RemoteType &t) { t.pollMs += 1; },
+        [](RemoteType &t) { t.tailStartBytes += 1; },
+        [](RemoteType &t) { t.compress = !t.compress; },
+        [](RemoteType &t) { t.consolePreset += u'x'; },
+    };
+    for (int i = 0; i < edits.size(); ++i) {
+        RemoteType changed = base;
+        edits[i](changed);
+        QVERIFY2(!(changed == base), qPrintable(QStringLiteral("field %1").arg(i)));
+        // And it round-trips through JSON, which is the other half of "every field".
+        changed.savePassword = true;
+        QCOMPARE(remoteTypeFromJson(remoteTypeToJson(changed)), changed);
+    }
+}
+
+void TestHostBookmarks::aTelnetHostIsNotTheSshHostAtTheSameAddress()
+{
+    HostBookmark ssh = sample();
+    ssh.savePassword = true;
+    ssh.password = QStringLiteral("ssh-secret");
+    HostBookmark telnet = sample();
+    telnet.label = QStringLiteral("prod-web console");
+    telnet.connection = RemoteType::Connection::Telnet;
+    telnet.consolePreset = QStringLiteral("busybox");
+    const QVector<HostBookmark> both{ssh, telnet};
+
+    // The SSH password must never be found for a telnet login at the same user, host and port
+    // — that would send it in clear to a prompt it was not meant for.
+    RemoteLocation viaTelnet = telnet.locationFor(QStringLiteral("/a.log"));
+    QCOMPARE(viaTelnet.transport, RemoteLocation::Transport::Telnet);
+    bool found = false;
+    const HostBookmark match = HostBookmarkStore::find(both, viaTelnet, &found);
+    QVERIFY(found);
+    QCOMPARE(match.label, telnet.label);
+    QCOMPARE(match.consolePreset, QStringLiteral("busybox"));
+
+    QCOMPARE(HostBookmarkStore::find(both, ssh.locationFor(QStringLiteral("/a.log")), &found).label,
+             ssh.label);
+    QCOMPARE(HostBookmarkStore::indexOfTarget(both, viaTelnet.target()), 1);
+}
+
+void TestHostBookmarks::theAdvertisedPortIsUsedOnlyWhereItIsTheConnectionsOwn()
+{
+    RemoteType t = sampleType();
+    QCOMPARE(t.effectivePort(2222), 2222);   // an `_ssh._tcp` record's port is SSH's
+    t.serviceType = QStringLiteral("_http._tcp");
+    QCOMPARE(t.effectivePort(8080), 22);     // a web server's port is not
+    t.connection = RemoteType::Connection::Telnet;
+    QCOMPARE(t.effectivePort(8080), 23);
+    t.serviceType = QStringLiteral("_telnet._tcp");
+    QCOMPARE(t.effectivePort(2323), 2323);
+    t.port = 9023;
+    QCOMPARE(t.effectivePort(2323), 9023);   // a port written down always wins
+    t.port = 0;
+    t.discovery = RemoteType::Discovery::Onvif;
+    QCOMPARE(t.effectivePort(80), 23);       // an ONVIF probe advertises a web service
 }
 
 QTEST_APPLESS_MAIN(TestHostBookmarks)

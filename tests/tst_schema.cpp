@@ -214,6 +214,53 @@ constexpr auto kHostsV1 = R"({
 }
 )";
 
+// hosts.json gained a `types` array and two host keys in M28 — ADDED keys, so still v1, and
+// this is the fixture that says so. Every field is set AWAY from its default: a fixture
+// saying `ssh` where the struct also defaults to SSH could not tell a key that was read
+// from one that was dropped.
+// (No `//` anywhere in this literal: moc does not understand a raw string and reads one
+// as a comment, which silently drops the class it is scanning.)
+constexpr auto kHostsWithTypesV1 = R"({
+    "hosts": [
+        {
+            "auth": "agent",
+            "connection": "telnet",
+            "consolePreset": "busybox",
+            "host": "cam7.example.com",
+            "label": "Camera 7",
+            "paths": [ "/var/log/messages" ],
+            "pollMs": 1000,
+            "port": 2323,
+            "savePassword": false,
+            "tailStartBytes": 0,
+            "user": "root"
+        }
+    ],
+    "schemaVersion": 1,
+    "types": [
+        {
+            "compress": true,
+            "connection": "telnet",
+            "consolePreset": "camera",
+            "defaultLog": "/var/log/camera.log",
+            "discovery": "onvif",
+            "domain": "lab.",
+            "instanceMatch": "^cam-",
+            "name": "Camera fleet",
+            "password": "s3cret",
+            "pollMs": 3000,
+            "port": 2323,
+            "savePassword": true,
+            "scopeMatch": "/name/Acme$",
+            "serviceType": "_telnet._tcp",
+            "tailStartBytes": 1048576,
+            "txtMatch": "^model=X",
+            "user": "admin"
+        }
+    ]
+}
+)";
+
 #if defined(LOFTAIL_HAVE_PRESETS)
 constexpr auto kFilterPresetsV1 = R"({
     "kind": "filters",
@@ -258,6 +305,7 @@ private slots:
     void theV1LogSettingsFileStillReadsAsItsAuthorMeantIt();
     void theV1PoolStillReadsAsItsAuthorMeantIt();
     void theV1HostsFileStillReadsAsItsAuthorMeantIt();
+    void theV1HostsFileWithRemoteTypesStillReadsAsItsAuthorMeantIt();
 #if defined(LOFTAIL_HAVE_PRESETS)
     void theV1PresetFilesStillReadAsTheirAuthorMeantThem();
 #endif
@@ -376,6 +424,46 @@ void TstSchema::theV1HostsFileStillReadsAsItsAuthorMeantIt()
     QCOMPARE(all.at(0).paths,
              (QStringList{QStringLiteral("/var/log/app.log"),
                           QStringLiteral("/var/log/sys.log")}));
+}
+
+void TstSchema::theV1HostsFileWithRemoteTypesStillReadsAsItsAuthorMeantIt()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    HostBookmarkStore store(dir.path());
+    QVERIFY(put(store.filePath(), kHostsWithTypesV1));
+
+    const QVector<HostBookmark> hosts = store.all();
+    QCOMPARE(hosts.size(), 1);
+    QCOMPARE(hosts.at(0).connection, RemoteType::Connection::Telnet);
+    QCOMPARE(hosts.at(0).consolePreset, QStringLiteral("busybox"));
+    QCOMPARE(hosts.at(0).port, 2323);
+
+    const QVector<RemoteType> types = store.types();
+    QCOMPARE(types.size(), 1);
+    const RemoteType &t = types.at(0);
+    QCOMPARE(t.name, QStringLiteral("Camera fleet"));
+    QCOMPARE(t.discovery, RemoteType::Discovery::Onvif);
+    QCOMPARE(t.serviceType, QStringLiteral("_telnet._tcp"));
+    QCOMPARE(t.domain, QStringLiteral("lab."));
+    QCOMPARE(t.instanceRe, QStringLiteral("^cam-"));
+    QCOMPARE(t.txtRe, QStringLiteral("^model=X"));
+    QCOMPARE(t.scopeRe, QStringLiteral("/name/Acme$"));
+    QCOMPARE(t.connection, RemoteType::Connection::Telnet);
+    QCOMPARE(t.port, 2323);
+    QCOMPARE(t.user, QStringLiteral("admin"));
+    QVERIFY(t.savePassword);
+    QCOMPARE(t.password, QStringLiteral("s3cret"));
+    QCOMPARE(t.defaultLogPath, QStringLiteral("/var/log/camera.log"));
+    QCOMPARE(t.pollMs, 3000);
+    QCOMPARE(t.tailStartBytes, 1048576);
+    QVERIFY(t.compress);
+    QCOMPARE(t.consolePreset, QStringLiteral("camera"));
+
+    // And the pre-M28 fixture's host, which spells no connection, is an SSH host.
+    QVERIFY(put(store.filePath(), kHostsV1));
+    QCOMPARE(store.all().at(0).connection, RemoteType::Connection::Ssh);
+    QVERIFY(store.types().isEmpty());
 }
 
 #if defined(LOFTAIL_HAVE_PRESETS)
