@@ -116,11 +116,9 @@ private slots:
     void aThemeThatSuppliesNoBandStillGetsOne();
     void eachActionButtonSitsLevelWithItsListRatherThanItsHeading();
     void theNameWearsTheApplicationMarkAndTheTwoAreCentredTogether();
-#if defined(LOFTAIL_HAVE_SSH)
+    // UNGATED since M28: telnet and discovery need no optional dependency, so a build without
+    // libssh2 still opens remote logs and keeps the section that lists them.
     void aRememberedRemoteLogIsARowAndASavedHostWithNoneIsAnother();
-#else
-    void theRemotesSectionIsAbsentWithoutSsh();
-#endif
 };
 
 void TestWelcome::initTestCase()
@@ -460,7 +458,6 @@ void TestWelcome::theNameWearsTheApplicationMarkAndTheTwoAreCentredTogether()
                             .arg(colours.size())));
 }
 
-#if defined(LOFTAIL_HAVE_SSH)
 void TestWelcome::aRememberedRemoteLogIsARowAndASavedHostWithNoneIsAnother()
 {
     const HostBookmarkStore store(HostBookmarkStore::defaultDir());
@@ -488,18 +485,9 @@ void TestWelcome::aRememberedRemoteLogIsARowAndASavedHostWithNoneIsAnother()
     QCOMPARE(list->item(1)->text(), QStringLiteral("staging..."));
     QVERIFY(list->item(1)->data(Qt::UserRole + 2).toString().isEmpty());
 }
-#else
-void TestWelcome::theRemotesSectionIsAbsentWithoutSsh()
-{
-    // Hidden entire rather than greyed, which is the opposite of what the File menu does
-    // with the same two items — the menu is where the "built without SSH" sentence lives
-    // and it keeps them for that, while an empty disabled column on a landing page
-    // explains nothing the menu is not about to explain.
-    MainWindow w;
-    QVERIFY(remoteSection(w));
-    QVERIFY(!remoteSection(w)->isVisibleTo(welcome(w)));
-}
-#endif
+// (theRemotesSectionIsAbsentWithoutSsh went with the gate: since M28 the section is present in
+// every build, because a build without libssh2 still opens logs over telnet and on discovered
+// telnet devices.)
 
 int main(int argc, char *argv[])
 {

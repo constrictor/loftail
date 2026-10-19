@@ -59,6 +59,8 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include "OpenRemoteDialog.h"
+#include "RemoteBrowserDialog.h"
+#include "RemoteParametersDialog.h"
 #include "OpenSerialDialog.h"
 #include "SerialDevices.h"
 #include "SerialEnumerator.h"
@@ -556,6 +558,13 @@ void MainWindow::buildMenus()
     m_openRemoteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")));
     connect(m_openRemoteAction, &QAction::triggered, this, &MainWindow::chooseRemoteToOpen);
 
+    // M28 — how loftail reaches other machines, apart from opening anything: the remote types
+    // that find devices by discovery, and the saved hosts reached by address.
+    m_remoteParametersAction = fileMenu->addAction(tr("Remote Para&meters..."));
+    m_remoteParametersAction->setObjectName(QStringLiteral("remoteParametersAction"));
+    connect(m_remoteParametersAction, &QAction::triggered, this,
+            &MainWindow::editRemoteParameters);
+
     m_recentMenu = fileMenu->addMenu(tr("Open &Recent"));
     m_recentMenu->setObjectName(QStringLiteral("recentMenu")); // findChild, for tests
     // A menu shows an action's tooltip only when asked to, and here the tooltip is the
@@ -595,20 +604,15 @@ void MainWindow::buildMenus()
 #endif
 
 #if !defined(LOFTAIL_HAVE_SSH)
+    // NOTHING IS GREYED ANY MORE, AND THAT IS M28's DOING: telnet needs no optional
+    // dependency and ONVIF discovery none either, so a build without libssh2 can still open a
+    // remote log — just not over SSH. The menu items stay live and say what is missing; the
+    // form says so again where SSH is chosen, and an SSH open refuses in words (M17).
     const QString noSsh = tr(
-        "This copy of loftail was built without SSH support, so remote logs cannot "
-        "be opened. Rebuild with libssh2 available to enable it.");
-    m_openRemoteAction->setEnabled(false);
+        "This copy of loftail was built without SSH support: logs over telnet and on "
+        "discovered telnet devices still open, logs over SSH do not.");
     m_openRemoteAction->setToolTip(noSsh);
-    m_remoteHostsMenu->setEnabled(false);
     m_remoteHostsMenu->setToolTip(noSsh);
-    // The welcome screen HIDES its remotes section where these two only grey out, and
-    // the divergence is deliberate. A menu entry that vanishes reads as a feature that
-    // does not exist, which is why both items above stay put and carry the sentence; a
-    // landing page is where somebody is choosing what to do, and an empty disabled
-    // column there is dead space that explains nothing the menu is not already about to
-    // explain. Decided in this one block so the two answers cannot drift apart.
-    m_welcome->setRemotesVisible(false);
 #endif
 
     fileMenu->addSeparator();
@@ -2407,14 +2411,51 @@ bool MainWindow::exportVisibleTo(const QString &path)
 
 void MainWindow::chooseRemoteToOpen()
 {
+    // THE BROWSER (M28): discovered devices, saved hosts and an address typed outright, in one
+    // list. Each answer goes through the funnel that answer already had — a saved host through
+    // openRemoteBookmark(), so its cadence and tail-start apply; everything else through
+    // openFile(), whose priming carries a discovered device's type and a telnet host's preset.
     HostBookmarkStore store(HostBookmarkStore::defaultDir());
-    OpenRemoteDialog dialog(&store, this);
-    if (dialog.exec() != QDialog::Accepted)
+    RemoteBrowserDialog dialog(&store, this);
+    const bool accepted = dialog.exec() == QDialog::Accepted;
+    refreshRemoteHostsMenu(); // the dialog may have saved or removed a host or a type
+    if (!accepted)
         return;
-    refreshRemoteHostsMenu(); // the dialog may have saved or removed a host
-    const QString url = dialog.chosenUrl();
-    if (!url.isEmpty())
-        openFile(url);
+    switch (dialog.choice()) {
+    case RemoteBrowserDialog::Choice::SavedHost:
+        openRemoteBookmark(dialog.chosenHost(), dialog.chosenPath());
+        break;
+    case RemoteBrowserDialog::Choice::Direct:
+        if (!dialog.chosenConsolePreset().isEmpty())
+            m_adHocConsolePresets.insert(normalizeLogPath(dialog.chosenUrl()),
+                                         dialog.chosenConsolePreset());
+        openFile(dialog.chosenUrl());
+        break;
+    case RemoteBrowserDialog::Choice::Discovered:
+        openFile(dialog.chosenUrl());
+        break;
+    case RemoteBrowserDialog::Choice::None:
+        break;
+    }
+}
+
+void MainWindow::editRemoteParameters()
+{
+    HostBookmarkStore store(HostBookmarkStore::defaultDir());
+    RemoteParametersDialog dialog(&store, this);
+    dialog.exec();
+    // The ONE refresh that carries an edit everywhere: the menu, the welcome page, the tab
+    // names, and the type snapshot every discovered log's fetcher reads on its next connect.
+    refreshRemoteHostsMenu();
+    // And re-primed, as an edited serial preset is: a discovered log's poll cadence, tail-start
+    // and console preset are the TYPE's, and its fetcher reads them back under its address.
+    for (const std::unique_ptr<DocumentContext> &ctx : m_contexts) {
+        if (!ctx || !ctx->doc)
+            continue;
+        const auto location = RemoteLocation::parse(ctx->doc->path());
+        if (location && location->transport == RemoteLocation::Transport::Discovered)
+            primeDiscoveredRemote(*location);
+    }
 }
 
 void MainWindow::refreshRemoteHostsMenu()
@@ -2650,6 +2691,12 @@ void MainWindow::primeSerialProfile(const RemoteLocation &location)
     // preset is a property of how this machine signs in, which is what a saved host is. The
     // tree still answers for a telnet address nobody saved, so `telnet://*` is one entry.
     QString presetName = resolved.serialProfile;
+    // A preset chosen in the host form for an open that was not saved as a host, for the life
+    // of this window — the form is the only place it was ever written down.
+    if (const auto adHoc = m_adHocConsolePresets.constFind(location.toString());
+        adHoc != m_adHocConsolePresets.constEnd()) {
+        presetName = *adHoc;
+    }
     if (location.transport == RemoteLocation::Transport::Telnet) {
         bool found = false;
         const HostBookmark host = HostBookmarkStore::find(m_hostBookmarks, location, &found);

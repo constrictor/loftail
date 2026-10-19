@@ -296,13 +296,14 @@ void TestRemoteOpen::menuEntriesExist()
     auto *hosts = window.findChild<QMenu *>(QStringLiteral("remoteHostsMenu"));
     QVERIFY(hosts);
 
-#if defined(LOFTAIL_HAVE_SSH)
+    // LIVE IN EVERY BUILD since M28: telnet and ONVIF discovery need no optional dependency,
+    // so a build without libssh2 still opens remote logs — and says what it cannot do.
     QVERIFY(openRemote->isEnabled());
     QVERIFY(hosts->isEnabled());
-#else
-    // Present but disabled, with a tooltip saying why — a missing menu item would
-    // just look like the feature does not exist.
-    QVERIFY(!openRemote->isEnabled());
+    auto *parameters = window.findChild<QAction *>(QStringLiteral("remoteParametersAction"));
+    QVERIFY(parameters);
+    QVERIFY(parameters->isEnabled());
+#if !defined(LOFTAIL_HAVE_SSH)
     QVERIFY(openRemote->toolTip().contains(QStringLiteral("without SSH support")));
 #endif
 }

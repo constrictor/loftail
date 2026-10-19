@@ -427,6 +427,21 @@ target_link_libraries(tst_remotedialog PRIVATE loftail_ui Qt6::Test Qt6::Widgets
 add_test(NAME tst_remotedialog COMMAND tst_remotedialog)
 set_tests_properties(tst_remotedialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# M28 — File ▸ Open Remote is a browser: discovered devices under their types, saved hosts, a
+# filter over both, and an address typed outright that opens the host form. A scripted browser
+# stands in for the network through the factory seam.
+qt_add_executable(tst_remotebrowser tst_remotebrowser.cpp)
+target_link_libraries(tst_remotebrowser PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_remotebrowser COMMAND tst_remotebrowser)
+set_tests_properties(tst_remotebrowser PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# M28 — File ▸ Remote Parameters: every type field round-trips, a password waits for an
+# account and goes where the consent note said, and the hosts page is the host form.
+qt_add_executable(tst_remoteparameters tst_remoteparameters.cpp)
+target_link_libraries(tst_remoteparameters PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_remoteparameters COMMAND tst_remoteparameters)
+set_tests_properties(tst_remoteparameters PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # Which language the interface is in, and specifically that QT'S OWN strings end up in
 # the same one. loftail ships no catalogue, so its own strings need no help; the
 # standard dialog buttons do, because qtbase_<lang> is loaded for the system locale by

@@ -21,6 +21,7 @@
 #include "DiagnosticLog.h"
 #include "ExecTransport.h"
 #include "RetryCountdown.h"
+#include "SecretStore.h"
 #include "SshExecCommands.h"
 #include "SshPrompter.h"
 #include "SshRetryPolicy.h"
@@ -288,9 +289,29 @@ bool ConsoleFetcher::establish()
     // network transport uses — keyed on target(), which for a device carries the `serial:`
     // prefix so a host of the same name cannot be handed this one's credential; and on the
     // TYPE's key for a discovered device (RemoteLocation::credentialTarget()).
+    //
+    // THE KEYCHAIN IS ASKED ONLY ON AN ATTENDED ATTEMPT, the SSH auth ladder's rule for its
+    // reason: a keychain read can raise an unlock dialog, and an unattended reconnect hours
+    // after the tab was opened must not put one in front of anybody. A console has no prompt
+    // of its own, so this is the only rung there is between the cache and nothing (M28).
+    const QString key = endpoint.credentialTarget();
+    bool attended = false;
+    {
+        // CONSUMED, as SshFetcher::reconnect() consumes it: the first attempt and one after
+        // File ▸ Reconnect are attended, every retry in between is not.
+        const std::scoped_lock lock(m_mutex);
+        attended = std::exchange(m_wantsPrompter, false);
+    }
+    if (!SshCredentialCache::has(key) && attended && !endpoint.effectiveUser().isEmpty()) {
+        QString stored;
+        if (secretStore()->read(sshSecretKey(key), &stored) == SecretStore::Result::Ok
+            && !stored.isEmpty()) {
+            SshCredentialCache::remember(key, stored);
+        }
+    }
     QByteArray password;
-    if (SshCredentialCache::has(endpoint.credentialTarget()))
-        password = SshCredentialCache::password(endpoint.credentialTarget()).toUtf8();
+    if (SshCredentialCache::has(key))
+        password = SshCredentialCache::password(key).toUtf8();
 
     const ConsoleSession::Ready ready =
         m_device->ensureReady(m_location.path, m_options, endpoint, password);
