@@ -63,7 +63,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
-            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev libavahi-client-dev \
             libfuse2 file desktop-file-utils \
             fontconfig
 
@@ -84,6 +84,10 @@ jobs:
           # remembered password is written — from the OS keychain to a plain-text file.
           grep -q "OS keychain for passwords: ENABLED" configure.log \
             || { echo "::error::QtKeychain was not detected; remembered passwords fall back to plain text"; exit 1; }
+          # And for Avahi: auto-detection failing silently would leave every Bonjour remote
+          # type finding nothing, and drop tst_avahilive from the build without a word.
+          grep -q "Bonjour discovery: ENABLED (avahi)" configure.log \
+            || { echo "::error::avahi-client was not detected; Bonjour discovery is off"; exit 1; }
           cmake --build build
           QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 
@@ -273,7 +277,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
-            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev libavahi-client-dev
 
       - name: Configure + build with ASan/UBSan
         run: |
@@ -341,7 +345,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
-            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev libavahi-client-dev \
             clang-18
 
       - name: Configure + build the fuzz targets
@@ -535,6 +539,56 @@ jobs:
           path: keychain-test-logs
           if-no-files-found: warn
 
+  mdns-live:
+    # THE ONLY JOB THAT EXECUTES THE AVAHI BACKEND (src/core/AvahiBrowser.cpp) and its AvahiPoll
+    # adapter onto Qt's event loop. Everything above the DiscoveryBrowser seam — the match rules,
+    # the connect-time lookup, the discover:// fetcher — is covered with no responder at all by
+    # tst_discovery and tst_remoteopen over a scripted browser, which satisfies the seam whether
+    # or not the platform half works; this is the half that cannot be faked.
+    #
+    # keychain-live's arrangement: a bus of its own, a real daemon on it, and a harness that
+    # names the functions that must have PASSED, because every case QSKIPs without the daemon
+    # and a skip is a zero exit status. avahi-client reaches the daemon over the SYSTEM bus, so
+    # the harness starts a private one and points DBUS_SYSTEM_BUS_ADDRESS at it; avahi-daemon
+    # refuses to run as anybody but root, so the harness starts that one through sudo.
+    #
+    # It GATES. A daemon on a fresh bus answering a service published on the same host is
+    # deterministic — no network beyond the runner's own interface, no credentials.
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain + system Qt 6 + Avahi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake \
+            qt6-base-dev libgl1-mesa-dev \
+            libavahi-client-dev avahi-daemon avahi-utils dbus
+
+      - name: Configure + build tst_avahilive
+        # SSH, archives and the keychain are off deliberately: none of them is reachable from
+        # this test, and this way the job builds loftail_core and one test binary.
+        run: |
+          cmake -S . -B build-mdns -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DLOFTAIL_WITH_SSH=OFF -DLOFTAIL_WITH_ARCHIVE=OFF -DLOFTAIL_WITH_KEYCHAIN=OFF \
+            2>&1 | tee configure-mdns.log
+          grep -q "Bonjour discovery: ENABLED (avahi)" configure-mdns.log \
+            || { echo "::error::avahi-client was not detected; there is nothing to test here"; exit 1; }
+          cmake --build build-mdns --target tst_avahilive
+
+      - name: Run tst_avahilive against a private Avahi daemon
+        run: packaging/test-mdns/run-mdns-tests.sh --build build-mdns --logs mdns-test-logs
+
+      - name: Upload the run log and the daemon's own
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mdns-live-logs
+          path: mdns-test-logs
+          if-no-files-found: warn
+
   clang-tidy:
     # Static analysis over src/ (.clang-tidy at the repo root holds the check list
     # and the reasoning behind every exclusion).
@@ -574,7 +628,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
-            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev libavahi-client-dev \
             clang-18 clang-tidy-18
 
       - name: Configure
@@ -700,7 +754,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
-            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev libavahi-client-dev \
             lcov
 
       - name: Configure + build instrumented
@@ -829,7 +883,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential ninja-build cmake \
             qt6-base-dev libgl1-mesa-dev \
-            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev \
+            libssh2-1-dev libarchive-dev qtkeychain-qt6-dev qt6-serialport-dev libavahi-client-dev \
             file desktop-file-utils
 
       - name: Configure + build (Release) and test
@@ -875,7 +929,7 @@ jobs:
           # AppImage bundles one and not the other: QtKeychain links the first and
           # dlopen()s the second, and shlibdeps only sees what was linked. libsecret is
           # a Recommends instead — see packaging/linux/deb.cmake.
-          for lib in libqt6 libssh2 libarchive libqt6keychain; do
+          for lib in libqt6 libssh2 libarchive libqt6keychain libavahi-client; do
             echo "$DEPENDS" | grep -q "$lib" \
               || { echo "::error::Depends does not mention $lib: $DEPENDS"; exit 1; }
           done

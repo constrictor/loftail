@@ -217,6 +217,25 @@ add_test(NAME tst_restarttarget COMMAND tst_restarttarget)
 # It needs no port, no device, no QApplication and no waiting, because the machine is a
 # pure decision with an injected clock — which is why it was written that way round rather
 # than inside the QSerialPort code it drives.
+# M28 — device discovery without a platform responder: the match rules every backend shares,
+# the WS-Discovery messages, the connect-time lookup through the browser seam, and the ONVIF
+# browser against a real multicast responder on loopback where the machine routes one. POSIX for
+# that responder's sockets; the rest would run anywhere.
+if(NOT WIN32)
+    qt_add_executable(tst_discovery tst_discovery.cpp)
+    target_link_libraries(tst_discovery PRIVATE loftail_core Qt6::Test Qt6::Network)
+    add_test(NAME tst_discovery COMMAND tst_discovery)
+endif()
+
+# M28 — the Avahi backend against a real daemon. Built only with that backend, and skipped unless
+# LOFTAIL_TEST_MDNS=1, which packaging/test-mdns/run-mdns-tests.sh sets after starting a private
+# system bus, avahi-daemon and two published services — tst_keychainlive's arrangement.
+if(LOFTAIL_HAVE_MDNS AND LOFTAIL_MDNS_BACKEND STREQUAL "avahi")
+    qt_add_executable(tst_avahilive tst_avahilive.cpp)
+    target_link_libraries(tst_avahilive PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_avahilive COMMAND tst_avahilive)
+endif()
+
 # M28 — the telnet layer with nothing listening: IAC stripping across reads, negotiation that
 # answers only a change of state, binary mode and the NVT CR NUL. Pure, so ungated.
 qt_add_executable(tst_telnetprotocol tst_telnetprotocol.cpp)

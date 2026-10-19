@@ -347,6 +347,19 @@ target_sources(loftail_core PRIVATE
     # one. Pure data plus its JSON, kept in hosts.json beside the saved hosts.
     RemoteType.cpp
     RemoteType.h
+    # Which of what a discovery found belongs to a type, and the WS-Discovery messages ONVIF
+    # is found with. Pure and always compiled: the platform browse APIs decide what is on the
+    # network, these decide what is shown, and they are what tst_discoverymatch and
+    # fuzz_wsdiscovery reach with nothing on the network at all.
+    DiscoveryMatch.cpp
+    DiscoveryMatch.h
+    # The browser seam, its factory, the last-seen cache and the connect-time lookup, plus the
+    # ONVIF browser — loftail's own WS-Discovery over a QUdpSocket, so always built. The
+    # Bonjour backend is the platform's and is gated below.
+    DiscoveryBrowser.cpp
+    DiscoveryBrowser.h
+    DiscoveryBackends.h
+    OnvifBrowser.cpp
     TelnetSession.cpp
     TelnetSession.h
     # The named presets and the remembered devices. HostBookmarkStore'''s shape verbatim,
@@ -433,6 +446,24 @@ else()
         SerialDevice.cpp
         SerialFetcher.cpp
     )
+endif()
+
+# M28 — the only translation unit that names a platform mDNS API, one per platform. Gated as
+# the three library gates above are; without it DiscoveryBrowser.cpp supplies a Bonjour browser
+# that says why it finds nothing.
+if(LOFTAIL_HAVE_MDNS)
+    if(LOFTAIL_MDNS_BACKEND STREQUAL "avahi")
+        target_sources(loftail_core PRIVATE AvahiBrowser.cpp)
+        target_link_libraries(loftail_core PRIVATE PkgConfig::AVAHI_CLIENT)
+    elseif(LOFTAIL_MDNS_BACKEND STREQUAL "dns_sd")
+        target_sources(loftail_core PRIVATE DnsSdBrowser.cpp)
+    elseif(LOFTAIL_MDNS_BACKEND STREQUAL "windns")
+        target_sources(loftail_core PRIVATE WinDnsBrowser.cpp)
+        target_link_libraries(loftail_core PRIVATE dnsapi)
+    endif()
+    target_compile_definitions(loftail_core PUBLIC
+        LOFTAIL_HAVE_MDNS=1
+        LOFTAIL_MDNS_BACKEND="${LOFTAIL_MDNS_BACKEND}")
 endif()
 
 if(LOFTAIL_HAVE_KEYCHAIN)

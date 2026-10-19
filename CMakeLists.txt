@@ -306,6 +306,63 @@ else()
                    "or vcpkg install qtserialport)")
 endif()
 
+# --- Bonjour discovery (M28) -------------------------------------------------
+#
+# THE PLATFORM'S OWN mDNS CLIENT, and a different one per platform, because each of them shares
+# one responder with every other program on the machine where a responder of loftail's own
+# would fight it for UDP 5353 (ARCHITECTURE.md §6.13):
+#
+#   * Linux    — avahi-client, through pkg-config (libavahi-client-dev);
+#   * macOS    — dns_sd.h, part of the system (libSystem), nothing to install;
+#   * Windows  — DnsServiceBrowse in dnsapi (Windows 10 1809+), probed in the SDK's headers.
+#
+# Auto-detected exactly as the three library options above are, and optional in the same way:
+# without it Bonjour types can still be written and saved, the browser says why it finds
+# nothing, and ONVIF discovery — loftail's own WS-Discovery over Qt Network — is unaffected.
+# Nothing is fetched, so this block has no interaction with the -Werror ordering rule (§14).
+option(LOFTAIL_WITH_MDNS "Build Bonjour (mDNS/DNS-SD) device discovery" ON)
+
+set(LOFTAIL_HAVE_MDNS OFF)
+set(LOFTAIL_MDNS_BACKEND "")
+if(LOFTAIL_WITH_MDNS)
+    if(WIN32)
+        include(CheckSymbolExists)
+        set(CMAKE_REQUIRED_DEFINITIONS -D_WIN32_WINNT=0x0A00 -DNTDDI_VERSION=0x0A000006)
+        set(CMAKE_REQUIRED_LIBRARIES dnsapi)
+        check_symbol_exists(DnsServiceBrowse "windows.h;windns.h" LOFTAIL_HAS_DNSSERVICEBROWSE)
+        unset(CMAKE_REQUIRED_DEFINITIONS)
+        unset(CMAKE_REQUIRED_LIBRARIES)
+        if(LOFTAIL_HAS_DNSSERVICEBROWSE)
+            set(LOFTAIL_HAVE_MDNS ON)
+            set(LOFTAIL_MDNS_BACKEND "windns")
+        endif()
+    elseif(APPLE)
+        include(CheckIncludeFileCXX)
+        check_include_file_cxx(dns_sd.h LOFTAIL_HAS_DNS_SD_H)
+        if(LOFTAIL_HAS_DNS_SD_H)
+            set(LOFTAIL_HAVE_MDNS ON)
+            set(LOFTAIL_MDNS_BACKEND "dns_sd")
+        endif()
+    else()
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(AVAHI_CLIENT QUIET IMPORTED_TARGET avahi-client)
+            if(AVAHI_CLIENT_FOUND)
+                set(LOFTAIL_HAVE_MDNS ON)
+                set(LOFTAIL_MDNS_BACKEND "avahi")
+            endif()
+        endif()
+    endif()
+endif()
+
+if(LOFTAIL_HAVE_MDNS)
+    message(STATUS "Bonjour discovery: ENABLED (${LOFTAIL_MDNS_BACKEND})")
+else()
+    message(STATUS "Bonjour discovery: DISABLED "
+                   "(install libavahi-client-dev on Linux; dns_sd.h ships with macOS; "
+                   "Windows needs the Windows 10 1809+ SDK)")
+endif()
+
 # --- Presets (M5) -------------------------------------------------------------
 #
 # Unlike LOFTAIL_WITH_SSH/_ARCHIVE/_KEYCHAIN, this gates a FEATURE rather than a
