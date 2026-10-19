@@ -144,6 +144,13 @@ protected:
     // How long a framed answer carrying `bytes` of payload may take to arrive.
     virtual qint64 readDeadlineMsLocked(qint64 bytes) const = 0;
 
+    // How long to let the far end SPEAK FIRST on a fresh link before the login machine nudges
+    // it. Zero for a serial line, which says nothing until spoken to; a telnet server prints
+    // its `login:` the moment it accepts, and a nudge sent before that has arrived makes it
+    // print a SECOND prompt — which lands while the user name is in flight, reads as the
+    // name being refused, and spends an attempt (or the whole login) on nothing.
+    virtual int greetingWaitMsLocked() const { return 0; }
+
     void setLink(std::unique_ptr<ConsoleLink> link);
     const SerialFetchOptions &optionsLocked() const { return m_options; }
     const char *diagArea() const { return m_diagArea; }

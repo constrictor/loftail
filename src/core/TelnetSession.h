@@ -57,6 +57,8 @@ protected:
     bool openLinkLocked(const SerialFetchOptions &options, const RemoteLocation &location,
                         Ready *out) override;
     qint64 readDeadlineMsLocked(qint64 bytes) const override;
+    // A telnet server prints its prompt on accepting, so it is given the chance to.
+    int greetingWaitMsLocked() const override { return 1500; }
 
 private:
     friend class TelnetSessionRegistry;

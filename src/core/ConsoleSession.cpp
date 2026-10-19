@@ -123,6 +123,16 @@ bool ConsoleSession::loginLocked(const SerialFetchOptions &options, const Remote
         m_login = std::make_unique<SerialLoginMachine>(options.profile, m_name,
                                                        location.effectiveUser(), password,
                                                        QDateTime::currentMSecsSinceEpoch());
+        // A far end that speaks first is given the chance to (greetingWaitMsLocked()). What it
+        // says is fed below, before any tick, so the machine classifies a prompt it has been
+        // shown rather than nudging a line that is plainly alive.
+        if (const int greet = greetingWaitMsLocked(); greet > 0 && m_link->bytesAvailable() == 0) {
+            QElapsedTimer waited;
+            waited.start();
+            while (!m_aborted && waited.elapsed() < greet && m_link->isOpen()
+                   && !m_link->waitForReadyRead(kSliceMs)) {
+            }
+        }
     }
 
     QElapsedTimer overall;
@@ -135,7 +145,12 @@ bool ConsoleSession::loginLocked(const SerialFetchOptions &options, const Remote
 
     while (!m_aborted) {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        LoginAction action = m_login->tick(now);
+        // NOT TICKED WHILE IDLE WITH BYTES WAITING: the first thing Idle's tick does is nudge,
+        // and a nudge answered by a second prompt is the race greetingWaitMsLocked() describes.
+        // The bytes are fed instead, which is what Idle's feed() is for.
+        LoginAction action;
+        if (m_login->step() != LoginStep::Idle || m_link->bytesAvailable() == 0)
+            action = m_login->tick(now);
         if (action.kind == LoginAction::Kind::Wait && m_link->bytesAvailable() == 0)
             m_link->waitForReadyRead(kSliceMs);
 
