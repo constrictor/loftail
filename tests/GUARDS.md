@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 211 rules
+## Guarded — 217 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -361,6 +361,12 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | File ▸ Serial is populated on aboutToShow and always offers Settings | Serial menu (M27) | tst_serialopen::theFileMenuHasASerialSubmenuWithItsSettingsEntry |
 | A config file on a device is refused by name rather than attempted over SSH | Serial transport (M27) | tst_serialopen::aSerialConfigFileIsRefusedByNameRatherThanAttempted |
 | A serial tab comes back with the session, and no schema version moved | Serial transport (M27) | tst_serialopen::aSerialTabComesBackWithTheSession |
+| The write funnel carries over every top-level key it does not own, or saving a host deletes every remote type | M28 (discover://) | tst_hostbookmarks::savingAHostKeepsEveryTypeAndSavingATypeKeepsEveryHost |
+| A device that moves is found again before the next connect, and its address-derived keys do not move | M28 (discover://) | tst_discoveredfetcher::aDeviceThatMovesIsFollowedToItsNewAddress |
+| The begin marker gets a line of its own, or a prompt left by `stty -echo` hides it | M28 (three defects) | tst_serialframing::aPromptLeftOnTheLineDoesNotHideTheBeginMarker |
+| TelnetProtocol is pure, keeps state across reads, and replies only on a change of state | M28 (telnet) | tst_telnetprotocol |
+| The Avahi half runs only against a real daemon, and the harness names what must have passed | M28 (discovery) | tst_avahilive |
+| The remotes section is present in every build since telnet needs no optional dependency | Welcome screen (L11) | tst_welcome::aRememberedRemoteLogIsARowAndASavedHostWithNoneIsAnother |
 
 ## Unguarded — 450 rules
 

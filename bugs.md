@@ -31,6 +31,16 @@ Three passes have been run and closed:
   refusing it, and the general rule is in `CLAUDE.md` — a branch written by hand in
   place of a parser has to ask for each of that parser's refusals by name.
 
+- **2026-10-19**, entries 51–53, found while building M28 and all fixed with it. 51 was
+  `ConsoleFetcher` (then `SerialFetcher`) comparing a serial log's options before its first
+  sign-in against a default-constructed copy, so any non-default preset waited for ever on
+  "Applying the new settings"; a new test's 200 ms poll found it. 52 was the framed command's
+  begin marker landing on the end of the shell's prompt once `stty -echo` had taken, so every
+  command after the byte-safety probe went unanswered on a real console; 53 was telnet's CR LF
+  leaving a stray `\r` on every command after `stty raw`. 52 and 53 were found only by driving
+  the real application against a real pty — every fixture had written a newline of its own
+  before each answer — and the fixtures now behave like a terminal.
+
 Entry 23 is what is left, and it is not waiting on a patch: it is a standing
 product decision nobody has taken.
 

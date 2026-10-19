@@ -106,6 +106,9 @@ QWidget *RemoteParametersDialog::buildTypesPage()
     m_typeList->setObjectName(QStringLiteral("remoteTypeList"));
     m_typeList->setMinimumWidth(170);
     listLayout->addWidget(m_typeList);
+    // A list of names, so it is given a name's width and the form the rest: left to its own
+    // size policy it took half the dialog to show a word.
+    listBox->setMaximumWidth(260);
     listLayout->addWidget(mutedNote(
         tr("A remote type finds machines of one kind on the network, and says how to sign in "
            "to one. Logs opened through it are remembered by the type and the device, not by "
