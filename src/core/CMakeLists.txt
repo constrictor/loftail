@@ -329,6 +329,15 @@ target_sources(loftail_core PRIVATE
     # reachable; the .cpp is gated below, because a port is the one thing here that needs Qt.
     SerialDevice.h
     SerialFetcher.h
+    # M28 — everything a login console needs that is not the port: the login loop, the
+    # framing, the byte-safety probe, the reboot watch, and the fetcher above them. EXTRACTED
+    # from SerialDevice.cpp and SerialFetcher.cpp rather than copied, because telnet is a
+    # second console and needs every line of it — and always compiled, because it names no
+    # QSerialPort and no socket, only the ConsoleLink seam.
+    ConsoleSession.cpp
+    ConsoleSession.h
+    ConsoleFetcher.cpp
+    ConsoleFetcher.h
     # The named presets and the remembered devices. HostBookmarkStore'''s shape verbatim,
     # including the rule that an added key never bumps the schema — an older binary reads an
     # absent key as the struct'''s default, where a bump makes it refuse the file and forget

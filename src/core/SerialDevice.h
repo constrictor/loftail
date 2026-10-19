@@ -18,18 +18,11 @@
 
 #pragma once
 
-#include "RemoteLocation.h"
-#include "SerialFetchOptions.h"
-#include "SerialFraming.h"
-#include "SerialLoginMachine.h"
-#include "SshExecCommands.h"
-
-#include <QByteArray>
-#include <QString>
+#include "ConsoleSession.h"
 
 #include <QHash>
+#include <QString>
 
-#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -67,106 +60,30 @@ namespace loftail {
 // The second is expressed through ExecTransport::RunCommand's own two-way rule — false means
 // the channel died, true with empty output means it ran and printed nothing — so the split is
 // carried by the interface rather than by a second flag anybody has to remember.
-class SerialDevice
+class SerialDevice final : public ConsoleSession
 {
 public:
-    ~SerialDevice();
+    ~SerialDevice() override;
 
-    // Connect the port, run the login conversation and settle the byte-safety probe, if that
-    // has not already been done by whichever log got here first.
-    //
-    // `samplePath` is used only for the byte-safety comparison, which is a property of the
-    // LINE rather than of the log — so the first caller's path settles it and later callers
-    // skip it.
-    struct Ready
-    {
-        bool    ok = false;
-        // Not there: the device is not plugged in, or the login has not finished. A WAIT.
-        bool    waiting = false;
-        // Refused outright and worth no more polling: no `stty raw` and no `base64`, or the
-        // login was told no. A refusal that keeps its tab and says why (M17).
-        bool    refused = false;
-        QString reason;
-    };
-    Ready ensureReady(const QString &samplePath, const SerialFetchOptions &options,
-                      const RemoteLocation &location, const QByteArray &password);
+    // One second of the line at ten bits per byte (serialChunkBytes()).
+    qint64 chunkBytes() const override;
 
-    // ExecTransport::RunCommand. TWO-WAY: false is the LINK, true with empty output is the
-    // request. See the class comment — this is where the shared-session health split lives.
-    bool run(const QString &command, QByteArray *stdOut);
+    // Everything else a fetcher asks of the device — ensureReady(), run(), readBytes(),
+    // runScript(), the reboot latch — is ConsoleSession's, which this class's comment above
+    // is the original statement of. What is left here is the PORT: which node a device name
+    // resolves to, the line settings, and the arithmetic that derives a deadline from a baud.
 
-    // Bytes of `path` at `offset`, through whichever encoding the probe settled on.
-    qint64 readBytes(const QString &path, qint64 offset, char *buffer, qint64 length);
-
-    ByteSafety byteSafety() const;
-
-    // Run one restart script on the device (SPEC.md §4, §6.9).
-    //
-    // TWO THINGS SEPARATE IT FROM run(). It KEEPS stderr, merged into the output, because here a
-    // complaint is one of the two failure signals rather than noise — the one place the frame's
-    // `2>/dev/null` is wrong. And it takes its own deadline, because a service restart outlives
-    // any read: a deadline derived from the line's rate would call every successful restart a
-    // dropped console.
-    //
-    // A console carries ONE stream, so stdout and stderr cannot be told apart and the caller
-    // must judge the run on its exit status alone. That relaxation is SPEC.md §4's, and
-    // RestartResult::streamsMerged is how the dialog says so.
-    bool runScript(const QString &command, qint64 deadlineMs, QByteArray *output, int *exitCode);
-
-    // Drop the login and the port. What a reboot, a dropped line and a line-setting change all
-    // mean, and the one thing that condemns the session for every log on the device.
-    void dropSession();
-
-    // Whether the reboot pattern has fired since this was last asked. CONSUMED by the ask, so
-    // the fetcher that notices it is the one that acts on it and a second poll does not
-    // reconnect twice.
-    bool takeReboot();
-
-    // Stop a blocking read at once, for a tab closing on a device that is not answering.
-    // Latched, never acted on — SessionHealth's discipline, and for its reason: the thread
-    // inside the port owns it.
-    void abort() { m_aborted = true; }
-
-    // What the tab says while the login is running. Empty once it is done.
-    QString waitingText() const;
-
-    // The options the device was last made ready with, so a fetcher can tell whether an edited
-    // preset needs the port reopened, the login run again, or nothing.
-    SerialProfile profileInUse() const;
+protected:
+    bool openLinkLocked(const SerialFetchOptions &options, const RemoteLocation &location,
+                        Ready *out) override;
+    qint64 readDeadlineMsLocked(qint64 bytes) const override;
 
 private:
     friend class SerialDeviceRegistry;
     SerialDevice(QString deviceName, std::function<QString()> resolveNode);
 
-    // Everything below is called with m_mutex held.
-    bool openPortLocked(const SerialFetchOptions &options, Ready *out);
-    bool loginLocked(const SerialFetchOptions &options, const RemoteLocation &location,
-                     const QByteArray &password, Ready *out);
-    bool settleByteSafetyLocked(const QString &samplePath, Ready *out);
-    bool runLocked(const QString &command, QByteArray *stdOut, qint64 expectedPayload,
-                   bool keepStdErr, QByteArray *rawPayload, qint64 deadlineOverrideMs = 0,
-                   int *exitCode = nullptr);
-    void dropSessionLocked();
-    qint64 readDeadlineMsLocked(qint64 bytes) const;
-
-    struct Port;   // the QSerialPort, hidden so this header names no Qt SerialPort type
-
-    QString                 m_deviceName;
     // Resolved through the registry, so the one seam above covers the device too.
     std::function<QString()> m_resolveNode;
-    mutable std::mutex      m_mutex;
-    std::unique_ptr<Port>   m_port;
-    std::unique_ptr<SerialLoginMachine> m_login;
-    SerialFetchOptions      m_options;
-    ByteSafety              m_safety = ByteSafety::Raw;
-    bool                    m_safetySettled = false;
-    bool                    m_ready = false;
-    quint64                 m_frameCounter = 0;
-    QByteArray              m_tokenBase;
-    QByteArray              m_pending;      // bytes read past the last frame
-    QString                 m_waitingText;
-    bool                    m_rebooted = false;
-    std::atomic<bool>       m_aborted{false};
 };
 
 // One SerialDevice per device NAME, reference-counted, SourceSpoolRegistry's own shape.
