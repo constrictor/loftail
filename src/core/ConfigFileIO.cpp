@@ -215,6 +215,17 @@ bool configAddressIsWritable(const QString &address, QString *reason)
         }
         return false;
     }
+    // THE SAME REFUSAL FOR TELNET (M28), and for the same reason: it is a login console, the
+    // write would need `base64 -d` on the far end, and ConfigTransfer would otherwise try to
+    // open an SSH session to a machine that may not run one.
+    if (RemoteLocation::transportOf(address) == RemoteLocation::Transport::Telnet) {
+        if (reason) {
+            *reason = Tr::tr("%1 is on a machine reached over telnet, and loftail cannot edit "
+                             "a config file there yet.")
+                          .arg(RemoteLocation::withoutPassword(address));
+        }
+        return false;
+    }
 
 #if !defined(LOFTAIL_HAVE_SSH)
     if (RemoteLocation::isRemote(address)) {

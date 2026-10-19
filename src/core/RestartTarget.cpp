@@ -108,7 +108,9 @@ bool restartTargetIsRunnable(const RestartTarget &target, QString *reason)
     }
 #endif
 #if !defined(LOFTAIL_HAVE_SSH)
-    if (target.remote && !serial) {
+    const bool telnet = target.remote && target.host
+        && target.host->transport == RemoteLocation::Transport::Telnet;
+    if (target.remote && !serial && !telnet) {
         if (reason) {
             *reason = Tr::tr("This build has no SSH support, so a restart command cannot "
                              "be run on another machine.");

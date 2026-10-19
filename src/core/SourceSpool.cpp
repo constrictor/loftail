@@ -38,6 +38,7 @@
 // libssh2's meant that a build with no SSH lost the declaration along with it. The two transports
 // are independent, and an include that says otherwise is how one gate came to control both.
 #include "SerialFetcher.h"
+#include "TelnetSession.h"
 
 #if defined(LOFTAIL_HAVE_SSH)
 #include "SshFetcher.h"
@@ -138,6 +139,18 @@ std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error
         // that reach here are exactly the ones parse() refused and so never cleaned.
         if (error)
             *error = Tr::tr("Not a valid serial log address: %1")
+                         .arg(RemoteLocation::withoutPassword(key));
+        return nullptr;
+    }
+
+    // Telnet before the SSH arm for the same reason (M28). It needs no optional dependency —
+    // only Qt Network, which the core library links unconditionally — so there is no build in
+    // which this branch refuses for want of one.
+    if (RemoteLocation::transportOf(key) == RemoteLocation::Transport::Telnet) {
+        if (const auto location = RemoteLocation::parse(key))
+            return makeTelnetFetcher(*location, error);
+        if (error)
+            *error = Tr::tr("Not a valid telnet log address: %1")
                          .arg(RemoteLocation::withoutPassword(key));
         return nullptr;
     }

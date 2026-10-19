@@ -2564,8 +2564,11 @@ void MainWindow::chooseSerialSettings()
         if (!ctx || !ctx->doc)
             continue;
         const auto location = RemoteLocation::parse(ctx->doc->path());
-        if (!location || location->transport != RemoteLocation::Transport::Serial)
+        if (!location
+            || (location->transport != RemoteLocation::Transport::Serial
+                && location->transport != RemoteLocation::Transport::Telnet)) {
             continue;
+        }
         primeSerialProfile(*location);
         // And poke it, so the change lands on the next turn rather than at the next poll. This is
         // what File ▸ Reconnect already does, reaching the same place.
@@ -2619,8 +2622,13 @@ void MainWindow::rememberSerialPath(const QString &deviceId, const QString &path
 
 void MainWindow::primeSerialProfile(const RemoteLocation &location)
 {
-    if (location.transport != RemoteLocation::Transport::Serial)
+    // BOTH LOGIN CONSOLES (M28): a telnet log signs in with the same kind of preset a serial
+    // one does — prompts, startup commands, a reboot pattern — and reaches the fetcher through
+    // the same mutex-guarded options store. Only the line settings mean nothing over telnet.
+    if (location.transport != RemoteLocation::Transport::Serial
+        && location.transport != RemoteLocation::Transport::Telnet) {
         return;
+    }
 
     // THE HANDOFF, AND IT IS IN openFile()'s SINGLE FUNNEL rather than only in the menu — which
     // is the gap ARCHITECTURE.md §8 records for the network transport's own options: those reach
@@ -2884,9 +2892,11 @@ bool MainWindow::openFile(const QString &rawPath, const QString &pattern)
     primeRemoteCredentials(path);
     // Beside it, and in the same funnel for the same reason: every way in must carry the
     // device's settings, not only the two surfaces that happen to know about them.
-    if (const auto serial = RemoteLocation::parse(path);
-        serial && serial->transport == RemoteLocation::Transport::Serial) {
-        primeSerialProfile(*serial);
+    if (const auto console = RemoteLocation::parse(path);
+        console
+        && (console->transport == RemoteLocation::Transport::Serial
+            || console->transport == RemoteLocation::Transport::Telnet)) {
+        primeSerialProfile(*console);
     }
 
     // An archive naming no member cannot be opened, so ask which log is wanted —

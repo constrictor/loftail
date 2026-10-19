@@ -338,6 +338,13 @@ target_sources(loftail_core PRIVATE
     ConsoleSession.h
     ConsoleFetcher.cpp
     ConsoleFetcher.h
+    # The telnet transport: a ConsoleLink over a TCP socket, and the RFC 854 filter in front of
+    # it. Always compiled — it needs Qt Network and nothing else, and the protocol half is pure
+    # so tst_telnetprotocol and fuzz_telnetprotocol reach it with nothing listening.
+    TelnetProtocol.cpp
+    TelnetProtocol.h
+    TelnetSession.cpp
+    TelnetSession.h
     # The named presets and the remembered devices. HostBookmarkStore'''s shape verbatim,
     # including the rule that an added key never bumps the schema — an older binary reads an
     # absent key as the struct'''s default, where a bump makes it refuse the file and forget
@@ -464,6 +471,10 @@ target_link_libraries(loftail_core PUBLIC Qt6::Core Qt6::Gui)
 # this library but of anything downstream that pulls in a Windows header.
 if(WIN32)
     target_compile_definitions(loftail_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+    # The telnet link speaks to its descriptor directly once Qt has connected it
+    # (TelnetSession.cpp, SocketDetach.h), so WSAPoll/send/recv are this library's own calls
+    # rather than something a dependency happens to link — named here, not left to luck.
+    target_link_libraries(loftail_core PRIVATE ws2_32)
 endif()
 
 target_include_directories(loftail_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -33,6 +33,8 @@ class QTimer;
 
 namespace loftail {
 
+class ConsoleSession;
+
 struct SshWorkerShared;
 
 // What became of a restart script (SPEC.md §4).
@@ -150,6 +152,9 @@ private:
     // so destroying the runner mid-run costs nothing and touches nothing it does not own.
     std::shared_ptr<std::atomic<bool>> m_serialAlive;
     QString m_serialDevice;
+    // The console the script is running on, WEAK so an abort can reach it without the runner
+    // keeping a device's session alive after every fetcher on it has let go.
+    std::weak_ptr<ConsoleSession> m_consoleSession;
 };
 
 } // namespace loftail

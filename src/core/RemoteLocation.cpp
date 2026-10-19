@@ -112,19 +112,31 @@ bool holdsNul(const QString &s)
 // The one spelling of the serial scheme, so a second literal cannot drift from the first.
 constexpr auto kSerialScheme = "serial://";
 
+// And of telnet's (M28). Parsed through QUrl like ssh's, because a telnet far end is a HOST
+// NAME — case-insensitive — and not a device node, which is the whole reason serial is not.
+constexpr auto kTelnetScheme = "telnet://";
+
 } // namespace
 
 bool RemoteLocation::isRemote(const QString &s)
 {
     return s.startsWith(QLatin1String("ssh://"), Qt::CaseInsensitive)
         || s.startsWith(QLatin1String("sftp://"), Qt::CaseInsensitive)
-        || s.startsWith(QLatin1String(kSerialScheme), Qt::CaseInsensitive);
+        || s.startsWith(QLatin1String(kSerialScheme), Qt::CaseInsensitive)
+        || s.startsWith(QLatin1String(kTelnetScheme), Qt::CaseInsensitive);
+}
+
+int RemoteLocation::defaultPortFor(Transport transport)
+{
+    return transport == Transport::Telnet ? 23 : kDefaultPort;
 }
 
 std::optional<RemoteLocation::Transport> RemoteLocation::transportOf(const QString &s)
 {
     if (s.startsWith(QLatin1String(kSerialScheme), Qt::CaseInsensitive))
         return Transport::Serial;
+    if (s.startsWith(QLatin1String(kTelnetScheme), Qt::CaseInsensitive))
+        return Transport::Telnet;
     if (s.startsWith(QLatin1String("ssh://"), Qt::CaseInsensitive)
         || s.startsWith(QLatin1String("sftp://"), Qt::CaseInsensitive)) {
         return Transport::Ssh;
@@ -269,9 +281,11 @@ std::optional<RemoteLocation> RemoteLocation::parse(const QString &s)
         return std::nullopt;
 
     RemoteLocation loc;
+    if (s.startsWith(QLatin1String(kTelnetScheme), Qt::CaseInsensitive))
+        loc.transport = Transport::Telnet;
     loc.user = url.userName(QUrl::FullyDecoded);
     loc.host = url.host();
-    loc.port = url.port(kDefaultPort);
+    loc.port = url.port(defaultPortFor(loc.transport));
     loc.path = pathFromUrl(url.path(QUrl::FullyDecoded));
     // A password in the URL is dropped on the floor, not stored and not used. Keeping
     // it would put a credential into the session file and the recent-files menu the
@@ -375,7 +389,8 @@ QString RemoteLocation::toString() const
     }
 
     QUrl url;
-    url.setScheme(QStringLiteral("ssh"));
+    url.setScheme(transport == Transport::Telnet ? QStringLiteral("telnet")
+                                                 : QStringLiteral("ssh"));
     if (!user.isEmpty())
         url.setUserName(user);
     url.setHost(host);
@@ -402,7 +417,8 @@ QString RemoteLocation::toDisplayString() const
     // QUrl::toString() rejects FullyDecoded outright, and decoding component by
     // component and re-joining is what this already is. The shape is toString()'s,
     // term for term, so the two agree byte for byte whenever nothing needs encoding.
-    QString out = QStringLiteral("ssh://");
+    QString out = transport == Transport::Telnet ? QString::fromLatin1(kTelnetScheme)
+                                                 : QStringLiteral("ssh://");
     if (!user.isEmpty())
         out += user + u'@';
     // An IPv6 literal is bracketed, as QUrl brackets it in toString(): RemoteLocation
@@ -423,7 +439,10 @@ QString RemoteLocation::effectiveUser() const
     // nothing to do with this machine's, so filling one in would key the connect under an
     // account nobody named and would silently send this machine's login name to somebody
     // else's hardware.
-    if (transport == Transport::Serial)
+    //
+    // A TELNET FAR END IS THE SAME: there is no `User` convention for a login console, and
+    // the login machine types whatever this answers into somebody else's `login:` prompt.
+    if (transport == Transport::Serial || transport == Transport::Telnet)
         return QString();
     // What ssh does with no User directive, and what the connect fills in — reached from
     // here so that both spell it the same way. HomeLocation rather than the environment's
@@ -442,6 +461,15 @@ QString RemoteLocation::target() const
         if (account.isEmpty())
             return QStringLiteral("serial:%1").arg(host);
         return QStringLiteral("serial:%1@%2").arg(account, host);
+    }
+    if (transport == Transport::Telnet) {
+        // THE SCHEME IS IN THE KEY FOR TELNET TOO, and for the same asymmetric reason: one
+        // machine may offer both SSH and telnet under different accounts and passwords, and
+        // a key shared between the two would hand the SSH password to a telnet login prompt
+        // — in clear, over the one transport that sends it in clear.
+        if (account.isEmpty())
+            return QStringLiteral("telnet:%1:%2").arg(host).arg(port);
+        return QStringLiteral("telnet:%1@%2:%3").arg(account, host).arg(port);
     }
     // Still guarded, because effectiveUser() can come back empty on a machine with no
     // home directory at all — and "@host:22" would be a key that reads as a bug.

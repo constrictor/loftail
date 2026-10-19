@@ -217,6 +217,23 @@ add_test(NAME tst_restarttarget COMMAND tst_restarttarget)
 # It needs no port, no device, no QApplication and no waiting, because the machine is a
 # pure decision with an injected clock — which is why it was written that way round rather
 # than inside the QSerialPort code it drives.
+# M28 — the telnet layer with nothing listening: IAC stripping across reads, negotiation that
+# answers only a change of state, binary mode and the NVT CR NUL. Pure, so ungated.
+qt_add_executable(tst_telnetprotocol tst_telnetprotocol.cpp)
+target_link_libraries(tst_telnetprotocol PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_telnetprotocol COMMAND tst_telnetprotocol)
+
+# M28 — the telnet transport against a real TCP connection into a real /bin/sh, tst_serialdevice's
+# twin: the far end is a std::thread speaking telnet on loopback, so IAC negotiation, a doubled
+# 0xFF in a log, binary refused, and a host not listening are all genuine. POSIX for the fixture's
+# sockets and popen(); the transport itself is not platform-specific.
+if(NOT WIN32)
+    qt_add_executable(tst_telnetsession tst_telnetsession.cpp)
+    target_link_libraries(tst_telnetsession PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_telnetsession COMMAND tst_telnetsession)
+    set_tests_properties(tst_telnetsession PROPERTIES LABELS threading)
+endif()
+
 qt_add_executable(tst_serialloginmachine tst_serialloginmachine.cpp)
 target_link_libraries(tst_serialloginmachine PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_serialloginmachine COMMAND tst_serialloginmachine)

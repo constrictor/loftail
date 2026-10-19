@@ -82,6 +82,13 @@ private slots:
     void aSerialAddressNamesNoDefaultUser();
     void aSerialAddressNeverEmitsItsPassword();
     void aSerialArchiveAddressSplits();
+
+    // M28 — telnet, the third transport and the second login console. Parsed through QUrl
+    // like ssh (a telnet far end is a host name), so what is worth asserting is where it must
+    // NOT behave like ssh: its default port, its credential key, and whose account it names.
+    void aTelnetAddressIsRemoteAndDefaultsToPort23();
+    void aTelnetTargetIsNeverAnSshTarget();
+    void aTelnetAddressNamesNoDefaultUserAndNoPassword();
 };
 
 void TestRemoteLocation::recognisesRemoteSchemes()
@@ -849,6 +856,8 @@ void TestRemoteLocation::normalizingAnAddressTwiceIsNormalizingItOnce_data()
     QTest::newRow("local") << QStringLiteral("/var/log/app.log");
     QTest::newRow("not an address") << QStringLiteral("ssh://");
     QTest::newRow("empty") << QString();
+    QTest::newRow("telnet") << QStringLiteral("telnet://root@board/var/log/messages");
+    QTest::newRow("telnet port") << QStringLiteral("TELNET://board:2323/a%20b.log");
     // The two the fuzzer produced, which is what this case exists for.
     QTest::newRow("a029 noncharacter in path") << QStringLiteral("sftp://J/~]￿");
     QTest::newRow("a030 noncharacter in user") << QStringLiteral("ssh://￿u:p@os/togs/sbn.zip/");
@@ -1108,6 +1117,58 @@ void TestRemoteLocation::aWholePathPatternSeesTheAddressAsAPersonWouldTypeIt()
 
     // The file-NAME branch is untouched, and is what worked all along.
     QCOMPARE(logMatchTarget(address, false), QStringLiteral("df_log_vmsapp (1).txt"));
+}
+
+void TestRemoteLocation::aTelnetAddressIsRemoteAndDefaultsToPort23()
+{
+    const QString address = QStringLiteral("telnet://root@Board/var/log/messages");
+    QVERIFY(RemoteLocation::isRemote(address));
+    QVERIFY(logPathIsSpooled(address));
+    QCOMPARE(RemoteLocation::transportOf(address), RemoteLocation::Transport::Telnet);
+    const auto loc = RemoteLocation::parse(address);
+    QVERIFY(loc.has_value());
+    QCOMPARE(loc->transport, RemoteLocation::Transport::Telnet);
+    QCOMPARE(loc->port, 23);
+    QCOMPARE(loc->host, QStringLiteral("board"));   // a host name, so case-folded like ssh's
+    QCOMPARE(loc->path, QStringLiteral("/var/log/messages"));
+    // THE PORT IS SPELLED IN THE NORMAL FORM, as ssh's is, so `telnet://h/p` and
+    // `telnet://h:23/p` are one log — and the scheme is never rewritten to ssh.
+    QCOMPARE(loc->toString(), QStringLiteral("telnet://root@board:23/var/log/messages"));
+    QCOMPARE(RemoteLocation::normalize(QStringLiteral("telnet://root@board:23/var/log/messages")),
+             loc->toString());
+    QCOMPARE(loc->toDisplayString(), QStringLiteral("telnet://root@board:23/var/log/messages"));
+    QCOMPARE(RemoteLocation::parse(QStringLiteral("telnet://b:2323/a.log"))->port, 2323);
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("telnet://b:0/a.log")).has_value());
+    QVERIFY(!logSourceDisplayName(address).contains(u'/'));
+}
+
+void TestRemoteLocation::aTelnetTargetIsNeverAnSshTarget()
+{
+    // THE SCHEME IS IN THE KEY. One machine may offer both, under different accounts; a shared
+    // key would hand the SSH password to a telnet login prompt, in clear.
+    const auto telnet = RemoteLocation::parse(QStringLiteral("telnet://root@h:22/a.log"));
+    const auto ssh = RemoteLocation::parse(QStringLiteral("ssh://root@h:22/a.log"));
+    QVERIFY(telnet && ssh);
+    QVERIFY(telnet->target() != ssh->target());
+    QCOMPARE(telnet->target(), QStringLiteral("telnet:root@h:22"));
+    const auto serial = RemoteLocation::parse(QStringLiteral("serial://root@h/a.log"));
+    QVERIFY(serial && serial->target() != telnet->target());
+}
+
+void TestRemoteLocation::aTelnetAddressNamesNoDefaultUserAndNoPassword()
+{
+    // NO LOCAL ACCOUNT IS FILLED IN: the login machine types whatever this answers into
+    // somebody else's `login:` prompt.
+    const auto anon = RemoteLocation::parse(QStringLiteral("telnet://board/a.log"));
+    QVERIFY(anon.has_value());
+    QVERIFY(anon->effectiveUser().isEmpty());
+    QCOMPARE(anon->target(), QStringLiteral("telnet:board:23"));
+
+    const auto withPw = RemoteLocation::parse(QStringLiteral("telnet://root:hunter2@board/a.log"));
+    QVERIFY(withPw.has_value());
+    QVERIFY(!withPw->toString().contains(QStringLiteral("hunter2")));
+    QVERIFY(!RemoteLocation::withoutPassword(QStringLiteral("telnet://root:hunter2@b/a"))
+                 .contains(QStringLiteral("hunter2")));
 }
 
 QTEST_APPLESS_MAIN(TestRemoteLocation)

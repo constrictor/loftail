@@ -158,3 +158,13 @@ bom_utf16le="\xff\xfe"
 bom_utf16be="\xfe\xff"
 crlf="\x0d\x0a"
 nul="\x00"
+
+# M28 — telnet: the scheme, and the IAC commands TelnetProtocol negotiates.
+"telnet://"
+"\xff\xff"
+"\xff\xfb\x00"
+"\xff\xfd\x00"
+"\xff\xfb\x01"
+"\xff\xfa"
+"\xff\xf0"
+"\x0d\x00"

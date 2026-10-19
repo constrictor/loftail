@@ -54,7 +54,13 @@ struct RemoteLocation
     enum class Transport {
         Ssh,     // `ssh://` and `sftp://`
         Serial,  // `serial://` — a device's login console, M27
+        Telnet,  // `telnet://` — the same login console reached over TCP, M28
     };
+
+    // The port an address of this transport means when it spells none: 22 for SSH, 23 for
+    // telnet. Serial spells no port at all and answers kDefaultPort, which its `port` field
+    // keeps so that fuzz_address's range assertion holds with no carve-out.
+    static int defaultPortFor(Transport transport);
 
     Transport transport = Transport::Ssh;
 

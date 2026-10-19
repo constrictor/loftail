@@ -43,6 +43,7 @@ set(loftail_fuzz_targets
     decoder
     address
     indexer
+    telnetprotocol
 )
 
 # The corpus is read from the SOURCE tree, not copied into the build tree: a
