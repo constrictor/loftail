@@ -19,6 +19,7 @@
 #pragma once
 
 #include "ConsoleSession.h"
+#include "EndpointResolver.h"
 #include "RemoteLocation.h"
 #include "SerialFetchOptions.h"
 #include "SourceFetcher.h"
@@ -48,6 +49,10 @@ struct ConsoleFetcherBinding
     // The options this address was primed with. RE-READ ON EVERY POLL, which is what makes
     // "change the settings on the fly" work — so the store behind it must be thread-safe.
     std::function<SerialFetchOptions(const RemoteLocation &)> options;
+
+    // Where to sign in THIS TIME, asked before every login when set (EndpointResolver.h).
+    // Unset for an address a person typed, which then signs in where it says.
+    EndpointResolver resolve;
 };
 
 // Always compiled: it names no QSerialPort and no socket type, only the two seams above.

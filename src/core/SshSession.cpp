@@ -1118,7 +1118,10 @@ bool SshSession::Impl::authenticate(SshPrompter *prompter, QString *error,
     // location for it (RemoteLocation.h).
     location.user = location.effectiveUser();
     const QByteArray user = location.user.toUtf8();
-    const QString target = location.target();
+    // credentialTarget() and not target(): the same thing for every address a person types,
+    // and the TYPE's key for a device found by discovery (RemoteLocation.h), whose concrete
+    // address is whatever it was handed this time.
+    const QString target = location.credentialTarget();
 
     // What the server will even consider. Calling this also completes the "none"
     // auth exchange, which some servers answer by granting access outright.

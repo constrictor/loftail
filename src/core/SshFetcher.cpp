@@ -108,8 +108,8 @@ constexpr qint64 kWcAbandonBytes = 64LL * 1024 * 1024;
 class SshFetcher final : public SourceFetcher
 {
 public:
-    SshFetcher(RemoteLocation location, SshFetchOptions options)
-        : m_location(std::move(location)), m_options(options)
+    SshFetcher(RemoteLocation location, SshFetchOptions options, EndpointResolver resolve = {})
+        : m_location(std::move(location)), m_options(options), m_resolve(std::move(resolve))
     {
     }
 
@@ -216,6 +216,9 @@ private:
 
     RemoteLocation  m_location;
     SshFetchOptions m_options;
+    // Where to connect, asked before every connect when set (EndpointResolver.h). Unset for
+    // every address a person types, which then connects to m_location exactly as before.
+    EndpointResolver m_resolve;
     QString         m_spoolDir;
 
     std::unique_ptr<SshSession> m_session; // the worker's, from the moment it starts
@@ -275,6 +278,27 @@ bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *
     const int timeout = mayPrompt ? m_options.timeoutMs
                                   : qMin(m_options.timeoutMs, kRetryTimeoutMs);
 
+    // A DISCOVERED DEVICE IS FOUND AGAIN BEFORE EVERY CONNECT, the first and each reconnect —
+    // which is exactly when one that moved needs finding. `endpoint` is the concrete far end
+    // for this attempt, and it is a LOCAL and not m_location: the GUI thread reads m_location
+    // (setState()'s diagnostic line, from requestStop()), so rewriting it here would be a race
+    // on a QString no test would ever catch. Not found is a WAIT, through Unreachable, which
+    // reconnect() already treats as one.
+    RemoteLocation endpoint = m_location;
+    if (m_resolve) {
+        QString why;
+        const auto found = m_resolve([this]() { return stopping(); }, &why);
+        if (!found) {
+            if (error)
+                *error = why;
+            *failure = SshSession::Failure::Unreachable;
+            if (status().state != FetchStatus::State::Waiting)
+                setWaiting(why);
+            return false;
+        }
+        endpoint = *found;
+    }
+
     // A retry out of Waiting stays Waiting until it actually gets somewhere. Announcing
     // "Connecting…" on every attempt would flap the state several times a minute, and
     // because originVanished() reads it, the document upstream would bounce out of the
@@ -306,7 +330,7 @@ bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *
     // thread, and that has to be arranged now that they do not (SshPrompter.h). Held
     // until this function returns, which is deliberately past authentication: the point
     // is for the waiters to find the password in the cache rather than ask for it.
-    SshConnectHold hold(m_location.target(), [this]() { return stopping(); });
+    SshConnectHold hold(endpoint.target(), [this]() { return stopping(); });
     if (!hold.held()) {
         if (error)
             *error = Tr::tr("Cancelled while waiting to connect to %1.").arg(m_location.host);
@@ -333,7 +357,7 @@ bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *
     SshPrompter *asker = mayPrompt ? &relay : nullptr;
     // The one connect in the process entitled to compress, and only where the host was
     // ticked for it (SshFetchOptions::compress, SshSession::compressionFor).
-    if (!m_session->connectTo(m_location, asker, timeout, error, failure,
+    if (!m_session->connectTo(endpoint, asker, timeout, error, failure,
                               SshSession::Need::LogTransport,
                               SshSession::compressionFor(SshSession::Purpose::Fetch,
                                                          m_options.compress))) {
@@ -996,6 +1020,14 @@ std::unique_ptr<SourceFetcher> makeSshFetcher(const RemoteLocation &location, QS
 {
     Q_UNUSED(error);
     return std::make_unique<SshFetcher>(location, sshFetchOptions(location));
+}
+
+std::unique_ptr<SourceFetcher> makeSshFetcher(const RemoteLocation &location, QString *error,
+                                              EndpointResolver resolve)
+{
+    Q_UNUSED(error);
+    // The options are keyed on the ADDRESS, which is what the funnel primed them under.
+    return std::make_unique<SshFetcher>(location, sshFetchOptions(location), std::move(resolve));
 }
 
 } // namespace loftail

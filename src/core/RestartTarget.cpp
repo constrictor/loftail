@@ -98,6 +98,18 @@ bool restartTargetIsRunnable(const RestartTarget &target, QString *reason)
     const bool serial = target.remote && target.host
         && target.host->transport == RemoteLocation::Transport::Serial;
 
+    // A DISCOVERED device is refused by name (M28), for ConfigFileIO's reason: the far end is
+    // known only to the fetcher that just looked it up, and the restart errand reads an address.
+    if (target.remote && target.host
+        && target.host->transport == RemoteLocation::Transport::Discovered) {
+        if (reason) {
+            *reason = Tr::tr("%1 was found by discovery, and loftail cannot run a restart "
+                             "command on such a device yet.")
+                          .arg(target.host->displayHost());
+        }
+        return false;
+    }
+
 #if !defined(LOFTAIL_HAVE_SERIAL)
     if (serial) {
         if (reason) {

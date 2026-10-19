@@ -271,15 +271,29 @@ bool ConsoleFetcher::establish()
 {
     m_options = m_binding.options(m_location);
 
+    // Where to sign in this time: the address itself, or — for a discovered device — wherever
+    // the resolver finds it now. A LOCAL, never m_location, which the GUI thread reads.
+    RemoteLocation endpoint = m_location;
+    if (m_binding.resolve) {
+        QString why;
+        const auto found = m_binding.resolve([this]() { return stopping(); }, &why);
+        if (!found) {
+            setWaiting(why);   // a device that is not on the network has not turned up (M13)
+            return false;
+        }
+        endpoint = *found;
+    }
+
     // The password, if one is remembered, comes from the same cache and the same keychain the
     // network transport uses — keyed on target(), which for a device carries the `serial:`
-    // prefix so a host of the same name cannot be handed this one's credential.
+    // prefix so a host of the same name cannot be handed this one's credential; and on the
+    // TYPE's key for a discovered device (RemoteLocation::credentialTarget()).
     QByteArray password;
-    if (SshCredentialCache::has(m_location.target()))
-        password = SshCredentialCache::password(m_location.target()).toUtf8();
+    if (SshCredentialCache::has(endpoint.credentialTarget()))
+        password = SshCredentialCache::password(endpoint.credentialTarget()).toUtf8();
 
     const ConsoleSession::Ready ready =
-        m_device->ensureReady(m_location.path, m_options, m_location, password);
+        m_device->ensureReady(m_location.path, m_options, endpoint, password);
     if (!ready.ok) {
         if (ready.refused) {
             // Told no, by the login or by the byte-safety ladder. A refusal that keeps its tab
@@ -377,6 +391,17 @@ void ConsoleFetcher::pollOnce()
         return;
     }
 
+    // NOT SIGNED IN YET, SO THERE IS NOTHING TO COMPARE: establish() reads the options fresh.
+    // This used to come AFTER the comparison below, which then compared the stored options
+    // against a default-constructed m_options on every turn before the first sign-in — so any
+    // preset differing from the defaults read as "the settings changed", dropped the attempt,
+    // and never got as far as establish(). A serial log with a custom preset waited for ever on
+    // "Applying the new settings"; tst_discoveredfetcher's 200 ms poll is what found it.
+    if (!m_exec) {
+        establish();
+        return;
+    }
+
     // The options may have been edited while this tab was open. ensureReady() is what decides
     // whether that costs a reopened port, a fresh login or nothing (serialChangeCost()), so the
     // comparison lives there rather than here — one device, several logs, one answer.
@@ -384,12 +409,7 @@ void ConsoleFetcher::pollOnce()
     if (current.profile != m_options.profile || current.tailStartBytes != m_options.tailStartBytes) {
         diagLog(m_binding.area, QStringLiteral("%1: settings changed").arg(m_location.toString()));
         m_exec.reset();
-        setWaiting(Tr::tr("Applying the new settings for %1").arg(m_location.host));
-        return;
-    }
-
-    if (!m_exec) {
-        establish();
+        setWaiting(Tr::tr("Applying the new settings for %1").arg(m_location.displayHost()));
         return;
     }
 

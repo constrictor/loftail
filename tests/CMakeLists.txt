@@ -251,6 +251,13 @@ if(NOT WIN32)
     target_link_libraries(tst_telnetsession PRIVATE loftail_core Qt6::Test)
     add_test(NAME tst_telnetsession COMMAND tst_telnetsession)
     set_tests_properties(tst_telnetsession PROPERTIES LABELS threading)
+
+    # M28 — a discover:// log end to end below the window: a scripted browser for the network,
+    # a real telnet server and /bin/sh for the device, and the device MOVING under an open log.
+    qt_add_executable(tst_discoveredfetcher tst_discoveredfetcher.cpp)
+    target_link_libraries(tst_discoveredfetcher PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_discoveredfetcher COMMAND tst_discoveredfetcher)
+    set_tests_properties(tst_discoveredfetcher PROPERTIES LABELS threading)
 endif()
 
 qt_add_executable(tst_serialloginmachine tst_serialloginmachine.cpp)

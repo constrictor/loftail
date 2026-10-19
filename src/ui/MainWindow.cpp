@@ -45,7 +45,10 @@
 #include "ManualFormatProvider.h"
 #include "MessageLabel.h"
 #include "UiColors.h"
+#include "DiscoveredFetcher.h"
+#include "DiscoveryBrowser.h"
 #include "HostBookmarkStore.h"
+#include "TelnetSession.h"
 #include "ArchiveLocation.h"
 #include "OpenArchiveDialog.h"
 #include "PreferencesDialog.h"
@@ -2425,6 +2428,12 @@ void MainWindow::refreshRemoteHostsMenu()
     // after a host entry has opened one.
     const HostBookmarkStore store(HostBookmarkStore::defaultDir());
     const QVector<HostBookmark> hosts = store.all();
+    // THE REMOTE TYPES FROM THE SAME FILE, IN THE SAME PASS (M28): the snapshot a discovered
+    // log's fetcher reads its type out of on every connect, so this refresh — already called at
+    // every point hosts.json can move — is also what carries an edited type to the logs open
+    // through it. Set before the constructor's restoreSession(), which buildMenus() precedes.
+    m_remoteTypes = store.types();
+    setKnownRemoteTypes(m_remoteTypes);
 
     QVector<WelcomeView::Entry> welcome;
 
@@ -2660,6 +2669,25 @@ void MainWindow::primeSerialProfile(const RemoteLocation &location)
     setSerialFetchOptions(location, options);
 }
 
+void MainWindow::primeDiscoveredRemote(const RemoteLocation &location)
+{
+    const int at = HostBookmarkStore::indexOfType(m_remoteTypes, location.discoveryType);
+    if (at < 0)
+        return;   // the factory refuses it, in words, with no I/O
+    const RemoteType &type = m_remoteTypes.at(at);
+    SshFetchOptions ssh;
+    ssh.pollMs = type.pollMs > 0 ? type.pollMs : 1000;
+    ssh.tailStartBytes = type.tailStartBytes;
+    ssh.compress = type.compress;
+    setSshFetchOptions(location, ssh);
+
+    SerialFetchOptions console;
+    const SerialProfileStore presets(SerialProfileStore::defaultDir());
+    console.profile = presets.presetNamed(type.consolePreset);
+    console.tailStartBytes = type.tailStartBytes;
+    setTelnetFetchOptions(location, console);
+}
+
 void MainWindow::openRemoteBookmark(const QString &hostName, const QString &path)
 {
     // The bookmark is looked up AT ACTIVATION rather than captured, because the surfaces
@@ -2770,6 +2798,25 @@ void MainWindow::primeRemoteCredentials(const QString &path)
     // TELNET IS PRIMED TOO (M28), and safely, because find() now compares the transport: a
     // telnet host's saved password can only reach a telnet login on that host.
     const auto transport = RemoteLocation::transportOf(path);
+    if (transport == RemoteLocation::Transport::Discovered) {
+        // A DISCOVERED DEVICE SIGNS IN WITH ITS TYPE'S ACCOUNT, so its saved password is the
+        // type's, filed under the type's own key (RemoteType::credentialTarget()) — which is
+        // what the resolved far end asks for, whatever address the device has today.
+        const auto location = RemoteLocation::parse(path);
+        if (!location)
+            return;
+        // Through the published snapshot rather than a member: this function is static, and
+        // the snapshot is the same pass of hosts.json the window's own copy came from.
+        const auto known = knownRemoteType(location->discoveryType);
+        if (!known)
+            return;
+        const RemoteType &type = *known;
+        if (type.savePassword && !type.password.isEmpty() && !type.user.isEmpty()
+            && !SshCredentialCache::has(type.credentialTarget())) {
+            SshCredentialCache::remember(type.credentialTarget(), type.password);
+        }
+        return;
+    }
     if (transport != RemoteLocation::Transport::Ssh
         && transport != RemoteLocation::Transport::Telnet) {
         return;
@@ -2913,6 +2960,12 @@ bool MainWindow::openFile(const QString &rawPath, const QString &pattern)
         && (console->transport == RemoteLocation::Transport::Serial
             || console->transport == RemoteLocation::Transport::Telnet)) {
         primeSerialProfile(*console);
+    }
+    // And a discovered device's: its type's poll cadence, tail-start, compression and console
+    // preset, keyed on the ADDRESS, which is what its fetcher reads them back under.
+    if (const auto discovered = RemoteLocation::parse(path);
+        discovered && discovered->transport == RemoteLocation::Transport::Discovered) {
+        primeDiscoveredRemote(*discovered);
     }
 
     // An archive naming no member cannot be opened, so ask which log is wanted —
@@ -3957,6 +4010,16 @@ void MainWindow::relabelTabs()
             // to key settings on and an unreadable thing to put on a tab. So: the label the user
             // gave the device, else the PORT NAME it currently resolves to (`ttyUSB0`, which is
             // what a person recognises), else the id, which is better than nothing.
+            // A DISCOVERED DEVICE is named by what it last called itself — the Bonjour instance
+            // name or the ONVIF name scope — and never by its id, which may be a forty-character
+            // `urn:uuid:` (displayHost() is the fallback that shortens one).
+            if (location.transport == RemoteLocation::Transport::Discovered) {
+                if (const auto seen = lastSeenDevice(location.discoveryType, location.host);
+                    seen && !seen->displayName.isEmpty() && seen->displayName != seen->id) {
+                    return seen->displayName;
+                }
+                return location.displayHost();
+            }
             if (location.transport == RemoteLocation::Transport::Serial) {
                 for (const SerialDeviceBookmark &d : m_serialDevices) {
                     if (d.id == location.host && !d.label.isEmpty())

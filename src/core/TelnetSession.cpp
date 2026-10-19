@@ -292,8 +292,10 @@ std::shared_ptr<TelnetSession> TelnetSessionRegistry::acquire(const RemoteLocati
     // NAMED FOR THE PERSON READING, keyed for the machine: messages say `web1` or `web1:2323`,
     // while the table is keyed on target(), whose `telnet:` prefix keeps a host's telnet login
     // apart from its SSH one.
-    const QString name = location.port == RemoteLocation::defaultPortFor(location.transport)
-        ? location.host
+    const QString name =
+        location.transport == RemoteLocation::Transport::Discovered
+            || location.port == RemoteLocation::defaultPortFor(location.transport)
+        ? location.displayHost()
         : QStringLiteral("%1:%2").arg(location.host).arg(location.port);
     auto session = std::shared_ptr<TelnetSession>(new TelnetSession(name));
     m_sessions.insert(key, session);
@@ -304,6 +306,20 @@ void TelnetSessionRegistry::clear()
 {
     const std::scoped_lock lock(m_mutex);
     m_sessions.clear();
+}
+
+std::unique_ptr<SourceFetcher> makeTelnetFetcher(const RemoteLocation &location, QString *error,
+                                                 EndpointResolver resolve)
+{
+    ConsoleFetcherBinding binding;
+    binding.area = "telnet";
+    binding.acquire = [](const RemoteLocation &loc) -> std::shared_ptr<ConsoleSession> {
+        return TelnetSessionRegistry::instance().acquire(loc);
+    };
+    binding.options = [](const RemoteLocation &loc) { return telnetFetchOptions(loc); };
+    binding.resolve = std::move(resolve);
+    Q_UNUSED(error);
+    return makeConsoleFetcher(location, std::move(binding));
 }
 
 std::unique_ptr<SourceFetcher> makeTelnetFetcher(const RemoteLocation &location, QString *error)

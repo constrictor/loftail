@@ -360,6 +360,12 @@ target_sources(loftail_core PRIVATE
     DiscoveryBrowser.h
     DiscoveryBackends.h
     OnvifBrowser.cpp
+    # A `discover://` log: the type snapshot, the connect-time resolver and the factory that
+    # hands it to the SSH or telnet fetcher. Always compiled; the SSH half refuses in words
+    # where libssh2 is not built in.
+    DiscoveredFetcher.cpp
+    DiscoveredFetcher.h
+    EndpointResolver.h
     TelnetSession.cpp
     TelnetSession.h
     # The named presets and the remembered devices. HostBookmarkStore'''s shape verbatim,

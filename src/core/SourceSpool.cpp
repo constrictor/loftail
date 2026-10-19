@@ -38,6 +38,7 @@
 // libssh2's meant that a build with no SSH lost the declaration along with it. The two transports
 // are independent, and an include that says otherwise is how one gate came to control both.
 #include "SerialFetcher.h"
+#include "DiscoveredFetcher.h"
 #include "TelnetSession.h"
 
 #if defined(LOFTAIL_HAVE_SSH)
@@ -139,6 +140,17 @@ std::unique_ptr<SourceFetcher> defaultFetcher(const QString &key, QString *error
         // that reach here are exactly the ones parse() refused and so never cleaned.
         if (error)
             *error = Tr::tr("Not a valid serial log address: %1")
+                         .arg(RemoteLocation::withoutPassword(key));
+        return nullptr;
+    }
+
+    // A discovered device before every other remote arm (M28): it is reached over SSH or
+    // telnet, but which one is its TYPE's answer, and the address alone does not say.
+    if (RemoteLocation::transportOf(key) == RemoteLocation::Transport::Discovered) {
+        if (const auto location = RemoteLocation::parse(key))
+            return makeDiscoveredFetcher(*location, error);
+        if (error)
+            *error = Tr::tr("Not a valid discovered-device address: %1")
                          .arg(RemoteLocation::withoutPassword(key));
         return nullptr;
     }

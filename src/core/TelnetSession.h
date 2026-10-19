@@ -19,6 +19,7 @@
 #pragma once
 
 #include "ConsoleSession.h"
+#include "EndpointResolver.h"
 #include "RemoteLocation.h"
 #include "SerialFetchOptions.h"
 #include "SourceFetcher.h"
@@ -101,5 +102,11 @@ inline SerialFetchOptions telnetFetchOptions(const RemoteLocation &location)
 // The fetcher for a `telnet://` address. Always compiled: it needs only Qt Network, which the
 // core library links unconditionally.
 std::unique_ptr<SourceFetcher> makeTelnetFetcher(const RemoteLocation &location, QString *error);
+
+// The same for a `discover://` address, signing in wherever `resolve` finds the device before
+// every login. The session is still keyed on `location` — the DEVICE, whose address moves —
+// so two logs on one discovered device share one login as two on one host do.
+std::unique_ptr<SourceFetcher> makeTelnetFetcher(const RemoteLocation &location, QString *error,
+                                                 EndpointResolver resolve);
 
 } // namespace loftail

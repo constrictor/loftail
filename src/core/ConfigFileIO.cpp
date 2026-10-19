@@ -218,6 +218,16 @@ bool configAddressIsWritable(const QString &address, QString *reason)
     // THE SAME REFUSAL FOR TELNET (M28), and for the same reason: it is a login console, the
     // write would need `base64 -d` on the far end, and ConfigTransfer would otherwise try to
     // open an SSH session to a machine that may not run one.
+    // And a DISCOVERED device's (M28): its far end is known only to a fetcher that has just
+    // looked it up, and the config path through ConfigTransfer reads an address, not a lookup.
+    if (RemoteLocation::transportOf(address) == RemoteLocation::Transport::Discovered) {
+        if (reason) {
+            *reason = Tr::tr("%1 is on a device found by discovery, and loftail cannot edit a "
+                             "config file there yet.")
+                          .arg(RemoteLocation::withoutPassword(address));
+        }
+        return false;
+    }
     if (RemoteLocation::transportOf(address) == RemoteLocation::Transport::Telnet) {
         if (reason) {
             *reason = Tr::tr("%1 is on a machine reached over telnet, and loftail cannot edit "

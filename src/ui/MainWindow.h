@@ -349,6 +349,8 @@ private:
     // openFile()'s single funnel, which is what keeps a command line, a recent-files entry and a
     // restored session from silently getting the defaults.
     void primeSerialProfile(const RemoteLocation &location);
+    // A discovered log's poll, tail-start, compression and console preset, from its TYPE.
+    void primeDiscoveredRemote(const RemoteLocation &location);
     static void rememberSerialPath(const QString &deviceId, const QString &path);
 
     void buildMenus();
@@ -916,6 +918,10 @@ private:
     // HostBookmarkStore::all() — and refreshRemoteHostsMenu() is already called at every
     // point the list can move, so this is never older than the menu beside it.
     QVector<HostBookmark> m_hostBookmarks;
+    // The remote types from hosts.json, taken in refreshRemoteHostsMenu()'s one pass beside
+    // m_hostBookmarks and for its reason: relabelTabs() and the open funnel must not re-parse
+    // the file on every tab change. Also published to the fetchers (setKnownRemoteTypes()).
+    QVector<RemoteType> m_remoteTypes;
     // View ▸ Line Wrap. Held so the checked entry can be made to track the ACTIVE view,
     // which matters now that the mode a log opens in is its own (M20) rather than one
     // window-wide choice: each action carries its WrapMode in QAction::data().
