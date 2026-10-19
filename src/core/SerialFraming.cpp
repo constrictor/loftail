@@ -74,8 +74,17 @@ QByteArray framedCommand(const QString &command, const SerialFrame &frame, bool 
     // The command is NOT quoted and must not be: it is shell source, exactly as a restart
     // script is, and quoting it would make the whole feature a no-op. What IS quoted is
     // every value any command interpolates, which is shellQuote()'s job at the layer above.
+    //
+    // THE BEGIN MARKER IS PRINTED AFTER A NEWLINE OF ITS OWN, because it must start a line
+    // (endOfMarkerLine()) and after `stty -echo` nothing guarantees one does: the shell prints
+    // its PROMPT once the previous command has finished, the terminal no longer echoes the
+    // newline of the line just typed, and so the marker landed on the end of `cam# ` — a line
+    // that does not START with it. Every framed command after the byte-safety probe then went
+    // unanswered for its whole deadline, on every real console with a prompt; the pty and
+    // telnet fixtures hid it by always writing a newline of their own before each answer. An
+    // empty line before the marker is ignored like any other noise outside the frame.
     const QString redirect = keepStdErr ? QStringLiteral(" 2>&1") : QStringLiteral(" 2>/dev/null");
-    return QByteArray("printf '%s\\n' ") + beginMarker(frame.token) + "; "
+    return QByteArray("printf '\\n%s\\n' ") + beginMarker(frame.token) + "; "
         + command.toUtf8() + redirect.toUtf8() + "; printf '%s %d\\n' "
         + endMarker(frame.token) + " \"$?\"\n";
 }

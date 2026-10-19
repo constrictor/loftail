@@ -168,6 +168,7 @@ private:
     void session()
     {
         m_binaryOut = false;
+        m_raw = false;
         m_loggedIn = false;
         m_awaitingPassword = false;
         // What a real telnetd opens with: echo and go-ahead suppression offered, and a question
@@ -229,7 +230,21 @@ private:
                     state = Iac;
                     continue;
                 }
-                // A line ends at CR or LF, and CR LF / CR NUL count once.
+                // LIKE A REAL PTY BEHIND A REAL telnetd. Until `stty raw` a line ends at CR or LF
+                // (the terminal's icrnl turns a CR into a newline) and CR LF / CR NUL count once.
+                // AFTER it, only LF ends a line and a CR is an ordinary byte of it — which is what
+                // made a client sending CR LF put a stray `\r` on every command's last word, a
+                // fault this fixture could not show while it treated the two alike.
+                if (m_raw) {
+                    if (c == '\n') {
+                        const QByteArray typed = line;
+                        line.clear();
+                        handleLine(typed);
+                        continue;
+                    }
+                    line.append(char(c));
+                    continue;
+                }
                 if (lastCr && (c == '\n' || c == 0)) {
                     lastCr = false;
                     continue;
@@ -281,6 +296,8 @@ private:
             f.write(typed);
             f.write("\n");
         }
+        if (typed.contains("stty raw"))
+            m_raw = true;   // the terminal's line discipline is gone from the next line on
         const QByteArray command = "PATH=" + m_toolsDir.toLocal8Bit() + " /bin/sh "
             + scriptPath.toLocal8Bit() + " </dev/null 2>/dev/null";
         QByteArray out;
@@ -291,7 +308,12 @@ private:
                 out.append(chunk, int(got));
             ::pclose(pipe);
         }
-        say("\n");
+        // The newline is the ECHO of the line just typed, and a terminal that has had
+        // `stty raw -echo` echoes nothing — so the prompt this machine printed last is still
+        // on the line the answer starts on, exactly as on a real console. A fixture that
+        // always wrote it hid a framing defect that hung every real login (SerialFraming.cpp).
+        if (!m_raw)
+            say("\n");
         say(out);
         say("# ");
     }
@@ -304,6 +326,7 @@ private:
     QByteArray         m_password = QByteArrayLiteral("hunter2");
     bool               m_allowBinary = true;
     bool               m_binaryOut = false;
+    bool               m_raw = false;   // `stty raw` has been run on the session
     bool               m_loggedIn = false;
     bool               m_awaitingPassword = false;
     std::atomic<bool>  m_running{false};

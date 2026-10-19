@@ -47,9 +47,17 @@ namespace loftail {
 //   * BINARY IS ASKED FOR IN BOTH DIRECTIONS, and the rest of the transport depends on it being
 //     granted: in binary mode the far end's telnetd passes bytes through untouched, so a raw
 //     log read arrives as the bytes the file holds. Where it is refused, an NVT `CR NUL` is
-//     folded back to `CR` and a newline we send goes out as `CR LF` — and the byte-safety
-//     probe, which never believes anything it has not round-tripped, is what decides whether
-//     reads may travel raw at all.
+//     folded back to `CR` — and the byte-safety probe, which never believes anything it has
+//     not round-tripped, is what decides whether reads may travel raw at all.
+//
+//   * A NEWLINE GOES OUT AS A BARE LF, IN BOTH MODES, AND THAT IS A DELIBERATE DEPARTURE FROM
+//     RFC 854's CR LF. The byte-safety probe runs `stty raw -echo`, after which the far end's
+//     terminal no longer turns a CR into a newline — and telnetd hands the CR on (netkit and
+//     busybox fold CR LF to CR before the pty sees it). So CR LF works until the probe, then
+//     every command arrives with a stray `\r` on its last word, the frame's end marker never
+//     matches, and the log never arrives. A bare LF is passed through untouched by every
+//     telnetd, raw mode or not. Found in a manual run against a real pty, which no fake that
+//     treats CR and LF alike could show.
 class TelnetProtocol
 {
 public:
@@ -76,7 +84,8 @@ public:
     QByteArray receive(QByteArrayView arrived, QByteArray *reply);
 
     // Bytes we want the far end's shell to read, made safe to put on the wire: every 0xFF
-    // doubled, and — only while we are NOT in binary mode — each `\n` sent as `\r\n`.
+    // doubled, and — only while we are NOT in binary mode — a bare `\r` sent as `\r\0`.
+    // A `\n` goes out as itself in both modes (see the class comment).
     QByteArray encode(QByteArrayView data) const;
 
     // Whether each direction has been granted binary mode.

@@ -25,6 +25,9 @@
 
 #include <QtTest>
 
+#include <QFileInfo>
+#include <QProcess>
+
 #include "SerialFraming.h"
 
 using namespace loftail;
@@ -59,7 +62,29 @@ private slots:
     void aShortPayloadIsCompleteAndSaysItWasShort();
     void aStatusThatDoesNotParseIsCorrupt();
     void theCapNeverDropsAFrameThatHasAlreadyStarted();
+    void aPromptLeftOnTheLineDoesNotHideTheBeginMarker();
 };
+
+void TestSerialFraming::aPromptLeftOnTheLineDoesNotHideTheBeginMarker()
+{
+    // WHAT A REAL CONSOLE SENDS after `stty -echo`: the prompt the shell printed when the last
+    // command finished, then — with no echoed newline between — whatever the framed command
+    // prints. Run through a REAL /bin/sh, so the framing's own printf is what is tested and not
+    // an idea of it. The marker used to land on the end of `cam# `, and nothing ever matched it.
+    if (!QFileInfo::exists(QStringLiteral("/bin/sh")))
+        QSKIP("no /bin/sh");
+    const SerialFrame f = frameFor();
+    QProcess sh;
+    sh.start(QStringLiteral("/bin/sh"), {QStringLiteral("-c"),
+                                         QString::fromUtf8(framedCommand(
+                                             QStringLiteral("echo the-answer"), f))});
+    QVERIFY(sh.waitForFinished(10000));
+    const QByteArray stream = QByteArrayLiteral("cam# ") + sh.readAllStandardOutput();
+    const FramedAnswer a = readFramedAnswer(stream, f);
+    QCOMPARE(a.state, FramedAnswer::State::Complete);
+    QCOMPARE(a.output, QByteArrayLiteral("the-answer\n"));
+    QCOMPARE(a.exitCode, 0);
+}
 
 void TestSerialFraming::theCommandIsNotQuotedAndItsStderrIsDiscarded()
 {
@@ -114,7 +139,7 @@ void TestSerialFraming::theEchoOfTheCommandDoesNotOpenTheFrame()
     // back first, and it CONTAINS the begin token. A substring match would start the payload
     // in the middle of that echoed command line and lose the first read of every command.
     const SerialFrame f = frameFor();
-    const QByteArray echoed = QByteArray("printf '%s\\n' ") + begin(f)
+    const QByteArray echoed = QByteArray("printf '\\n%s\\n' ") + begin(f)
         + "; stat -c '%s %Y' /a.log; printf '%s %d\\n' " + end(f) + " \"$?\"\n";
     const QByteArray stream = echoed + begin(f) + "\n1024 1767225600\n" + end(f) + " 0\n";
 

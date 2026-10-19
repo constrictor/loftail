@@ -181,8 +181,6 @@ QByteArray TelnetProtocol::encode(QByteArrayView data) const
         if (c == kIac) {
             out.append(char(kIac));
             out.append(char(kIac));
-        } else if (c == '\n' && !binary) {
-            out.append("\r\n", 2);
         } else if (c == '\r' && !binary) {
             out.append("\r\0", 2);
         } else {

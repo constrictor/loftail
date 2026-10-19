@@ -199,13 +199,20 @@ void TestTelnetProtocol::inBinaryACrNulIsTwoBytesOfTheFile()
 
 void TestTelnetProtocol::encodingDoublesIacAndOnlyTranslatesNewlinesOutsideBinary()
 {
+    // A NEWLINE IS A BARE LF IN BOTH MODES: after `stty raw` a CR is no longer a newline to
+    // the far end's shell, and telnetd hands one on (TelnetProtocol.h). Only a bare CR is
+    // NVT-escaped outside binary mode.
     TelnetProtocol nvt;
     QByteArray data("echo x\n");
     data.append(char(0xff));
-    QByteArray want("echo x\r\n");
+    data.append('\r');
+    QByteArray want("echo x\n");
     want.append(char(0xff));
     want.append(char(0xff));
+    want.append('\r');
+    want.append('\0');
     QCOMPARE(nvt.encode(data), want);
+    data.chop(1);
 
     TelnetProtocol binary;
     binary.openingNegotiation();
