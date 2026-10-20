@@ -166,11 +166,14 @@ DiscoveredDevice deviceFromProbeMatch(const QString &typeName, const WsProbeMatc
     d.details = match.scopes;
     for (const QString &xaddr : match.xaddrs) {
         const QUrl url(xaddr);
-        if (url.isValid() && !url.host().isEmpty()) {
+        if (!url.isValid() || url.host().isEmpty())
+            continue;
+        if (d.host.isEmpty()) {
             d.host = url.host();
             d.port = url.port(0);
-            break;
         }
+        if (!d.addresses.contains(url.host()))
+            d.addresses.append(url.host());
     }
     d.displayName = onvifNameFromScopes(match.scopes);
     if (d.displayName.isEmpty())

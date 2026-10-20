@@ -57,6 +57,7 @@ QT_END_NAMESPACE
 namespace loftail {
 
 class Document;
+class DiscoveryWatch;
 class ConfigView;
 class DocumentView;
 class LogModel;
@@ -186,6 +187,11 @@ public:
     // what is on offer with no modal on screen, which is the only way to state that a
     // log open in two tabs is offered once.
     QVector<DocumentContext *> otherLogContexts() const;
+
+    // The remote types a standing watch is browsing because a log on one of their devices is
+    // open (DiscoveryWatch.h). Public for the same reason as the line above: a test states it
+    // with nothing on screen.
+    QStringList watchedRemoteTypes() const;
 
 signals:
     // Panes bind to the active document by signal, not by construction (invariant
@@ -420,6 +426,8 @@ private:
     // cannot change while they stand still, and rewriting a QTabBar entry relays the
     // whole bar out.
     void relabelTabs();
+    // Browse the types of the open `discover://` logs, and nothing else (DiscoveryWatch.h).
+    void syncDiscoveryWatch(const QStringList &openAddresses);
 
     // --- Highlight actions beyond colour (M19, SPEC.md §7) -------------------------
 
@@ -926,6 +934,8 @@ private:
     // m_hostBookmarks and for its reason: relabelTabs() and the open funnel must not re-parse
     // the file on every tab change. Also published to the fetchers (setKnownRemoteTypes()).
     QVector<RemoteType> m_remoteTypes;
+    // The standing watch over the devices whose logs are open; made on first need.
+    DiscoveryWatch *m_discoveryWatch = nullptr;
     // Console presets chosen in the host form for telnet opens that were not saved as a host,
     // keyed by normalized address (chooseRemoteToOpen(), primeSerialProfile()).
     QHash<QString, QString> m_adHocConsolePresets;

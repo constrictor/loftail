@@ -127,6 +127,6 @@ std::unique_ptr<SourceFetcher> makeSshFetcher(const RemoteLocation &location, QS
 // how a `discover://` log reaches its device. `location` is still the ADDRESS: it keys the
 // options and names the log in every message that is about the log rather than the machine.
 std::unique_ptr<SourceFetcher> makeSshFetcher(const RemoteLocation &location, QString *error,
-                                              EndpointResolver resolve);
+                                              EndpointSource endpoint);
 
 } // namespace loftail

@@ -31,7 +31,12 @@
 
 #include <QtTest>
 
+#include <QProcess>
+#include <QScopeGuard>
+#include <QStandardPaths>
 #include <QThread>
+
+#include <memory>
 
 #include "DiscoveryBrowser.h"
 #include "RemoteType.h"
@@ -101,6 +106,71 @@ private slots:
         delete worker;
         QVERIFY2(found.has_value(), qPrintable(why));
         QCOMPARE(found->port, 2222);
+    }
+
+    void anAddressThatMovesUnderARegisteredServiceIsReportedAgain()
+    {
+        // THE RESOLVER IS KEPT ALIVE, and this is the one thing that executes it: the SERVICE
+        // stays registered throughout and only its host's ADDRESS record moves, which is what
+        // DHCP does to a device and what a resolver freed after its first answer never saw —
+        // no remove, no add, so nothing would ever have been reported again (DiscoveryWatch.h).
+        const QString publish = QStandardPaths::findExecutable(QStringLiteral("avahi-publish"));
+        if (publish.isEmpty())
+            QSKIP("avahi-publish is not installed");
+        const QString host = QStringLiteral("loftail-moving.local");
+        auto spawn = [&](const QStringList &args) {
+            auto p = std::make_unique<QProcess>();
+            p->setProcessChannelMode(QProcess::MergedChannels);
+            p->start(publish, args);
+            return p;
+        };
+        auto address = spawn({QStringLiteral("-a"), QStringLiteral("-R"), host,
+                              QStringLiteral("192.0.2.10")});
+        auto service = spawn({QStringLiteral("-s"), QStringLiteral("-H"), host,
+                              QStringLiteral("loftail-moving"), QStringLiteral("_loftailtest._tcp"),
+                              QStringLiteral("2223"), QStringLiteral("model=X200")});
+        auto stopAll = qScopeGuard([&] {
+            for (QProcess *p : {address.get(), service.get()}) {
+                if (p) {
+                    p->kill();
+                    p->waitForFinished(2000);
+                }
+            }
+        });
+
+        auto browser = makeDiscoveryBrowser(type());
+        QStringList hosts;
+        int losses = 0;
+        connect(browser.get(), &DiscoveryBrowser::found, this, [&](const DiscoveredDevice &d) {
+            if (d.id == QStringLiteral("loftail-moving"))
+                hosts.append(d.host);
+        });
+        connect(browser.get(), &DiscoveryBrowser::lost, this,
+                [&](const QString &, const QString &id) {
+                    if (id == QStringLiteral("loftail-moving"))
+                        ++losses;
+                });
+        browser->start(type());
+        QTRY_VERIFY_WITH_TIMEOUT(hosts.contains(QStringLiteral("192.0.2.10")), 15000);
+
+        // The address moves; the service does not. And not at once: a device off its network
+        // for a while has NO address record, long enough for Avahi to give the resolver up as
+        // failed — the gap that a manual run against the real application found, where a
+        // resolver freed on failure was never made again and the move was never reported.
+        address->kill();
+        address->waitForFinished(2000);
+        QTest::qWait(12000);
+        address = spawn({QStringLiteral("-a"), QStringLiteral("-R"), host,
+                         QStringLiteral("192.0.2.11")});
+        QTRY_VERIFY_WITH_TIMEOUT(hosts.contains(QStringLiteral("192.0.2.11")), 20000);
+        QCOMPARE(hosts.last(), QStringLiteral("192.0.2.11"));
+        // Reported AGAIN, by the resolver that was already running — not by the service being
+        // withdrawn and re-registered, which is the only way it used to surface.
+        QCOMPARE(losses, 0);
+        // And what the standing watch reads is the new address.
+        QCOMPARE(lastSeenDevice(type().name, QStringLiteral("loftail-moving"))->host,
+                 QStringLiteral("192.0.2.11"));
+        browser->stop();
     }
 
     void anInstanceNobodyPublishedIsNotFound()

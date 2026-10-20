@@ -46,4 +46,28 @@ namespace loftail {
 using EndpointResolver = std::function<std::optional<RemoteLocation>(
     const std::function<bool()> &abandoned, QString *why)>;
 
+// Whether the far end a fetcher is connected to is STILL the device's, asked on every poll.
+//
+// A connect-time lookup finds a device that moved only once its old link has failed, and a
+// link to an address that has since been handed to another machine does not fail — it shows
+// that machine's log. So a fetcher holding one of these asks it each poll, and on `false`
+// drops its session and reconnects through the resolver, which is what a moved device's logs
+// being REOPENED at the new address amounts to. `where`, on false, names the new address for
+// the diagnostic line.
+//
+// TRUE WHENEVER IT DOES NOT KNOW: no standing watch, a device not seen, an address set that
+// still holds the endpoint. A false is a positive statement that the device is somewhere else,
+// never an absence of news — which is what keeps a device whose service blinked out of
+// Bonjour, as Bonjour's do, from losing its log for it.
+using EndpointCheck =
+    std::function<bool(const RemoteLocation &endpoint, QString *where)>;
+
+// The two together: what a fetcher for a moving far end is built with. Both empty is the
+// default, and is identity — the fetcher connects to its own address and never asks again.
+struct EndpointSource
+{
+    EndpointResolver resolve;
+    EndpointCheck    stillCurrent;
+};
+
 } // namespace loftail

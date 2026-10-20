@@ -159,6 +159,10 @@ private:
     std::unique_ptr<ExecTransport> m_exec;
     std::unique_ptr<Worker>        m_worker;
     SerialFetchOptions             m_options;
+    // The far end the device session was signed in at, for the "has it moved?" question.
+    // WORKER-ONLY: m_location is the one the GUI thread reads.
+    RemoteLocation                 m_connectedTo;
+    bool                           m_signInAtOnce = false;   // worker-only, like the above
     ReconnectGrace                 m_grace;
 
     mutable std::mutex      m_mutex;
@@ -275,9 +279,9 @@ bool ConsoleFetcher::establish()
     // Where to sign in this time: the address itself, or — for a discovered device — wherever
     // the resolver finds it now. A LOCAL, never m_location, which the GUI thread reads.
     RemoteLocation endpoint = m_location;
-    if (m_binding.resolve) {
+    if (m_binding.endpoint.resolve) {
         QString why;
-        const auto found = m_binding.resolve([this]() { return stopping(); }, &why);
+        const auto found = m_binding.endpoint.resolve([this]() { return stopping(); }, &why);
         if (!found) {
             setWaiting(why);   // a device that is not on the network has not turned up (M13)
             return false;
@@ -340,6 +344,7 @@ bool ConsoleFetcher::establish()
         return false;
     }
     m_grace.signedIn();
+    m_connectedTo = endpoint;
 
     // The log-shaped half of the transport, bound to the device's two seams. Rebuilt on every
     // establish so that a reconnect settles its rungs afresh — settling once per session would
@@ -420,6 +425,26 @@ void ConsoleFetcher::pollOnce()
     // "Applying the new settings"; tst_discoveredfetcher's 200 ms poll is what found it.
     if (!m_exec) {
         establish();
+        return;
+    }
+
+    // A DEVICE THAT MOVED IS FOLLOWED NOW, not when its old link fails (EndpointResolver.h).
+    // The SHARED session is dropped, which is right for every log on the device: they were all
+    // signed in at the address the device has left, and each finds it again at its next poll.
+    QString movedTo;
+    if (m_binding.endpoint.stillCurrent
+        && !m_binding.endpoint.stillCurrent(m_connectedTo, &movedTo)) {
+        diagLog(m_binding.area, QStringLiteral("%1 moved from %2:%3 to %4 — signing in again")
+                                    .arg(m_location.toString(), m_connectedTo.host)
+                                    .arg(m_connectedTo.port)
+                                    .arg(movedTo));
+        m_exec.reset();
+        m_device->dropSession();
+        setWaiting(Tr::tr("%1 moved to another address — signing in again")
+                       .arg(m_location.displayHost()));
+        // AT ONCE, not after the slow cadence a wait otherwise sleeps out: this is not a retry
+        // of something that failed but a sign-in at an address the watch has just named.
+        m_signInAtOnce = true;
         return;
     }
 
@@ -515,6 +540,8 @@ void ConsoleFetcher::tailLoop()
         }
         if (!refused)
             pollOnce();
+        if (std::exchange(m_signInAtOnce, false))
+            continue;
 
         std::unique_lock<std::mutex> lock(m_mutex);
         if (m_stopping)

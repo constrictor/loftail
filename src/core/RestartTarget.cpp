@@ -18,6 +18,7 @@
 
 #include "RestartTarget.h"
 
+#include "DiscoveredFetcher.h"
 #include "LogAnchor.h"
 
 #include <QCoreApplication>
@@ -95,20 +96,22 @@ bool restartTargetIsRunnable(const RestartTarget &target, QString *reason)
     // WHICH DEPENDENCY IS MISSING DEPENDS ON THE TRANSPORT, and asking one question about both
     // would name the wrong one: a build with libssh2 and no Qt SerialPort can restart a service
     // on a server and not on a board, and the sentence has to say which.
-    const bool serial = target.remote && target.host
-        && target.host->transport == RemoteLocation::Transport::Serial;
-
-    // A DISCOVERED device is refused by name (M28), for ConfigFileIO's reason: the far end is
-    // known only to the fetcher that just looked it up, and the restart errand reads an address.
-    if (target.remote && target.host
-        && target.host->transport == RemoteLocation::Transport::Discovered) {
+    // A DISCOVERED device is reached over whatever its type says (M28), and is answered for as
+    // that transport — so a build with no SSH can still restart a service on a device found
+    // over ONVIF whose type signs in by telnet. The device itself is found when the run starts.
+    const RemoteLocation::Transport via = target.remote && target.host
+        ? reachedOver(*target.host)
+        : RemoteLocation::Transport::Ssh;
+    if (target.remote && via == RemoteLocation::Transport::Discovered) {
         if (reason) {
-            *reason = Tr::tr("%1 was found by discovery, and loftail cannot run a restart "
-                             "command on such a device yet.")
-                          .arg(target.host->displayHost());
+            *reason = Tr::tr("There is no remote type called %1 any more, so loftail does not "
+                             "know how to reach the device — add it again in File ▸ Remote "
+                             "Parameters.")
+                          .arg(target.host->discoveryType);
         }
         return false;
     }
+    const bool serial = target.remote && via == RemoteLocation::Transport::Serial;
 
 #if !defined(LOFTAIL_HAVE_SERIAL)
     if (serial) {
@@ -120,8 +123,7 @@ bool restartTargetIsRunnable(const RestartTarget &target, QString *reason)
     }
 #endif
 #if !defined(LOFTAIL_HAVE_SSH)
-    const bool telnet = target.remote && target.host
-        && target.host->transport == RemoteLocation::Transport::Telnet;
+    const bool telnet = target.remote && via == RemoteLocation::Transport::Telnet;
     if (target.remote && !serial && !telnet) {
         if (reason) {
             *reason = Tr::tr("This build has no SSH support, so a restart command cannot "
@@ -133,6 +135,7 @@ bool restartTargetIsRunnable(const RestartTarget &target, QString *reason)
     Q_UNUSED(target);
     Q_UNUSED(reason);
     Q_UNUSED(serial);
+    Q_UNUSED(via);
     return true;
 }
 

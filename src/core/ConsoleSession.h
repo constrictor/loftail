@@ -179,6 +179,8 @@ private:
     QByteArray              m_pending;      // bytes read past the last frame
     QString                 m_waitingText;
     bool                    m_rebooted = false;
+    QString                 m_linkedHost;   // where the link was opened, for ensureReady()
+    int                     m_linkedPort = 0;
     std::atomic<bool>       m_aborted{false};
 };
 

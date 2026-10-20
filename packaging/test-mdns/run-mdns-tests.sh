@@ -155,6 +155,7 @@ failed=0
 for fn in \
     theBrowserFindsAPublishedServiceAndItsTxtRecords \
     theConnectTimeLookupWorksOnAWorkerThread \
+    anAddressThatMovesUnderARegisteredServiceIsReportedAgain \
     anInstanceNobodyPublishedIsNotFound
 do
     if ! grep -Eq "^PASS[[:space:]]*:[[:space:]]*TestAvahiLive::${fn}\(\)" "$log"; then

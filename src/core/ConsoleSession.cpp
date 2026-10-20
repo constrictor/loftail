@@ -393,13 +393,28 @@ ConsoleSession::Ready ConsoleSession::ensureReady(const QString &samplePath,
     }
     m_options = options;
 
+    // ONE DEVICE, ONE FAR END: a session asked to be ready at an address other than the one it
+    // is linked to starts over there. Only a discovered device's address can move under one
+    // session (serial's never does, a typed host's is the key), and two logs on such a device
+    // must not end up one at the old address and one at the new.
+    if ((m_ready || m_link) && (location.host != m_linkedHost || location.port != m_linkedPort)) {
+        diagLog(m_diagArea, QStringLiteral("%1: far end moved to %2:%3 — starting over")
+                              .arg(m_name, location.host)
+                              .arg(location.port));
+        dropSessionLocked();
+    }
+
     if (m_ready) {
         out.ok = true;
         return out;
     }
 
-    if (!m_link && !openLinkLocked(options, location, &out))
-        return out;
+    if (!m_link) {
+        if (!openLinkLocked(options, location, &out))
+            return out;
+        m_linkedHost = location.host;
+        m_linkedPort = location.port;
+    }
     if (!loginLocked(options, location, password, &out))
         return out;
     if (!m_safetySettled && !settleByteSafetyLocked(samplePath, &out))

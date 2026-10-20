@@ -309,7 +309,7 @@ void TelnetSessionRegistry::clear()
 }
 
 std::unique_ptr<SourceFetcher> makeTelnetFetcher(const RemoteLocation &location, QString *error,
-                                                 EndpointResolver resolve)
+                                                 EndpointSource endpoint)
 {
     ConsoleFetcherBinding binding;
     binding.area = "telnet";
@@ -317,7 +317,7 @@ std::unique_ptr<SourceFetcher> makeTelnetFetcher(const RemoteLocation &location,
         return TelnetSessionRegistry::instance().acquire(loc);
     };
     binding.options = [](const RemoteLocation &loc) { return telnetFetchOptions(loc); };
-    binding.resolve = std::move(resolve);
+    binding.endpoint = std::move(endpoint);
     Q_UNUSED(error);
     return makeConsoleFetcher(location, std::move(binding));
 }

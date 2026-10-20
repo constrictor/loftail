@@ -51,10 +51,33 @@ std::optional<RemoteType> knownRemoteType(const QString &name);
 RemoteLocation endpointFor(const RemoteType &type, const DiscoveredDevice &device,
                            const RemoteLocation &address);
 
-// The resolver a discovered fetcher is built with: look the device up NOW, and where that finds
+// What a discovered fetcher is built with (EndpointResolver.h).
+//
+// `resolve`: where a standing watch is browsing the type (DiscoveryWatch.h), the device it
+// last saw, with no lookup at all; otherwise look the device up NOW, and where that finds
 // nothing fall back to where it was last seen — a device that has stopped answering discovery
-// may still answer a connect. Exposed for tests.
-EndpointResolver discoveryResolver(const RemoteLocation &address, int lookupTimeoutMs = 4000);
+// may still answer a connect.
+//
+// `stillCurrent`: false only when a standing watch has the device at a set of addresses the
+// endpoint is not in, or at another port, for a whole grace period (kMoveGraceMs) — so a
+// backend that reports a multi-homed device one interface at a time, or a fresh browser whose
+// first answer is a partial set, does not tear down a working connection on the way.
+EndpointSource discoveryEndpointSource(const RemoteLocation &address,
+                                       int lookupTimeoutMs = 4000);
+
+// The resolver half alone, run once on the calling thread: what Restart App and the config
+// editor ask before their one connect. Needs the thread's Qt event loop, as every lookup does.
+std::optional<RemoteLocation> resolveDiscoveredEndpoint(const RemoteLocation &address,
+                                                        const std::function<bool()> &abandoned,
+                                                        QString *why);
+
+// How a `discover://` address is REACHED: its type's connection, Ssh or Telnet — or
+// Discovered itself when no type of that name is configured, which every caller treats as
+// "cannot be reached at all". Any other address answers its own transport.
+RemoteLocation::Transport reachedOver(const RemoteLocation &address);
+
+// How long a device must be seen elsewhere before an open log follows it.
+inline constexpr qint64 kMoveGraceMs = 3000;
 
 // The fetcher for a `discover://` address. Refuses, with no I/O, an address whose type is not
 // configured — the type is what says SSH or telnet, so without it there is no fetcher to build.

@@ -47,6 +47,7 @@
 #include "UiColors.h"
 #include "DiscoveredFetcher.h"
 #include "DiscoveryBrowser.h"
+#include "DiscoveryWatch.h"
 #include "HostBookmarkStore.h"
 #include "TelnetSession.h"
 #include "ArchiveLocation.h"
@@ -1409,6 +1410,8 @@ void MainWindow::documentsUnbound()
     // nothing — with no contexts left, updateTrayPresence() answers "not wanted".
     m_lastNotified = nullptr;
     updateTrayPresence();
+    // Close All takes the set down without reaching relabelTabs(), so the watch is told here.
+    syncDiscoveryWatch({});
 
     // Unbind the panes from the now-gone document (invariant #7).
     emit activeDocumentChanged(nullptr);
@@ -4027,12 +4030,49 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
     }
 }
 
+void MainWindow::syncDiscoveryWatch(const QStringList &openAddresses)
+{
+    // THE TYPES OF THE OPEN `discover://` LOGS, as hosts.json defines them now — m_remoteTypes,
+    // taken in refreshRemoteHostsMenu()'s one pass, so this parses nothing. A type renamed or
+    // deleted while its logs are open simply stops being watched; the logs then go on at the
+    // address they have, and find out at their next connect that the type is gone.
+    QVector<RemoteType> wanted;
+    for (const QString &address : openAddresses) {
+        const auto location = RemoteLocation::parse(address);
+        if (!location || location->transport != RemoteLocation::Transport::Discovered)
+            continue;
+        const int at = HostBookmarkStore::indexOfType(m_remoteTypes, location->discoveryType);
+        if (at < 0)
+            continue;
+        const RemoteType &type = m_remoteTypes.at(at);
+        const bool already = std::any_of(wanted.cbegin(), wanted.cend(), [&](const RemoteType &t) {
+            return t.name.compare(type.name, Qt::CaseInsensitive) == 0;
+        });
+        if (!already)
+            wanted.append(type);
+    }
+    if (wanted.isEmpty() && !m_discoveryWatch)
+        return;
+    if (!m_discoveryWatch)
+        m_discoveryWatch = new DiscoveryWatch(this);
+    m_discoveryWatch->setWatchedTypes(wanted);
+}
+
+QStringList MainWindow::watchedRemoteTypes() const
+{
+    return m_discoveryWatch ? m_discoveryWatch->watchedTypeNames() : QStringList();
+}
+
 void MainWindow::relabelTabs()
 {
     QStringList addresses;
     addresses.reserve(int(m_contexts.size()));
     for (const auto &ctx : m_contexts)
         addresses.append(ctx->doc->path());
+
+    // The standing watch follows the same set (DiscoveryWatch.h): this is where it changes,
+    // and refreshRemoteHostsMenu() — where a type's definition changes — ends here too.
+    syncDiscoveryWatch(addresses);
 
     // WHAT MAY NOT BE EVICTED (M21). The pool is bounded, so storing one log's settings
     // can cost another log theirs — and the one cost that is never acceptable is a log

@@ -88,6 +88,7 @@ public:
         return m_received;
     }
     int connections() const { return m_connections; }
+    bool isRunning() const { return m_running; }
 
     void start()
     {
@@ -169,6 +170,8 @@ private:
     {
         m_binaryOut = false;
         m_raw = false;
+        m_inFrame = false;
+        m_frame.clear();
         m_loggedIn = false;
         m_awaitingPassword = false;
         // What a real telnetd opens with: echo and go-ahead suppression offered, and a question
@@ -282,9 +285,29 @@ private:
             say("\nPassword: ");
             return;
         }
-        if (typed.isEmpty()) {
+        if (typed.isEmpty() && !m_inFrame) {
             say("\n# ");
             return;
+        }
+        // ONE FRAME IS ONE SCRIPT, as it is to the ONE shell a real console has: a framed
+        // command may span several lines — a restart script is variable assignments and a brace
+        // group, one statement per line — and the shell behind a console keeps its variables
+        // and its open group from line to line. Running each line as a shell of its own split
+        // the group, so the end marker never came and Restart App waited out its whole
+        // deadline: a run nothing had ever driven through this fixture. What this still does
+        // not do is print PS2 (`> `) per continuation line, which a real shell writes to the
+        // terminal as it goes.
+        QByteArray script = typed;
+        if (m_inFrame || (typed.startsWith("printf '\\n%s\\n' LFB-") && !typed.contains("LFE-"))) {
+            m_frame += typed;
+            m_frame += '\n';
+            if (!typed.contains("LFE-")) {
+                m_inFrame = true;
+                return;
+            }
+            m_inFrame = false;
+            script = m_frame;
+            m_frame.clear();
         }
         // A REAL SHELL RUNS IT, from a file, with stdin from /dev/null — tst_serialdevice's
         // two rules, for the reason that cost that fixture three hung runs.
@@ -293,7 +316,7 @@ private:
             QFile f(scriptPath);
             if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
                 return;
-            f.write(typed);
+            f.write(script);
             f.write("\n");
         }
         if (typed.contains("stty raw"))
@@ -327,6 +350,8 @@ private:
     bool               m_allowBinary = true;
     bool               m_binaryOut = false;
     bool               m_raw = false;   // `stty raw` has been run on the session
+    bool               m_inFrame = false;   // inside a framed command spanning several lines
+    QByteArray         m_frame;
     bool               m_loggedIn = false;
     bool               m_awaitingPassword = false;
     std::atomic<bool>  m_running{false};

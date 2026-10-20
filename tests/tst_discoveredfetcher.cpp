@@ -38,8 +38,11 @@
 
 #include "DiscoveredFetcher.h"
 #include "DiscoveryBrowser.h"
+#include "DiscoveryWatch.h"
 #include "FakeTelnetd.h"
 #include "RemoteLocation.h"
+#include "RestartRunner.h"
+#include "RestartTarget.h"
 #include "SerialFetchOptions.h"
 #include "SerialProfile.h"
 #include "SshPrompter.h"
@@ -53,12 +56,18 @@ namespace {
 // on the fetcher's worker thread — hence the mutex.
 struct Network
 {
-    std::mutex mutex;
-    QString    host;
-    int        port = 0;
-    bool       present = true;
+    std::mutex  mutex;
+    QString     host;
+    int         port = 0;
+    bool        present = true;
+    // Every address the device answers on, `host` among them; empty means `host` alone.
+    QStringList addresses;
 };
 
+// A LIVE backend, as Avahi with kept resolvers is one: it looks at the scripted network every
+// few milliseconds and reports the device again whenever what it would say has CHANGED, and
+// says `lost` when the device leaves — which is what a standing watch (DiscoveryWatch.h) is
+// built on, and what a backend that answered once and fell silent could not stand in for.
 class ScriptedBrowser final : public DiscoveryBrowser
 {
 public:
@@ -69,26 +78,54 @@ public:
     void start(const RemoteType &type) override
     {
         m_type = type;
-        QTimer::singleShot(20, this, [this] {
-            DiscoveredDevice d;
-            {
-                const std::scoped_lock lock(m_net->mutex);
-                if (!m_net->present)
-                    return;
-                d.host = m_net->host;
-                d.port = m_net->port;
-            }
-            d.id = QStringLiteral("board-1");
-            d.displayName = QStringLiteral("Board one");
-            d.details = {QStringLiteral("model=X")};
-            report(m_type, d);
-        });
+        m_wasPresent = false;
+        m_last = DiscoveredDevice{};
+        if (!m_tick) {
+            m_tick = new QTimer(this);
+            m_tick->setInterval(20);
+            connect(m_tick, &QTimer::timeout, this, [this] { look(); });
+        }
+        m_tick->start();
     }
-    void stop() override {}
+    void stop() override
+    {
+        if (m_tick)
+            m_tick->stop();
+    }
 
 private:
+    void look()
+    {
+        DiscoveredDevice d;
+        bool present = false;
+        {
+            const std::scoped_lock lock(m_net->mutex);
+            present = m_net->present;
+            d.host = m_net->host;
+            d.port = m_net->port;
+            d.addresses = m_net->addresses;
+        }
+        if (!present) {
+            if (m_wasPresent)
+                emit lost(m_type.name, QStringLiteral("board-1"));
+            m_wasPresent = false;
+            return;
+        }
+        d.id = QStringLiteral("board-1");
+        d.displayName = QStringLiteral("Board one");
+        d.details = {QStringLiteral("model=X")};
+        if (m_wasPresent && d == m_last)
+            return;
+        m_wasPresent = true;
+        m_last = d;
+        report(m_type, d);
+    }
+
     std::shared_ptr<Network> m_net;
-    RemoteType m_type;
+    RemoteType               m_type;
+    QTimer                  *m_tick = nullptr;
+    bool                     m_wasPresent = false;
+    DiscoveredDevice         m_last;
 };
 
 QString readAll(const QString &path)
@@ -325,6 +362,308 @@ private slots:
         second.stop();
     }
 
+    // --- the standing watch (DiscoveryWatch.h) -------------------------------------------
+
+    void theMoveRuleIsTheAddressSetHeldForAWholeGracePeriod()
+    {
+        {
+            const std::scoped_lock lock(m_net->mutex);
+            m_net->present = false;   // the browser says nothing; the cache is set by hand
+        }
+        const RemoteLocation address = addressFor(QStringLiteral("/x.log"));
+        const EndpointSource source = discoveryEndpointSource(address);
+        QVERIFY(source.resolve);
+        QVERIFY(source.stillCurrent);
+
+        DiscoveredDevice at;
+        at.typeName = QStringLiteral("Boards");
+        at.id = QStringLiteral("board-1");
+        at.host = QStringLiteral("10.0.0.1");
+        at.port = 2323;
+        at.addresses = {QStringLiteral("10.0.0.1"), QStringLiteral("10.0.0.2")};
+        const RemoteLocation connected = endpointFor(boardsType(), at, address);
+        QString where;
+
+        // No watch: not knowing is never a move, whatever the cache says.
+        DiscoveredDevice elsewhere = at;
+        elsewhere.host = QStringLiteral("10.0.0.9");
+        elsewhere.addresses = {QStringLiteral("10.0.0.9")};
+        rememberDiscoveredDevice(elsewhere);
+        QVERIFY(source.stillCurrent(connected, &where));
+        QTest::qWait(int(kMoveGraceMs) + 200);
+        QVERIFY(source.stillCurrent(connected, &where));
+
+        DiscoveryWatch watch;
+        watch.setWatchedTypes({boardsType()});
+        QVERIFY(discoveryWatchIsRunning(QStringLiteral("boards")));
+
+        // Where it was connected, and where the backend now NAMES the other interface: both
+        // are the device, so neither is a move.
+        rememberDiscoveredDevice(at);
+        QVERIFY(source.stillCurrent(connected, &where));
+        DiscoveredDevice otherInterface = at;
+        otherInterface.host = QStringLiteral("10.0.0.2");
+        rememberDiscoveredDevice(otherInterface);
+        QVERIFY(source.stillCurrent(connected, &where));
+
+        // Elsewhere: not on the first look, and not within the grace period...
+        rememberDiscoveredDevice(elsewhere);
+        QVERIFY(source.stillCurrent(connected, &where));
+        QTest::qWait(int(kMoveGraceMs) / 3);
+        QVERIFY(source.stillCurrent(connected, &where));
+        // ...a blip back inside it starts the clock again...
+        rememberDiscoveredDevice(at);
+        QVERIFY(source.stillCurrent(connected, &where));
+        rememberDiscoveredDevice(elsewhere);
+        QVERIFY(source.stillCurrent(connected, &where));
+        QTest::qWait(int(kMoveGraceMs) * 2 / 3);
+        QVERIFY(source.stillCurrent(connected, &where));
+        // ...and once it has held for the whole of it, the device has moved.
+        QTest::qWait(int(kMoveGraceMs) / 3 + 200);
+        QVERIFY(!source.stillCurrent(connected, &where));
+        QCOMPARE(where, QStringLiteral("10.0.0.9:2323"));
+
+        // A different PORT at the same address is a move as well.
+        DiscoveredDevice newPort = at;
+        newPort.port = 2424;
+        rememberDiscoveredDevice(newPort);
+        QVERIFY(source.stillCurrent(connected, &where));
+        QTest::qWait(int(kMoveGraceMs) + 200);
+        QVERIFY(!source.stillCurrent(connected, &where));
+
+        watch.setWatchedTypes({});
+        QVERIFY(!discoveryWatchIsRunning(QStringLiteral("Boards")));
+    }
+
+    void aDeviceThatMovesIsFollowedEvenWhileTheOldAddressStillAnswers()
+    {
+        // THE CASE THE WATCH EXISTS FOR: the old address goes on answering — DHCP gave it to
+        // another machine, or a replacement unit took it — so the old link never fails, and
+        // only the watch can say the device is somewhere else.
+        const QString log = m_dir.filePath(QStringLiteral("followed.log"));
+        {
+            QFile f(log);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("one\n");
+        }
+        FakeTelnetd first(toolsDir(), m_dir.path());
+        first.start();
+        setNetwork(first.port());
+
+        DiscoveryWatch watch;
+        watch.setWatchedTypes({boardsType()});
+
+        const RemoteLocation address = addressFor(log);
+        auto fetcher = openLive(address, QStringLiteral("spool-followed"));
+        QVERIFY(fetcher);
+        const auto generationBefore = fetcher->status().generation;
+
+        FakeTelnetd second(toolsDir(), m_dir.path());
+        second.start();
+        setNetwork(second.port());
+
+        QVERIFY2(waitFor([&] {
+                     return second.connections() > 0
+                         && fetcher->status().state == FetchStatus::State::Live
+                         && fetcher->status().generation != generationBefore;
+                 },
+                         30000),
+                 qPrintable(fetcherState(*fetcher)));
+        // The old address was never refused: it was LEFT, which is the difference.
+        QVERIFY(first.isRunning());
+        QCOMPARE(readAll(fetcher->spoolPath(fetcher->status().generation)),
+                 QStringLiteral("one\n"));
+
+        closeFetcher(fetcher);
+        second.stop();
+        first.stop();
+    }
+
+    void aServiceThatDisappearsLeavesTheOpenLogAlone()
+    {
+        const QString log = m_dir.filePath(QStringLiteral("blink.log"));
+        {
+            QFile f(log);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("one\n");
+        }
+        FakeTelnetd server(toolsDir(), m_dir.path());
+        server.start();
+        setNetwork(server.port());
+
+        DiscoveryWatch watch;
+        watch.setWatchedTypes({boardsType()});
+        auto fetcher = openLive(addressFor(log), QStringLiteral("spool-blink"));
+        QVERIFY(fetcher);
+        const int connections = server.connections();
+        const auto generation = fetcher->status().generation;
+
+        // Bonjour says the device has gone. It has not.
+        {
+            const std::scoped_lock lock(m_net->mutex);
+            m_net->present = false;
+        }
+        QTest::qWait(int(kMoveGraceMs) + 1500);
+        // NOT AN EVENT: the cache is untouched, the session is untouched, the tab is untouched.
+        QVERIFY(lastSeenDevice(QStringLiteral("Boards"), QStringLiteral("board-1")).has_value());
+        QCOMPARE(fetcher->status().state, FetchStatus::State::Live);
+        QCOMPARE(fetcher->status().generation, generation);
+        QCOMPARE(server.connections(), connections);
+        // And the log goes on being tailed through it.
+        {
+            QFile f(log);
+            QVERIFY(f.open(QIODevice::Append));
+            f.write("two\n");
+        }
+        QVERIFY2(waitFor([&] {
+                     return readAll(fetcher->spoolPath(fetcher->status().generation))
+                         == QStringLiteral("one\ntwo\n");
+                 },
+                         15000),
+                 qPrintable(fetcherState(*fetcher)));
+
+        closeFetcher(fetcher);
+        server.stop();
+    }
+
+    void aServiceThatFlapsAtTheSameAddressIsNotReconnected()
+    {
+        const QString log = m_dir.filePath(QStringLiteral("flap.log"));
+        {
+            QFile f(log);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("one\n");
+        }
+        FakeTelnetd server(toolsDir(), m_dir.path());
+        server.start();
+        setNetwork(server.port());
+
+        DiscoveryWatch watch;
+        watch.setWatchedTypes({boardsType()});
+        auto fetcher = openLive(addressFor(log), QStringLiteral("spool-flap"));
+        QVERIFY(fetcher);
+        const int connections = server.connections();
+        const auto generation = fetcher->status().generation;
+
+        for (int i = 0; i < 6; ++i) {
+            {
+                const std::scoped_lock lock(m_net->mutex);
+                m_net->present = !m_net->present;
+            }
+            QTest::qWait(700);
+        }
+        QTest::qWait(int(kMoveGraceMs));
+        QCOMPARE(fetcher->status().state, FetchStatus::State::Live);
+        QCOMPARE(fetcher->status().generation, generation);
+        QCOMPARE(server.connections(), connections);
+
+        closeFetcher(fetcher);
+        server.stop();
+    }
+
+    void aDeviceReachedOverTwoAddressesDoesNotFlap()
+    {
+        const QString log = m_dir.filePath(QStringLiteral("twohomes.log"));
+        {
+            QFile f(log);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("one\n");
+        }
+        FakeTelnetd server(toolsDir(), m_dir.path());
+        server.start();
+        {
+            const std::scoped_lock lock(m_net->mutex);
+            m_net->host = QStringLiteral("127.0.0.1");
+            m_net->port = server.port();
+            m_net->addresses = {QStringLiteral("127.0.0.1"), QStringLiteral("192.0.2.1")};
+        }
+
+        DiscoveryWatch watch;
+        watch.setWatchedTypes({boardsType()});
+        auto fetcher = openLive(addressFor(log), QStringLiteral("spool-twohomes"));
+        QVERIFY(fetcher);
+        const int connections = server.connections();
+        const auto generation = fetcher->status().generation;
+
+        // The backend names one interface and then the other, as one per link does — and then
+        // goes on naming the OTHER one for longer than the grace period, which is what tells
+        // the address-set rule from a comparison of the preferred host: inside the grace either
+        // would hold, and past it only the set keeps a connection that is still to the device.
+        for (int i = 0; i < 4; ++i) {
+            {
+                const std::scoped_lock lock(m_net->mutex);
+                m_net->host = i % 2 ? QStringLiteral("127.0.0.1") : QStringLiteral("192.0.2.1");
+            }
+            QTest::qWait(700);
+        }
+        {
+            const std::scoped_lock lock(m_net->mutex);
+            m_net->host = QStringLiteral("192.0.2.1");
+        }
+        QTest::qWait(int(kMoveGraceMs) + 2000);
+        QCOMPARE(fetcher->status().state, FetchStatus::State::Live);
+        QCOMPARE(fetcher->status().generation, generation);
+        QCOMPARE(server.connections(), connections);
+
+        closeFetcher(fetcher);
+        server.stop();
+    }
+
+    void restartAppRunsOnTheDeviceWhereItIsNow()
+    {
+        // File ▸ Restart App on a discovered device (SPEC.md §4): it used to be refused by name,
+        // the errand reading an address the `discover://` one does not carry. Over telnet it
+        // runs in the console session registered under the DEVICE — the one its log signed in,
+        // which after a move is at the device's NEW address.
+        const QString log = m_dir.filePath(QStringLiteral("restart.log"));
+        {
+            QFile f(log);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("one\n");
+        }
+        FakeTelnetd first(toolsDir(), m_dir.path());
+        first.start();
+        setNetwork(first.port());
+        DiscoveryWatch watch;
+        watch.setWatchedTypes({boardsType()});
+        const RemoteLocation address = addressFor(log);
+        auto fetcher = openLive(address, QStringLiteral("spool-restart"));
+        QVERIFY(fetcher);
+        const auto generation = fetcher->status().generation;
+
+        FakeTelnetd second(toolsDir(), m_dir.path());
+        second.start();
+        setNetwork(second.port());
+        QVERIFY2(waitFor([&] {
+                     return second.connections() > 0
+                         && fetcher->status().state == FetchStatus::State::Live
+                         && fetcher->status().generation != generation;
+                 },
+                         30000),
+                 qPrintable(fetcherState(*fetcher)));
+
+        const QString marker = m_dir.filePath(QStringLiteral("restarted"));
+        const RestartTarget target = resolveRestartTarget(
+            address.toString(), QStringLiteral("echo \"$LOGFILE\" > %1").arg(marker));
+        QCOMPARE(target.state, RestartTarget::State::Resolved);
+        QString why;
+        QVERIFY2(restartTargetIsRunnable(target, &why), qPrintable(why));
+
+        RestartRunner runner;
+        std::optional<RestartResult> result;
+        connect(&runner, &RestartRunner::finished, this,
+                [&](const RestartResult &r) { result = r; });
+        runner.start(target);
+        QVERIFY(waitFor([&] { return result.has_value(); }, 30000));
+        QVERIFY2(result->ok, qPrintable(result->error));
+        QCOMPARE(result->exitCode, 0);
+        QCOMPARE(readAll(marker).trimmed(), log);
+
+        closeFetcher(fetcher);
+        second.stop();
+        first.stop();
+    }
+
     void aDeviceThatIsNotThereIsWaitedForAndSaysSo()
     {
         {
@@ -378,6 +717,45 @@ private slots:
     }
 
 private:
+    void setNetwork(int port)
+    {
+        const std::scoped_lock lock(m_net->mutex);
+        m_net->host = QStringLiteral("127.0.0.1");
+        m_net->port = port;
+        m_net->present = true;
+    }
+
+    // A fetcher for `address`, primed and Live, or null with the reason logged.
+    std::unique_ptr<SourceFetcher> openLive(const RemoteLocation &address, const QString &spool)
+    {
+        primeOptions(address);
+        QString error;
+        auto fetcher = makeDiscoveredFetcher(address, &error);
+        if (!fetcher) {
+            qWarning() << error;
+            return nullptr;
+        }
+        const QString spoolDir = m_dir.filePath(spool);
+        QDir().mkpath(spoolDir);
+        if (!fetcher->start(spoolDir, &error)) {
+            qWarning() << error;
+            return nullptr;
+        }
+        if (!waitFor([&] { return fetcher->status().state == FetchStatus::State::Live; },
+                     20000)) {
+            qWarning() << fetcherState(*fetcher);
+            return nullptr;
+        }
+        return fetcher;
+    }
+
+    static void closeFetcher(std::unique_ptr<SourceFetcher> &fetcher)
+    {
+        fetcher->requestStop();
+        waitFor([&] { return fetcher->isStopped(); }, 10000);
+        fetcher.reset();
+    }
+
     static QString fetcherState(const SourceFetcher &f)
     {
         const FetchStatus s = f.status();

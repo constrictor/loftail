@@ -50,9 +50,10 @@ struct ConsoleFetcherBinding
     // "change the settings on the fly" work — so the store behind it must be thread-safe.
     std::function<SerialFetchOptions(const RemoteLocation &)> options;
 
-    // Where to sign in THIS TIME, asked before every login when set (EndpointResolver.h).
-    // Unset for an address a person typed, which then signs in where it says.
-    EndpointResolver resolve;
+    // Where to sign in THIS TIME, asked before every login when set, and whether the far end
+    // signed in to is still the device's, asked every poll (EndpointResolver.h). Unset for an
+    // address a person typed, which then signs in where it says and never asks again.
+    EndpointSource endpoint;
 };
 
 // Always compiled: it names no QSerialPort and no socket type, only the two seams above.

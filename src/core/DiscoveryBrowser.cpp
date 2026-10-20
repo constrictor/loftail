@@ -152,6 +152,12 @@ void DiscoveryBrowser::report(const RemoteType &type, DiscoveredDevice device)
     device.typeName = type.name;
     if (device.displayName.isEmpty())
         device.displayName = device.id;
+    // `addresses` always holds `host`, and `host` is one of `addresses`: a backend that knows
+    // only one fills one, and every reader may then ask either.
+    if (device.host.isEmpty() && !device.addresses.isEmpty())
+        device.host = device.addresses.first();
+    if (!device.host.isEmpty() && !device.addresses.contains(device.host))
+        device.addresses.prepend(device.host);
     if (!deviceMatchesType(type, device))
         return;
     rememberDiscoveredDevice(device);

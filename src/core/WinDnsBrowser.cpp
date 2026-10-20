@@ -31,6 +31,7 @@
 
 #include <QCoreApplication>
 #include <QHash>
+#include <QHostAddress>
 #include <QMetaObject>
 #include <QPointer>
 #include <QTimer>
@@ -126,6 +127,19 @@ public:
             return;
         }
         m_browsing = true;
+        // RESOLVED AGAIN ON A CADENCE: a Windows resolve answers once and is over, so an address
+        // that moves under an instance that stays registered would otherwise never be reported
+        // to the standing watch (DiscoveryWatch.h). Ten seconds is a handful of mDNS questions
+        // a minute per device, against a move noticed within the window an open log tolerates.
+        if (!m_refresh) {
+            m_refresh = new QTimer(this);
+            m_refresh->setInterval(10000);
+            connect(m_refresh, &QTimer::timeout, this, [this] {
+                for (auto it = m_seen.cbegin(); it != m_seen.cend(); ++it)
+                    resolveInstance(it.value());
+            });
+        }
+        m_refresh->start();
     }
 
     void stop() override
@@ -140,6 +154,9 @@ public:
         }
         m_hook.reset();
         m_seen.clear();
+        m_lastReported.clear();
+        if (m_refresh)
+            m_refresh->stop();
     }
 
 private:
@@ -156,13 +173,22 @@ private:
         if (instance.endsWith(suffix, Qt::CaseInsensitive))
             instance.chop(suffix.size());
         if (removed) {
-            if (m_seen.remove(instance))
+            if (m_seen.remove(instance)) {
+                m_lastReported.remove(instance);
                 emit lost(m_type.name, instance);
+            }
             return;
         }
         if (m_seen.contains(instance))
             return;
-        m_seen.insert(instance, true);
+        m_seen.insert(instance, fullName);
+        resolveInstance(fullName);
+    }
+
+    void resolveInstance(const QString &fullName)
+    {
+        if (!m_hook)
+            return;
         auto *context = new ResolveContext;
         context->hook = m_hook;
         context->fullName = fullName.toStdWString();
@@ -220,14 +246,22 @@ private:
         if (instance->ip4Address) {
             const DWORD a = *instance->ip4Address;
             // Network byte order, as an IN_ADDR holds it.
-            device.host = QStringLiteral("%1.%2.%3.%4")
-                              .arg(a & 0xff)
-                              .arg((a >> 8) & 0xff)
-                              .arg((a >> 16) & 0xff)
-                              .arg((a >> 24) & 0xff);
-        } else {
-            device.host = fromWide(instance->pszHostName);
+            device.addresses.append(QStringLiteral("%1.%2.%3.%4")
+                                        .arg(a & 0xff)
+                                        .arg((a >> 8) & 0xff)
+                                        .arg((a >> 16) & 0xff)
+                                        .arg((a >> 24) & 0xff));
         }
+        if (instance->ip6Address) {
+            const QHostAddress v6(
+                reinterpret_cast<const quint8 *>(instance->ip6Address->IP6Byte));
+            if (!v6.isNull())
+                device.addresses.append(v6.toString());
+        }
+        // IPv4 preferred for `host`, as every backend prefers it; the host name only where the
+        // answer carried no address at all.
+        device.host = device.addresses.isEmpty() ? fromWide(instance->pszHostName)
+                                                 : device.addresses.first();
         device.port = instance->wPort;
         for (DWORD i = 0; i < instance->dwPropertyCount; ++i) {
             QString item = fromWide(instance->keys[i]);
@@ -250,6 +284,11 @@ private:
             if (!instanceName.isEmpty())
                 device.id = instanceName;
             device.displayName = device.id;
+            // A resolve restating what the last one said is not news.
+            const auto last = b->m_lastReported.constFind(device.id);
+            if (last != b->m_lastReported.constEnd() && *last == device)
+                return;
+            b->m_lastReported.insert(device.id, device);
             b->report(b->m_type, device);
         });
     }
@@ -259,7 +298,9 @@ private:
     std::wstring          m_query;
     DNS_SERVICE_CANCEL    m_cancel{};
     bool                  m_browsing = false;
-    QHash<QString, bool>  m_seen;
+    QHash<QString, QString>          m_seen;           // instance -> full name, to resolve again
+    QHash<QString, DiscoveredDevice> m_lastReported;
+    QTimer                          *m_refresh = nullptr;
 };
 
 } // namespace

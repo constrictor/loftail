@@ -42,6 +42,7 @@
 #include <avahi-common/strlst.h>
 #include <avahi-common/watch.h>
 
+#include <algorithm>
 #include <limits>
 
 #include <net/if.h>
@@ -225,14 +226,52 @@ public:
             avahi_client_free(m_client);
             m_client = nullptr;
         }
-        m_seen.clear();
-        m_reported.clear();
+        // ...and so do the resolvers, which is why the pointers are only forgotten here.
+        m_lookups.clear();
+        m_lastReported.clear();
     }
 
 private:
     void failLater(const QString &reason)
     {
         QTimer::singleShot(0, this, [this, reason] { emit failed(reason); });
+    }
+
+    // ONE LIVE RESOLVER PER (instance, interface, protocol), kept until that instance is
+    // REMOVED there. A resolver freed after its first answer — which is what this was — reports
+    // where a device was when it was first seen and never again, so a device whose service
+    // stays registered while its address moves was invisible to the standing watch
+    // (DiscoveryWatch.h). A live one re-emits FOUND whenever its SRV, TXT or address records
+    // change, which is the whole of how an address change reaches an open log.
+    struct Lookup
+    {
+        AvahiServiceResolver *resolver = nullptr;
+        QString               address;   // empty until resolved
+        int                   port = 0;
+        QStringList           txt;
+        bool                  v4 = false;
+        // What the browse said, kept so a resolver that FAILED can be made again (onResolve()).
+        AvahiIfIndex          iface = AVAHI_IF_UNSPEC;
+        AvahiProtocol         protocol = AVAHI_PROTO_UNSPEC;
+        QByteArray            type;
+        QByteArray            domain;
+    };
+
+    // How long a failed resolver waits before it is made again.
+    static constexpr int kResolveRetryMs = 3000;
+
+    void startResolver(const QString &instance, Lookup &lookup)
+    {
+        const QByteArray name = instance.toUtf8();
+        lookup.resolver = avahi_service_resolver_new(
+            m_client, lookup.iface, lookup.protocol, name.constData(), lookup.type.constData(),
+            lookup.domain.constData(), AVAHI_PROTO_UNSPEC, AvahiLookupFlags(0),
+            &AvahiBrowser::onResolve, this);
+    }
+
+    static quint64 lookupKey(AvahiIfIndex iface, AvahiProtocol protocol)
+    {
+        return (quint64(quint32(iface)) << 8) | quint64(quint8(protocol));
     }
 
     static void onBrowse(AvahiServiceBrowser *, AvahiIfIndex iface, AvahiProtocol protocol,
@@ -242,21 +281,38 @@ private:
         auto *self = static_cast<AvahiBrowser *>(userdata);
         const QString instance = QString::fromUtf8(name ? name : "");
         switch (event) {
-        case AVAHI_BROWSER_NEW:
-            ++self->m_seen[instance];
-            // Freed in onResolve, whatever it answers.
-            avahi_service_resolver_new(self->m_client, iface, protocol, name, type, domain,
-                                       AVAHI_PROTO_UNSPEC, AvahiLookupFlags(0),
-                                       &AvahiBrowser::onResolve, self);
+        case AVAHI_BROWSER_NEW: {
+            Lookup &lookup = self->m_lookups[instance][lookupKey(iface, protocol)];
+            lookup.iface = iface;
+            lookup.protocol = protocol;
+            lookup.type = QByteArray(type ? type : "");
+            lookup.domain = QByteArray(domain ? domain : "");
+            if (!lookup.resolver)
+                self->startResolver(instance, lookup);
             break;
-        case AVAHI_BROWSER_REMOVE:
+        }
+        case AVAHI_BROWSER_REMOVE: {
             // An instance is seen once per interface and protocol; it is gone when the last
-            // of those is.
-            if (--self->m_seen[instance] <= 0) {
-                self->m_seen.remove(instance);
+            // of those is. What is left of it is reported again, so a device that dropped off
+            // one network but not another moves to the one it is still on.
+            auto it = self->m_lookups.find(instance);
+            if (it == self->m_lookups.end())
+                break;
+            const auto at = it->find(lookupKey(iface, protocol));
+            if (at != it->end()) {
+                if (at->resolver)
+                    avahi_service_resolver_free(at->resolver);
+                it->erase(at);
+            }
+            if (it->isEmpty()) {
+                self->m_lookups.erase(it);
+                self->m_lastReported.remove(instance);
                 emit self->lost(self->m_type.name, instance);
+            } else {
+                self->reportInstance(instance);
             }
             break;
+        }
         case AVAHI_BROWSER_FAILURE:
             self->failLater(Tr::tr("Bonjour browsing failed — %1")
                                 .arg(QString::fromUtf8(
@@ -275,44 +331,111 @@ private:
                           void *userdata)
     {
         auto *self = static_cast<AvahiBrowser *>(userdata);
-        if (event == AVAHI_RESOLVER_FOUND && address) {
-            DiscoveredDevice device;
-            device.id = QString::fromUtf8(name ? name : "");
-            device.displayName = device.id;
-            char text[AVAHI_ADDRESS_STR_MAX] = {0};
-            avahi_address_snprint(text, sizeof text, address);
-            device.host = QString::fromLatin1(text);
-            // A link-local IPv6 address is meaningless without the interface it is on.
-            if (address->proto == AVAHI_PROTO_INET6 && device.host.startsWith(u"fe80")) {
-                char ifname[IF_NAMESIZE] = {0};
-                if (if_indextoname(unsigned(iface), ifname))
-                    device.host += QLatin1Char('%') + QString::fromLatin1(ifname);
-            }
-            if (device.host.isEmpty() && hostName)
-                device.host = QString::fromUtf8(hostName);
-            device.port = port;
-            for (AvahiStringList *it = txt; it; it = avahi_string_list_get_next(it)) {
-                device.details.append(QString::fromUtf8(
-                    reinterpret_cast<const char *>(avahi_string_list_get_text(it)),
-                    int(avahi_string_list_get_size(it))));
-            }
-            // IPv4 is preferred where a device has both: an IPv4 answer replaces an IPv6 one
-            // already reported, and not the other way round.
-            const bool v4 = address->proto == AVAHI_PROTO_INET;
-            const auto previous = self->m_reported.constFind(device.id);
-            if (previous == self->m_reported.constEnd() || v4 || !*previous) {
-                self->m_reported.insert(device.id, v4);
-                self->report(self->m_type, device);
-            }
+        const QString instance = QString::fromUtf8(name ? name : "");
+        Lookup *lookup = self->lookupOf(instance, resolver);
+        if (!lookup)
+            return;   // removed while the answer was on its way; freed there
+        if (event != AVAHI_RESOLVER_FOUND || !address) {
+            // A resolver that failed is finished, and NOTHING ELSE WILL MAKE ANOTHER: the
+            // service is still registered, so no NEW is coming. That is exactly what a device
+            // off its network for a while looks like — its address record withdrawn, the
+            // resolver timing out on it — and a resolver let go of here meant the address it
+            // came back with was never reported, found by driving the real application. So it is
+            // made again after a pause, for as long as the instance is still browsed on this
+            // link. Nothing is reported for the failure itself: a failed lookup is an absence of
+            // news, which is never a move (EndpointResolver.h).
+            avahi_service_resolver_free(resolver);
+            lookup->resolver = nullptr;
+            const quint64 key = lookupKey(lookup->iface, lookup->protocol);
+            QPointer<AvahiBrowser> guard(self);
+            AvahiClient *client = self->m_client;
+            QTimer::singleShot(kResolveRetryMs, self, [guard, client, instance, key] {
+                if (!guard || guard->m_client != client)
+                    return;   // stopped, or restarted with a client of its own, meanwhile
+                auto it = guard->m_lookups.find(instance);
+                if (it == guard->m_lookups.end())
+                    return;   // removed meanwhile
+                auto at = it->find(key);
+                if (at == it->end() || at->resolver)
+                    return;
+                guard->startResolver(instance, *at);
+            });
+            return;
         }
-        avahi_service_resolver_free(resolver);
+        char text[AVAHI_ADDRESS_STR_MAX] = {0};
+        avahi_address_snprint(text, sizeof text, address);
+        QString host = QString::fromLatin1(text);
+        // A link-local IPv6 address is meaningless without the interface it is on.
+        if (address->proto == AVAHI_PROTO_INET6 && host.startsWith(u"fe80")) {
+            char ifname[IF_NAMESIZE] = {0};
+            if (if_indextoname(unsigned(iface), ifname))
+                host += QLatin1Char('%') + QString::fromLatin1(ifname);
+        }
+        if (host.isEmpty() && hostName)
+            host = QString::fromUtf8(hostName);
+        lookup->address = host;
+        lookup->port = port;
+        lookup->v4 = address->proto == AVAHI_PROTO_INET;
+        lookup->txt.clear();
+        for (AvahiStringList *it = txt; it; it = avahi_string_list_get_next(it)) {
+            lookup->txt.append(QString::fromUtf8(
+                reinterpret_cast<const char *>(avahi_string_list_get_text(it)),
+                int(avahi_string_list_get_size(it))));
+        }
+        self->reportInstance(instance);
     }
 
-    RemoteType           m_type;
-    AvahiClient         *m_client = nullptr;
-    AvahiServiceBrowser *m_browser = nullptr;
-    QHash<QString, int>  m_seen;
-    QHash<QString, bool> m_reported;   // id -> reported with an IPv4 address
+    Lookup *lookupOf(const QString &instance, AvahiServiceResolver *resolver)
+    {
+        auto it = m_lookups.find(instance);
+        if (it == m_lookups.end())
+            return nullptr;
+        for (Lookup &l : *it) {
+            if (l.resolver == resolver)
+                return &l;
+        }
+        return nullptr;
+    }
+
+    // The instance as every interface and protocol currently has it: all of its addresses,
+    // with IPv4 preferred for `host` where it has both. Reported only when it differs from what
+    // was reported last, so a resolver restating itself is not news.
+    void reportInstance(const QString &instance)
+    {
+        const auto it = m_lookups.constFind(instance);
+        if (it == m_lookups.constEnd())
+            return;
+        DiscoveredDevice device;
+        device.id = instance;
+        device.displayName = instance;
+        const Lookup *chosen = nullptr;
+        for (const Lookup &l : *it) {
+            if (l.address.isEmpty())
+                continue;
+            if (!device.addresses.contains(l.address))
+                device.addresses.append(l.address);
+            if (!chosen || (l.v4 && !chosen->v4))
+                chosen = &l;
+        }
+        if (!chosen)
+            return;
+        device.host = chosen->address;
+        device.port = chosen->port;
+        device.details = chosen->txt;
+        // Stable order, so the change test below compares sets rather than arrival order.
+        std::sort(device.addresses.begin(), device.addresses.end());
+        const auto last = m_lastReported.constFind(instance);
+        if (last != m_lastReported.constEnd() && *last == device)
+            return;
+        m_lastReported.insert(instance, device);
+        report(m_type, device);
+    }
+
+    RemoteType                                        m_type;
+    AvahiClient                                      *m_client = nullptr;
+    AvahiServiceBrowser                              *m_browser = nullptr;
+    QHash<QString, QHash<quint64, Lookup>>            m_lookups;       // instance -> per link
+    QHash<QString, DiscoveredDevice>                  m_lastReported;  // instance -> as reported
 };
 
 } // namespace

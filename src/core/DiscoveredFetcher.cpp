@@ -19,12 +19,15 @@
 #include "DiscoveredFetcher.h"
 
 #include "DiscoveryBrowser.h"
+#include "DiscoveryWatch.h"
 #include "HostBookmarkStore.h"
 #include "SshFetcher.h"
 #include "TelnetSession.h"
 
 #include <QCoreApplication>
 
+#include <chrono>
+#include <memory>
 #include <mutex>
 
 namespace loftail {
@@ -77,45 +80,122 @@ RemoteLocation endpointFor(const RemoteType &type, const DiscoveredDevice &devic
     return out;
 }
 
-EndpointResolver discoveryResolver(const RemoteLocation &address, int lookupTimeoutMs)
+namespace {
+
+std::optional<RemoteLocation> resolveNow(const RemoteLocation &address, int lookupTimeoutMs,
+                                         const std::function<bool()> &abandoned, QString *why)
 {
-    return [address, lookupTimeoutMs](const std::function<bool()> &abandoned,
-                                      QString *why) -> std::optional<RemoteLocation> {
-        const auto type = knownRemoteType(address.discoveryType);
-        if (!type) {
-            if (why) {
-                *why = Tr::tr("There is no remote type called %1 any more — add it again in "
-                              "File ▸ Remote Parameters.")
-                           .arg(address.discoveryType);
-            }
-            return std::nullopt;
+    const auto type = knownRemoteType(address.discoveryType);
+    if (!type) {
+        if (why) {
+            *why = Tr::tr("There is no remote type called %1 any more — add it again in "
+                          "File ▸ Remote Parameters.")
+                       .arg(address.discoveryType);
         }
-        QString lookupFailure;
-        std::optional<DiscoveredDevice> device =
-            resolveDiscoveredDevice(*type, address.host, lookupTimeoutMs, abandoned,
-                                    &lookupFailure);
-        // A DEVICE THAT STOPPED ANSWERING DISCOVERY MAY STILL ANSWER A CONNECT: plenty of
-        // responders go quiet under load or drop off a multicast group after a network change.
-        // Its last address is worth one try, and a connect that fails is a wait like any other.
-        if (!device)
-            device = lastSeenDevice(type->name, address.host);
-        if (!device) {
-            if (why) {
-                *why = lookupFailure.isEmpty()
-                    ? Tr::tr("%1 is not on the network right now").arg(address.displayHost())
-                    : lookupFailure;
-            }
-            return std::nullopt;
+        return std::nullopt;
+    }
+    // A STANDING WATCH IS ALREADY LOOKING, so what it saw last is as current as a fresh
+    // lookup would be and costs nothing — where the lookup costs its whole timeout for a device
+    // that is switched off, on every retry.
+    std::optional<DiscoveredDevice> device = watchedDevice(type->name, address.host);
+    QString lookupFailure;
+    if (!device) {
+        device = resolveDiscoveredDevice(*type, address.host, lookupTimeoutMs, abandoned,
+                                         &lookupFailure);
+    }
+    // A DEVICE THAT STOPPED ANSWERING DISCOVERY MAY STILL ANSWER A CONNECT: plenty of
+    // responders go quiet under load or drop off a multicast group after a network change.
+    // Its last address is worth one try, and a connect that fails is a wait like any other.
+    if (!device)
+        device = lastSeenDevice(type->name, address.host);
+    if (!device) {
+        if (why) {
+            *why = lookupFailure.isEmpty()
+                ? Tr::tr("%1 is not on the network right now").arg(address.displayHost())
+                : lookupFailure;
         }
-        if (device->host.isEmpty()) {
-            if (why) {
-                *why = Tr::tr("%1 answered discovery without an address to connect to")
-                           .arg(address.displayHost());
-            }
-            return std::nullopt;
+        return std::nullopt;
+    }
+    if (device->host.isEmpty()) {
+        if (why) {
+            *why = Tr::tr("%1 answered discovery without an address to connect to")
+                       .arg(address.displayHost());
         }
-        return endpointFor(*type, *device, address);
+        return std::nullopt;
+    }
+    return endpointFor(*type, *device, address);
+}
+
+} // namespace
+
+EndpointSource discoveryEndpointSource(const RemoteLocation &address, int lookupTimeoutMs)
+{
+    EndpointSource source;
+    source.resolve = [address, lookupTimeoutMs](const std::function<bool()> &abandoned,
+                                                QString *why) {
+        return resolveNow(address, lookupTimeoutMs, abandoned, why);
     };
+
+    // The fetcher's own worker is the only caller, so the grace clock needs no lock; it is
+    // shared only so that the function object stays copyable.
+    struct Grace
+    {
+        bool                                  elsewhere = false;
+        std::chrono::steady_clock::time_point since;
+    };
+    auto grace = std::make_shared<Grace>();
+    source.stillCurrent = [address, grace](const RemoteLocation &endpoint, QString *where) {
+        const auto type = knownRemoteType(address.discoveryType);
+        // NOT KNOWING IS NEVER A MOVE: no type, no watch, a device the watch has not seen, or
+        // one it saw leave (which leaves the cache exactly as it was).
+        const std::optional<DiscoveredDevice> device =
+            type ? watchedDevice(type->name, address.host) : std::nullopt;
+        if (!type || !device || device->host.isEmpty()) {
+            grace->elsewhere = false;
+            return true;
+        }
+        const RemoteLocation now = endpointFor(*type, *device, address);
+        // The address SET, not the preferred host: a device on two interfaces is the same
+        // device on either, and must not be reconnected every time the backend names the
+        // other one. The port is a single value and compares directly.
+        const bool here = device->addresses.contains(endpoint.host, Qt::CaseInsensitive)
+            && now.port == endpoint.port;
+        if (here) {
+            grace->elsewhere = false;
+            return true;
+        }
+        // SEEN ELSEWHERE FOR A WHOLE GRACE PERIOD before it counts — measured in elapsed time,
+        // never in polls (M13's rule): a fresh browser's first answer may name one address of
+        // several, and the rest arrive milliseconds later.
+        const auto clock = std::chrono::steady_clock::now();
+        if (!grace->elsewhere) {
+            grace->elsewhere = true;
+            grace->since = clock;
+            return true;
+        }
+        if (clock - grace->since < std::chrono::milliseconds(kMoveGraceMs))
+            return true;
+        grace->elsewhere = false;
+        if (where)
+            *where = QStringLiteral("%1:%2").arg(now.host).arg(now.port);
+        return false;
+    };
+    return source;
+}
+
+RemoteLocation::Transport reachedOver(const RemoteLocation &address)
+{
+    if (address.transport != RemoteLocation::Transport::Discovered)
+        return address.transport;
+    const auto type = knownRemoteType(address.discoveryType);
+    return type ? type->transport() : RemoteLocation::Transport::Discovered;
+}
+
+std::optional<RemoteLocation> resolveDiscoveredEndpoint(const RemoteLocation &address,
+                                                        const std::function<bool()> &abandoned,
+                                                        QString *why)
+{
+    return resolveNow(address, 4000, abandoned, why);
 }
 
 std::unique_ptr<SourceFetcher> makeDiscoveredFetcher(const RemoteLocation &location,
@@ -131,9 +211,9 @@ std::unique_ptr<SourceFetcher> makeDiscoveredFetcher(const RemoteLocation &locat
         return nullptr;
     }
     if (type->connection == RemoteType::Connection::Telnet)
-        return makeTelnetFetcher(location, error, discoveryResolver(location));
+        return makeTelnetFetcher(location, error, discoveryEndpointSource(location));
 #if defined(LOFTAIL_HAVE_SSH)
-    return makeSshFetcher(location, error, discoveryResolver(location));
+    return makeSshFetcher(location, error, discoveryEndpointSource(location));
 #else
     if (error) {
         *error = Tr::tr("%1 is reached over SSH, and SSH support is not built into this copy "

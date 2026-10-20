@@ -358,6 +358,8 @@ target_sources(loftail_core PRIVATE
     # Bonjour backend is the platform's and is gated below.
     DiscoveryBrowser.cpp
     DiscoveryBrowser.h
+    DiscoveryWatch.cpp
+    DiscoveryWatch.h
     DiscoveryBackends.h
     OnvifBrowser.cpp
     # A `discover://` log: the type snapshot, the connect-time resolver and the factory that

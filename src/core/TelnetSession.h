@@ -107,6 +107,6 @@ std::unique_ptr<SourceFetcher> makeTelnetFetcher(const RemoteLocation &location,
 // every login. The session is still keyed on `location` — the DEVICE, whose address moves —
 // so two logs on one discovered device share one login as two on one host do.
 std::unique_ptr<SourceFetcher> makeTelnetFetcher(const RemoteLocation &location, QString *error,
-                                                 EndpointResolver resolve);
+                                                 EndpointSource endpoint);
 
 } // namespace loftail

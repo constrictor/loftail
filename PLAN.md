@@ -535,10 +535,12 @@ M25's strip could not line up with the thing it sat beside, and the reason is st
 - [x] `discover://Type/id/path`, `EndpointResolver` in the SSH and console fetchers, `makeDiscoveredFetcher()`, credentials filed per type.
 - [x] `RemoteBrowserDialog` as File ▸ Open Remote, `RemoteParametersDialog` as File ▸ Remote Parameters, the host form's telnet half and *Settings from*.
 - [x] `tst_telnetprotocol`, `tst_telnetsession`, `tst_discovery`, `tst_discoveredfetcher`, `tst_remotebrowser`, `tst_remoteparameters`, `tst_avahilive` (+ `packaging/test-mdns/run-mdns-tests.sh` and the `mdns-live` job), `fuzz_telnetprotocol`, `fuzz_wsdiscovery`, golden `types` fixture in `tst_schema`.
+- [x] A **standing watch** (`DiscoveryWatch`) over the types of the open `discover://` logs, refreshed from `relabelTabs()` and `documentsUnbound()`; `EndpointSource::stillCurrent` asked every poll, so an open log follows its device the moment it is seen elsewhere — even while the old address still answers — and a service that disappears is not an event. `DiscoveredDevice::addresses`, the address-set move rule and a 3 s elapsed grace. Avahi keeps its resolvers alive; `dns_sd` keeps resolves and a long-lived address query; Windows re-resolves every 10 s.
+- [x] Restart App and SSH config editing on a discovered device, resolved on the errand's worker; `FakeTelnetd` runs a multi-line framed command as one script, which is what a restart script over a console needs.
 
-**Done when** a device advertised over Bonjour opens from File ▸ Open Remote by reference, follows when it moves to a new address, and comes back with the session; a telnet log reads byte for byte; and an address typed outright can take its settings from a type. Verified by hand against a real Avahi daemon and a real pty under Xvfb.
+**Done when** a device advertised over Bonjour opens from File ▸ Open Remote by reference, follows when it moves to a new address — at once, whether or not the old one still answers, and not at all when the service merely blinks out — and comes back with the session; a telnet log reads byte for byte; and an address typed outright can take its settings from a type. Verified by hand against a real Avahi daemon and a real pty under Xvfb.
 
-**Risk.** The `dns_sd` and `windns` backends have only been compiled, by the macOS and Windows legs. Config editing and Restart App on a discovered device refuse rather than resolve.
+**Risk.** The `dns_sd` and `windns` backends have only been compiled, by the macOS and Windows legs — including their address-change reporting, which is the half the standing watch depends on. Config editing on a discovered device reached over telnet is refused, as any telnet host's is.
 
 ---
 

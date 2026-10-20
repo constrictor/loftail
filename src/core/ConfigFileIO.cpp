@@ -19,6 +19,7 @@
 #include "ConfigFileIO.h"
 
 #include "Decoder.h"
+#include "DiscoveredFetcher.h"
 #include "PromptRelay.h"
 #include "RemoteLocation.h"
 #include "RetryCountdown.h"
@@ -218,17 +219,24 @@ bool configAddressIsWritable(const QString &address, QString *reason)
     // THE SAME REFUSAL FOR TELNET (M28), and for the same reason: it is a login console, the
     // write would need `base64 -d` on the far end, and ConfigTransfer would otherwise try to
     // open an SSH session to a machine that may not run one.
-    // And a DISCOVERED device's (M28): its far end is known only to a fetcher that has just
-    // looked it up, and the config path through ConfigTransfer reads an address, not a lookup.
-    if (RemoteLocation::transportOf(address) == RemoteLocation::Transport::Discovered) {
+    //
+    // A DISCOVERED device is answered for as whatever its TYPE reaches it over (reachedOver()):
+    // a device whose type signs in by telnet gets the telnet sentence, and one reached over SSH
+    // is edited exactly as a typed host is — ConfigTransfer's withSshSession() finds the device
+    // first, where it is now. Only a device whose type has gone cannot be reached at all.
+    const auto location = RemoteLocation::parse(address);
+    const RemoteLocation::Transport via =
+        location ? reachedOver(*location)
+                 : RemoteLocation::transportOf(address).value_or(RemoteLocation::Transport::Ssh);
+    if (via == RemoteLocation::Transport::Discovered) {
         if (reason) {
-            *reason = Tr::tr("%1 is on a device found by discovery, and loftail cannot edit a "
-                             "config file there yet.")
+            *reason = Tr::tr("%1 is on a device of a remote type that is no longer configured "
+                             "— add it again in File ▸ Remote Parameters.")
                           .arg(RemoteLocation::withoutPassword(address));
         }
         return false;
     }
-    if (RemoteLocation::transportOf(address) == RemoteLocation::Transport::Telnet) {
+    if (via == RemoteLocation::Transport::Telnet) {
         if (reason) {
             *reason = Tr::tr("%1 is on a machine reached over telnet, and loftail cannot edit "
                              "a config file there yet.")

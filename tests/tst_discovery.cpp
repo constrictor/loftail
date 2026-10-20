@@ -38,6 +38,7 @@
 
 #include "DiscoveryBrowser.h"
 #include "DiscoveryMatch.h"
+#include "DiscoveryWatch.h"
 #include "RemoteType.h"
 
 using namespace loftail;
@@ -132,6 +133,11 @@ private slots:
     void aDeviceThatDoesNotAnswerIsNotFoundAndSaysSo();
     void aDeviceTheRulesExcludeIsNeverReported();
     void aBuildWithoutABackendSaysWhyRatherThanFindingNothing();
+
+    void everyXAddrIsAnAddressOfTheDevice();
+    void aReportedDeviceAlwaysListsItsHostAmongItsAddresses();
+    void theWatchRunsOneBrowserPerTypeAndRestartsOneThatChanged();
+    void aDeviceThatLeavesStaysInTheCacheAndIsAnsweredOnlyWhileWatched();
 
     void theOnvifBrowserFindsACameraOverRealMulticast();
 };
@@ -247,6 +253,169 @@ void TestDiscovery::aProbeMatchBecomesADeviceNamedByItsNameScope()
     m.scopes.clear();
     QCOMPARE(deviceFromProbeMatch(QStringLiteral("Cameras"), m).displayName,
              QStringLiteral("10.1.2.3"));
+}
+
+void TestDiscovery::everyXAddrIsAnAddressOfTheDevice()
+{
+    // A camera on two networks answers with an XAddr on each, and a connection to either is a
+    // connection to the camera — so both are its addresses, and the first is where it is.
+    WsProbeMatch m;
+    m.endpoint = QStringLiteral("urn:uuid:cam-8");
+    m.xaddrs = {QStringLiteral("http://10.1.2.3/onvif/device_service"),
+                QStringLiteral("http://192.168.7.3/onvif/device_service"),
+                QStringLiteral("not a url"),
+                QStringLiteral("http://10.1.2.3:8080/again")};
+    const DiscoveredDevice d = deviceFromProbeMatch(QStringLiteral("Cameras"), m);
+    QCOMPARE(d.host, QStringLiteral("10.1.2.3"));
+    QCOMPARE(d.addresses,
+             (QStringList{QStringLiteral("10.1.2.3"), QStringLiteral("192.168.7.3")}));
+}
+
+void TestDiscovery::aReportedDeviceAlwaysListsItsHostAmongItsAddresses()
+{
+    // report() is the one place every backend passes through, so it is where `host` and
+    // `addresses` are made to agree: the move rule asks the set, the connect asks the host.
+    DiscoveredDevice onlyHost = bonjourDevice(QStringLiteral("cam-1"), QStringLiteral("10.0.0.5"),
+                                              {QStringLiteral("model=X1")});
+    DiscoveredDevice onlySet = bonjourDevice(QStringLiteral("cam-2"), QString(),
+                                             {QStringLiteral("model=X1")});
+    onlySet.addresses = {QStringLiteral("10.0.0.6"), QStringLiteral("10.0.0.7")};
+    setDiscoveryBrowserFactory([=](const RemoteType &, QObject *parent) {
+        return std::make_unique<ScriptedBrowser>(QList<DiscoveredDevice>{onlyHost, onlySet}, 0,
+                                                 parent);
+    });
+    auto browser = makeDiscoveryBrowser(camerasOverBonjour());
+    QList<DiscoveredDevice> found;
+    connect(browser.get(), &DiscoveryBrowser::found, this,
+            [&](const DiscoveredDevice &d) { found.append(d); });
+    browser->start(camerasOverBonjour());
+    QTRY_COMPARE(found.size(), 2);
+    QCOMPARE(found.at(0).addresses, QStringList{QStringLiteral("10.0.0.5")});
+    QCOMPARE(found.at(1).host, QStringLiteral("10.0.0.6"));
+    QCOMPARE(found.at(1).addresses,
+             (QStringList{QStringLiteral("10.0.0.6"), QStringLiteral("10.0.0.7")}));
+}
+
+namespace {
+
+// Counts how many browsers the watch makes and how many are alive, per type name.
+struct BrowserCensus
+{
+    QHash<QString, int> made;
+    QHash<QString, int> alive;
+};
+
+class CountedBrowser final : public DiscoveryBrowser
+{
+public:
+    CountedBrowser(std::shared_ptr<BrowserCensus> census, QString name, QObject *parent)
+        : DiscoveryBrowser(parent), m_census(std::move(census)), m_name(std::move(name))
+    {
+        ++m_census->made[m_name];
+        ++m_census->alive[m_name];
+    }
+    ~CountedBrowser() override { --m_census->alive[m_name]; }
+    void start(const RemoteType &) override {}
+    void stop() override {}
+
+private:
+    std::shared_ptr<BrowserCensus> m_census;
+    QString                        m_name;
+};
+
+} // namespace
+
+void TestDiscovery::theWatchRunsOneBrowserPerTypeAndRestartsOneThatChanged()
+{
+    auto census = std::make_shared<BrowserCensus>();
+    setDiscoveryBrowserFactory([census](const RemoteType &type, QObject *parent) {
+        return std::make_unique<CountedBrowser>(census, type.name, parent);
+    });
+    RemoteType cams = camerasOverBonjour();
+    RemoteType boards;
+    boards.name = QStringLiteral("Boards");
+
+    {
+        DiscoveryWatch watch;
+        QVERIFY(!discoveryWatchIsRunning(cams.name));
+
+        watch.setWatchedTypes({cams});
+        QCOMPARE(census->made.value(cams.name), 1);
+        QVERIFY(discoveryWatchIsRunning(QStringLiteral("CAMERAS")));   // names fold
+
+        // The same definition again — what every relabel does — makes nothing new.
+        watch.setWatchedTypes({cams});
+        QCOMPARE(census->made.value(cams.name), 1);
+
+        // A changed definition is browsed again, with the old browser gone.
+        cams.txtRe = QStringLiteral("^model=Y");
+        watch.setWatchedTypes({cams, boards});
+        QCOMPARE(census->made.value(cams.name), 2);
+        QCOMPARE(census->alive.value(cams.name), 1);
+        QCOMPARE(census->alive.value(boards.name), 1);
+        QCOMPARE(watch.watchedTypeNames(), (QStringList{boards.name, cams.name}));
+
+        // A type no open log names any more is not browsed.
+        watch.setWatchedTypes({boards});
+        QCOMPARE(census->alive.value(cams.name), 0);
+        QVERIFY(!discoveryWatchIsRunning(cams.name));
+        QVERIFY(discoveryWatchIsRunning(boards.name));
+    }
+    // And the watch takes its browsers with it.
+    QCOMPARE(census->alive.value(boards.name), 0);
+    QVERIFY(!discoveryWatchIsRunning(boards.name));
+}
+
+namespace {
+
+// Reports one device and then says it has gone, which is what Bonjour does spuriously.
+class LeavingBrowser final : public DiscoveryBrowser
+{
+public:
+    using DiscoveryBrowser::DiscoveryBrowser;
+    void start(const RemoteType &type) override
+    {
+        m_type = type;
+        QTimer::singleShot(0, this, [this] {
+            report(m_type, bonjourDevice(QStringLiteral("cam-1"), QStringLiteral("10.0.0.5"),
+                                         {QStringLiteral("model=X1")}));
+            emit lost(m_type.name, QStringLiteral("cam-1"));
+            m_done = true;
+        });
+    }
+    void stop() override {}
+    bool m_done = false;
+
+private:
+    RemoteType m_type;
+};
+
+} // namespace
+
+void TestDiscovery::aDeviceThatLeavesStaysInTheCacheAndIsAnsweredOnlyWhileWatched()
+{
+    LeavingBrowser *made = nullptr;
+    setDiscoveryBrowserFactory([&made](const RemoteType &, QObject *parent) {
+        auto b = std::make_unique<LeavingBrowser>(parent);
+        made = b.get();
+        return b;
+    });
+    const RemoteType cams = camerasOverBonjour();
+    DiscoveryWatch watch;
+    watch.setWatchedTypes({cams});
+    QVERIFY(made);
+    QTRY_VERIFY(made->m_done);
+
+    // `lost` IS NOT AN EVENT: the cache keeps the device, and the watch answers for it.
+    QVERIFY(lastSeenDevice(cams.name, QStringLiteral("cam-1")).has_value());
+    const auto watched = watchedDevice(cams.name, QStringLiteral("cam-1"));
+    QVERIFY(watched.has_value());
+    QCOMPARE(watched->host, QStringLiteral("10.0.0.5"));
+
+    // With no watch the cache is a guess, and a "has it moved?" question gets no answer.
+    watch.setWatchedTypes({});
+    QVERIFY(!watchedDevice(cams.name, QStringLiteral("cam-1")).has_value());
+    QVERIFY(lastSeenDevice(cams.name, QStringLiteral("cam-1")).has_value());
 }
 
 void TestDiscovery::theConnectTimeLookupFindsTheDeviceByItsId()

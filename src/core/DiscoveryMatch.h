@@ -42,6 +42,11 @@ struct DiscoveredDevice
     QString     displayName;  // what a person would call it; the instance name, or an ONVIF name scope
     QString     host;         // an address to connect to, numeric where the backend gave one
     int         port = 0;     // the advertised port, 0 for none
+    // EVERY address the device answers on right now, `host` among them. A device reached over
+    // two interfaces reports both, and a connection to either is a connection to the device —
+    // so "the device moved" is the connected address LEAVING this set, never `host` changing,
+    // or such a device is reconnected every time the backend happens to name the other one.
+    QStringList addresses;
     QStringList details;      // TXT records as `key=value`, or ONVIF scope URIs
 
     bool operator==(const DiscoveredDevice &) const = default;
