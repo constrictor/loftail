@@ -27,8 +27,10 @@
 
 #include <QFileInfo>
 #include <QProcess>
+#include <QProcessEnvironment>
 
 #include "SerialFraming.h"
+#include "SshExecCommands.h"
 
 using namespace loftail;
 
@@ -63,7 +65,71 @@ private slots:
     void aStatusThatDoesNotParseIsCorrupt();
     void theCapNeverDropsAFrameThatHasAlreadyStarted();
     void aPromptLeftOnTheLineDoesNotHideTheBeginMarker();
+    void aMultiLineCommandThroughAnInteractiveShellStillEnds();
+    void aShortReadWhoseLastLineHasNoNewlineStillEnds();
 };
+
+void TestSerialFraming::aMultiLineCommandThroughAnInteractiveShellStillEnds()
+{
+    // WHAT A REAL CONSOLE DOES WITH A RESTART SCRIPT, through a real INTERACTIVE /bin/sh: the
+    // script is assignments and a brace group over several lines, so the shell prints its
+    // continuation prompt per line and its own prompt once the group has run — and that prompt
+    // is on the line the end marker comes out on. The marker used to be printed straight after
+    // it, never started a line, and Restart App over a console waited out its five-minute
+    // deadline with the script long finished: found by driving the real application against a
+    // shell on a pty, which no fixture running each line on its own could show.
+    if (!QFileInfo::exists(QStringLiteral("/bin/sh")))
+        QSKIP("no /bin/sh");
+    const SerialFrame f = frameFor();
+    // The REAL restart command, not an idea of one: its own shape — the group closing on a line
+    // of its own and the frame's redirect landing on the next — is the half that put a prompt
+    // in front of the marker, and a hand-written command without it passes against the bug.
+    const QByteArray framed = framedCommand(
+        restartScriptCommand(QStringLiteral("echo \"ran with $LOGFILE\""),
+                             {{QStringLiteral("LOGFILE"), QStringLiteral("/var/log/app.log")}}),
+        f, /*keepStdErr=*/true);
+    QProcess sh;
+    sh.setProcessChannelMode(QProcess::MergedChannels);   // the prompts go to stderr
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("PS1"), QStringLiteral("cam# "));
+    env.insert(QStringLiteral("PS2"), QStringLiteral("> "));
+    env.remove(QStringLiteral("ENV"));
+    sh.setProcessEnvironment(env);
+    sh.start(QStringLiteral("/bin/sh"), {QStringLiteral("-i")});
+    QVERIFY(sh.waitForStarted(5000));
+    sh.write(framed);
+    sh.write("exit\n");
+    sh.closeWriteChannel();
+    QVERIFY(sh.waitForFinished(10000));
+    const QByteArray stream = sh.readAll();
+    QVERIFY2(stream.contains("cam# "), stream.constData());   // the prompts are really there
+    const FramedAnswer a = readFramedAnswer(stream, f);
+    QVERIFY2(a.state == FramedAnswer::State::Complete, stream.constData());
+    QVERIFY2(a.output.contains("ran with /var/log/app.log"), a.output.constData());
+    QCOMPARE(a.exitCode, 0);
+}
+
+void TestSerialFraming::aShortReadWhoseLastLineHasNoNewlineStillEnds()
+{
+    // A RAW READ OF A LOG MID-LINE: `head -c L` of a file the writer is part-way through a
+    // line of ends without a newline, and the end marker used to follow those bytes on the
+    // same line — so the frame was never complete and the read waited out its deadline. And
+    // the newline the frame now puts in front of the marker is ITS OWN, so it must not reach
+    // the payload: an extra byte there is one the spool has and the log does not, at every
+    // offset after it.
+    if (!QFileInfo::exists(QStringLiteral("/bin/sh")))
+        QSKIP("no /bin/sh");
+    const SerialFrame f = frameFor(10);
+    QProcess sh;
+    sh.start(QStringLiteral("/bin/sh"),
+             {QStringLiteral("-c"), QString::fromUtf8(framedCommand(QStringLiteral("printf abc"), f))});
+    QVERIFY(sh.waitForFinished(10000));
+    const FramedAnswer a = readFramedAnswer(sh.readAllStandardOutput(), f);
+    QCOMPARE(a.state, FramedAnswer::State::Complete);
+    QVERIFY(a.shortPayload);
+    QCOMPARE(a.output, QByteArrayLiteral("abc"));
+    QCOMPARE(a.exitCode, 0);
+}
 
 void TestSerialFraming::aPromptLeftOnTheLineDoesNotHideTheBeginMarker()
 {
@@ -117,7 +183,7 @@ void TestSerialFraming::aRestartScriptKeepsItsStderrByAskingForIt()
 void TestSerialFraming::anAnswerIsWhatLiesBetweenTheMarkers()
 {
     const SerialFrame f = frameFor();
-    const QByteArray stream = begin(f) + "\n1024 1767225600\n" + end(f) + " 0\n";
+    const QByteArray stream = begin(f) + "\n1024 1767225600\n" + "\n" + end(f) + " 0\n";
     const FramedAnswer a = readFramedAnswer(stream, f);
     QCOMPARE(a.state, FramedAnswer::State::Complete);
     QCOMPARE(a.output, QByteArrayLiteral("1024 1767225600\n"));
@@ -125,7 +191,7 @@ void TestSerialFraming::anAnswerIsWhatLiesBetweenTheMarkers()
     QCOMPARE(a.consumed, stream.size());
 
     // A non-zero status rides the end marker, which is the whole reason it is there.
-    const QByteArray failed = begin(f) + "\n" + end(f) + " 127\n";
+    const QByteArray failed = begin(f) + "\n" + "\n" + end(f) + " 127\n";
     const FramedAnswer b = readFramedAnswer(failed, f);
     QCOMPARE(b.state, FramedAnswer::State::Complete);
     QCOMPARE(b.exitCode, 127);
@@ -140,8 +206,8 @@ void TestSerialFraming::theEchoOfTheCommandDoesNotOpenTheFrame()
     // in the middle of that echoed command line and lose the first read of every command.
     const SerialFrame f = frameFor();
     const QByteArray echoed = QByteArray("printf '\\n%s\\n' ") + begin(f)
-        + "; stat -c '%s %Y' /a.log; printf '%s %d\\n' " + end(f) + " \"$?\"\n";
-    const QByteArray stream = echoed + begin(f) + "\n1024 1767225600\n" + end(f) + " 0\n";
+        + "; stat -c '%s %Y' /a.log; printf '\\n%s %d\\n' " + end(f) + " \"$?\"\n";
+    const QByteArray stream = echoed + begin(f) + "\n1024 1767225600\n" + "\n" + end(f) + " 0\n";
 
     const FramedAnswer a = readFramedAnswer(stream, f);
     QCOMPARE(a.state, FramedAnswer::State::Complete);
@@ -156,7 +222,7 @@ void TestSerialFraming::noiseBeforeAndAfterTheFrameIsNotTheAnswer()
     // outside the markers is discarded, which is the whole of the tolerance.
     const SerialFrame f = frameFor();
     const QByteArray stream = QByteArrayLiteral("[   12.345678] usb 1-1: new device\r\n")
-        + begin(f) + "\n" + "42\n" + end(f) + " 0\n"
+        + begin(f) + "\n" + "42\n" + "\n" + end(f) + " 0\n"
         + QByteArrayLiteral("[   12.999999] eth0: link up\r\n");
     const FramedAnswer a = readFramedAnswer(stream, f);
     QCOMPARE(a.state, FramedAnswer::State::Complete);
@@ -180,7 +246,7 @@ void TestSerialFraming::aPayloadHoldingTheTokenIsNotTruncatedByIt()
     payload += QByteArrayLiteral("line three\n");
 
     SerialFrame f = frameFor(payload.size());
-    const QByteArray stream = begin(f) + "\n" + payload + end(f) + " 0\n";
+    const QByteArray stream = begin(f) + "\n" + payload + "\n" + end(f) + " 0\n";
 
     const FramedAnswer a = readFramedAnswer(stream, f);
     QCOMPARE(a.state, FramedAnswer::State::Complete);
@@ -199,11 +265,11 @@ void TestSerialFraming::aFrameIsIncompleteUntilItsEndMarkerHasAWholeLine()
     QVERIFY(readFramedAnswer(begin(f) + "\n42\n", f).state == FramedAnswer::State::Incomplete);
     // The end marker arrived but its line has not finished, so the status may still be
     // half-written: `1` of `127` would read as exit 1.
-    QVERIFY(readFramedAnswer(begin(f) + "\n42\n" + end(f) + " 12", f).state
+    QVERIFY(readFramedAnswer(begin(f) + "\n42\n" + "\n" + end(f) + " 12", f).state
             == FramedAnswer::State::Incomplete);
-    QVERIFY(readFramedAnswer(begin(f) + "\n42\n" + end(f) + " 127\n", f).state
+    QVERIFY(readFramedAnswer(begin(f) + "\n42\n" + "\n" + end(f) + " 127\n", f).state
             == FramedAnswer::State::Complete);
-    QCOMPARE(readFramedAnswer(begin(f) + "\n42\n" + end(f) + " 127\n", f).exitCode, 127);
+    QCOMPARE(readFramedAnswer(begin(f) + "\n42\n" + "\n" + end(f) + " 127\n", f).exitCode, 127);
 }
 
 void TestSerialFraming::aShortPayloadIsCompleteAndSaysItWasShort()
@@ -217,7 +283,7 @@ void TestSerialFraming::aShortPayloadIsCompleteAndSaysItWasShort()
     // log is small.
     SerialFrame f = frameFor(100);
     const QByteArray payload = QByteArray(40, 'x') + "\n";
-    const QByteArray stream = begin(f) + "\n" + payload + end(f) + " 0\n";
+    const QByteArray stream = begin(f) + "\n" + payload + "\n" + end(f) + " 0\n";
     const FramedAnswer a = readFramedAnswer(stream, f);
     QCOMPARE(a.state, FramedAnswer::State::Complete);
     QVERIFY(a.shortPayload);
@@ -227,7 +293,7 @@ void TestSerialFraming::aShortPayloadIsCompleteAndSaysItWasShort()
 
     // And a payload of exactly the bound is NOT flagged, or the flag says nothing.
     SerialFrame exact = frameFor(payload.size());
-    const QByteArray full = begin(exact) + "\n" + payload + end(exact) + " 0\n";
+    const QByteArray full = begin(exact) + "\n" + payload + "\n" + end(exact) + " 0\n";
     const FramedAnswer b = readFramedAnswer(full, exact);
     QCOMPARE(b.state, FramedAnswer::State::Complete);
     QVERIFY(!b.shortPayload);
@@ -240,7 +306,7 @@ void TestSerialFraming::aStatusThatDoesNotParseIsCorrupt()
     // but the state says not to trust it — the retry is the caller's choice, not this
     // function's, because for a metadata command the output may well be the whole answer.
     const SerialFrame f = frameFor();
-    const QByteArray stream = begin(f) + "\n42\n" + end(f) + " ??\n";
+    const QByteArray stream = begin(f) + "\n42\n" + "\n" + end(f) + " ??\n";
     const FramedAnswer a = readFramedAnswer(stream, f);
     QCOMPARE(a.state, FramedAnswer::State::Corrupt);
     QCOMPARE(a.output, QByteArrayLiteral("42\n"));

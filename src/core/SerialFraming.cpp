@@ -83,9 +83,18 @@ QByteArray framedCommand(const QString &command, const SerialFrame &frame, bool 
     // unanswered for its whole deadline, on every real console with a prompt; the pty and
     // telnet fixtures hid it by always writing a newline of their own before each answer. An
     // empty line before the marker is ignored like any other noise outside the frame.
+    //
+    // THE END MARKER GETS A NEWLINE OF ITS OWN TOO, for the same reason and two more, and
+    // readFramedAnswer() takes exactly that one back off. A command spanning several lines — a
+    // restart script is assignments and a brace group — makes an interactive shell print its
+    // PROMPT once the group has run, on the line the marker then landed on, so Restart App over
+    // a real console waited out its whole deadline with the script long finished. And a payload
+    // that does not end in a newline — a raw read of a log the writer is part-way through a
+    // line of — put the marker on the end of its last line, so a short read of such a file was
+    // never answered either.
     const QString redirect = keepStdErr ? QStringLiteral(" 2>&1") : QStringLiteral(" 2>/dev/null");
     return QByteArray("printf '\\n%s\\n' ") + beginMarker(frame.token) + "; "
-        + command.toUtf8() + redirect.toUtf8() + "; printf '%s %d\\n' "
+        + command.toUtf8() + redirect.toUtf8() + "; printf '\\n%s %d\\n' "
         + endMarker(frame.token) + " \"$?\"\n";
 }
 
@@ -104,31 +113,41 @@ FramedAnswer readFramedAnswer(const QByteArray &buffer, const SerialFrame &frame
     if (frame.expected >= 0) {
         // LENGTH-DELIMITED. The payload may be arbitrary bytes — a log — so it may contain
         // this very token, and scanning it would truncate the log at that point.
-        if (buffer.size() - payloadStart < frame.expected) {
-            // Fewer bytes than the command was bounded to. Two readings, and they need
-            // telling apart: the rest may still be arriving, or the far end may have
-            // FINISHED and sent less.
-            //
-            // A SHORT PAYLOAD IS THE ORDINARY END OF A FILE AND NOT AN ERROR: `head -c L`
-            // gives fewer bytes whenever the file holds fewer, which is what the byte-safety
-            // probe does on purpose — it asks for a 4 KB sample of a log that may be a
-            // hundred bytes long. So if the end marker has ALREADY arrived, the frame is
-            // complete and simply shorter than the bound; the flag says so and the caller
-            // decides what that means for it.
-            //
-            // The scan below is over the payload region, which is the hazard the
-            // length-delimiting rule exists against — but it is reached only once the
-            // payload is already short, and what it produces is a short answer rather than
-            // a log truncated in silence.
-            if (endOfMarkerLine(buffer, end, payloadStart) < 0)
-                return out;   // Incomplete: more is coming.
-            // Short and finished. Leave payloadEnd unset so the marker-delimited path below
-            // bounds it, and search from the start of the payload rather than from a length
-            // that reaches past the end of the buffer.
-            out.shortPayload = true;
+        //
+        // FULL OR SHORT IS READ OFF THE FRAME, never off how many bytes have arrived. The frame
+        // closes with its own newline and the end marker (framedCommand()), so a payload of
+        // exactly the bound has that terminator AT the bound, and one that is short has it
+        // earlier. Counting bytes instead — "fewer than the bound arrived, so it is short" —
+        // read a payload a few bytes short of its bound as a full one, the marker's own line
+        // making up the difference: the marker then went into the log as data.
+        const qsizetype fullEnd = payloadStart + frame.expected;
+        const QByteArray terminator = QByteArray("\n") + end;
+        if (buffer.size() >= fullEnd + terminator.size()
+            && buffer.mid(fullEnd, terminator.size()) == terminator) {
+            payloadEnd = fullEnd;
+            searchFrom = fullEnd;
         } else {
-            payloadEnd = payloadStart + frame.expected;
-            searchFrom = payloadEnd;
+            const qsizetype at = buffer.indexOf(terminator, payloadStart);
+            if (at < 0 || endOfMarkerLine(buffer, end, at + 1) < 0) {
+                // Not closed yet: more of the payload, or the marker's line, is coming.
+                if (buffer.size() < fullEnd + terminator.size())
+                    return out;
+                // The bound has been passed with no terminator at it or before it — a frame
+                // whose structure disagrees with itself. The search below finds the marker
+                // where it is and reports the frame Corrupt rather than reading past it.
+                payloadEnd = fullEnd;
+                searchFrom = fullEnd;
+            } else if (at < fullEnd) {
+                // A SHORT PAYLOAD IS THE ORDINARY END OF A FILE AND NOT AN ERROR: `head -c L`
+                // gives fewer bytes whenever the file holds fewer, which is what the
+                // byte-safety probe does on purpose — it asks for a 4 KB sample of a log that
+                // may be a hundred bytes long. The flag says so and the caller decides what that
+                // means for it. Left to the marker-delimited path below to bound.
+                out.shortPayload = true;
+            } else {
+                payloadEnd = fullEnd;
+                searchFrom = fullEnd;
+            }
         }
     }
 
@@ -151,8 +170,20 @@ FramedAnswer readFramedAnswer(const QByteArray &buffer, const SerialFrame &frame
     if (statusLineStart < 0)
         return out;   // Incomplete: the end marker has not arrived.
 
-    if (payloadEnd < 0)
+    if (payloadEnd < 0) {
         payloadEnd = statusLineStart;
+        // THE FRAME'S OWN NEWLINE before the end marker (framedCommand()) is not the payload's,
+        // and exactly that one comes off — a carriage return with it on a scanned answer, which
+        // a console still translating newlines adds. Not on a raw short read, which runs only
+        // once `stty raw` has taken, where a CR in front of it is the log's own byte.
+        if (payloadEnd > payloadStart && buffer.at(payloadEnd - 1) == '\n') {
+            --payloadEnd;
+            if (frame.expected < 0 && payloadEnd > payloadStart
+                && buffer.at(payloadEnd - 1) == '\r') {
+                --payloadEnd;
+            }
+        }
+    }
 
     if (payloadEnd > statusLineStart) {
         // The bound reached past the end marker, which cannot happen for a well-formed frame:
