@@ -182,7 +182,7 @@ void RestartDialog::onFinished(const RestartResult &result)
         // by itself, where over SSH it would have stayed up: that difference is the reader's to
         // know rather than to discover.
         text += QLatin1Char('\n')
-            + tr("A serial console carries one stream, so error output could not be told from "
+            + tr("A login console carries one stream, so error output could not be told from "
                  "ordinary output; this run was judged on its exit status alone.");
     }
     m_status->setText(text);

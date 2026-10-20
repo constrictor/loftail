@@ -36,6 +36,7 @@
 #include <QTabWidget>
 #include <QTimer>
 
+#include "DiscoveryBrowser.h"
 #include "Document.h"
 #include "DocumentContext.h"
 #include "DocumentView.h"
@@ -175,6 +176,7 @@ private slots:
     void aChangedReasonReachesTheViewTheTabAndTheStatusBar();
     void aDisconnectKeepsTheRecordsAndSaysSoBesideThem();
     void aSavedHostNamesTheTabRatherThanItsAddress();
+    void aDiscoveredTabKeepsItsTypeWatchedUntilItCloses();
 };
 
 void TestRemoteOpen::opensARemoteUrlAsATab()
@@ -296,13 +298,14 @@ void TestRemoteOpen::menuEntriesExist()
     auto *hosts = window.findChild<QMenu *>(QStringLiteral("remoteHostsMenu"));
     QVERIFY(hosts);
 
-#if defined(LOFTAIL_HAVE_SSH)
+    // LIVE IN EVERY BUILD since M28: telnet and ONVIF discovery need no optional dependency,
+    // so a build without libssh2 still opens remote logs — and says what it cannot do.
     QVERIFY(openRemote->isEnabled());
     QVERIFY(hosts->isEnabled());
-#else
-    // Present but disabled, with a tooltip saying why — a missing menu item would
-    // just look like the feature does not exist.
-    QVERIFY(!openRemote->isEnabled());
+    auto *parameters = window.findChild<QAction *>(QStringLiteral("remoteParametersAction"));
+    QVERIFY(parameters);
+    QVERIFY(parameters->isEnabled());
+#if !defined(LOFTAIL_HAVE_SSH)
     QVERIFY(openRemote->toolTip().contains(QStringLiteral("without SSH support")));
 #endif
 }
@@ -735,6 +738,60 @@ void TestRemoteOpen::aSavedHostNamesTheTabRatherThanItsAddress()
     QVERIFY(tabs(window)->tabToolTip(0).startsWith(RemoteLocation::normalize(url())));
 
     QVERIFY(store.replaceAll({})); // inside the farm's test mode, where it was written
+}
+
+namespace {
+
+// A browser that looks for nothing: the case is about WHICH types are watched, and a real
+// backend would go looking on whatever network the runner has.
+class SilentBrowser final : public DiscoveryBrowser
+{
+public:
+    using DiscoveryBrowser::DiscoveryBrowser;
+    void start(const RemoteType &) override {}
+    void stop() override {}
+};
+
+} // namespace
+
+void TestRemoteOpen::aDiscoveredTabKeepsItsTypeWatchedUntilItCloses()
+{
+    // The standing watch follows the set of open logs (DiscoveryWatch.h): browsing a type
+    // starts with the first log open on one of its devices and stops with the last — and a
+    // window with no such log browses nothing at all.
+    FakeRemoteFarm farm;
+    setDiscoveryBrowserFactory([](const RemoteType &, QObject *parent) {
+        return std::make_unique<SilentBrowser>(parent);
+    });
+    const QString address = QStringLiteral("discover://Lab%20Cams/cam-1/var/log/app.log");
+    farm.at(address)->setInitialContent(sampleLog());
+
+    HostBookmarkStore store(HostBookmarkStore::defaultDir());
+    RemoteType cams;
+    cams.name = QStringLiteral("Lab Cams");
+    cams.connection = RemoteType::Connection::Telnet;
+    RemoteType printers;
+    printers.name = QStringLiteral("Printers");
+    QVERIFY(store.replaceTypes({cams, printers}));
+
+    {
+        MainWindow window;
+        QVERIFY(window.watchedRemoteTypes().isEmpty());
+        window.openFile(address, QString::fromLatin1(kPattern));
+        settle();
+        QCOMPARE(tabCount(window), 1);
+        // The type of the open log, and not every type there is.
+        QCOMPARE(window.watchedRemoteTypes(), QStringList{QStringLiteral("Lab Cams")});
+
+        auto *close = window.findChild<QAction *>(QStringLiteral("closeTabAction"));
+        QVERIFY(close);
+        close->trigger();
+        QTRY_COMPARE(tabCount(window), 0);
+        QTRY_VERIFY(window.watchedRemoteTypes().isEmpty());
+    }
+
+    setDiscoveryBrowserFactory(nullptr);
+    QVERIFY(store.replaceTypes({})); // inside the farm's test mode, where it was written
 }
 
 int main(int argc, char *argv[])

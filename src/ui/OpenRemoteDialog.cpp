@@ -21,7 +21,9 @@
 #include "CollapsibleSection.h"
 #include "RemoteLocation.h"
 #include "SecretStore.h"
+#include "SerialProfileStore.h"
 #include "SshFetcher.h"
+#include "SshPrompter.h"
 #include "UiColors.h"
 
 #include <QCheckBox>
@@ -97,8 +99,8 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
     auto *connectionBox = new QGroupBox(tr("Connection"), this);
     auto *connectionLayout = new QVBoxLayout(connectionBox);
 
-    auto *pasteHint = new QLabel(tr("Paste a whole ssh:// address into any field to fill "
-                                    "in the rest."),
+    auto *pasteHint = new QLabel(tr("Paste a whole ssh:// or telnet:// address into any field "
+                                    "to fill in the rest."),
                                  connectionBox);
     pasteHint->setWordWrap(true);
     {
@@ -111,6 +113,27 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
     auto *form = new QFormLayout;
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     connectionLayout->addLayout(form);
+
+    // M28 — COPY, NOT LINK. Choosing a remote type or another saved host fills the form in
+    // from it, so a machine typed by address need not have every setting typed as well; what
+    // is opened or saved afterwards is the form, owing nothing to where it was filled from.
+    m_settingsFrom = new QComboBox(connectionBox);
+    m_settingsFrom->setObjectName(QStringLiteral("remoteSettingsFrom"));
+    m_settingsFrom->setToolTip(tr("Fill the form in from a remote type or another saved host. "
+                                  "The host already typed is kept."));
+    auto *settingsFromLabel = new QLabel(tr("Settings &from:"), connectionBox);
+    settingsFromLabel->setBuddy(m_settingsFrom);
+    form->addRow(settingsFromLabel, m_settingsFrom);
+
+    // SSH or telnet. The rest of the form is the same address either way — a telnet far end
+    // is a host, a port, an account and a log path — and only the sign-in differs.
+    m_connection = new QComboBox(connectionBox);
+    m_connection->setObjectName(QStringLiteral("remoteConnectionCombo"));
+    m_connection->addItem(tr("SSH"), int(RemoteType::Connection::Ssh));
+    m_connection->addItem(tr("Telnet"), int(RemoteType::Connection::Telnet));
+    auto *connectionLabel = new QLabel(tr("Connection t&ype:"), connectionBox);
+    connectionLabel->setBuddy(m_connection);
+    form->addRow(connectionLabel, m_connection);
 
     m_user = new QLineEdit(connectionBox);
     m_user->setObjectName(QStringLiteral("remoteUserField"));
@@ -180,7 +203,20 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
     m_auth->setObjectName(QStringLiteral("remoteAuthCombo"));
     m_auth->addItem(tr("SSH agent or key (recommended)"), int(HostBookmark::Auth::Agent));
     m_auth->addItem(tr("Password"), int(HostBookmark::Auth::Password));
-    signInForm->addRow(tr("&With:"), m_auth);
+    m_authLabel = new QLabel(tr("&With:"), signInBox);
+    m_authLabel->setBuddy(m_auth);
+    signInForm->addRow(m_authLabel, m_auth);
+
+    // A TELNET LOGIN IS NEVER PROMPTED FOR: the console conversation answers the far end's
+    // `Password:` itself, with whatever was given here (M28). So this field is the whole of
+    // how a telnet password is supplied, and it means something only with an account to go
+    // with it — hence enabled only while the user field has one.
+    m_password = new QLineEdit(signInBox);
+    m_password->setObjectName(QStringLiteral("remotePasswordField"));
+    m_password->setEchoMode(QLineEdit::Password);
+    m_passwordLabel = new QLabel(tr("P&assword:"), signInBox);
+    m_passwordLabel->setBuddy(m_password);
+    signInForm->addRow(m_passwordLabel, m_password);
 
     m_remember = new QCheckBox(tr("Re&member the password after I enter it"), signInBox);
     m_remember->setObjectName(QStringLiteral("remoteRememberPassword"));
@@ -268,6 +304,17 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
                               "uncompressed."));
     advancedForm->addRow(m_compress);
 
+    // Telnet only: which serial.json preset the login conversation is held to — the prompts,
+    // the startup commands, the reboot pattern. The line settings in it mean nothing here.
+    m_consolePreset = new QComboBox(advancedContent);
+    m_consolePreset->setObjectName(QStringLiteral("remoteConsolePreset"));
+    m_consolePreset->addItem(tr("(built-in defaults)"), QString());
+    for (const SerialProfile &p : SerialProfileStore(SerialProfileStore::defaultDir()).presets())
+        m_consolePreset->addItem(p.name, p.name);
+    auto *consolePresetLabel = new QLabel(tr("Console &login preset:"), advancedContent);
+    consolePresetLabel->setBuddy(m_consolePreset);
+    advancedForm->addRow(consolePresetLabel, m_consolePreset);
+
     m_advanced->setContentWidget(advancedContent);
     rightColumn->addWidget(m_advanced);
     rightColumn->addStretch();
@@ -313,7 +360,15 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
     });
     setPasswordAuth(false); // the combo starts on "SSH agent or key"
 
+    connect(m_connection, &QComboBox::currentIndexChanged, this,
+            [this] { setConnection(connection()); });
+    connect(m_user, &QLineEdit::textChanged, this, &OpenRemoteDialog::updatePasswordField);
+    connect(m_settingsFrom, &QComboBox::activated, this, &OpenRemoteDialog::applySettingsSource);
+    setConnection(RemoteType::Connection::Ssh);
+    ensureReadablePlaceholder(m_password);
+
     reloadBookmarks();
+    reloadSettingsSources();
     updateActions();
     m_host->setFocus();
 }
@@ -321,6 +376,7 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
 void OpenRemoteDialog::reloadBookmarks()
 {
     m_bookmarks = m_store ? m_store->all() : QVector<HostBookmark>();
+    reloadSettingsSources();
     const QSignalBlocker block(m_list);
     m_list->clear();
     for (const HostBookmark &b : m_bookmarks)
@@ -338,6 +394,13 @@ void OpenRemoteDialog::showBookmark(int row)
 
 void OpenRemoteDialog::preset(const HostBookmark &bookmark, const QString &path)
 {
+    // The connection FIRST: switching it moves the port between the two defaults, which must
+    // happen before the bookmark's own port is written rather than after it.
+    setConnection(bookmark.connection);
+    m_consolePreset->setCurrentIndex(qMax(0, m_consolePreset->findData(bookmark.consolePreset)));
+    m_password->setText(bookmark.connection == RemoteType::Connection::Telnet
+                            ? bookmark.password
+                            : QString());
     m_label->setText(bookmark.label);
     m_user->setText(bookmark.user);
     m_host->setText(bookmark.host);
@@ -423,6 +486,11 @@ void OpenRemoteDialog::showPathMenu(const QPoint &where)
 HostBookmark OpenRemoteDialog::currentFields() const
 {
     HostBookmark b;
+    b.connection = connection();
+    if (b.connection == RemoteType::Connection::Telnet) {
+        b.consolePreset = m_consolePreset->currentData().toString();
+        b.password = m_password->text();
+    }
     b.label = m_label->text().trimmed();
     b.user = m_user->text().trimmed();
     b.host = m_host->text().trimmed();
@@ -451,6 +519,10 @@ HostBookmark OpenRemoteDialog::currentFields() const
 
 void OpenRemoteDialog::setPasswordAuth(bool password)
 {
+    // A telnet password is typed HERE rather than asked for later, so remembering it is
+    // always on offer — while there is an account for it to belong to.
+    if (connection() == RemoteType::Connection::Telnet)
+        password = !m_user->text().trimmed().isEmpty();
     m_remember->setEnabled(password);
     if (!password)
         m_remember->setChecked(false);
@@ -459,7 +531,8 @@ void OpenRemoteDialog::setPasswordAuth(bool password)
 
 void OpenRemoteDialog::updateConsent()
 {
-    const bool password = m_auth->currentData().toInt() == int(HostBookmark::Auth::Password);
+    const bool password = connection() == RemoteType::Connection::Telnet
+        || m_auth->currentData().toInt() == int(HostBookmark::Auth::Password);
     if (!password) {
         m_consent->setText(QStringLiteral("<span style='color:%1'>%2</span>")
                                .arg(mutedColor(palette()).name(),
@@ -489,6 +562,7 @@ void OpenRemoteDialog::updateConsent()
 void OpenRemoteDialog::updateActions()
 {
     RemoteLocation location;
+    location.transport = currentFields().transport();
     location.user = m_user->text().trimmed();
     location.host = m_host->text().trimmed();
     location.port = m_port->value();
@@ -518,11 +592,20 @@ void OpenRemoteDialog::absorbPastedUrl(QLineEdit *field)
     // a port and an SSH account — would otherwise absorb a device address and silently
     // produce a host named `ttyusb0`, lowercased by QUrl on the way through. A serial
     // address belongs in the serial form; here it is left alone as any other text is.
-    if (RemoteLocation::transportOf(text) != RemoteLocation::Transport::Ssh)
+    //
+    // TELNET IS ABSORBED TOO (M28) — it is the same host-port-account-path form — and the
+    // connection combo follows the address, so pasting `telnet://` switches it.
+    const auto transport = RemoteLocation::transportOf(text);
+    if (transport != RemoteLocation::Transport::Ssh
+        && transport != RemoteLocation::Transport::Telnet) {
         return;
+    }
     const auto location = RemoteLocation::parse(text);
     if (!location || location->host.isEmpty())
         return;
+
+    setConnection(transport == RemoteLocation::Transport::Telnet ? RemoteType::Connection::Telnet
+                                                                 : RemoteType::Connection::Ssh);
 
     // Every field is rewritten, which is also what removes the pasted URL from the one
     // it landed in. The path is the exception: a host-only URL (`ssh://prod-web`) must
@@ -572,6 +655,32 @@ void OpenRemoteDialog::saveCurrentAsBookmark()
                 b.password = existing.password;
         }
     }
+
+    // A TELNET PASSWORD TYPED HERE GOES WHERE THE CHECKBOX SAID IT WOULD: the keychain where
+    // one answers — and then not into the file — or hosts.json where none does, which the
+    // consent note named before the box could be ticked. A keychain that refuses is reported
+    // and nothing is written in its place (rememberSshPassword()'s rule, M14).
+    if (b.connection == RemoteType::Connection::Telnet) {
+        if (!b.savePassword || b.user.isEmpty()) {
+            b.password.clear();
+            b.savePassword = false;
+        } else if (!b.password.isEmpty()) {
+            QString message;
+            switch (rememberSshPassword(b.locationFor(QString()).target(), b.password, &message)) {
+            case RememberOutcome::StoredInKeychain:
+                b.password.clear();   // the keychain holds it; the file says only "remembered"
+                break;
+            case RememberOutcome::UseFileFallback:
+                break;
+            case RememberOutcome::Failed:
+                QMessageBox::warning(this, tr("Password not remembered"),
+                                     tr("The keychain refused the password: %1").arg(message));
+                b.password.clear();
+                b.savePassword = false;
+                break;
+            }
+        }
+    }
     m_store->save(b);
     reloadBookmarks();
 
@@ -619,12 +728,21 @@ void OpenRemoteDialog::accept()
 {
     const HostBookmark fields = currentFields();
     RemoteLocation location;
+    location.transport = fields.transport();
     location.user = fields.user;
     location.host = fields.host;
     location.port = fields.port;
     location.path = m_path->currentText().trimmed();
     if (!location.isValid())
         return; // a guard only: the Open button is disabled while this can happen
+
+    // A telnet password typed for this open answers this login, whether or not the host is
+    // saved: into the session's cache, under the key the console looks it up by.
+    if (fields.connection == RemoteType::Connection::Telnet) {
+        m_chosenConsolePreset = fields.consolePreset;
+        if (!fields.user.isEmpty() && !fields.password.isEmpty())
+            SshCredentialCache::remember(location.target(), fields.password);
+    }
 
     // Carry the fetch tuning to the fetcher that is about to be built for this exact
     // location (SshFetcher.h), so the poll cadence and any tail-only choice apply to
@@ -633,6 +751,132 @@ void OpenRemoteDialog::accept()
 
     m_chosenUrl = location.toString();
     QDialog::accept();
+}
+
+} // namespace loftail
+
+namespace loftail {
+
+RemoteType::Connection OpenRemoteDialog::connection() const
+{
+    return static_cast<RemoteType::Connection>(m_connection->currentData().toInt());
+}
+
+void OpenRemoteDialog::setConnection(RemoteType::Connection connection)
+{
+    const bool telnet = connection == RemoteType::Connection::Telnet;
+    {
+        const QSignalBlocker block(m_connection);
+        m_connection->setCurrentIndex(m_connection->findData(int(connection)));
+    }
+    // The port follows the connection while it is still the OTHER one's default — a port
+    // somebody typed is theirs and is left alone.
+    const int ssh = RemoteLocation::defaultPortFor(RemoteLocation::Transport::Ssh);
+    const int tel = RemoteLocation::defaultPortFor(RemoteLocation::Transport::Telnet);
+    if (telnet && m_port->value() == ssh)
+        m_port->setValue(tel);
+    else if (!telnet && m_port->value() == tel)
+        m_port->setValue(ssh);
+
+    // SSH chooses how to sign in; telnet is told the password up front. Hidden rather than
+    // greyed, because neither row means anything to the other connection.
+    m_authLabel->setVisible(!telnet);
+    m_auth->setVisible(!telnet);
+    m_passwordLabel->setVisible(telnet);
+    m_password->setVisible(telnet);
+    m_consolePreset->setEnabled(telnet);
+    m_compress->setEnabled(!telnet);
+    m_user->setPlaceholderText(telnet ? tr("the account the login prompt is answered with")
+                                      : tr("defaults to your SSH configuration"));
+    setPasswordAuth(!telnet
+                    && m_auth->currentData().toInt() == int(HostBookmark::Auth::Password));
+    updatePasswordField();
+    updateActions();
+}
+
+void OpenRemoteDialog::updatePasswordField()
+{
+    // A password belongs to an account: with no user there is nobody for it to sign in as.
+    const bool hasUser = !m_user->text().trimmed().isEmpty();
+    m_password->setEnabled(hasUser);
+    if (connection() == RemoteType::Connection::Telnet) {
+        m_remember->setEnabled(hasUser);
+        if (!hasUser)
+            m_remember->setChecked(false);
+        updateConsent();
+    }
+}
+
+void OpenRemoteDialog::reloadSettingsSources()
+{
+    if (!m_settingsFrom)
+        return;
+    m_types = m_store ? m_store->types() : QVector<RemoteType>();
+    const QSignalBlocker block(m_settingsFrom);
+    m_settingsFrom->clear();
+    m_settingsFrom->addItem(tr("(type every setting)"), QString());
+    for (const RemoteType &t : std::as_const(m_types))
+        m_settingsFrom->addItem(tr("Remote type: %1").arg(t.name), QStringLiteral("type:") + t.name);
+    for (const HostBookmark &b : std::as_const(m_bookmarks)) {
+        m_settingsFrom->addItem(tr("Saved host: %1").arg(b.displayName()),
+                                QStringLiteral("host:") + b.displayName());
+    }
+    m_settingsFrom->setEnabled(m_settingsFrom->count() > 1);
+}
+
+void OpenRemoteDialog::applySettingsSource(int index)
+{
+    const QString key = m_settingsFrom->itemData(index).toString();
+    if (key.startsWith(QStringLiteral("type:"))) {
+        const int at = HostBookmarkStore::indexOfType(m_types, key.mid(5));
+        if (at < 0)
+            return;
+        const RemoteType &t = m_types.at(at);
+        setConnection(t.connection);
+        m_user->setText(t.user);
+        m_port->setValue(t.port > 0 ? t.port : RemoteLocation::defaultPortFor(t.transport()));
+        if (!t.defaultLogPath.isEmpty())
+            m_path->setEditText(t.defaultLogPath);
+        m_poll->setValue(t.pollMs > 0 ? t.pollMs : 1000);
+        m_tailOnly->setChecked(t.tailStartBytes > 0);
+        if (t.tailStartBytes > 0)
+            m_tailMb->setValue(int(t.tailStartBytes / (1024LL * 1024)));
+        m_compress->setChecked(t.compress);
+        m_consolePreset->setCurrentIndex(qMax(0, m_consolePreset->findData(t.consolePreset)));
+        if (t.connection == RemoteType::Connection::Telnet)
+            m_password->setText(t.savePassword ? t.password : QString());
+        return;
+    }
+    if (key.startsWith(QStringLiteral("host:"))) {
+        const int at = HostBookmarkStore::indexOfName(m_bookmarks, key.mid(5));
+        if (at < 0)
+            return;
+        // EVERYTHING BUT THE MACHINE where one has been typed: the point of the gesture is
+        // "this host, set up the way that one is", and the name is left for the user too.
+        const QString typedHost = m_host->text().trimmed();
+        const QString typedName = m_label->text();
+        HostBookmark b = m_bookmarks.at(at);
+        const QString path = b.paths.isEmpty() ? QString() : b.paths.first();
+        preset(b, path);
+        m_label->setText(typedName);
+        if (!typedHost.isEmpty())
+            m_host->setText(typedHost);
+    }
+}
+
+void OpenRemoteDialog::presetAddress(const QString &host, const QString &path)
+{
+    // A pasted address is split exactly as typing one into the host field would split it.
+    m_host->setText(host);
+    absorbPastedUrl(m_host);
+    if (!path.isEmpty())
+        m_path->setEditText(path);
+    updateActions();
+}
+
+void OpenRemoteDialog::setManageMode(bool manage)
+{
+    m_buttons->setVisible(!manage);
 }
 
 } // namespace loftail

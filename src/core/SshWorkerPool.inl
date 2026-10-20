@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "DiscoveredFetcher.h"
 #include "RemoteLocation.h"
 #include "SshPrompter.h"
 #include "SshSession.h"
@@ -79,11 +80,31 @@ QString withSshSession(const QString &address, SshPrompter *prompter,
                        const std::shared_ptr<SshWorkerShared> &shared, SshSession::Need need,
                        SshErrandRepeat repeat, Body body)
 {
-    const auto location = RemoteLocation::parse(address);
+    auto location = RemoteLocation::parse(address);
     if (!location || !location->isValid()) {
         return QCoreApplication::translate("loftail::SshWorkerPool",
                                            "Not a valid remote address: %1")
             .arg(RemoteLocation::withoutPassword(address));
+    }
+
+    // A DISCOVERED DEVICE IS FOUND FIRST, on this worker and with the lookup the log's own
+    // fetcher uses (resolveDiscoveredEndpoint()), so an errand reaches the device where it is
+    // NOW — and where a standing watch is browsing its type, that costs no lookup at all.
+    // Everything below then sees an ordinary SSH far end, keyed in the idle cache on where it
+    // actually is, so an errand on a device that has moved never borrows a session to the
+    // address it left; the password is still filed per TYPE (credentialTarget()).
+    if (location->transport == RemoteLocation::Transport::Discovered) {
+        QString why;
+        auto found = resolveDiscoveredEndpoint(
+            *location, [shared]() { return shared->abandoned.load(); }, &why);
+        if (!found)
+            return shared->abandoned ? QString() : why;
+        if (found->transport != RemoteLocation::Transport::Ssh) {
+            return QCoreApplication::translate("loftail::SshWorkerPool",
+                                               "%1 is reached over telnet, not SSH.")
+                .arg(location->displayHost());
+        }
+        location = std::move(found);
     }
 
     const QString        target = location->target();

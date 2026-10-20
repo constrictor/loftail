@@ -27,6 +27,14 @@ add_library(loftail_ui STATIC
     # widget-side answers to the host-key and password questions.
     OpenRemoteDialog.cpp
     OpenRemoteDialog.h
+    # M28 — File ▸ Open Remote is the browser now (discovered devices, saved hosts, and an
+    # address typed outright), and File ▸ Remote Parameters edits the remote types and the
+    # saved hosts. The host form above is the latter's hosts page and the former's
+    # "Connect directly" step, so there is one form for one file's records.
+    RemoteBrowserDialog.cpp
+    RemoteBrowserDialog.h
+    RemoteParametersDialog.cpp
+    RemoteParametersDialog.h
     # Which log to open on a device that has none remembered. ALWAYS COMPILED, exactly as the two
     # dialogs above it are, so both build configurations look the same.
     OpenSerialDialog.cpp

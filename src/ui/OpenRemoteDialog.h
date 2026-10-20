@@ -78,6 +78,18 @@ public:
     // Prefill from an existing bookmark and path (the Remote Hosts submenu route).
     void preset(const HostBookmark &bookmark, const QString &path);
 
+    // Prefill only the address — the browser's "Connect directly" route, where a host was
+    // typed and everything else is still to be chosen (M28).
+    void presetAddress(const QString &host, const QString &path);
+
+    // The console preset chosen for a telnet connection, for an open that is not saved as a
+    // host: MainWindow carries it to the fetcher the way a saved host's would be (M28).
+    QString chosenConsolePreset() const { return m_chosenConsolePreset; }
+
+    // Embedded in File ▸ Remote Parameters as the editor of saved hosts: no Open, no Cancel
+    // — Save, Update and Remove are the whole of what the page is for there (M28).
+    void setManageMode(bool manage);
+
 private:
     void reloadBookmarks();
     void showBookmark(int row);
@@ -93,6 +105,12 @@ private:
     void saveCurrentAsBookmark();
     void removeCurrentBookmark();
     void accept() override;
+    // M28 — the connection kind, and copying settings from a type or another saved host.
+    void setConnection(RemoteType::Connection connection);
+    RemoteType::Connection connection() const;
+    void reloadSettingsSources();
+    void applySettingsSource(int index);
+    void updatePasswordField();
 
     HostBookmarkStore    *m_store = nullptr;
     QVector<HostBookmark> m_bookmarks;
@@ -108,6 +126,13 @@ private:
     QSpinBox  *m_port = nullptr;
     QComboBox *m_path = nullptr; // editable; lists the paths remembered for this host
     QComboBox *m_auth = nullptr;
+    QComboBox *m_connection = nullptr;     // SSH or telnet (M28)
+    QComboBox *m_settingsFrom = nullptr;   // copy settings from a remote type or saved host
+    QLineEdit *m_password = nullptr;       // telnet: what the console login is answered with
+    QLabel    *m_passwordLabel = nullptr;
+    QComboBox *m_consolePreset = nullptr;  // telnet: the login conversation's preset
+    QLabel    *m_authLabel = nullptr;
+    QVector<RemoteType> m_types;
     QCheckBox *m_remember = nullptr;
     QLabel    *m_consent = nullptr; // where a remembered password would go — always shown
     QSpinBox  *m_poll = nullptr;
@@ -125,6 +150,7 @@ private:
     QString m_pathsTarget;
 
     QString m_chosenUrl;
+    QString m_chosenConsolePreset;
 };
 
 } // namespace loftail

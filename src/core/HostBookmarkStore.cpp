@@ -33,6 +33,7 @@ namespace {
 
 constexpr auto kFileName = "hosts.json";
 constexpr auto kHostsKey = "hosts";
+constexpr auto kTypesKey = "types";
 constexpr auto kSchemaKey = "schemaVersion";
 
 QString authToString(HostBookmark::Auth auth)
@@ -70,6 +71,9 @@ QJsonObject toJson(const HostBookmark &b)
     // binary reads an absent key as false, which is this option's default, whereas a bumped
     // version makes it refuse the whole file and forget every saved host.
     o.insert(QStringLiteral("compress"), b.compress);
+    o.insert(QStringLiteral("connection"), RemoteType::connectionToString(b.connection));
+    if (!b.consolePreset.isEmpty())
+        o.insert(QStringLiteral("consolePreset"), b.consolePreset);
     QJsonArray paths;
     for (const QString &p : b.paths)
         paths.append(p);
@@ -96,6 +100,9 @@ HostBookmark fromJson(const QJsonObject &o)
     b.pollMs = o.value(QStringLiteral("pollMs")).toInt(1000);
     b.tailStartBytes = static_cast<qint64>(o.value(QStringLiteral("tailStartBytes")).toDouble());
     b.compress = o.value(QStringLiteral("compress")).toBool();
+    b.connection =
+        RemoteType::connectionFromString(o.value(QStringLiteral("connection")).toString());
+    b.consolePreset = o.value(QStringLiteral("consolePreset")).toString();
     const QJsonArray paths = o.value(QStringLiteral("paths")).toArray();
     for (const auto &v : paths) {
         if (v.isString())
@@ -106,9 +113,13 @@ HostBookmark fromJson(const QJsonObject &o)
     return b;
 }
 
-bool sameHost(const HostBookmark &b, const QString &user, const QString &host, int port)
+bool sameHost(const HostBookmark &b, const RemoteLocation &location)
 {
-    return b.user == user && b.host == host && b.port == port;
+    // THE TRANSPORT IS PART OF THE IDENTITY (M28): a machine reached over telnet and over SSH
+    // is two connections with two accounts, and matching across them would prime one's saved
+    // password into the other's login.
+    return b.transport() == location.transport && b.user == location.user
+        && b.host == location.host && b.port == location.port;
 }
 
 } // namespace
@@ -120,6 +131,7 @@ RemoteLocation HostBookmark::locationFor(const QString &path) const
     location.host = host;
     location.port = port;
     location.path = path;
+    location.transport = transport();
     return location;
 }
 
@@ -232,6 +244,19 @@ int HostBookmarkStore::indexOfName(const QVector<HostBookmark> &bookmarks, const
 
 bool HostBookmarkStore::replaceAll(const QVector<HostBookmark> &bookmarks) const
 {
+    QJsonArray hosts;
+    bool anySecret = false;
+    for (const HostBookmark &b : bookmarks) {
+        hosts.append(toJson(b));
+        if (b.savePassword && !b.password.isEmpty())
+            anySecret = true;
+    }
+    return writeKey(QLatin1String(kHostsKey), hosts, anySecret);
+}
+
+bool HostBookmarkStore::writeKey(const QString &key, const QJsonArray &value,
+                                 bool holdsSecret) const
+{
     const QString path = filePath();
     if (path.isEmpty())
         return false;
@@ -245,24 +270,106 @@ bool HostBookmarkStore::replaceAll(const QVector<HostBookmark> &bookmarks) const
     if (Schema::fileIsFromFuture(path, kSchemaVersion))
         return false;
 
-    QJsonArray hosts;
+    // EVERY KEY THIS WRITE DOES NOT OWN IS CARRIED OVER (M28). Before `types` existed the root
+    // was rebuilt from scratch, which was harmless while `hosts` was the only key — and would
+    // now make saving a host delete every remote type. Only from a file this build can read:
+    // an unstamped one is not ours, so nothing in it is worth keeping.
+    QJsonObject root;
+    bool ok = false;
+    const QJsonDocument existing = AtomicJson::read(path, &ok);
+    if (ok && existing.isObject()
+        && Schema::judge(existing.object(), kSchemaVersion, nullptr) == Schema::Verdict::Usable) {
+        root = existing.object();
+    }
+    root.insert(QLatin1String(kSchemaKey), kSchemaVersion);
+    root.insert(key, value);
+
+    // Owner-only whenever a password is in there — in EITHER array, so the secret test runs
+    // over what is being kept as well as what is being written. Always writing it private
+    // would be tidier still, but this file is also read on a shared config directory, and
+    // narrowing permissions people did not ask for is its own surprise — so the restriction
+    // follows the secret.
+    bool secret = holdsSecret;
+    for (const QString &k : {QString::fromLatin1(kHostsKey), QString::fromLatin1(kTypesKey)}) {
+        if (k == key)
+            continue;
+        for (const auto &v : root.value(k).toArray()) {
+            const QJsonObject o = v.toObject();
+            if (o.value(QStringLiteral("savePassword")).toBool()
+                && !o.value(QStringLiteral("password")).toString().isEmpty()) {
+                secret = true;
+            }
+        }
+    }
+    const QJsonDocument doc(root);
+    return secret ? AtomicJson::writePrivate(path, doc) : AtomicJson::write(path, doc);
+}
+
+QVector<RemoteType> HostBookmarkStore::types() const
+{
+    QVector<RemoteType> out;
+    const QString path = filePath();
+    if (path.isEmpty())
+        return out;
+    bool ok = false;
+    const QJsonDocument doc = AtomicJson::read(path, &ok);
+    if (!ok || !doc.isObject())
+        return out;
+    // Judged exactly as all() judges it, and for its reason: a newer build's file is read as
+    // nothing, and writeKey() then refuses to write over it.
+    if (Schema::judge(doc.object(), kSchemaVersion, nullptr) != Schema::Verdict::Usable)
+        return out;
+    for (const auto &v : doc.object().value(QLatin1String(kTypesKey)).toArray()) {
+        if (!v.isObject())
+            continue;
+        RemoteType t = remoteTypeFromJson(v.toObject());
+        if (t.name.trimmed().isEmpty() || indexOfType(out, t.name) >= 0)
+            continue;   // a name is the identity; the first wins, as for hosts
+        out.append(t);
+    }
+    return out;
+}
+
+int HostBookmarkStore::indexOfType(const QVector<RemoteType> &types, const QString &name)
+{
+    for (int i = 0; i < types.size(); ++i) {
+        if (sameName(types.at(i).name, name))
+            return i;
+    }
+    return -1;
+}
+
+bool HostBookmarkStore::replaceTypes(const QVector<RemoteType> &types) const
+{
+    QJsonArray array;
     bool anySecret = false;
-    for (const HostBookmark &b : bookmarks) {
-        hosts.append(toJson(b));
-        if (b.savePassword && !b.password.isEmpty())
+    for (const RemoteType &t : types) {
+        array.append(remoteTypeToJson(t));
+        if (t.savePassword && !t.password.isEmpty())
             anySecret = true;
     }
+    return writeKey(QLatin1String(kTypesKey), array, anySecret);
+}
 
-    QJsonObject root;
-    root.insert(QLatin1String(kSchemaKey), kSchemaVersion);
-    root.insert(QLatin1String(kHostsKey), hosts);
+bool HostBookmarkStore::saveType(const RemoteType &type) const
+{
+    QVector<RemoteType> all = types();
+    const int at = indexOfType(all, type.name);
+    if (at >= 0)
+        all[at] = type;
+    else
+        all.append(type);
+    return replaceTypes(all);
+}
 
-    // Owner-only whenever a password is in there. Always writing it private would be
-    // tidier still, but this file is also read by the Open Remote dialog on a shared
-    // config directory, and narrowing permissions people did not ask for is its own
-    // surprise — so the restriction follows the secret.
-    const QJsonDocument doc(root);
-    return anySecret ? AtomicJson::writePrivate(path, doc) : AtomicJson::write(path, doc);
+bool HostBookmarkStore::removeType(const QString &name) const
+{
+    QVector<RemoteType> all = types();
+    const int at = indexOfType(all, name);
+    if (at < 0)
+        return true;
+    all.removeAt(at);
+    return replaceTypes(all);
 }
 
 bool HostBookmarkStore::save(const HostBookmark &bookmark) const
@@ -292,7 +399,7 @@ HostBookmark HostBookmarkStore::find(const QVector<HostBookmark> &bookmarks,
     for (const HostBookmark &b : bookmarks) {
         // A bookmark with no user matches a location with no user, and vice versa —
         // they are different connections (see RemoteLocation::target()).
-        if (sameHost(b, location.user, location.host, location.port)) {
+        if (sameHost(b, location)) {
             if (found)
                 *found = true;
             return b;

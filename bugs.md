@@ -9,7 +9,7 @@ findable in the git history — and the rule a fix established lives in `CLAUDE.
 beside the code it binds, which is where it is of use, while the guard that holds
 it down is named in `tests/GUARDS.md`.
 
-Three passes have been run and closed:
+Passes run and closed:
 
 - **2026-08-18**, entries 1–22. Three agents driving the real UI (Xvfb + xdotool,
   screenshots measured with PIL) over the record table, the panes and the window,
@@ -30,6 +30,30 @@ Three passes have been run and closed:
   different bytes, whose normal form then moved again on the next pass. Fixed by
   refusing it, and the general rule is in `CLAUDE.md` — a branch written by hand in
   place of a parser has to ask for each of that parser's refusals by name.
+
+- **2026-10-19**, entries 51–53, found while building M28 and all fixed with it. 51 was
+  `ConsoleFetcher` (then `SerialFetcher`) comparing a serial log's options before its first
+  sign-in against a default-constructed copy, so any non-default preset waited for ever on
+  "Applying the new settings"; a new test's 200 ms poll found it. 52 was the framed command's
+  begin marker landing on the end of the shell's prompt once `stty -echo` had taken, so every
+  command after the byte-safety probe went unanswered on a real console; 53 was telnet's CR LF
+  leaving a stray `\r` on every command after `stty raw`. 52 and 53 were found only by driving
+  the real application against a real pty — every fixture had written a newline of its own
+  before each answer — and the fixtures now behave like a terminal.
+
+- **2026-10-20**, entries 54–57, found while making a discovered log follow its device and
+  all fixed with it. 54 was Avahi's resolver being freed after its first answer, so an
+  address moving under a service that stays registered was never reported; 55 was the
+  resolver that replaced it being let go on failure, so a device off its network for longer
+  than Avahi's resolver timeout was never followed when it came back — found by the real
+  application, a test's quick kill-and-republish never reaching the timeout. 56 was the end
+  marker landing on an interactive shell's prompt after a multi-line command, so Restart App
+  over any real console (serial since M27, telnet since M28) waited out its five-minute
+  deadline with the script long finished; the fixture had never run a restart script, running
+  each line of one as a shell of its own. 57 was a raw read a few bytes short of its bound
+  being taken for a full one, the end marker's own line making up the difference, and read
+  into the log as data. 55 and 56 were found only by driving the real application against a
+  real Avahi daemon and a real shell on a pty.
 
 Entry 23 is what is left, and it is not waiting on a patch: it is a standing
 product decision nobody has taken.

@@ -30,6 +30,7 @@
 #include "SshPromptDialogs.h"
 
 #include <QElapsedTimer>
+#include <QHash>
 #include <QMainWindow>
 #include <QPair>
 #include <QString>
@@ -56,6 +57,7 @@ QT_END_NAMESPACE
 namespace loftail {
 
 class Document;
+class DiscoveryWatch;
 class ConfigView;
 class DocumentView;
 class LogModel;
@@ -185,6 +187,11 @@ public:
     // what is on offer with no modal on screen, which is the only way to state that a
     // log open in two tabs is offered once.
     QVector<DocumentContext *> otherLogContexts() const;
+
+    // The remote types a standing watch is browsing because a log on one of their devices is
+    // open (DiscoveryWatch.h). Public for the same reason as the line above: a test states it
+    // with nothing on screen.
+    QStringList watchedRemoteTypes() const;
 
 signals:
     // Panes bind to the active document by signal, not by construction (invariant
@@ -349,6 +356,10 @@ private:
     // openFile()'s single funnel, which is what keeps a command line, a recent-files entry and a
     // restored session from silently getting the defaults.
     void primeSerialProfile(const RemoteLocation &location);
+    // A discovered log's poll, tail-start, compression and console preset, from its TYPE.
+    void primeDiscoveredRemote(const RemoteLocation &location);
+    // File ▸ Remote Parameters (M28).
+    void editRemoteParameters();
     static void rememberSerialPath(const QString &deviceId, const QString &path);
 
     void buildMenus();
@@ -415,6 +426,8 @@ private:
     // cannot change while they stand still, and rewriting a QTabBar entry relays the
     // whole bar out.
     void relabelTabs();
+    // Browse the types of the open `discover://` logs, and nothing else (DiscoveryWatch.h).
+    void syncDiscoveryWatch(const QStringList &openAddresses);
 
     // --- Highlight actions beyond colour (M19, SPEC.md §7) -------------------------
 
@@ -805,6 +818,7 @@ private:
     // QMenu::clear() deletes the actions the menu owns — which would be this one,
     // mid-signal.
     QAction *m_clearRecentAction = nullptr;
+    QAction *m_remoteParametersAction = nullptr;
     QAction *m_openRemoteAction = nullptr;
     QMenu   *m_remoteHostsMenu = nullptr;
     QMenu   *m_serialMenu = nullptr;
@@ -916,6 +930,15 @@ private:
     // HostBookmarkStore::all() — and refreshRemoteHostsMenu() is already called at every
     // point the list can move, so this is never older than the menu beside it.
     QVector<HostBookmark> m_hostBookmarks;
+    // The remote types from hosts.json, taken in refreshRemoteHostsMenu()'s one pass beside
+    // m_hostBookmarks and for its reason: relabelTabs() and the open funnel must not re-parse
+    // the file on every tab change. Also published to the fetchers (setKnownRemoteTypes()).
+    QVector<RemoteType> m_remoteTypes;
+    // The standing watch over the devices whose logs are open; made on first need.
+    DiscoveryWatch *m_discoveryWatch = nullptr;
+    // Console presets chosen in the host form for telnet opens that were not saved as a host,
+    // keyed by normalized address (chooseRemoteToOpen(), primeSerialProfile()).
+    QHash<QString, QString> m_adHocConsolePresets;
     // View ▸ Line Wrap. Held so the checked entry can be made to track the ACTIVE view,
     // which matters now that the mode a log opens in is its own (M20) rather than one
     // window-wide choice: each action carries its WrapMode in QAction::data().

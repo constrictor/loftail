@@ -112,19 +112,40 @@ bool holdsNul(const QString &s)
 // The one spelling of the serial scheme, so a second literal cannot drift from the first.
 constexpr auto kSerialScheme = "serial://";
 
+// And of telnet's (M28). Parsed through QUrl like ssh's, because a telnet far end is a HOST
+// NAME — case-insensitive — and not a device node, which is the whole reason serial is not.
+constexpr auto kTelnetScheme = "telnet://";
+
+// And discovery's (M28). Cut by hand like serial's, for a sharper version of serial's reason:
+// both of its first two segments are names chosen by somebody else — a type name the user
+// typed, with spaces and capitals, and a device id such as `urn:uuid:…` holding the very
+// characters a URL authority is made of.
+constexpr auto kDiscoverScheme = "discover://";
+
 } // namespace
 
 bool RemoteLocation::isRemote(const QString &s)
 {
     return s.startsWith(QLatin1String("ssh://"), Qt::CaseInsensitive)
         || s.startsWith(QLatin1String("sftp://"), Qt::CaseInsensitive)
-        || s.startsWith(QLatin1String(kSerialScheme), Qt::CaseInsensitive);
+        || s.startsWith(QLatin1String(kSerialScheme), Qt::CaseInsensitive)
+        || s.startsWith(QLatin1String(kTelnetScheme), Qt::CaseInsensitive)
+        || s.startsWith(QLatin1String(kDiscoverScheme), Qt::CaseInsensitive);
+}
+
+int RemoteLocation::defaultPortFor(Transport transport)
+{
+    return transport == Transport::Telnet ? 23 : kDefaultPort;
 }
 
 std::optional<RemoteLocation::Transport> RemoteLocation::transportOf(const QString &s)
 {
     if (s.startsWith(QLatin1String(kSerialScheme), Qt::CaseInsensitive))
         return Transport::Serial;
+    if (s.startsWith(QLatin1String(kTelnetScheme), Qt::CaseInsensitive))
+        return Transport::Telnet;
+    if (s.startsWith(QLatin1String(kDiscoverScheme), Qt::CaseInsensitive))
+        return Transport::Discovered;
     if (s.startsWith(QLatin1String("ssh://"), Qt::CaseInsensitive)
         || s.startsWith(QLatin1String("sftp://"), Qt::CaseInsensitive)) {
         return Transport::Ssh;
@@ -254,6 +275,50 @@ std::optional<RemoteLocation> parseSerial(const QString &s)
     return loc;
 }
 
+// A `discover://Type/id/path` address, cut by hand (kDiscoverScheme says why).
+//
+//     discover://<type>/<device id>/<path>
+//
+// The first two segments are EACH one percent-encoded segment, and toString() encodes them
+// with nothing exempt, so a `/` or a `:` inside either — `urn:uuid:…`, a type called
+// "Lab / east" — can never be mistaken for a separator, and decode-then-encode is a fixed
+// point for every string the noncharacter rule lets through. It inherits the hand-cut
+// branch's one obligation: every refusal QUrl would have made has to be asked for by name
+// (bugs.md 50), so escapes are checked before anything is decoded, and a noncharacter and a
+// NUL are refused in all three parts.
+std::optional<RemoteLocation> parseDiscovered(const QString &s)
+{
+    const QString rest = s.mid(int(qstrlen(kDiscoverScheme)));
+    const int first = int(rest.indexOf(u'/'));
+    if (first <= 0)
+        return std::nullopt;
+    const int second = int(rest.indexOf(u'/', first + 1));
+    if (second <= first + 1)
+        return std::nullopt;   // no device id, or no path after it
+    const QString rawType = rest.left(first);
+    const QString rawId = rest.mid(first + 1, second - first - 1);
+    const QString rawPath = rest.mid(second);
+    if (!escapesAreWellFormed(rawType) || !escapesAreWellFormed(rawId)
+        || !escapesAreWellFormed(rawPath)) {
+        return std::nullopt;
+    }
+
+    RemoteLocation loc;
+    loc.transport = RemoteLocation::Transport::Discovered;
+    loc.port = RemoteLocation::kDefaultPort;   // spelled nowhere; kept for the range rule
+    loc.discoveryType = QUrl::fromPercentEncoding(rawType.toUtf8());
+    loc.host = QUrl::fromPercentEncoding(rawId.toUtf8());
+    loc.path = pathFromUrl(QUrl::fromPercentEncoding(rawPath.toUtf8()));
+    if (loc.discoveryType.isEmpty() || !loc.isValid())
+        return std::nullopt;
+    if (holdsNoncharacter(loc.discoveryType) || holdsNoncharacter(loc.host)
+        || holdsNoncharacter(loc.path) || holdsNul(loc.discoveryType) || holdsNul(loc.host)
+        || holdsNul(loc.path)) {
+        return std::nullopt;
+    }
+    return loc;
+}
+
 } // namespace
 
 std::optional<RemoteLocation> RemoteLocation::parse(const QString &s)
@@ -263,15 +328,19 @@ std::optional<RemoteLocation> RemoteLocation::parse(const QString &s)
 
     if (s.startsWith(QLatin1String(kSerialScheme), Qt::CaseInsensitive))
         return parseSerial(s);
+    if (s.startsWith(QLatin1String(kDiscoverScheme), Qt::CaseInsensitive))
+        return parseDiscovered(s);
 
     const QUrl url(s, QUrl::StrictMode);
     if (!url.isValid() || url.host().isEmpty())
         return std::nullopt;
 
     RemoteLocation loc;
+    if (s.startsWith(QLatin1String(kTelnetScheme), Qt::CaseInsensitive))
+        loc.transport = Transport::Telnet;
     loc.user = url.userName(QUrl::FullyDecoded);
     loc.host = url.host();
-    loc.port = url.port(kDefaultPort);
+    loc.port = url.port(defaultPortFor(loc.transport));
     loc.path = pathFromUrl(url.path(QUrl::FullyDecoded));
     // A password in the URL is dropped on the floor, not stored and not used. Keeping
     // it would put a credential into the session file and the recent-files menu the
@@ -361,6 +430,15 @@ QString RemoteLocation::withoutPassword(const QString &s)
 
 QString RemoteLocation::toString() const
 {
+    if (transport == Transport::Discovered) {
+        // parseDiscovered()'s inverse term for term: each of the two names is ONE segment,
+        // so nothing in it is exempt from encoding — a `/` inside a device id must not
+        // become a separator on the way back in.
+        return QLatin1String(kDiscoverScheme)
+            + QString::fromUtf8(QUrl::toPercentEncoding(discoveryType)) + u'/'
+            + QString::fromUtf8(QUrl::toPercentEncoding(host))
+            + QString::fromUtf8(QUrl::toPercentEncoding(pathToUrl(path), "/~"));
+    }
     if (transport == Transport::Serial) {
         // Built by hand for parseSerial()'s reason — QUrl would lowercase the device — and
         // term for term its inverse, which is what makes the pair a fixed point. NO PORT:
@@ -375,7 +453,8 @@ QString RemoteLocation::toString() const
     }
 
     QUrl url;
-    url.setScheme(QStringLiteral("ssh"));
+    url.setScheme(transport == Transport::Telnet ? QStringLiteral("telnet")
+                                                 : QStringLiteral("ssh"));
     if (!user.isEmpty())
         url.setUserName(user);
     url.setHost(host);
@@ -386,6 +465,15 @@ QString RemoteLocation::toString() const
 
 QString RemoteLocation::toDisplayString() const
 {
+    if (transport == Transport::Discovered) {
+        // As written, but the two names stay encoded where they hold a separator — the one
+        // place "as written" would produce something that reads as a different address.
+        const auto name = [](const QString &n) {
+            return n.contains(u'/') ? QString::fromUtf8(QUrl::toPercentEncoding(n, " :")) : n;
+        };
+        return QLatin1String(kDiscoverScheme) + name(discoveryType) + u'/' + name(host)
+            + pathToUrl(path);
+    }
     if (transport == Transport::Serial) {
         // The serial normal form needs no decoding pass of its own for the device — its
         // charset has nothing encodable in it — so the two differ only in the path, exactly
@@ -402,7 +490,8 @@ QString RemoteLocation::toDisplayString() const
     // QUrl::toString() rejects FullyDecoded outright, and decoding component by
     // component and re-joining is what this already is. The shape is toString()'s,
     // term for term, so the two agree byte for byte whenever nothing needs encoding.
-    QString out = QStringLiteral("ssh://");
+    QString out = transport == Transport::Telnet ? QString::fromLatin1(kTelnetScheme)
+                                                 : QStringLiteral("ssh://");
     if (!user.isEmpty())
         out += user + u'@';
     // An IPv6 literal is bracketed, as QUrl brackets it in toString(): RemoteLocation
@@ -423,8 +512,15 @@ QString RemoteLocation::effectiveUser() const
     // nothing to do with this machine's, so filling one in would key the connect under an
     // account nobody named and would silently send this machine's login name to somebody
     // else's hardware.
-    if (transport == Transport::Serial)
+    //
+    // A TELNET FAR END IS THE SAME: there is no `User` convention for a login console, and
+    // the login machine types whatever this answers into somebody else's `login:` prompt.
+    //
+    // A DISCOVERED DEVICE NAMES NO ACCOUNT EITHER: its type does, at connect time.
+    if (transport == Transport::Serial || transport == Transport::Telnet
+        || transport == Transport::Discovered) {
         return QString();
+    }
     // What ssh does with no User directive, and what the connect fills in — reached from
     // here so that both spell it the same way. HomeLocation rather than the environment's
     // USER: it is what Qt already answers on every platform, and it is the same value
@@ -432,8 +528,21 @@ QString RemoteLocation::effectiveUser() const
     return QStandardPaths::writableLocation(QStandardPaths::HomeLocation).section(u'/', -1);
 }
 
+QString RemoteLocation::displayHost() const
+{
+    if (transport == Transport::Discovered && host.startsWith(u"urn:uuid:", Qt::CaseInsensitive))
+        return QStringLiteral("%1 %2").arg(discoveryType, host.mid(9).section(u'-', 0, 0));
+    return host;
+}
+
 QString RemoteLocation::target() const
 {
+    if (transport == Transport::Discovered) {
+        // THE TYPE AND THE DEVICE, AND NO ADDRESS: the address is not known until connect
+        // time, and two devices of one type are two far ends. Prefixed like every other
+        // transport's, so no host, device or console can share a key with it.
+        return QStringLiteral("discover:%1/%2").arg(discoveryType, host);
+    }
     const QString account = effectiveUser();
     if (transport == Transport::Serial) {
         // THE SCHEME IS IN THE KEY, and the header says why at length: a host genuinely
@@ -442,6 +551,15 @@ QString RemoteLocation::target() const
         if (account.isEmpty())
             return QStringLiteral("serial:%1").arg(host);
         return QStringLiteral("serial:%1@%2").arg(account, host);
+    }
+    if (transport == Transport::Telnet) {
+        // THE SCHEME IS IN THE KEY FOR TELNET TOO, and for the same asymmetric reason: one
+        // machine may offer both SSH and telnet under different accounts and passwords, and
+        // a key shared between the two would hand the SSH password to a telnet login prompt
+        // — in clear, over the one transport that sends it in clear.
+        if (account.isEmpty())
+            return QStringLiteral("telnet:%1:%2").arg(host).arg(port);
+        return QStringLiteral("telnet:%1@%2:%3").arg(account, host).arg(port);
     }
     // Still guarded, because effectiveUser() can come back empty on a machine with no
     // home directory at all — and "@host:22" would be a key that reads as a bug.

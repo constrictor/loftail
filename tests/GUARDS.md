@@ -56,7 +56,7 @@ runner, and fails by an order of magnitude when the contract goes. The one
 wall-clock check in the tree is `bench_index --selftest`, which is labelled
 `perf`, is DISABLED unless `-DLOFTAIL_PERF_TESTS=ON`, and gates nothing.
 
-## Guarded — 211 rules
+## Guarded — 227 rules
 
 | Rule | CLAUDE.md | Guard |
 | --- | --- | --- |
@@ -361,6 +361,22 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | File ▸ Serial is populated on aboutToShow and always offers Settings | Serial menu (M27) | tst_serialopen::theFileMenuHasASerialSubmenuWithItsSettingsEntry |
 | A config file on a device is refused by name rather than attempted over SSH | Serial transport (M27) | tst_serialopen::aSerialConfigFileIsRefusedByNameRatherThanAttempted |
 | A serial tab comes back with the session, and no schema version moved | Serial transport (M27) | tst_serialopen::aSerialTabComesBackWithTheSession |
+| The write funnel carries over every top-level key it does not own, or saving a host deletes every remote type | M28 (discover://) | tst_hostbookmarks::savingAHostKeepsEveryTypeAndSavingATypeKeepsEveryHost |
+| A device that moves is found again before the next connect, and its address-derived keys do not move | M28 (discover://) | tst_discoveredfetcher::aDeviceThatMovesIsFollowedToItsNewAddress |
+| The begin marker gets a line of its own, or a prompt left by `stty -echo` hides it | M28 (three defects) | tst_serialframing::aPromptLeftOnTheLineDoesNotHideTheBeginMarker |
+| TelnetProtocol is pure, keeps state across reads, and replies only on a change of state | M28 (telnet) | tst_telnetprotocol |
+| The Avahi half runs only against a real daemon, and the harness names what must have passed | M28 (discovery) | tst_avahilive |
+| The remotes section is present in every build since telnet needs no optional dependency | Welcome screen (L11) | tst_welcome::aRememberedRemoteLogIsARowAndASavedHostWithNoneIsAnother |
+| An open discovered log follows its device the moment it is seen elsewhere, even while the old address still answers | Standing watch (M28) | tst_discoveredfetcher::aDeviceThatMovesIsFollowedEvenWhileTheOldAddressStillAnswers |
+| `lost` never evicts, reconnects or marks a tab | Standing watch (M28) | tst_discoveredfetcher::aServiceThatDisappearsLeavesTheOpenLogAlone |
+| A service flapping at the same address is not reconnected | Standing watch (M28) | tst_discoveredfetcher::aServiceThatFlapsAtTheSameAddressIsNotReconnected |
+| "Moved" is the connected address leaving the address set, never the preferred host changing | Standing watch (M28) | tst_discoveredfetcher::aDeviceReachedOverTwoAddressesDoesNotFlap |
+| Not knowing is never a move, and a move must hold for kMoveGraceMs of elapsed time | Standing watch (M28) | tst_discoveredfetcher::theMoveRuleIsTheAddressSetHeldForAWholeGracePeriod |
+| A backend reports an address CHANGE under a registered service, not only a first sighting | Standing watch (M28) | tst_avahilive::anAddressThatMovesUnderARegisteredServiceIsReportedAgain |
+| FakeTelnetd runs a framed command spanning several lines as one script, as a real console's shell does | Standing watch (M28) | tst_discoveredfetcher::restartAppRunsOnTheDeviceWhereItIsNow |
+| An Avahi resolver that fails is made again while its instance is still browsed | Standing watch (M28) | tst_avahilive::anAddressThatMovesUnderARegisteredServiceIsReportedAgain |
+| The end marker gets a newline of its own, or an interactive shell's prompt hides it after a multi-line command | Console framing (M28) | tst_serialframing::aMultiLineCommandThroughAnInteractiveShellStillEnds |
+| Full or short is read off the frame's terminator, never off the byte count | Console framing (M28) | tst_serialframing::aShortReadWhoseLastLineHasNoNewlineStillEnds |
 
 ## Unguarded — 450 rules
 

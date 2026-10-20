@@ -526,6 +526,24 @@ M25's strip could not line up with the thing it sat beside, and the reason is st
 **Risk.** `isRemote()` answering true for a fourth scheme reaches 27 call sites and two were wrong (the Open Remote paste splitter, the saved-host prime). `QUrl` lowercasing a host would have made every device address parse, normalize and point at nothing. The two extractions touch the least-testable file in the tree and their inertness rests on a harness that needs docker. And **a pty is not a UART**: the line settings are exercised by no automated test anywhere, which is the one thing here that still needs a board.
 
 
+## M28 — devices found by discovery, and telnet
+
+- [x] `ConsoleSession` + `ConsoleLink` and `ConsoleFetcher` + `ConsoleFetcherBinding` extracted out of `SerialDevice`/`SerialFetcher`. Inertness proved: `tst_serialdevice` unaltered.
+- [x] `telnet://` — `TelnetProtocol` (pure), `TelnetSession`/`TelnetSessionRegistry` over a detached socket, `Transport::Telnet` with a `telnet:` target prefix; restart scripts over the console; config editing refused by name.
+- [x] `RemoteType` and the `types` array in `hosts.json` (no schema bump; the write funnel carries over keys it does not own); `HostBookmark::connection`/`consolePreset`; `find()` compares the transport.
+- [x] `DiscoveryBrowser` with Avahi, `dns_sd` and `DnsServiceBrowse` backends behind `LOFTAIL_WITH_MDNS`, loftail's own ONVIF WS-Discovery, the shared match rules, the last-seen cache and `resolveDiscoveredDevice()`.
+- [x] `discover://Type/id/path`, `EndpointResolver` in the SSH and console fetchers, `makeDiscoveredFetcher()`, credentials filed per type.
+- [x] `RemoteBrowserDialog` as File ▸ Open Remote, `RemoteParametersDialog` as File ▸ Remote Parameters, the host form's telnet half and *Settings from*.
+- [x] `tst_telnetprotocol`, `tst_telnetsession`, `tst_discovery`, `tst_discoveredfetcher`, `tst_remotebrowser`, `tst_remoteparameters`, `tst_avahilive` (+ `packaging/test-mdns/run-mdns-tests.sh` and the `mdns-live` job), `fuzz_telnetprotocol`, `fuzz_wsdiscovery`, golden `types` fixture in `tst_schema`.
+- [x] A **standing watch** (`DiscoveryWatch`) over the types of the open `discover://` logs, refreshed from `relabelTabs()` and `documentsUnbound()`; `EndpointSource::stillCurrent` asked every poll, so an open log follows its device the moment it is seen elsewhere — even while the old address still answers — and a service that disappears is not an event. `DiscoveredDevice::addresses`, the address-set move rule and a 3 s elapsed grace. Avahi keeps its resolvers alive; `dns_sd` keeps resolves and a long-lived address query; Windows re-resolves every 10 s.
+- [x] Restart App and SSH config editing on a discovered device, resolved on the errand's worker; `FakeTelnetd` runs a multi-line framed command as one script, which is what a restart script over a console needs.
+
+**Done when** a device advertised over Bonjour opens from File ▸ Open Remote by reference, follows when it moves to a new address — at once, whether or not the old one still answers, and not at all when the service merely blinks out — and comes back with the session; a telnet log reads byte for byte; and an address typed outright can take its settings from a type. Verified by hand against a real Avahi daemon and a real pty under Xvfb.
+
+**Risk.** The `dns_sd` and `windns` backends have only been compiled, by the macOS and Windows legs — including their address-change reporting, which is the half the standing watch depends on. Config editing on a discovered device reached over telnet is refused, as any telnet host's is.
+
+---
+
 ## Deliberately deferred
 
 Later-release features are catalogued in `FUTURE.md` (side-by-side views, bookmarks; multi-file views shipped in M9, format autodetection in M8, SSH sources in M11, and compressed/archived sources in M12); each names the P1 accommodation that keeps it additive. Recorded here only so they are not silently dropped from the plan.

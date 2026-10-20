@@ -19,8 +19,10 @@
 #pragma once
 
 #include "RemoteLocation.h"
+#include "RemoteType.h"
 #include "SshFetcher.h"
 
+#include <QJsonArray>
 #include <QString>
 #include <QVector>
 
@@ -51,6 +53,11 @@ struct HostBookmark
     // ADDED key with no schema bump: an older binary reads it as absent, which is the
     // default, where a bump would make it refuse the whole file and lose every host.
     bool    compress = false;
+    // How the host is reached (M28). SSH, as every host saved before telnet existed is; a
+    // telnet host signs in through a console preset rather than an auth method. ADDED KEYS,
+    // NO SCHEMA BUMP, `compress`'s own argument.
+    RemoteType::Connection connection = RemoteType::Connection::Ssh;
+    QString consolePreset;       // serial.json preset a telnet login is held to; telnet only
 
     // Whether `password` below is stored ON DISK IN CLEAR TEXT. Off by default, and
     // the UI must state plainly what turning it on means before it can be turned on
@@ -68,6 +75,11 @@ struct HostBookmark
     QString password;
 
     QString displayName() const { return label.isEmpty() ? host : label; }
+    RemoteLocation::Transport transport() const
+    {
+        return connection == RemoteType::Connection::Telnet ? RemoteLocation::Transport::Telnet
+                                                            : RemoteLocation::Transport::Ssh;
+    }
     RemoteLocation locationFor(const QString &path) const;
     SshFetchOptions fetchOptions() const;
 };
@@ -137,7 +149,25 @@ public:
     // Forward comparison cannot get either wrong. Returns -1 when there is none.
     static int indexOfTarget(const QVector<HostBookmark> &bookmarks, const QString &target);
 
+    // --- remote types (M28) -------------------------------------------------
+    //
+    // KEPT IN THE SAME FILE, as a `types` array beside `hosts`: both describe how loftail
+    // reaches another machine, both may hold a password and so share the owner-only rule, and
+    // one file is one place for the Remote Parameters dialog to read. An ADDED top-level key,
+    // so no schema bump — and that is only true because every write below PRESERVES the keys
+    // it does not own, which replaceAll() did not need to while `hosts` was the only one.
+    QVector<RemoteType> types() const;
+    bool saveType(const RemoteType &type) const;
+    bool removeType(const QString &name) const;
+    bool replaceTypes(const QVector<RemoteType> &types) const;
+    static int indexOfType(const QVector<RemoteType> &types, const QString &name);
+
 private:
+    // The one write funnel: the root as it stands on disk, with `key` replaced by `value` and
+    // every other key kept — so a hosts write cannot drop the types and a types write cannot
+    // drop the hosts. Refuses a file from a newer build (SchemaVersion.h).
+    bool writeKey(const QString &key, const QJsonArray &value, bool holdsSecret) const;
+
     QString m_dir;
 };
 

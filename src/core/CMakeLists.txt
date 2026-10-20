@@ -329,6 +329,47 @@ target_sources(loftail_core PRIVATE
     # reachable; the .cpp is gated below, because a port is the one thing here that needs Qt.
     SerialDevice.h
     SerialFetcher.h
+    # M28 — everything a login console needs that is not the port: the login loop, the
+    # framing, the byte-safety probe, the reboot watch, and the fetcher above them. EXTRACTED
+    # from SerialDevice.cpp and SerialFetcher.cpp rather than copied, because telnet is a
+    # second console and needs every line of it — and always compiled, because it names no
+    # QSerialPort and no socket, only the ConsoleLink seam.
+    ConsoleSession.cpp
+    ConsoleSession.h
+    ConsoleFetcher.cpp
+    ConsoleFetcher.h
+    # The telnet transport: a ConsoleLink over a TCP socket, and the RFC 854 filter in front of
+    # it. Always compiled — it needs Qt Network and nothing else, and the protocol half is pure
+    # so tst_telnetprotocol and fuzz_telnetprotocol reach it with nothing listening.
+    TelnetProtocol.cpp
+    TelnetProtocol.h
+    # A named kind of remote: how to find machines of it on the network and how to sign in to
+    # one. Pure data plus its JSON, kept in hosts.json beside the saved hosts.
+    RemoteType.cpp
+    RemoteType.h
+    # Which of what a discovery found belongs to a type, and the WS-Discovery messages ONVIF
+    # is found with. Pure and always compiled: the platform browse APIs decide what is on the
+    # network, these decide what is shown, and they are what tst_discoverymatch and
+    # fuzz_wsdiscovery reach with nothing on the network at all.
+    DiscoveryMatch.cpp
+    DiscoveryMatch.h
+    # The browser seam, its factory, the last-seen cache and the connect-time lookup, plus the
+    # ONVIF browser — loftail's own WS-Discovery over a QUdpSocket, so always built. The
+    # Bonjour backend is the platform's and is gated below.
+    DiscoveryBrowser.cpp
+    DiscoveryBrowser.h
+    DiscoveryWatch.cpp
+    DiscoveryWatch.h
+    DiscoveryBackends.h
+    OnvifBrowser.cpp
+    # A `discover://` log: the type snapshot, the connect-time resolver and the factory that
+    # hands it to the SSH or telnet fetcher. Always compiled; the SSH half refuses in words
+    # where libssh2 is not built in.
+    DiscoveredFetcher.cpp
+    DiscoveredFetcher.h
+    EndpointResolver.h
+    TelnetSession.cpp
+    TelnetSession.h
     # The named presets and the remembered devices. HostBookmarkStore'''s shape verbatim,
     # including the rule that an added key never bumps the schema — an older binary reads an
     # absent key as the struct'''s default, where a bump makes it refuse the file and forget
@@ -415,6 +456,24 @@ else()
     )
 endif()
 
+# M28 — the only translation unit that names a platform mDNS API, one per platform. Gated as
+# the three library gates above are; without it DiscoveryBrowser.cpp supplies a Bonjour browser
+# that says why it finds nothing.
+if(LOFTAIL_HAVE_MDNS)
+    if(LOFTAIL_MDNS_BACKEND STREQUAL "avahi")
+        target_sources(loftail_core PRIVATE AvahiBrowser.cpp)
+        target_link_libraries(loftail_core PRIVATE PkgConfig::AVAHI_CLIENT)
+    elseif(LOFTAIL_MDNS_BACKEND STREQUAL "dns_sd")
+        target_sources(loftail_core PRIVATE DnsSdBrowser.cpp)
+    elseif(LOFTAIL_MDNS_BACKEND STREQUAL "windns")
+        target_sources(loftail_core PRIVATE WinDnsBrowser.cpp)
+        target_link_libraries(loftail_core PRIVATE dnsapi)
+    endif()
+    target_compile_definitions(loftail_core PUBLIC
+        LOFTAIL_HAVE_MDNS=1
+        LOFTAIL_MDNS_BACKEND="${LOFTAIL_MDNS_BACKEND}")
+endif()
+
 if(LOFTAIL_HAVE_KEYCHAIN)
     target_sources(loftail_core PRIVATE
         KeychainSecretStore.cpp
@@ -455,6 +514,10 @@ target_link_libraries(loftail_core PUBLIC Qt6::Core Qt6::Gui)
 # this library but of anything downstream that pulls in a Windows header.
 if(WIN32)
     target_compile_definitions(loftail_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+    # The telnet link speaks to its descriptor directly once Qt has connected it
+    # (TelnetSession.cpp, SocketDetach.h), so WSAPoll/send/recv are this library's own calls
+    # rather than something a dependency happens to link — named here, not left to luck.
+    target_link_libraries(loftail_core PRIVATE ws2_32)
 endif()
 
 target_include_directories(loftail_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

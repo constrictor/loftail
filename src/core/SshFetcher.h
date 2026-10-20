@@ -19,6 +19,7 @@
 #pragma once
 
 #include "SourceFetcher.h"
+#include "EndpointResolver.h"
 #include "RemoteLocation.h"
 
 #include <memory>
@@ -121,5 +122,11 @@ SshFetchOptions sshFetchOptions(const RemoteLocation &location);
 // Build a fetcher that reads `location` over SSH. Returns nullptr with `error` filled
 // where SSH support is not compiled in. Connecting happens in start(), not here.
 std::unique_ptr<SourceFetcher> makeSshFetcher(const RemoteLocation &location, QString *error);
+
+// The same, connecting wherever `resolve` says before every connect (EndpointResolver.h) —
+// how a `discover://` log reaches its device. `location` is still the ADDRESS: it keys the
+// options and names the log in every message that is about the log rather than the machine.
+std::unique_ptr<SourceFetcher> makeSshFetcher(const RemoteLocation &location, QString *error,
+                                              EndpointSource endpoint);
 
 } // namespace loftail

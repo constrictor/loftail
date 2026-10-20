@@ -82,6 +82,19 @@ private slots:
     void aSerialAddressNamesNoDefaultUser();
     void aSerialAddressNeverEmitsItsPassword();
     void aSerialArchiveAddressSplits();
+
+    // M28 — telnet, the third transport and the second login console. Parsed through QUrl
+    // like ssh (a telnet far end is a host name), so what is worth asserting is where it must
+    // NOT behave like ssh: its default port, its credential key, and whose account it names.
+    void aTelnetAddressIsRemoteAndDefaultsToPort23();
+    void aTelnetTargetIsNeverAnSshTarget();
+    void aTelnetAddressNamesNoDefaultUserAndNoPassword();
+
+    // M28 — a discovered device: the address names the TYPE and the device's own id and no
+    // address, cut by hand, and every hand-cut obligation asked for by name.
+    void aDiscoveredAddressRoundTripsWithSeparatorsInItsNames();
+    void aDiscoveredAddressRefusesWhatItCannotSpell();
+    void aDiscoveredTargetIsNeitherAHostNorADevice();
 };
 
 void TestRemoteLocation::recognisesRemoteSchemes()
@@ -849,6 +862,11 @@ void TestRemoteLocation::normalizingAnAddressTwiceIsNormalizingItOnce_data()
     QTest::newRow("local") << QStringLiteral("/var/log/app.log");
     QTest::newRow("not an address") << QStringLiteral("ssh://");
     QTest::newRow("empty") << QString();
+    QTest::newRow("telnet") << QStringLiteral("telnet://root@board/var/log/messages");
+    QTest::newRow("telnet port") << QStringLiteral("TELNET://board:2323/a%20b.log");
+    QTest::newRow("discover") << QStringLiteral("discover://Cameras/cam-7/var/log/app.log");
+    QTest::newRow("discover uuid") << QStringLiteral("discover://Lab%20Cams/urn%3auuid%3a1-2/x.log");
+    QTest::newRow("discover slash in id") << QStringLiteral("discover://T/a%2Fb/x%20y.log");
     // The two the fuzzer produced, which is what this case exists for.
     QTest::newRow("a029 noncharacter in path") << QStringLiteral("sftp://J/~]￿");
     QTest::newRow("a030 noncharacter in user") << QStringLiteral("ssh://￿u:p@os/togs/sbn.zip/");
@@ -1108,6 +1126,108 @@ void TestRemoteLocation::aWholePathPatternSeesTheAddressAsAPersonWouldTypeIt()
 
     // The file-NAME branch is untouched, and is what worked all along.
     QCOMPARE(logMatchTarget(address, false), QStringLiteral("df_log_vmsapp (1).txt"));
+}
+
+void TestRemoteLocation::aTelnetAddressIsRemoteAndDefaultsToPort23()
+{
+    const QString address = QStringLiteral("telnet://root@Board/var/log/messages");
+    QVERIFY(RemoteLocation::isRemote(address));
+    QVERIFY(logPathIsSpooled(address));
+    QCOMPARE(RemoteLocation::transportOf(address), RemoteLocation::Transport::Telnet);
+    const auto loc = RemoteLocation::parse(address);
+    QVERIFY(loc.has_value());
+    QCOMPARE(loc->transport, RemoteLocation::Transport::Telnet);
+    QCOMPARE(loc->port, 23);
+    QCOMPARE(loc->host, QStringLiteral("board"));   // a host name, so case-folded like ssh's
+    QCOMPARE(loc->path, QStringLiteral("/var/log/messages"));
+    // THE PORT IS SPELLED IN THE NORMAL FORM, as ssh's is, so `telnet://h/p` and
+    // `telnet://h:23/p` are one log — and the scheme is never rewritten to ssh.
+    QCOMPARE(loc->toString(), QStringLiteral("telnet://root@board:23/var/log/messages"));
+    QCOMPARE(RemoteLocation::normalize(QStringLiteral("telnet://root@board:23/var/log/messages")),
+             loc->toString());
+    QCOMPARE(loc->toDisplayString(), QStringLiteral("telnet://root@board:23/var/log/messages"));
+    QCOMPARE(RemoteLocation::parse(QStringLiteral("telnet://b:2323/a.log"))->port, 2323);
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("telnet://b:0/a.log")).has_value());
+    QVERIFY(!logSourceDisplayName(address).contains(u'/'));
+}
+
+void TestRemoteLocation::aTelnetTargetIsNeverAnSshTarget()
+{
+    // THE SCHEME IS IN THE KEY. One machine may offer both, under different accounts; a shared
+    // key would hand the SSH password to a telnet login prompt, in clear.
+    const auto telnet = RemoteLocation::parse(QStringLiteral("telnet://root@h:22/a.log"));
+    const auto ssh = RemoteLocation::parse(QStringLiteral("ssh://root@h:22/a.log"));
+    QVERIFY(telnet && ssh);
+    QVERIFY(telnet->target() != ssh->target());
+    QCOMPARE(telnet->target(), QStringLiteral("telnet:root@h:22"));
+    const auto serial = RemoteLocation::parse(QStringLiteral("serial://root@h/a.log"));
+    QVERIFY(serial && serial->target() != telnet->target());
+}
+
+void TestRemoteLocation::aTelnetAddressNamesNoDefaultUserAndNoPassword()
+{
+    // NO LOCAL ACCOUNT IS FILLED IN: the login machine types whatever this answers into
+    // somebody else's `login:` prompt.
+    const auto anon = RemoteLocation::parse(QStringLiteral("telnet://board/a.log"));
+    QVERIFY(anon.has_value());
+    QVERIFY(anon->effectiveUser().isEmpty());
+    QCOMPARE(anon->target(), QStringLiteral("telnet:board:23"));
+
+    const auto withPw = RemoteLocation::parse(QStringLiteral("telnet://root:hunter2@board/a.log"));
+    QVERIFY(withPw.has_value());
+    QVERIFY(!withPw->toString().contains(QStringLiteral("hunter2")));
+    QVERIFY(!RemoteLocation::withoutPassword(QStringLiteral("telnet://root:hunter2@b/a"))
+                 .contains(QStringLiteral("hunter2")));
+}
+
+void TestRemoteLocation::aDiscoveredAddressRoundTripsWithSeparatorsInItsNames()
+{
+    RemoteLocation loc;
+    loc.transport = RemoteLocation::Transport::Discovered;
+    loc.discoveryType = QStringLiteral("Lab / East Cams");
+    loc.host = QStringLiteral("urn:uuid:1b2c3d4e-aaaa/b");
+    loc.path = QStringLiteral("/var/log/my app.log");
+    const QString spelled = loc.toString();
+    // EACH NAME IS ONE SEGMENT: a `/` or `:` inside it never reads as a separator.
+    QCOMPARE(spelled.count(u'/'), 2 + 3 + 1);   // `//`, the two separators, and the path's own
+    const auto back = RemoteLocation::parse(spelled);
+    QVERIFY(back.has_value());
+    QCOMPARE(back->transport, RemoteLocation::Transport::Discovered);
+    QCOMPARE(back->discoveryType, loc.discoveryType);
+    QCOMPARE(back->host, loc.host);
+    QCOMPARE(back->path, loc.path);
+    QCOMPARE(back->toString(), spelled);
+    // The type name keeps its case — it is the user's spelling and a case-insensitive key.
+    QCOMPARE(RemoteLocation::parse(QStringLiteral("discover://CamS/x/a.log"))->discoveryType,
+             QStringLiteral("CamS"));
+    QVERIFY(logPathIsSpooled(spelled));
+    QCOMPARE(RemoteLocation::transportOf(spelled), RemoteLocation::Transport::Discovered);
+}
+
+void TestRemoteLocation::aDiscoveredAddressRefusesWhatItCannotSpell()
+{
+    // The hand-cut branch inherits none of QUrl's refusals (bugs.md 50): each is asked for here.
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("discover://T/id")).has_value());      // no path
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("discover://T//a.log")).has_value());  // no id
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("discover:///id/a.log")).has_value()); // no type
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("discover://T/i%U/a.log")).has_value());
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("discover://T%/i/a.log")).has_value());
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("discover://T/i/a%GG.log")).has_value());
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("discover://T/i%EF%BF%BF/a.log")).has_value());
+    QVERIFY(!RemoteLocation::parse(QStringLiteral("discover://T/i/a%00.log")).has_value());
+    QVERIFY(!logPathIsWellFormed(QStringLiteral("discover://T/id")));
+}
+
+void TestRemoteLocation::aDiscoveredTargetIsNeitherAHostNorADevice()
+{
+    const auto d = RemoteLocation::parse(QStringLiteral("discover://web1/x/a.log"));
+    const auto s = RemoteLocation::parse(QStringLiteral("ssh://web1/a.log"));
+    QVERIFY(d && s);
+    QVERIFY(d->target() != s->target());
+    QVERIFY(d->target().startsWith(QStringLiteral("discover:")));
+    QVERIFY(d->effectiveUser().isEmpty());
+    // No account is ever written into a discovered address; its type supplies one.
+    QVERIFY(!d->toString().contains(u'@'));
 }
 
 QTEST_APPLESS_MAIN(TestRemoteLocation)

@@ -217,6 +217,49 @@ add_test(NAME tst_restarttarget COMMAND tst_restarttarget)
 # It needs no port, no device, no QApplication and no waiting, because the machine is a
 # pure decision with an injected clock — which is why it was written that way round rather
 # than inside the QSerialPort code it drives.
+# M28 — device discovery without a platform responder: the match rules every backend shares,
+# the WS-Discovery messages, the connect-time lookup through the browser seam, and the ONVIF
+# browser against a real multicast responder on loopback where the machine routes one. POSIX for
+# that responder's sockets; the rest would run anywhere.
+if(NOT WIN32)
+    qt_add_executable(tst_discovery tst_discovery.cpp)
+    target_link_libraries(tst_discovery PRIVATE loftail_core Qt6::Test Qt6::Network)
+    add_test(NAME tst_discovery COMMAND tst_discovery)
+endif()
+
+# M28 — the Avahi backend against a real daemon. Built only with that backend, and skipped unless
+# LOFTAIL_TEST_MDNS=1, which packaging/test-mdns/run-mdns-tests.sh sets after starting a private
+# system bus, avahi-daemon and two published services — tst_keychainlive's arrangement.
+if(LOFTAIL_HAVE_MDNS AND LOFTAIL_MDNS_BACKEND STREQUAL "avahi")
+    qt_add_executable(tst_avahilive tst_avahilive.cpp)
+    target_link_libraries(tst_avahilive PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_avahilive COMMAND tst_avahilive)
+endif()
+
+# M28 — the telnet layer with nothing listening: IAC stripping across reads, negotiation that
+# answers only a change of state, binary mode and the NVT CR NUL. Pure, so ungated.
+qt_add_executable(tst_telnetprotocol tst_telnetprotocol.cpp)
+target_link_libraries(tst_telnetprotocol PRIVATE loftail_core Qt6::Test)
+add_test(NAME tst_telnetprotocol COMMAND tst_telnetprotocol)
+
+# M28 — the telnet transport against a real TCP connection into a real /bin/sh, tst_serialdevice's
+# twin: the far end is a std::thread speaking telnet on loopback, so IAC negotiation, a doubled
+# 0xFF in a log, binary refused, and a host not listening are all genuine. POSIX for the fixture's
+# sockets and popen(); the transport itself is not platform-specific.
+if(NOT WIN32)
+    qt_add_executable(tst_telnetsession tst_telnetsession.cpp)
+    target_link_libraries(tst_telnetsession PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_telnetsession COMMAND tst_telnetsession)
+    set_tests_properties(tst_telnetsession PROPERTIES LABELS threading)
+
+    # M28 — a discover:// log end to end below the window: a scripted browser for the network,
+    # a real telnet server and /bin/sh for the device, and the device MOVING under an open log.
+    qt_add_executable(tst_discoveredfetcher tst_discoveredfetcher.cpp)
+    target_link_libraries(tst_discoveredfetcher PRIVATE loftail_core Qt6::Test)
+    add_test(NAME tst_discoveredfetcher COMMAND tst_discoveredfetcher)
+    set_tests_properties(tst_discoveredfetcher PROPERTIES LABELS threading)
+endif()
+
 qt_add_executable(tst_serialloginmachine tst_serialloginmachine.cpp)
 target_link_libraries(tst_serialloginmachine PRIVATE loftail_core Qt6::Test)
 add_test(NAME tst_serialloginmachine COMMAND tst_serialloginmachine)
@@ -383,6 +426,21 @@ qt_add_executable(tst_remotedialog tst_remotedialog.cpp)
 target_link_libraries(tst_remotedialog PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
 add_test(NAME tst_remotedialog COMMAND tst_remotedialog)
 set_tests_properties(tst_remotedialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# M28 — File ▸ Open Remote is a browser: discovered devices under their types, saved hosts, a
+# filter over both, and an address typed outright that opens the host form. A scripted browser
+# stands in for the network through the factory seam.
+qt_add_executable(tst_remotebrowser tst_remotebrowser.cpp)
+target_link_libraries(tst_remotebrowser PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_remotebrowser COMMAND tst_remotebrowser)
+set_tests_properties(tst_remotebrowser PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# M28 — File ▸ Remote Parameters: every type field round-trips, a password waits for an
+# account and goes where the consent note said, and the hosts page is the host form.
+qt_add_executable(tst_remoteparameters tst_remoteparameters.cpp)
+target_link_libraries(tst_remoteparameters PRIVATE loftail_ui Qt6::Test Qt6::Widgets)
+add_test(NAME tst_remoteparameters COMMAND tst_remoteparameters)
+set_tests_properties(tst_remoteparameters PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Which language the interface is in, and specifically that QT'S OWN strings end up in
 # the same one. loftail ships no catalogue, so its own strings need no help; the

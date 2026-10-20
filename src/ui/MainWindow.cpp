@@ -45,7 +45,11 @@
 #include "ManualFormatProvider.h"
 #include "MessageLabel.h"
 #include "UiColors.h"
+#include "DiscoveredFetcher.h"
+#include "DiscoveryBrowser.h"
+#include "DiscoveryWatch.h"
 #include "HostBookmarkStore.h"
+#include "TelnetSession.h"
 #include "ArchiveLocation.h"
 #include "OpenArchiveDialog.h"
 #include "PreferencesDialog.h"
@@ -56,6 +60,8 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include "OpenRemoteDialog.h"
+#include "RemoteBrowserDialog.h"
+#include "RemoteParametersDialog.h"
 #include "OpenSerialDialog.h"
 #include "SerialDevices.h"
 #include "SerialEnumerator.h"
@@ -553,6 +559,13 @@ void MainWindow::buildMenus()
     m_openRemoteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")));
     connect(m_openRemoteAction, &QAction::triggered, this, &MainWindow::chooseRemoteToOpen);
 
+    // M28 — how loftail reaches other machines, apart from opening anything: the remote types
+    // that find devices by discovery, and the saved hosts reached by address.
+    m_remoteParametersAction = fileMenu->addAction(tr("Remote Para&meters..."));
+    m_remoteParametersAction->setObjectName(QStringLiteral("remoteParametersAction"));
+    connect(m_remoteParametersAction, &QAction::triggered, this,
+            &MainWindow::editRemoteParameters);
+
     m_recentMenu = fileMenu->addMenu(tr("Open &Recent"));
     m_recentMenu->setObjectName(QStringLiteral("recentMenu")); // findChild, for tests
     // A menu shows an action's tooltip only when asked to, and here the tooltip is the
@@ -592,20 +605,15 @@ void MainWindow::buildMenus()
 #endif
 
 #if !defined(LOFTAIL_HAVE_SSH)
+    // NOTHING IS GREYED ANY MORE, AND THAT IS M28's DOING: telnet needs no optional
+    // dependency and ONVIF discovery none either, so a build without libssh2 can still open a
+    // remote log — just not over SSH. The menu items stay live and say what is missing; the
+    // form says so again where SSH is chosen, and an SSH open refuses in words (M17).
     const QString noSsh = tr(
-        "This copy of loftail was built without SSH support, so remote logs cannot "
-        "be opened. Rebuild with libssh2 available to enable it.");
-    m_openRemoteAction->setEnabled(false);
+        "This copy of loftail was built without SSH support: logs over telnet and on "
+        "discovered telnet devices still open, logs over SSH do not.");
     m_openRemoteAction->setToolTip(noSsh);
-    m_remoteHostsMenu->setEnabled(false);
     m_remoteHostsMenu->setToolTip(noSsh);
-    // The welcome screen HIDES its remotes section where these two only grey out, and
-    // the divergence is deliberate. A menu entry that vanishes reads as a feature that
-    // does not exist, which is why both items above stay put and carry the sentence; a
-    // landing page is where somebody is choosing what to do, and an empty disabled
-    // column there is dead space that explains nothing the menu is not already about to
-    // explain. Decided in this one block so the two answers cannot drift apart.
-    m_welcome->setRemotesVisible(false);
 #endif
 
     fileMenu->addSeparator();
@@ -1402,6 +1410,8 @@ void MainWindow::documentsUnbound()
     // nothing — with no contexts left, updateTrayPresence() answers "not wanted".
     m_lastNotified = nullptr;
     updateTrayPresence();
+    // Close All takes the set down without reaching relabelTabs(), so the watch is told here.
+    syncDiscoveryWatch({});
 
     // Unbind the panes from the now-gone document (invariant #7).
     emit activeDocumentChanged(nullptr);
@@ -2404,14 +2414,51 @@ bool MainWindow::exportVisibleTo(const QString &path)
 
 void MainWindow::chooseRemoteToOpen()
 {
+    // THE BROWSER (M28): discovered devices, saved hosts and an address typed outright, in one
+    // list. Each answer goes through the funnel that answer already had — a saved host through
+    // openRemoteBookmark(), so its cadence and tail-start apply; everything else through
+    // openFile(), whose priming carries a discovered device's type and a telnet host's preset.
     HostBookmarkStore store(HostBookmarkStore::defaultDir());
-    OpenRemoteDialog dialog(&store, this);
-    if (dialog.exec() != QDialog::Accepted)
+    RemoteBrowserDialog dialog(&store, this);
+    const bool accepted = dialog.exec() == QDialog::Accepted;
+    refreshRemoteHostsMenu(); // the dialog may have saved or removed a host or a type
+    if (!accepted)
         return;
-    refreshRemoteHostsMenu(); // the dialog may have saved or removed a host
-    const QString url = dialog.chosenUrl();
-    if (!url.isEmpty())
-        openFile(url);
+    switch (dialog.choice()) {
+    case RemoteBrowserDialog::Choice::SavedHost:
+        openRemoteBookmark(dialog.chosenHost(), dialog.chosenPath());
+        break;
+    case RemoteBrowserDialog::Choice::Direct:
+        if (!dialog.chosenConsolePreset().isEmpty())
+            m_adHocConsolePresets.insert(normalizeLogPath(dialog.chosenUrl()),
+                                         dialog.chosenConsolePreset());
+        openFile(dialog.chosenUrl());
+        break;
+    case RemoteBrowserDialog::Choice::Discovered:
+        openFile(dialog.chosenUrl());
+        break;
+    case RemoteBrowserDialog::Choice::None:
+        break;
+    }
+}
+
+void MainWindow::editRemoteParameters()
+{
+    HostBookmarkStore store(HostBookmarkStore::defaultDir());
+    RemoteParametersDialog dialog(&store, this);
+    dialog.exec();
+    // The ONE refresh that carries an edit everywhere: the menu, the welcome page, the tab
+    // names, and the type snapshot every discovered log's fetcher reads on its next connect.
+    refreshRemoteHostsMenu();
+    // And re-primed, as an edited serial preset is: a discovered log's poll cadence, tail-start
+    // and console preset are the TYPE's, and its fetcher reads them back under its address.
+    for (const std::unique_ptr<DocumentContext> &ctx : m_contexts) {
+        if (!ctx || !ctx->doc)
+            continue;
+        const auto location = RemoteLocation::parse(ctx->doc->path());
+        if (location && location->transport == RemoteLocation::Transport::Discovered)
+            primeDiscoveredRemote(*location);
+    }
 }
 
 void MainWindow::refreshRemoteHostsMenu()
@@ -2425,6 +2472,12 @@ void MainWindow::refreshRemoteHostsMenu()
     // after a host entry has opened one.
     const HostBookmarkStore store(HostBookmarkStore::defaultDir());
     const QVector<HostBookmark> hosts = store.all();
+    // THE REMOTE TYPES FROM THE SAME FILE, IN THE SAME PASS (M28): the snapshot a discovered
+    // log's fetcher reads its type out of on every connect, so this refresh — already called at
+    // every point hosts.json can move — is also what carries an edited type to the logs open
+    // through it. Set before the constructor's restoreSession(), which buildMenus() precedes.
+    m_remoteTypes = store.types();
+    setKnownRemoteTypes(m_remoteTypes);
 
     QVector<WelcomeView::Entry> welcome;
 
@@ -2564,8 +2617,11 @@ void MainWindow::chooseSerialSettings()
         if (!ctx || !ctx->doc)
             continue;
         const auto location = RemoteLocation::parse(ctx->doc->path());
-        if (!location || location->transport != RemoteLocation::Transport::Serial)
+        if (!location
+            || (location->transport != RemoteLocation::Transport::Serial
+                && location->transport != RemoteLocation::Transport::Telnet)) {
             continue;
+        }
         primeSerialProfile(*location);
         // And poke it, so the change lands on the next turn rather than at the next poll. This is
         // what File ▸ Reconnect already does, reaching the same place.
@@ -2619,8 +2675,13 @@ void MainWindow::rememberSerialPath(const QString &deviceId, const QString &path
 
 void MainWindow::primeSerialProfile(const RemoteLocation &location)
 {
-    if (location.transport != RemoteLocation::Transport::Serial)
+    // BOTH LOGIN CONSOLES (M28): a telnet log signs in with the same kind of preset a serial
+    // one does — prompts, startup commands, a reboot pattern — and reaches the fetcher through
+    // the same mutex-guarded options store. Only the line settings mean nothing over telnet.
+    if (location.transport != RemoteLocation::Transport::Serial
+        && location.transport != RemoteLocation::Transport::Telnet) {
         return;
+    }
 
     // THE HANDOFF, AND IT IS IN openFile()'s SINGLE FUNNEL rather than only in the menu — which
     // is the gap ARCHITECTURE.md §8 records for the network transport's own options: those reach
@@ -2629,17 +2690,52 @@ void MainWindow::primeSerialProfile(const RemoteLocation &location)
     // the defaults. Every way in carries it here.
     const SerialProfileStore store(SerialProfileStore::defaultDir());
     const LogProfile resolved = resolvedProfile(location.toString());
+    // A SAVED TELNET HOST NAMES ITS OWN PRESET, and that wins over the settings tree: the
+    // preset is a property of how this machine signs in, which is what a saved host is. The
+    // tree still answers for a telnet address nobody saved, so `telnet://*` is one entry.
+    QString presetName = resolved.serialProfile;
+    // A preset chosen in the host form for an open that was not saved as a host, for the life
+    // of this window — the form is the only place it was ever written down.
+    if (const auto adHoc = m_adHocConsolePresets.constFind(location.toString());
+        adHoc != m_adHocConsolePresets.constEnd()) {
+        presetName = *adHoc;
+    }
+    if (location.transport == RemoteLocation::Transport::Telnet) {
+        bool found = false;
+        const HostBookmark host = HostBookmarkStore::find(m_hostBookmarks, location, &found);
+        if (found && !host.consolePreset.isEmpty())
+            presetName = host.consolePreset;
+    }
     SerialFetchOptions options;
-    options.profile = store.presetNamed(resolved.serialProfile);
-    if (!resolved.serialProfile.isEmpty() && options.profile.name != resolved.serialProfile) {
+    options.profile = store.presetNamed(presetName);
+    if (!presetName.isEmpty() && options.profile.name != presetName) {
         // Named a preset that is not there. FALLS BACK RATHER THAN REFUSING, because the settings
         // tree and serial.json are independently editable — and it says so in the one place that
         // can be read afterwards, rather than opening on the wrong settings in silence.
         diagLog("serial", QStringLiteral("%1: preset \"%2\" is not configured — using the "
                                         "built-in defaults")
-                              .arg(location.toString(), resolved.serialProfile));
+                              .arg(location.toString(), presetName));
     }
     setSerialFetchOptions(location, options);
+}
+
+void MainWindow::primeDiscoveredRemote(const RemoteLocation &location)
+{
+    const int at = HostBookmarkStore::indexOfType(m_remoteTypes, location.discoveryType);
+    if (at < 0)
+        return;   // the factory refuses it, in words, with no I/O
+    const RemoteType &type = m_remoteTypes.at(at);
+    SshFetchOptions ssh;
+    ssh.pollMs = type.pollMs > 0 ? type.pollMs : 1000;
+    ssh.tailStartBytes = type.tailStartBytes;
+    ssh.compress = type.compress;
+    setSshFetchOptions(location, ssh);
+
+    SerialFetchOptions console;
+    const SerialProfileStore presets(SerialProfileStore::defaultDir());
+    console.profile = presets.presetNamed(type.consolePreset);
+    console.tailStartBytes = type.tailStartBytes;
+    setTelnetFetchOptions(location, console);
 }
 
 void MainWindow::openRemoteBookmark(const QString &hostName, const QString &path)
@@ -2748,8 +2844,33 @@ void MainWindow::primeRemoteCredentials(const QString &path)
     // would match a saved host of that name and be primed with its password. That is the
     // same collision class target()'s `serial:` prefix exists to prevent one layer down,
     // arriving from the other direction.
-    if (RemoteLocation::transportOf(path) != RemoteLocation::Transport::Ssh)
+    //
+    // TELNET IS PRIMED TOO (M28), and safely, because find() now compares the transport: a
+    // telnet host's saved password can only reach a telnet login on that host.
+    const auto transport = RemoteLocation::transportOf(path);
+    if (transport == RemoteLocation::Transport::Discovered) {
+        // A DISCOVERED DEVICE SIGNS IN WITH ITS TYPE'S ACCOUNT, so its saved password is the
+        // type's, filed under the type's own key (RemoteType::credentialTarget()) — which is
+        // what the resolved far end asks for, whatever address the device has today.
+        const auto location = RemoteLocation::parse(path);
+        if (!location)
+            return;
+        // Through the published snapshot rather than a member: this function is static, and
+        // the snapshot is the same pass of hosts.json the window's own copy came from.
+        const auto known = knownRemoteType(location->discoveryType);
+        if (!known)
+            return;
+        const RemoteType &type = *known;
+        if (type.savePassword && !type.password.isEmpty() && !type.user.isEmpty()
+            && !SshCredentialCache::has(type.credentialTarget())) {
+            SshCredentialCache::remember(type.credentialTarget(), type.password);
+        }
         return;
+    }
+    if (transport != RemoteLocation::Transport::Ssh
+        && transport != RemoteLocation::Transport::Telnet) {
+        return;
+    }
     const auto location = RemoteLocation::parse(path);
     if (!location)
         return;
@@ -2884,9 +3005,17 @@ bool MainWindow::openFile(const QString &rawPath, const QString &pattern)
     primeRemoteCredentials(path);
     // Beside it, and in the same funnel for the same reason: every way in must carry the
     // device's settings, not only the two surfaces that happen to know about them.
-    if (const auto serial = RemoteLocation::parse(path);
-        serial && serial->transport == RemoteLocation::Transport::Serial) {
-        primeSerialProfile(*serial);
+    if (const auto console = RemoteLocation::parse(path);
+        console
+        && (console->transport == RemoteLocation::Transport::Serial
+            || console->transport == RemoteLocation::Transport::Telnet)) {
+        primeSerialProfile(*console);
+    }
+    // And a discovered device's: its type's poll cadence, tail-start, compression and console
+    // preset, keyed on the ADDRESS, which is what its fetcher reads them back under.
+    if (const auto discovered = RemoteLocation::parse(path);
+        discovered && discovered->transport == RemoteLocation::Transport::Discovered) {
+        primeDiscoveredRemote(*discovered);
     }
 
     // An archive naming no member cannot be opened, so ask which log is wanted —
@@ -3901,12 +4030,49 @@ void MainWindow::updateTabTitles(DocumentContext *ctx)
     }
 }
 
+void MainWindow::syncDiscoveryWatch(const QStringList &openAddresses)
+{
+    // THE TYPES OF THE OPEN `discover://` LOGS, as hosts.json defines them now — m_remoteTypes,
+    // taken in refreshRemoteHostsMenu()'s one pass, so this parses nothing. A type renamed or
+    // deleted while its logs are open simply stops being watched; the logs then go on at the
+    // address they have, and find out at their next connect that the type is gone.
+    QVector<RemoteType> wanted;
+    for (const QString &address : openAddresses) {
+        const auto location = RemoteLocation::parse(address);
+        if (!location || location->transport != RemoteLocation::Transport::Discovered)
+            continue;
+        const int at = HostBookmarkStore::indexOfType(m_remoteTypes, location->discoveryType);
+        if (at < 0)
+            continue;
+        const RemoteType &type = m_remoteTypes.at(at);
+        const bool already = std::any_of(wanted.cbegin(), wanted.cend(), [&](const RemoteType &t) {
+            return t.name.compare(type.name, Qt::CaseInsensitive) == 0;
+        });
+        if (!already)
+            wanted.append(type);
+    }
+    if (wanted.isEmpty() && !m_discoveryWatch)
+        return;
+    if (!m_discoveryWatch)
+        m_discoveryWatch = new DiscoveryWatch(this);
+    m_discoveryWatch->setWatchedTypes(wanted);
+}
+
+QStringList MainWindow::watchedRemoteTypes() const
+{
+    return m_discoveryWatch ? m_discoveryWatch->watchedTypeNames() : QStringList();
+}
+
 void MainWindow::relabelTabs()
 {
     QStringList addresses;
     addresses.reserve(int(m_contexts.size()));
     for (const auto &ctx : m_contexts)
         addresses.append(ctx->doc->path());
+
+    // The standing watch follows the same set (DiscoveryWatch.h): this is where it changes,
+    // and refreshRemoteHostsMenu() — where a type's definition changes — ends here too.
+    syncDiscoveryWatch(addresses);
 
     // WHAT MAY NOT BE EVICTED (M21). The pool is bounded, so storing one log's settings
     // can cost another log theirs — and the one cost that is never acceptable is a log
@@ -3931,6 +4097,16 @@ void MainWindow::relabelTabs()
             // to key settings on and an unreadable thing to put on a tab. So: the label the user
             // gave the device, else the PORT NAME it currently resolves to (`ttyUSB0`, which is
             // what a person recognises), else the id, which is better than nothing.
+            // A DISCOVERED DEVICE is named by what it last called itself — the Bonjour instance
+            // name or the ONVIF name scope — and never by its id, which may be a forty-character
+            // `urn:uuid:` (displayHost() is the fallback that shortens one).
+            if (location.transport == RemoteLocation::Transport::Discovered) {
+                if (const auto seen = lastSeenDevice(location.discoveryType, location.host);
+                    seen && !seen->displayName.isEmpty() && seen->displayName != seen->id) {
+                    return seen->displayName;
+                }
+                return location.displayHost();
+            }
             if (location.transport == RemoteLocation::Transport::Serial) {
                 for (const SerialDeviceBookmark &d : m_serialDevices) {
                     if (d.id == location.host && !d.label.isEmpty())

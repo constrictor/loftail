@@ -19,8 +19,10 @@
 #include "RestartRunner.h"
 
 #include "SerialDevice.h"
+#include "TelnetSession.h"
 
 #include "DiagnosticLog.h"
+#include "DiscoveredFetcher.h"
 #include "SshExecCommands.h"
 #include "SshWorkerPool.h"
 
@@ -174,9 +176,15 @@ void RestartRunner::start(const RestartTarget &target)
     // WHICH TRANSPORT, not merely "remote": the two share no machinery — no connect, no worker
     // pool, no session cache — because a device is already signed in by the fetcher reading its
     // log, and it is the same session.
-    const bool serial = target.remote && target.host
-        && target.host->transport == RemoteLocation::Transport::Serial;
-    if (serial)
+    //
+    // A discovered device goes the way its TYPE says (reachedOver()). Over telnet that is the
+    // console session registered under the DEVICE — the one its log's fetcher signed in, at
+    // wherever the device is now; over SSH it is the errand, which finds the device first.
+    const RemoteLocation::Transport via =
+        target.remote && target.host ? reachedOver(*target.host) : RemoteLocation::Transport::Ssh;
+    const bool console = target.remote && target.host
+        && (via == RemoteLocation::Transport::Serial || via == RemoteLocation::Transport::Telnet);
+    if (console)
         startSerial(target);
     else if (target.remote)
         startRemote(target);
@@ -186,15 +194,28 @@ void RestartRunner::start(const RestartTarget &target)
 
 void RestartRunner::startSerial(const RestartTarget &target)
 {
+    // A LOGIN CONSOLE, serial or telnet (M28): both are signed in already by the fetcher
+    // reading the log, and both are the same ConsoleSession underneath — only the registry the
+    // session comes from differs. A build with no Qt SerialPort can still restart a service
+    // behind telnet, which needs nothing optional.
+    const bool telnet = reachedOver(*target.host) == RemoteLocation::Transport::Telnet;
 #if !defined(LOFTAIL_HAVE_SERIAL)
-    RestartResult out;
-    restartTargetIsRunnable(target, &out.error);
-    m_running = false;
-    reportLater(out);
-#else
+    if (!telnet) {
+        RestartResult out;
+        restartTargetIsRunnable(target, &out.error);
+        m_running = false;
+        reportLater(out);
+        return;
+    }
+#endif
     const QString command = restartScriptCommand(target.script, target.variables);
     const QString device = target.host->host;
-    auto device_handle = SerialDeviceRegistry::instance().acquire(device);
+    std::shared_ptr<ConsoleSession> device_handle;
+    if (telnet)
+        device_handle = TelnetSessionRegistry::instance().acquire(*target.host);
+    else
+        device_handle = SerialDeviceRegistry::instance().acquire(device);
+    m_consoleSession = device_handle;
 
     // ABANDONED, NEVER JOINED, the discipline every errand in this tree follows: closing the
     // dialog on a device that is not answering must not cost the deadline, and the run holds the
@@ -240,10 +261,11 @@ void RestartRunner::startSerial(const RestartTarget &target)
             },
             Qt::QueuedConnection);
     });
-    m_serialDevice = device;
+    m_serialDevice = target.host->transport == RemoteLocation::Transport::Discovered
+        ? target.host->displayHost()
+        : device;
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     worker->start();
-#endif
 }
 
 void RestartRunner::publish(const QByteArray &bytes, bool isStdErr)
@@ -578,10 +600,8 @@ void RestartRunner::abort()
         // the thread inside the port owns it (SessionHealth's discipline).
         *m_serialAlive = false;
         m_serialAlive.reset();
-#if defined(LOFTAIL_HAVE_SERIAL)
-        if (auto device = SerialDeviceRegistry::instance().acquire(m_serialDevice))
+        if (auto device = m_consoleSession.lock())
             device->abort();
-#endif
         RestartResult out;
         out.aborted = true;
         out.streamsMerged = true;

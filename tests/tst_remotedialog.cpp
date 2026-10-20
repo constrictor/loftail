@@ -27,6 +27,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QTemporaryDir>
 
 #include "CollapsibleSection.h"
@@ -81,6 +82,8 @@ private slots:
     void theEmptyListExplainsItself();
     void advancedIsFoldedUnlessTheHostChangedSomethingInIt();
     void theCompressionBoxIsOffByDefaultAndTravelsBothWays();
+    // M28 — the same form reaches a telnet host.
+    void telnetMovesThePortAsksForAPasswordAndSavesItsPreset();
 };
 
 // The button used to be permanently enabled, and accept() returned silently when the
@@ -363,6 +366,47 @@ void TestRemoteDialog::theCompressionBoxIsOffByDefaultAndTravelsBothWays()
     const int row = HostBookmarkStore::indexOfName(back, QStringLiteral("squeezed"));
     QVERIFY(row >= 0);
     QVERIFY2(!back.at(row).compress, "unticking it is saved too");
+}
+
+void TestRemoteDialog::telnetMovesThePortAsksForAPasswordAndSavesItsPreset()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    HostBookmarkStore store(dir.path());
+    OpenRemoteDialog dialog(&store);
+    dialog.show();
+    auto *connection = dialog.findChild<QComboBox *>(QStringLiteral("remoteConnectionCombo"));
+    auto *port = dialog.findChild<QSpinBox *>(QStringLiteral("remotePortField"));
+    auto *password = field(dialog, "remotePasswordField");
+    QVERIFY(connection && port && password);
+    QCOMPARE(port->value(), 22);
+    QVERIFY2(!password->isVisible(), "SSH asks for a password at connect time, not here");
+
+    connection->setCurrentIndex(connection->findData(int(RemoteType::Connection::Telnet)));
+    QCOMPARE(port->value(), 23);   // the default followed the connection
+    QVERIFY(password->isVisible());
+    QVERIFY2(!password->isEnabled(), "a password needs an account to go with it");
+    field(dialog, "remoteUserField")->setText(QStringLiteral("root"));
+    QVERIFY(password->isEnabled());
+
+    // A port somebody typed is theirs: switching back leaves it alone.
+    port->setValue(2323);
+    connection->setCurrentIndex(connection->findData(int(RemoteType::Connection::Ssh)));
+    QCOMPARE(port->value(), 2323);
+
+    // Pasting a telnet:// address switches the connection with it.
+    field(dialog, "remoteHostField")->setText(QStringLiteral("telnet://admin@cam7:2424/var/log/m"));
+    emit field(dialog, "remoteHostField")->textEdited(field(dialog, "remoteHostField")->text());
+    QCOMPARE(connection->currentData().toInt(), int(RemoteType::Connection::Telnet));
+    QCOMPARE(field(dialog, "remoteHostField")->text(), QStringLiteral("cam7"));
+    QCOMPARE(port->value(), 2424);
+
+    field(dialog, "remoteNameField")->setText(QStringLiteral("cam7 console"));
+    dialog.findChild<QPushButton *>(QStringLiteral("remoteSaveButton"))->click();
+    const HostBookmark saved = store.all().at(0);
+    QCOMPARE(saved.connection, RemoteType::Connection::Telnet);
+    QCOMPARE(saved.locationFor(QStringLiteral("/x")).toString(),
+             QStringLiteral("telnet://admin@cam7:2424/x"));
 }
 
 int main(int argc, char *argv[])

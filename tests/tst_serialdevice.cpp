@@ -236,8 +236,14 @@ private:
         // command does not fail for want of a terminal.
         if (typed.contains("stty raw -echo") && !m_stickyMangling)
             m_mangles = false;
+        if (typed.contains("stty raw -echo"))
+            m_echoes = false;
 
-        say("\n");
+        // The newline is the ECHO of the line just typed. After `stty -echo` there is none,
+        // so the prompt printed last is still on the line the answer starts on — what a real
+        // board's console does, and what a fixture that always wrote it could not show.
+        if (m_echoes)
+            say("\n");
         say(out);
         say(QByteArrayLiteral("# "));
     }
@@ -252,6 +258,7 @@ private:
     bool              m_awaitingPassword = false;
     bool              m_mangles = false;
     bool              m_stickyMangling = false;
+    bool              m_echoes = true;
     bool              m_chatty = false;
     std::thread       m_thread;
 };

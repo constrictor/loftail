@@ -54,7 +54,12 @@ bool ExecByteSafety::runRawMode()
     QByteArray ignored;
     // Not believed on its own — see the class comment. This only ASKS; settle() is what
     // checks whether it took.
-    return m_run(QStringLiteral("stty raw -echo 2>/dev/null; echo -n"), &ignored);
+    //
+    // The PROMPTS go with the echo, for the same reason: a command spanning several lines —
+    // a restart script — has the interactive shell behind a console print PS2 once per line
+    // and PS1 when it is done, all of it landing in the output shown for the run. Set in the
+    // console's own shell, so they hold for the session; harmless anywhere else.
+    return m_run(QStringLiteral("stty raw -echo 2>/dev/null; PS1=''; PS2=''; echo -n"), &ignored);
 }
 
 bool ExecByteSafety::encoderRoundTripAgrees(const QByteArray &raw)

@@ -54,7 +54,18 @@ struct RemoteLocation
     enum class Transport {
         Ssh,     // `ssh://` and `sftp://`
         Serial,  // `serial://` — a device's login console, M27
+        Telnet,  // `telnet://` — the same login console reached over TCP, M28
+        // `discover://Type/id/path` — a device found by a RemoteType's discovery, named by
+        // the TYPE and the device's own stable id rather than by an address, M28. Resolved
+        // to an SSH or telnet far end at connect time, never earlier, which is the whole of
+        // why it survives the device changing address.
+        Discovered,
     };
+
+    // The port an address of this transport means when it spells none: 22 for SSH, 23 for
+    // telnet. Serial spells no port at all and answers kDefaultPort, which its `port` field
+    // keeps so that fuzz_address's range assertion holds with no carve-out.
+    static int defaultPortFor(Transport transport);
 
     Transport transport = Transport::Ssh;
 
@@ -66,6 +77,18 @@ struct RemoteLocation
     QString host;
     QString path; // the remote path, decoded; "~/x.log" style paths keep their tilde
     int     port = kDefaultPort; // meaningless for Transport::Serial, which spells none
+    // Transport::Discovered only: the RemoteType's name. `host` then holds the device id.
+    QString discoveryType;
+    // NOT PART OF THE ADDRESS and never serialized: where this connect's password is filed,
+    // when that is not target(). A discovered device signs in with its TYPE's account, so the
+    // fetcher resolving one sets this to RemoteType::credentialTarget() on the concrete SSH or
+    // telnet location it builds — or one password per device ADDRESS would be asked for and
+    // remembered, and lost again the day the device moved.
+    QString credentialOverride;
+    QString credentialTarget() const
+    {
+        return credentialOverride.isEmpty() ? target() : credentialOverride;
+    }
 
     // Cheap scheme test, safe to call on every path in the application. Accepts
     // `sftp://` as well: dragging a file out of a GNOME Files SSH mount produces one, and
@@ -204,7 +227,10 @@ struct RemoteLocation
     QString target() const;
 
     // The host as shown to a person: the bare host name, no user or port.
-    QString displayHost() const { return host; }
+    // The machine as a person would name it. A host or a device as given — except a
+    // discovered device, whose id may be a forty-character `urn:uuid:…`: that is shown as its
+    // type and the first block of the uuid, which is short, stable and still tells two apart.
+    QString displayHost() const;
 };
 
 // The helpers below are the ONLY things the rest of the application needs in order to
