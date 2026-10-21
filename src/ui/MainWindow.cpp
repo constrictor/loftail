@@ -729,6 +729,13 @@ void MainWindow::buildMenus()
     const QKeySequence ctrlP(Qt::CTRL | Qt::Key_P);
     if (!preferencesKeys.contains(ctrlP))
         preferencesKeys.prepend(ctrlP);
+#else
+    // Cmd+, comes from the PLATFORM THEME's key bindings, and only the Cocoa one has it: a
+    // build run under any other QPA plugin (offscreen, which is every test run) answers the
+    // generic scheme, where Preferences is bound to nothing. Spelled out so the convention
+    // does not depend on which plugin loaded. Qt::CTRL is Cmd on macOS.
+    if (preferencesKeys.isEmpty())
+        preferencesKeys.append(QKeySequence(Qt::CTRL | Qt::Key_Comma));
 #endif
     preferencesAction->setShortcuts(preferencesKeys);
     preferencesAction->setMenuRole(QAction::PreferencesRole);

@@ -35,6 +35,8 @@
 #include <poll.h>
 #include <unistd.h>
 
+#include <cerrno>
+
 #include "RemoteLocation.h"
 #include "SourceFetcher.h"
 #include "SshFetcher.h"
@@ -105,6 +107,36 @@ private:
             m_held.append(filler);
         }
         return true;
+    }
+
+    // WHETHER THIS KERNEL STALLS A CONNECT AT ALL, asked before any case relies on it. Linux
+    // drops a SYN for a listener whose accept queue is full, which is the whole fixture;
+    // macOS's kernel completes the handshake regardless and leaves the queue to sort it out
+    // afterwards, so there a connect to the "stalled" port simply connects, and every case
+    // built on it passes or fails for reasons that have nothing to do with slicing. A probe
+    // that connects within a few hundred milliseconds is that answer, and the probe is
+    // closed either way so it cannot take a slot the case under test is owed.
+    bool kernelStallsAConnect() const
+    {
+        const int probe = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (probe < 0)
+            return false;
+        ::fcntl(probe, F_SETFL, O_NONBLOCK);
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = htons(m_port);
+        const int rc = ::connect(probe, reinterpret_cast<sockaddr *>(&address), sizeof(address));
+        bool connected = rc == 0;
+        if (!connected && errno == EINPROGRESS) {
+            pollfd waiting { probe, POLLOUT, 0 };
+            int error = 0;
+            socklen_t length = sizeof(error);
+            connected = ::poll(&waiting, 1, 300) > 0
+                && ::getsockopt(probe, SOL_SOCKET, SO_ERROR, &error, &length) == 0 && error == 0;
+        }
+        ::close(probe);
+        return !connected;
     }
 
     // Take one connection off the queue, which lets the next SYN retry through. WHICH
@@ -194,6 +226,9 @@ private slots:
 void TestSshConnect::aConnectSlowerThanOneSliceReachesTheHandshake()
 {
     QVERIFY(stallingPortOpen());
+    if (!kernelStallsAConnect())
+        QSKIP("this kernel completes a handshake past a full accept queue, so no connect can "
+              "be stalled on loopback here; the property is held by the Linux legs");
 
     // Room for the connection only after a slice has passed, so it genuinely spans more
     // than one however fast the runner is. From a THREAD and not a QTimer: a timer would
@@ -283,6 +318,9 @@ void TestSshConnect::aConnectNobodyStillWantsIsGivenUpOnLongBeforeTheBudget()
     // costs a slice, not the connect budget. The slices survived the fix — what changed
     // is that they no longer kill the connection they are slicing.
     QVERIFY(stallingPortOpen());
+    if (!kernelStallsAConnect())
+        QSKIP("this kernel completes a handshake past a full accept queue, so no connect can "
+              "be stalled on loopback here; the property is held by the Linux legs");
 
     SshSession session;
     std::atomic_bool wanted { true };

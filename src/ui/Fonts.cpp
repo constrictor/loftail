@@ -20,6 +20,7 @@
 
 #include <QApplication>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QGuiApplication>
 #include <QScreen>
 
@@ -35,6 +36,27 @@ int g_logFontPointSize = 0;
 // offscreen plugin has no font database at all, and a screen may not be there yet.
 constexpr int kAssumedPointSize = 10;
 constexpr qreal kAssumedDpi = 96.0;
+
+// A fixed-pitch family that is really installed, for when the one the platform names is not.
+// The usual faces first, in no deep order, then whatever the database calls fixed pitch.
+QString installedFixedPitchFamily()
+{
+    static const char *const kUsual[] = {
+        "Menlo", "SF Mono", "Monaco", "DejaVu Sans Mono", "Liberation Mono",
+        "Noto Sans Mono", "Consolas", "Courier New", "Courier",
+    };
+    const QStringList families = QFontDatabase::families();
+    for (const char *name : kUsual) {
+        const QString family = QString::fromLatin1(name);
+        if (families.contains(family, Qt::CaseInsensitive) && QFontDatabase::isFixedPitch(family))
+            return family;
+    }
+    for (const QString &family : families) {
+        if (QFontDatabase::isFixedPitch(family) && !QFontDatabase::isPrivateFamily(family))
+            return family;
+    }
+    return {};
+}
 } // namespace
 
 QFont monospaceFont()
@@ -55,6 +77,19 @@ QFont monospaceFont()
     // proportional one.
     f.setStyleHint(QFont::TypeWriter);
     f.setFixedPitch(true);
+
+    // AND BRACES THAT ARE NOT A HINT. Neither of those two is honoured by every font
+    // database: CoreText, for one, answers a missing family with a proportional face
+    // whatever the style hint says — which is what the macOS build gets whenever the
+    // platform theme's fixed font names a family that is not there (every offscreen run,
+    // where it is "Monospace"). The height model memoizes one advance per codepoint on the
+    // strength of the face being fixed pitch (§7.1.1), so a proportional one is not a
+    // cosmetic difference. Asked only when the resolved face is not fixed pitch, so the
+    // ordinary case never enumerates the database.
+    if (!QFontInfo(f).fixedPitch()) {
+        if (const QString family = installedFixedPitchFamily(); !family.isEmpty())
+            f.setFamilies({family});
+    }
     return f;
 }
 

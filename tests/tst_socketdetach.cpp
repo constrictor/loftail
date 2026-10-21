@@ -33,6 +33,7 @@
 #  include <netinet/in.h>
 #  include <fcntl.h>
 #  include <unistd.h>
+#  include <poll.h>
 #  include <cerrno>
 #endif
 
@@ -114,9 +115,40 @@ private:
         return true;
     }
 
+    // WHETHER THIS KERNEL STALLS A CONNECT AT ALL, asked before any case relies on it. Linux
+    // drops a SYN for a listener whose accept queue is full, which is the whole fixture;
+    // macOS's kernel completes the handshake regardless and leaves the queue to sort it out
+    // afterwards, so there a connect to the "stalled" port simply connects, and every case
+    // built on it passes or fails for reasons that have nothing to do with slicing. A probe
+    // that connects within a few hundred milliseconds is that answer, and the probe is
+    // closed either way so it cannot take a slot the case under test is owed.
+    bool kernelStallsAConnect() const
+    {
+        const int probe = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (probe < 0)
+            return false;
+        ::fcntl(probe, F_SETFL, O_NONBLOCK);
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = htons(m_stallPort);
+        const int rc = ::connect(probe, reinterpret_cast<sockaddr *>(&address), sizeof(address));
+        bool connected = rc == 0;
+        if (!connected && errno == EINPROGRESS) {
+            pollfd waiting { probe, POLLOUT, 0 };
+            int error = 0;
+            socklen_t length = sizeof(error);
+            connected = ::poll(&waiting, 1, 300) > 0
+                && ::getsockopt(probe, SOL_SOCKET, SO_ERROR, &error, &length) == 0 && error == 0;
+        }
+        ::close(probe);
+        return !connected;
+    }
+
     // Take one connection off the queue, which lets the next SYN retry through.
     void freeOneStallSlot()
     {
+        ::fcntl(m_stall, F_SETFL, O_NONBLOCK);   // called on a timer; an empty queue must not block
         sockaddr_in from {};
         socklen_t length = sizeof(from);
         const int taken = ::accept(m_stall, reinterpret_cast<sockaddr *>(&from), &length);
@@ -332,6 +364,9 @@ void TestSocketDetach::aTimedOutWaitForConnectedAbandonsTheAttempt()
     QSKIP("needs a raw listening socket to stall a connect");
 #else
     QVERIFY(stallingPortOpen());
+    if (!kernelStallsAConnect())
+        QSKIP("this kernel completes a handshake past a full accept queue, so no connect can "
+              "be stalled on loopback here; the property is held by the Linux legs");
 
     QTcpSocket socket;
     socket.connectToHost(QHostAddress(QHostAddress::LocalHost), m_stallPort);
@@ -357,14 +392,24 @@ void TestSocketDetach::aConnectSlowerThanOneSliceStillConnects()
     QSKIP("needs a raw listening socket to stall a connect");
 #else
     QVERIFY(stallingPortOpen());
+    if (!kernelStallsAConnect())
+        QSKIP("this kernel completes a handshake past a full accept queue, so no connect can "
+              "be stalled on loopback here; the property is held by the Linux legs");
 
     QTcpSocket socket;
     QElapsedTimer elapsed;
     elapsed.start();
     socket.connectToHost(QHostAddress(QHostAddress::LocalHost), m_stallPort);
     // Room for the connection only once the wait is under way, so it genuinely spans
-    // more than one slice however fast the runner is.
-    QTimer::singleShot(kSliceMs, this, [this] { freeOneStallSlot(); });
+    // more than one slice however fast the runner is — and room KEPT being made from then
+    // on, not one slot: the fillers that did not fit retry their own SYNs on the same
+    // backoff as this connection, so a single freed slot is a race it can lose, and its
+    // next retry is seconds away. A timer is right here, unlike tst_sshconnect's thread:
+    // awaitSocketConnected() is a QEventLoop, which is the very thing this case relies on.
+    QTimer drain;
+    drain.setInterval(20);
+    connect(&drain, &QTimer::timeout, this, [this] { freeOneStallSlot(); });
+    QTimer::singleShot(kSliceMs, &drain, qOverload<>(&QTimer::start));
 
     QCOMPARE(awaitSocketConnected(socket, 20000, kSliceMs, nullptr), SocketWait::Connected);
     QCOMPARE(socket.state(), QAbstractSocket::ConnectedState);
@@ -386,6 +431,9 @@ void TestSocketDetach::aConnectNobodyWantsIsGivenUpBetweenSlices()
     QSKIP("needs a raw listening socket to stall a connect");
 #else
     QVERIFY(stallingPortOpen());
+    if (!kernelStallsAConnect())
+        QSKIP("this kernel completes a handshake past a full accept queue, so no connect can "
+              "be stalled on loopback here; the property is held by the Linux legs");
 
     QTcpSocket socket;
     QElapsedTimer elapsed;
