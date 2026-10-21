@@ -4981,6 +4981,17 @@ void TestLogView::theSelectedRecordIsLaidOutInTheWidthItWasMeasuredIn()
             }
         }
     }
+    // Both images go where CI picks them up, when it says where that is: a mismatch on a
+    // leg nobody here can run is otherwise a sentence about pixels nobody can see.
+    if (differing != 0 || got.size() != want.size()) {
+        if (const QByteArray dir = qgetenv("LOFTAIL_TEST_ARTIFACTS"); !dir.isEmpty()) {
+            QDir().mkpath(QString::fromLocal8Bit(dir));
+            got.save(QString::fromLocal8Bit(dir) + QStringLiteral("/selected-narrow.png"));
+            want.save(QString::fromLocal8Bit(dir) + QStringLiteral("/selected-wide.png"));
+            renderViewport(narrow).save(QString::fromLocal8Bit(dir) + QStringLiteral("/narrow-whole.png"));
+            renderViewport(wide).save(QString::fromLocal8Bit(dir) + QStringLiteral("/wide-whole.png"));
+        }
+    }
     QVERIFY2(got.size() == want.size() && differing == 0,
              qPrintable(QStringLiteral("%1 of %2 pixels differ, within %3,%4 %5x%6 (font \"%7\")")
                             .arg(differing).arg(got.width() * got.height())

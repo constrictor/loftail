@@ -1293,7 +1293,17 @@ jobs:
           # -k 0: nothing on a developer's machine compiles this platform, so one run
           # should report every error rather than the first.
           cmake --build build -- -k 0
-          QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+          QT_QPA_PLATFORM=offscreen LOFTAIL_TEST_ARTIFACTS="$PWD/test-artifacts" \
+            ctest --test-dir build --output-on-failure
+
+      # What a pixel case saw when it failed, for the leg nobody here can run.
+      - name: Upload what the failing cases rendered
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-test-artifacts
+          path: test-artifacts/
+          if-no-files-found: ignore
 
       - name: Build .app bundle + dmg
         run: |
