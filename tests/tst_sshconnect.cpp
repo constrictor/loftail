@@ -199,10 +199,22 @@ void TestSshConnect::aConnectSlowerThanOneSliceReachesTheHandshake()
     // than one however fast the runner is. From a THREAD and not a QTimer: a timer would
     // only fire if the code under test turns an event loop, which is the very thing this
     // is trying to establish rather than something it may assume.
+    //
+    // KEEP ACCEPTING, NOT ONCE. The fillers that did not fit are retrying their own SYNs
+    // on the same backoff as the connection under test, so a single freed slot is a race
+    // the connection under test can lose — a filler takes it, and the next retry is ~3 s
+    // out, past the budget. Under a parallel ctest that lost one run in a few.
     std::atomic_int served { -1 };
-    std::thread opener([this, &served] {
+    std::atomic_bool connectDone { false };
+    std::thread opener([this, &served, &connectDone] {
         std::this_thread::sleep_for(std::chrono::milliseconds(400));
-        served = acceptOne();
+        ::fcntl(m_listen, F_SETFL, O_NONBLOCK);
+        while (!connectDone) {
+            const int taken = acceptOne();
+            if (taken >= 0 && served < 0)
+                served = taken;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
     });
 
     SshSession session;
@@ -213,7 +225,10 @@ void TestSshConnect::aConnectSlowerThanOneSliceReachesTheHandshake()
     // A short budget: the far end never answers the banner, so the handshake spends the
     // whole of it before giving up. That is the cost of the case, and it is why this
     // does not use the 20 s a real connect gets.
-    const bool ok = session.connectTo(stallingLocation(), nullptr, 3000, &error, &failure);
+    // 4500 rather than 3000 leaves room for the SYN retry after the first (~3 s), should
+    // the connection under test still be the one left out at ~1 s.
+    const bool ok = session.connectTo(stallingLocation(), nullptr, 4500, &error, &failure);
+    connectDone = true;
     opener.join();
 
     QVERIFY2(!ok, "a raw listening socket cannot complete an SSH handshake");
