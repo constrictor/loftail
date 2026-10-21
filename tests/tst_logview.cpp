@@ -4961,10 +4961,18 @@ void TestLogView::theSelectedRecordIsLaidOutInTheWidthItWasMeasuredIn()
     QVERIFY(wide.viewport()->height() >= lines * wide.lineHeight());
     QCOMPARE(narrow.selWrapLines(), lines);
 
+    // The strip compared stops ONE CHARACTER short of the narrow view's right edge. The
+    // narrow view's last glyph on each line is cut by its viewport, and a glyph cut by a clip
+    // is not obliged to rasterize to the pixels it has whole: under FreeType it does, under
+    // CoreText (the macOS leg, its first run) the last 5 px of every line differed while
+    // every line broke in the same place. Where the lines break is this case's whole claim,
+    // and a character short of the edge says it exactly as well.
+    const int compared = strip - qCeil(QFontMetricsF(wide.font()).horizontalAdvance(QLatin1Char('0')));
+    QVERIFY(compared > 0);
     const int msg = wide.header()->count() - 1;
-    const QRect from(wide.header()->sectionViewportPosition(msg), 0, strip,
+    const QRect from(wide.header()->sectionViewportPosition(msg), 0, compared,
                      lines * wide.lineHeight());
-    const QRect to(narrow.header()->sectionViewportPosition(msg), 0, strip,
+    const QRect to(narrow.header()->sectionViewportPosition(msg), 0, compared,
                    lines * narrow.lineHeight());
     QVERIFY(to.right() < narrow.viewport()->width());
     const QImage got = renderViewport(narrow).copy(to).convertToFormat(QImage::Format_ARGB32);
