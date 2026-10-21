@@ -987,6 +987,10 @@ jobs:
         with:
           version: "6.4.2"
           arch: win64_msvc2019_64
+          # An add-on module, not part of the base install, so without it serial is
+          # DISABLED here and nothing below would have said so — which is how this leg
+          # built six releases with no serial support and a green run every time.
+          modules: qtserialport
 
       # Qt for Windows is built for MSVC and injects MSVC-only flags
       # (/Zc:__cplusplus, /permissive-). With the Ninja generator CMake would
@@ -1136,6 +1140,13 @@ jobs:
           if (-not (Select-String -Path configure.log -Pattern "OS keychain for passwords: ENABLED" -Quiet)) {
             Write-Host "::error::QtKeychain was not built; remembered passwords fall back to plain text"; exit 1
           }
+          if (-not (Select-String -Path configure.log -Pattern "Serial log sources: ENABLED" -Quiet)) {
+            Write-Host "::error::Qt SerialPort was not found; serial log support is off"; exit 1
+          }
+          # windns is the only backend this leg compiles, and it is compiled nowhere else.
+          if (-not (Select-String -Path configure.log -Pattern "Bonjour discovery: ENABLED \(windns\)" -Quiet)) {
+            Write-Host "::error::the windns Bonjour backend was not built"; exit 1
+          }
           cmake --build build
           $env:QT_QPA_PLATFORM = "offscreen"
           ctest --test-dir build --output-on-failure
@@ -1201,7 +1212,8 @@ jobs:
           # means the shipped zip is missing a feature the whole run just proved works.
           $log = Get-Content configure-portable.log -Raw
           foreach ($want in @("SSH remote sources: ENABLED", "Archived log sources: ENABLED",
-                              "OS keychain for passwords: ENABLED")) {
+                              "OS keychain for passwords: ENABLED", "Serial log sources: ENABLED",
+                              "Bonjour discovery: ENABLED (windns)")) {
             if ($log -notmatch [regex]::Escape($want)) {
               Write-Host "::error::the portable zip was built without '$want'"; exit 1
             }
@@ -1236,48 +1248,67 @@ jobs:
           if-no-files-found: error
 
   macos:
-    # Temporarily disabled. Flip `if` back to true (or delete this line) to
-    # re-enable the macOS build+package job.
-    if: false
-    # Qt 6.4.2's macOS package hard-links the legacy AGL framework, which newer
-    # macOS SDKs removed ("framework 'AGL' not found"). Use the Intel macos-13
-    # runner and pin Xcode 14.3.1 (macOS 13.3 SDK), which still ships AGL, so
-    # the reference Qt 6.4 links.
-    #
-    # If re-enabled: `brew install libssh2 qtkeychain` gives remote log support and the
-    # OS keychain here too, and macdeployqt will need the same bundling check the
-    # AppImage step does. macOS is the one platform where a keychain is unconditionally
-    # there — Security.framework, no daemon and no session bus — so unlike the Linux
-    # legs, a DISABLED there would only ever mean the package is missing.
-    runs-on: macos-13
+    # Apple Silicon, and a NEWER Qt than the 6.4 floor, both forced. The Intel macos-13
+    # image this job used to pin is retired, and Qt 6.4.2's macOS package hard-links the
+    # legacy AGL framework, which every SDK on the remaining images has removed
+    # ("framework 'AGL' not found") — so 6.4 cannot link here at all. The floor is still
+    # held by the Ubuntu 24.04 legs and the Windows leg; this one proves the platform.
+    runs-on: macos-15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-
-      - name: Select Xcode 14.3.1 (SDK that still ships AGL)
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: "14.3.1"
 
       - name: Install Qt 6
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.4.2"
+          version: "6.8.3"
           arch: clang_64
+          modules: qtserialport
+
+      # Homebrew for the C libraries and NOT for QtKeychain: brew's qtkeychain depends on
+      # brew's own qt, which would sit beside the Qt installed above — two Qt6Cores, one
+      # ABI, the Windows leg's vcpkg trap. QtKeychain is built from source instead, which
+      # on macOS is a thin wrapper over Security.framework with nothing external to lose.
+      # libarchive is keg-only (macOS ships a libarchive of its own with no headers), so
+      # its prefix goes on CMAKE_PREFIX_PATH explicitly.
+      - name: Install libssh2, libarchive, ninja
+        run: |
+          brew install ninja pkgconf libssh2 libarchive
+          echo "BREW_PREFIXES=$(brew --prefix libarchive);$(brew --prefix libssh2)" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix libarchive)/lib/pkgconfig:$(brew --prefix libssh2)/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Configure + build and test
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR;$BREW_PREFIXES" \
+            -DLOFTAIL_KEYCHAIN_FETCH=ON 2>&1 | tee configure.log
+          # Every optional feature is present on this platform, so a DISABLED means the
+          # setup broke — and a silent one shrinks the suite and still goes green.
+          # dns_sd is the only backend this leg compiles, and it is compiled nowhere else.
+          for want in "SSH remote sources: ENABLED" "Archived log sources: ENABLED" \
+                      "OS keychain for passwords: ENABLED" "Serial log sources: ENABLED" \
+                      "Bonjour discovery: ENABLED (dns_sd)"; do
+            grep -qF "$want" configure.log || { echo "::error::configure did not report '$want'"; exit 1; }
+          done
           cmake --build build
           QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 
       - name: Build .app bundle + dmg
-        run: packaging/macos/build-appbundle.sh Release
+        run: |
+          QT_DIR="$QT_ROOT_DIR" packaging/macos/build-appbundle.sh Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR;$BREW_PREFIXES" -DLOFTAIL_KEYCHAIN_FETCH=ON
+          # Assert on the PACKAGED build too, as the Windows leg does for its zip.
+          for want in "SSH remote sources: ENABLED" "Archived log sources: ENABLED" \
+                      "OS keychain for passwords: ENABLED" "Serial log sources: ENABLED" \
+                      "Bonjour discovery: ENABLED (dns_sd)"; do
+            grep -qF "$want" configure-macos.log || { echo "::error::the dmg was built without '$want'"; exit 1; }
+          done
 
       - name: Smoke-test the bundle
         run: |
-          ./build-macos/src/loftail.app/Contents/MacOS/loftail --version
+          APP=$(find build-macos -maxdepth 4 -name loftail.app -type d | head -n1)
+          "$APP/Contents/MacOS/loftail" --version
 
-      # Same as the other three, for whenever this job is re-enabled.
       - uses: actions/upload-artifact@v7
         with:
           path: dist/*.dmg

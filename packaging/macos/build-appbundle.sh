@@ -37,7 +37,11 @@
 # with Qt 6 (>= 6.4) installed, then clean-machine-verify per packaging/README.md.
 #
 # Usage:
-#   packaging/macos/build-appbundle.sh [build-type]
+#   packaging/macos/build-appbundle.sh [build-type] [extra cmake args...]
+#
+# The extra arguments go to the configure step, so the packaged build can carry the
+# same optional-dependency flags as the build CI tested — build-portable.ps1's
+# -CMakeArgs, for the reason given there.
 #
 # Environment overrides:
 #   BUILD_DIR   build tree            (default: build-macos)
@@ -47,6 +51,7 @@
 set -euo pipefail
 
 BUILD_TYPE="${1:-Release}"
+shift || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -64,8 +69,10 @@ else
     MACDEPLOYQT="$(command -v macdeployqt || echo macdeployqt)"
 fi
 
+CMAKE_ARGS+=("$@")
+
 echo ">> Configuring ($BUILD_TYPE)"
-cmake "${CMAKE_ARGS[@]}"
+cmake "${CMAKE_ARGS[@]}" 2>&1 | tee "$REPO_ROOT/configure-macos.log"
 
 echo ">> Building"
 cmake --build "$BUILD_DIR"
