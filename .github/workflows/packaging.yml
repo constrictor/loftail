@@ -1290,7 +1290,9 @@ jobs:
                       "Bonjour discovery: ENABLED (dns_sd)"; do
             grep -qF "$want" configure.log || { echo "::error::configure did not report '$want'"; exit 1; }
           done
-          cmake --build build
+          # -k 0: nothing on a developer's machine compiles this platform, so one run
+          # should report every error rather than the first.
+          cmake --build build -- -k 0
           QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 
       - name: Build .app bundle + dmg

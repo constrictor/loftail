@@ -42,7 +42,13 @@
 #include <QTemporaryDir>
 
 #include <fcntl.h>
+// openpty() is declared in <pty.h> on Linux and in <util.h> on the BSDs and macOS, where it
+// lives in libSystem rather than in a libutil of its own.
+#if defined(__APPLE__)
+#include <util.h>
+#else
 #include <pty.h>
+#endif
 #include <termios.h>
 #include <unistd.h>
 
