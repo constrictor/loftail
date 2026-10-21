@@ -5758,7 +5758,11 @@ void renderOneWrappedRecord(LogView &view, int pointSize, int wrapWidth, Wrapped
     zoomTo(view, pointSize);
     view.setWrapMode(LogView::WrapMode::AlwaysOn);
     putMessageOriginAt(view, wrapWidth);
-    settleRemeasure();
+    // Until the width-change DEBOUNCE has fired, the estimator is still keyed on the old
+    // width and measureBlockOfRecord() measures at it — one row, for a record that wraps
+    // to four at the new one. settleRemeasure()'s fixed 200 ms against a 120 ms timer
+    // held on Linux and lost on a loaded macOS runner, so this waits for the thing itself.
+    QTRY_COMPARE_WITH_TIMEOUT(view.estimatedGeometry().wrapWidth(), view.messageWrapWidth(), 5000);
     view.measureBlockOfRecord(0);
     out.modelLines = view.estimatedGeometry().recordHeightLines(0);
     out.band = messageBand(view, out.modelLines);
