@@ -1305,7 +1305,11 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
 
+      # Run even when a test failed: the package is built from a tree of its own, and a
+      # packaging fault should not wait behind an unrelated red case to be seen.
       - name: Build .app bundle + dmg
+        id: bundle
+        if: ${{ !cancelled() }}
         run: |
           QT_DIR="$QT_ROOT_DIR" packaging/macos/build-appbundle.sh Release \
             -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR;$BREW_PREFIXES" -DLOFTAIL_KEYCHAIN_FETCH=ON
@@ -1317,11 +1321,13 @@ jobs:
           done
 
       - name: Smoke-test the bundle
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |
           APP=$(find build-macos -maxdepth 4 -name loftail.app -type d | head -n1)
           "$APP/Contents/MacOS/loftail" --version
 
       - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         with:
           path: dist/*.dmg
           archive: false

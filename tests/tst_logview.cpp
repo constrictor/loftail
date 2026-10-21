@@ -17,6 +17,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <QtTest>
+#include <QRawFont>
+#include <QTextLayout>
 
 #include <QApplication>
 #include <QClipboard>
@@ -5840,12 +5842,34 @@ void TestLogView::aRecordOfWideOrOverhangingGlyphsIsDrawnWhole()
         QCOMPARE(view.messageWrapWidth(), width);
         // The claim, in rows: the model counts what the layout places. Against the old
         // model this is short by at least one, which is exactly how the setup was chosen.
+        // What the first non-ASCII codepoint measured, three ways — the numbers a failure
+        // here is about, on a leg (macOS) nobody here can run, where it has failed
+        // intermittently with the code unchanged.
+        QString measured;
+        for (const QChar c : probe.text) {
+            if (c.unicode() < 0x80 || c.isSurrogate())
+                continue;
+            const QString one(c);
+            QTextLayout layout(one, view.font());
+            layout.beginLayout();
+            QTextLine line = layout.createLine();
+            if (line.isValid())
+                line.setLineWidth(1.0e6);
+            layout.endLayout();
+            measured = QStringLiteral(" [U+%1: metrics %2, layout %3, in primary face %4]")
+                           .arg(c.unicode(), 4, 16, QLatin1Char('0'))
+                           .arg(QFontMetricsF(view.font()).horizontalAdvance(one))
+                           .arg(line.isValid() ? line.naturalTextWidth() : -1.0)
+                           .arg(QRawFont::fromFont(view.font()).supportsCharacter(c) ? "yes" : "no");
+            break;
+        }
         QVERIFY2(rendered.modelLines == lines,
                  qPrintable(QStringLiteral("%1: the record was given %2 rows where the "
-                                           "layout places %3")
+                                           "layout places %3%4")
                                 .arg(where)
                                 .arg(rendered.modelLines)
-                                .arg(lines)));
+                                .arg(lines)
+                                .arg(measured)));
         QVERIFY2(flooredDivisionLines(probe.text, view.font(), width) < lines,
                  qPrintable(where + QStringLiteral(": the setup no longer reproduces the "
                                                    "arithmetic model's undercount")));
