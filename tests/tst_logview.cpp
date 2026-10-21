@@ -5857,7 +5857,7 @@ void TestLogView::aRecordOfWideOrOverhangingGlyphsIsDrawnWhole()
                 line.setLineWidth(1.0e6);
             layout.endLayout();
             measured = QStringLiteral(" [U+%1: metrics %2, layout %3, in primary face %4]")
-                           .arg(c.unicode(), 4, 16, QLatin1Char('0'))
+                           .arg(uint(c.unicode()), 4, 16, QLatin1Char('0'))
                            .arg(QFontMetricsF(view.font()).horizontalAdvance(one))
                            .arg(line.isValid() ? line.naturalTextWidth() : -1.0)
                            .arg(QRawFont::fromFont(view.font()).supportsCharacter(c) ? "yes" : "no");
