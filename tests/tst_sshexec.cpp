@@ -720,7 +720,7 @@ void TestSshExec::theTroubleCommandTellsMissingFromDeniedFromNoFolder()
     if (!haveShell())
         QSKIP("no /bin/sh to prove the commands against");
 
-    const auto ask = [this](const QString &path) {
+    const auto ask = [](const QString &path) {
         LogPresence answer = LogPresence::Present;
         const bool parsed = parsePathTroubleOutput(runSh(pathTroubleCommand(path)), &answer);
         return parsed ? answer : LogPresence::Present;

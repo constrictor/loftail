@@ -55,6 +55,16 @@ Passes run and closed:
   into the log as data. 55 and 56 were found only by driving the real application against a
   real Avahi daemon and a real shell on a pty.
 
+- **2026-10-21**, entry 58 — the chain's seventh link, found by `fuzz_address` on the first CI
+  run after M28 merged, and the same bill bugs.md 50 named for a different hand-cut branch.
+  `discover://`'s parser took everything up to the first `/` as the type name, so
+  `discover://u:secret@Type/id/p` parsed as a type called `u:secret@Type`, and
+  `toDisplayString()` wrote it back verbatim: a password on screen, in the one shape every
+  other reader of a URL calls userinfo, by a route `withoutPassword()` never sees because the
+  address parsed. A raw `@` in the authority is refused now, as QUrl would have read it as
+  userinfo the scheme does not have, and the display encodes an `@` a type name genuinely
+  holds.
+
 Entry 23 is what is left, and it is not waiting on a patch: it is a standing
 product decision nobody has taken.
 

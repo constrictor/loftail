@@ -302,6 +302,13 @@ std::optional<RemoteLocation> parseDiscovered(const QString &s)
         || !escapesAreWellFormed(rawPath)) {
         return std::nullopt;
     }
+    // A RAW `@` IN THE AUTHORITY IS USERINFO to every other reader of a URL, and this scheme
+    // has none: `discover://u:secret@Type/id/p` would otherwise parse as a type called
+    // "u:secret@Type" and be shown back verbatim, which is a password on screen by the one
+    // route withoutPassword() cannot see (bugs.md 58). A type whose name really holds an `@`
+    // is spelled `%40`, which is how toString() writes it.
+    if (rawType.contains(u'@'))
+        return std::nullopt;
 
     RemoteLocation loc;
     loc.transport = RemoteLocation::Transport::Discovered;
@@ -466,10 +473,13 @@ QString RemoteLocation::toString() const
 QString RemoteLocation::toDisplayString() const
 {
     if (transport == Transport::Discovered) {
-        // As written, but the two names stay encoded where they hold a separator — the one
-        // place "as written" would produce something that reads as a different address.
+        // As written, but the two names stay encoded where they hold a separator or an `@` —
+        // the places "as written" would produce something that reads as a different address,
+        // or as one carrying a credential.
         const auto name = [](const QString &n) {
-            return n.contains(u'/') ? QString::fromUtf8(QUrl::toPercentEncoding(n, " :")) : n;
+            return n.contains(u'/') || n.contains(u'@')
+                ? QString::fromUtf8(QUrl::toPercentEncoding(n, " :"))
+                : n;
         };
         return QLatin1String(kDiscoverScheme) + name(discoveryType) + u'/' + name(host)
             + pathToUrl(path);
