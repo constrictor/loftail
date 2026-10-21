@@ -33,8 +33,8 @@
 #   the .dmg with `notarytool`. Codesigning/notarization is intentionally out of
 #   scope for this baseline artifact (PLAN.md M7).
 #
-# STATUS: authored on Linux, NOT yet run/verified on macOS. Run this on a Mac
-# with Qt 6 (>= 6.4) installed, then clean-machine-verify per packaging/README.md.
+# STATUS: run by the macOS CI leg since 2026-10-21; a clean-machine check per
+# packaging/README.md is still a person's job.
 #
 # Usage:
 #   packaging/macos/build-appbundle.sh [build-type] [extra cmake args...]
@@ -97,6 +97,10 @@ echo ">> Bundle: $APP"
 # takes -dmg, so the disk image is produced in the same run and a file added afterwards
 # would be in the .app on this machine and in nothing that ships. The bundle's own
 # NSHumanReadableCopyright names the terms; this is the copy of them.
+# The bundle has no Resources directory of its own until something is put in it — no icon
+# or .qm ships yet — so it is made here, which is what the first run of this script on a
+# Mac found.
+mkdir -p "$APP/Contents/Resources"
 cp "$REPO_ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 
 echo ">> Running macdeployqt"
