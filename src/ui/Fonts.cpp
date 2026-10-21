@@ -52,8 +52,12 @@ QString installedFixedPitchFamily()
             return family;
     }
     for (const QString &family : families) {
-        if (QFontDatabase::isFixedPitch(family) && !QFontDatabase::isPrivateFamily(family))
+        // LastResort is macOS's face of last resort, which draws every character as a box
+        // naming its Unicode block, and may well call itself fixed pitch.
+        if (QFontDatabase::isFixedPitch(family) && !QFontDatabase::isPrivateFamily(family)
+            && family.compare(QLatin1String("LastResort"), Qt::CaseInsensitive) != 0) {
             return family;
+        }
     }
     return {};
 }

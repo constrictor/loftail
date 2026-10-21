@@ -560,7 +560,12 @@ void TestLogView::everyColumnRendersFixedPitch()
 
     // QFontInfo reports the font actually resolved, not the one requested, so this
     // fails if the family falls back to a proportional face.
-    QVERIFY(QFontInfo(view.font()).fixedPitch());
+    QVERIFY2(QFontInfo(view.font()).fixedPitch(),
+             qPrintable(QStringLiteral("resolved to \"%1\"").arg(QFontInfo(view.font()).family())));
+    // Which face, on every platform: the one line that says what the rest of this file's
+    // pixel cases were measured against, on a leg nobody here can run.
+    qInfo("log font resolves to \"%s\" at %g pt", qPrintable(QFontInfo(view.font()).family()),
+          QFontInfo(view.font()).pointSizeF());
     // Cells are painted on the viewport and headings by the header view; both must
     // inherit the same font rather than the proportional application default.
     QVERIFY(QFontInfo(view.viewport()->font()).fixedPitch());
@@ -4962,7 +4967,25 @@ void TestLogView::theSelectedRecordIsLaidOutInTheWidthItWasMeasuredIn()
     const QRect to(narrow.header()->sectionViewportPosition(msg), 0, strip,
                    lines * narrow.lineHeight());
     QVERIFY(to.right() < narrow.viewport()->width());
-    QCOMPARE(renderViewport(narrow).copy(to), renderViewport(wide).copy(from));
+    const QImage got = renderViewport(narrow).copy(to).convertToFormat(QImage::Format_ARGB32);
+    const QImage want = renderViewport(wide).copy(from).convertToFormat(QImage::Format_ARGB32);
+    // How they differ, not merely that they do: QCOMPARE on two images says nothing more, and
+    // this has failed on a leg nobody here can run.
+    int differing = 0;
+    QRect where;
+    for (int y = 0; y < qMin(got.height(), want.height()); ++y) {
+        for (int x = 0; x < qMin(got.width(), want.width()); ++x) {
+            if (got.pixel(x, y) != want.pixel(x, y)) {
+                ++differing;
+                where |= QRect(x, y, 1, 1);
+            }
+        }
+    }
+    QVERIFY2(got.size() == want.size() && differing == 0,
+             qPrintable(QStringLiteral("%1 of %2 pixels differ, within %3,%4 %5x%6 (font \"%7\")")
+                            .arg(differing).arg(got.width() * got.height())
+                            .arg(where.x()).arg(where.y()).arg(where.width()).arg(where.height())
+                            .arg(QFontInfo(wide.font()).family())));
 }
 
 // --- the column count is the characters that fit, unrounded (bugs.md 17) -----

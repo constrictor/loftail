@@ -65,6 +65,15 @@ Passes run and closed:
   userinfo the scheme does not have, and the display encodes an `@` a type name genuinely
   holds.
 
+- **2026-10-21**, entry 59 — the eighth, from the same fuzzer an hour later and older than
+  M28. `sftp://h/;.xz%2f` was not an archive address as written, normalized to
+  `ssh://h:22/;.xz/` once the encoded `/` was decoded, and that one is: a bare stream with
+  nothing after the slash, whose own normal form is `ssh://h:22/;.xz`. Which layer an address
+  belongs to is decided on its raw text (entry 49's ruling) while a remote path's normal form
+  is decoded, and `%2F` is the one escape whose decoding moves that decision.
+  `normalizeLogPath()` now runs to a fixed point, bounded, exactly as `cleanedToFixedPoint()`
+  does for entry 47 — a repair rather than a refusal, a file name being unable to hold a `/`.
+
 Entry 23 is what is left, and it is not waiting on a patch: it is a standing
 product decision nobody has taken.
 
