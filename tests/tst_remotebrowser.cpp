@@ -73,6 +73,8 @@ public:
     }
     void stop() override {}
     void loseIt(const QString &id) { emit lost(m_type.name, id); }
+    // A device turning up later than the first answer, as one does while the dialog is open.
+    void announce(const DiscoveredDevice &d) { report(m_type, d); }
 
 private:
     const Script *m_script;
@@ -113,6 +115,21 @@ QTreeWidgetItem *rowNamed(QTreeWidget *tree, const QString &group, const QString
             return row;
     }
     return nullptr;
+}
+
+// The name of the selected row, or an empty string for none.
+QString selectedName(QTreeWidget *tree)
+{
+    const auto items = tree->selectedItems();
+    return items.isEmpty() ? QString() : items.first()->text(0);
+}
+
+// Typing as a person does: each character a real key press THROUGH THE QWindow, so it lands
+// on whatever holds the focus rather than on a widget the test chose.
+void typeAtFocus(QWindow *window, const QString &text)
+{
+    for (const QChar c : text)
+        QTest::keyClick(window, c.toLatin1());
 }
 
 } // namespace
@@ -177,6 +194,39 @@ private slots:
     void anAddressIsShownWithoutAPortAndOnvifDetailsLeadWithTheHardware();
     void connectingDirectlyFillsTheHostFormFromAType();
     void openWaitsForARowAndALog();
+    void typingKeepsTheFirstResultSelected();
+    void upAndDownStepThroughTheResultsWithoutLeavingTheFilter();
+    void aResultThatTurnsUpIsSelectedOnlyIfNothingWas();
+    void returnInTheFilterOpensTheSelectedResult();
+    void anOfferedLogGoesWithItsRowAndATypedOneStays();
+
+private:
+    // Two devices under Cameras and one saved host, every one of them a result of an empty
+    // filter: Lobby 10.0.0.5, Garage 10.0.0.6, then "yard server" 10.1.1.1.
+    void scriptTwoCamerasAndAYard(HostBookmarkStore &store)
+    {
+        QVERIFY(store.saveType(cameras()));
+        HostBookmark h;
+        h.label = QStringLiteral("yard server");
+        h.host = QStringLiteral("10.1.1.1");
+        h.paths = {QStringLiteral("/var/log/ci.log"), QStringLiteral("/var/log/ci-old.log")};
+        QVERIFY(store.save(h));
+        m_script.devices[QStringLiteral("Cameras")] = {
+            device(QStringLiteral("a"), QStringLiteral("Lobby"), QStringLiteral("10.0.0.5"),
+                   {QStringLiteral("model=X1")}),
+            device(QStringLiteral("b"), QStringLiteral("Garage"), QStringLiteral("10.0.0.6"),
+                   {QStringLiteral("model=X2")})};
+    }
+    // Shown, active and typing into the filter — or the case cannot say where the focus is.
+    static bool readyAtTheFilter(RemoteBrowserDialog &dialog, QLineEdit *filter)
+    {
+        dialog.show();
+        dialog.activateWindow();
+        if (!QTest::qWaitForWindowActive(&dialog))
+            return false;
+        filter->setFocus();
+        return QTest::qWaitFor([&] { return dialog.focusWidget() == filter; });
+    }
 };
 
 void TestRemoteBrowser::discoveredDevicesAppearUnderTheirTypeAndOpenByReference()
@@ -436,6 +486,219 @@ void TestRemoteBrowser::openWaitsForARowAndALog()
     QVERIFY2(!open->isEnabled(), "a host with no log is not something to open yet");
     log->setEditText(QStringLiteral("/var/log/a.log"));
     QVERIFY(open->isEnabled());
+}
+
+void TestRemoteBrowser::typingKeepsTheFirstResultSelected()
+{
+    HostBookmarkStore store = freshStore();
+    scriptTwoCamerasAndAYard(store);
+    RemoteBrowserDialog dialog(&store);
+    auto *tree = dialog.findChild<QTreeWidget *>(QStringLiteral("remoteBrowserTree"));
+    auto *filter = dialog.findChild<QLineEdit *>(QStringLiteral("remoteBrowserFilter"));
+    auto *log = dialog.findChild<QComboBox *>(QStringLiteral("remoteBrowserLog"));
+    QTRY_COMPARE(rowsUnder(tree, QStringLiteral("Cameras")).size(), 2);
+    if (!readyAtTheFilter(dialog, filter))
+        QSKIP("The platform will not activate the window, so nothing can hold the focus.");
+    QVERIFY2(selectedName(tree).isEmpty(), "nothing is chosen before anything is typed");
+
+    // Every address holds a "1", so the first result is the first row of the whole list...
+    typeAtFocus(dialog.windowHandle(), QStringLiteral("1"));
+    QCOMPARE(selectedName(tree), QStringLiteral("Lobby"));
+    // ...and narrowing to one that is not first moves the selection with it, keystroke by
+    // keystroke, the log field following.
+    typeAtFocus(dialog.windowHandle(), QStringLiteral("0.1"));
+    QCOMPARE(filter->text(), QStringLiteral("10.1"));
+    QCOMPARE(selectedName(tree), QStringLiteral("yard server"));
+    QCOMPARE(log->currentText(), QStringLiteral("/var/log/ci.log"));
+
+    // Deleting is typing too: the first result is first again.
+    QTest::keyClick(dialog.windowHandle(), Qt::Key_Backspace);
+    QCOMPARE(selectedName(tree), QStringLiteral("Lobby"));
+
+    // A row picked with the arrows is replaced by the next keystroke's first result.
+    QTest::keyClick(dialog.windowHandle(), Qt::Key_Down);
+    QCOMPARE(selectedName(tree), QStringLiteral("Garage"));
+    typeAtFocus(dialog.windowHandle(), QStringLiteral("0"));
+    QCOMPARE(filter->text(), QStringLiteral("10.0"));
+    QCOMPARE(selectedName(tree), QStringLiteral("Lobby"));
+
+    // Nothing matches: nothing is selected, and Open has nothing to act on.
+    typeAtFocus(dialog.windowHandle(), QStringLiteral("zz"));
+    QVERIFY(selectedName(tree).isEmpty());
+    QVERIFY(!dialog.findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Open)->isEnabled());
+    QCOMPARE(dialog.focusWidget(), filter);
+}
+
+void TestRemoteBrowser::upAndDownStepThroughTheResultsWithoutLeavingTheFilter()
+{
+    HostBookmarkStore store = freshStore();
+    scriptTwoCamerasAndAYard(store);
+    RemoteBrowserDialog dialog(&store);
+    auto *tree = dialog.findChild<QTreeWidget *>(QStringLiteral("remoteBrowserTree"));
+    auto *filter = dialog.findChild<QLineEdit *>(QStringLiteral("remoteBrowserFilter"));
+    QTRY_COMPARE(rowsUnder(tree, QStringLiteral("Cameras")).size(), 2);
+    if (!readyAtTheFilter(dialog, filter))
+        QSKIP("The platform will not activate the window, so nothing can hold the focus.");
+    QWindow *window = dialog.windowHandle();
+    const auto pressAndExpect = [&](Qt::Key key, const char *expected) {
+        QTest::keyClick(window, key);
+        QCOMPARE(selectedName(tree), QString::fromLatin1(expected));
+        // THE FOCUS STAYS IN THE FILTER, which is the whole of the request: the next
+        // keystroke is still typing.
+        QCOMPARE(dialog.focusWidget(), filter);
+    };
+
+    // From no selection Down starts at the top. The step from Garage to the saved host passes
+    // the "Saved hosts" heading, which is never a result, and neither end wraps.
+    pressAndExpect(Qt::Key_Down, "Lobby");
+    pressAndExpect(Qt::Key_Down, "Garage");
+    pressAndExpect(Qt::Key_Down, "yard server");
+    pressAndExpect(Qt::Key_Down, "yard server");
+    pressAndExpect(Qt::Key_Up, "Garage");
+    pressAndExpect(Qt::Key_Up, "Lobby");
+    pressAndExpect(Qt::Key_Up, "Lobby");
+
+    // A row the filter hides is stepped over: "y" keeps Lobby and the yard and hides Garage.
+    typeAtFocus(window, QStringLiteral("y"));
+    QVERIFY(rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Garage"))->isHidden());
+    QCOMPARE(selectedName(tree), QStringLiteral("Lobby"));
+    pressAndExpect(Qt::Key_Down, "yard server");
+    pressAndExpect(Qt::Key_Up, "Lobby");
+    // The arrows moved the selection and left the text alone.
+    QCOMPARE(filter->text(), QStringLiteral("y"));
+
+    // A group the reader collapsed over the selected row is opened again by an arrow, rather
+    // than Return being left to open a row nobody can see. Down at the end, so the selection
+    // does not MOVE — the view's own scroll-to-current answers only a change of row.
+    pressAndExpect(Qt::Key_Down, "yard server");
+    QTreeWidgetItem *yard = rowNamed(tree, QStringLiteral("Saved hosts"),
+                                     QStringLiteral("yard server"));
+    yard->parent()->setExpanded(false);
+    pressAndExpect(Qt::Key_Down, "yard server");
+    QVERIFY(yard->parent()->isExpanded());
+}
+
+void TestRemoteBrowser::aResultThatTurnsUpIsSelectedOnlyIfNothingWas()
+{
+    HostBookmarkStore store = freshStore();
+    QVERIFY(store.saveType(cameras()));
+    HostBookmark h;
+    h.label = QStringLiteral("garage server");
+    h.host = QStringLiteral("10.1.1.1");
+    h.paths = {QStringLiteral("/var/log/ci.log")};
+    QVERIFY(store.save(h));
+    RemoteBrowserDialog dialog(&store);
+    auto *tree = dialog.findChild<QTreeWidget *>(QStringLiteral("remoteBrowserTree"));
+    auto *filter = dialog.findChild<QLineEdit *>(QStringLiteral("remoteBrowserFilter"));
+    const auto browsers = dialog.findChildren<DiscoveryBrowser *>();
+    QCOMPARE(browsers.size(), 1);
+    auto *network = static_cast<ScriptedBrowser *>(browsers.first());
+
+    // With nothing typed, a device turning up is listed and not chosen for the reader.
+    network->announce(device(QStringLiteral("a"), QStringLiteral("Lobby"),
+                             QStringLiteral("10.0.0.5"), {QStringLiteral("model=X1")}));
+    QVERIFY(rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Lobby")));
+    QVERIFY(selectedName(tree).isEmpty());
+
+    // A device arriving ABOVE the selected result does not take the selection from it.
+    filter->setText(QStringLiteral("garage"));
+    QCOMPARE(selectedName(tree), QStringLiteral("garage server"));
+    network->announce(device(QStringLiteral("b"), QStringLiteral("Garage"),
+                             QStringLiteral("10.0.0.6"), {QStringLiteral("model=X2")}));
+    QVERIFY(!rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Garage"))->isHidden());
+    QCOMPARE(selectedName(tree), QStringLiteral("garage server"));
+
+    // Typed and nothing matching yet: the first device that does is selected as it arrives.
+    filter->setText(QStringLiteral("porch"));
+    QVERIFY(selectedName(tree).isEmpty());
+    network->announce(device(QStringLiteral("c"), QStringLiteral("Porch"),
+                             QStringLiteral("10.0.0.7"), {QStringLiteral("model=X3")}));
+    QCOMPARE(selectedName(tree), QStringLiteral("Porch"));
+
+    // And a selected device that goes is replaced by the next result rather than by nothing.
+    network->announce(device(QStringLiteral("d"), QStringLiteral("Porch 2"),
+                             QStringLiteral("10.0.0.8"), {QStringLiteral("model=X4")}));
+    network->loseIt(QStringLiteral("c"));
+    QCOMPARE(selectedName(tree), QStringLiteral("Porch 2"));
+}
+
+void TestRemoteBrowser::returnInTheFilterOpensTheSelectedResult()
+{
+    HostBookmarkStore store = freshStore();
+    scriptTwoCamerasAndAYard(store);
+    HostBookmark bare;
+    bare.label = QStringLiteral("yard spare");
+    bare.host = QStringLiteral("10.1.1.2");
+    QVERIFY(store.save(bare));
+    RemoteBrowserDialog dialog(&store);
+    auto *tree = dialog.findChild<QTreeWidget *>(QStringLiteral("remoteBrowserTree"));
+    auto *filter = dialog.findChild<QLineEdit *>(QStringLiteral("remoteBrowserFilter"));
+    auto *log = dialog.findChild<QComboBox *>(QStringLiteral("remoteBrowserLog"));
+    QTRY_COMPARE(rowsUnder(tree, QStringLiteral("Cameras")).size(), 2);
+    if (!readyAtTheFilter(dialog, filter))
+        QSKIP("The platform will not activate the window, so nothing can hold the focus.");
+
+    // A host with no remembered log: Return says where the missing half goes, as Return on
+    // its row does, rather than doing nothing.
+    typeAtFocus(dialog.windowHandle(), QStringLiteral("spare"));
+    QCOMPARE(selectedName(tree), QStringLiteral("yard spare"));
+    QVERIFY(log->currentText().isEmpty());
+    QTest::keyClick(dialog.windowHandle(), Qt::Key_Return);
+    QVERIFY(dialog.isVisible());
+    QTRY_VERIFY(log->hasFocus());
+
+    // Type, arrow, Return: the second result is opened, by name.
+    filter->setFocus();
+    QTRY_COMPARE(dialog.focusWidget(), filter);
+    filter->clear();
+    typeAtFocus(dialog.windowHandle(), QStringLiteral("yard"));
+    QCOMPARE(selectedName(tree), QStringLiteral("yard server"));
+    QTest::keyClick(dialog.windowHandle(), Qt::Key_Down);
+    QCOMPARE(selectedName(tree), QStringLiteral("yard spare"));
+    log->setEditText(QStringLiteral("/var/log/spare.log"));
+    QTest::keyClick(dialog.windowHandle(), Qt::Key_Return);
+    QTRY_COMPARE(dialog.result(), int(QDialog::Accepted));
+    QCOMPARE(dialog.choice(), RemoteBrowserDialog::Choice::SavedHost);
+    QCOMPARE(dialog.chosenHost(), QStringLiteral("yard spare"));
+    QCOMPARE(dialog.chosenPath(), QStringLiteral("/var/log/spare.log"));
+}
+
+void TestRemoteBrowser::anOfferedLogGoesWithItsRowAndATypedOneStays()
+{
+    HostBookmarkStore store = freshStore();
+    scriptTwoCamerasAndAYard(store);
+    HostBookmark bare;
+    bare.label = QStringLiteral("yard spare");
+    bare.host = QStringLiteral("10.1.1.2");
+    QVERIFY(store.save(bare));
+    RemoteBrowserDialog dialog(&store);
+    auto *tree = dialog.findChild<QTreeWidget *>(QStringLiteral("remoteBrowserTree"));
+    auto *log = dialog.findChild<QComboBox *>(QStringLiteral("remoteBrowserLog"));
+    QTRY_COMPARE(rowsUnder(tree, QStringLiteral("Cameras")).size(), 2);
+    QTreeWidgetItem *spare = rowNamed(tree, QStringLiteral("Saved hosts"),
+                                      QStringLiteral("yard spare"));
+
+    // The camera's default log was offered, not typed: it does not follow the selection to a
+    // host that remembers no log, which would open the camera's log path on that host.
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Lobby")));
+    QCOMPARE(log->currentText(), QStringLiteral("/var/log/camera.log"));
+    tree->setCurrentItem(spare);
+    QVERIFY(log->currentText().isEmpty());
+
+    // Nor does the SECOND of a host's offers, picked from the list rather than typed.
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("Saved hosts"),
+                                  QStringLiteral("yard server")));
+    QCOMPARE(log->currentText(), QStringLiteral("/var/log/ci.log"));
+    log->setCurrentIndex(1);
+    QCOMPARE(log->currentText(), QStringLiteral("/var/log/ci-old.log"));
+    tree->setCurrentItem(spare);
+    QVERIFY(log->currentText().isEmpty());
+
+    // An offer the reader edited is theirs now, and stays — as a path typed outright does.
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Garage")));
+    log->setEditText(QStringLiteral("/var/log/camera.log.1"));
+    tree->setCurrentItem(spare);
+    QCOMPARE(log->currentText(), QStringLiteral("/var/log/camera.log.1"));
 }
 
 int main(int argc, char *argv[])
