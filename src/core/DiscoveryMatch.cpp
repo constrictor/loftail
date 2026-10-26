@@ -70,6 +70,26 @@ QString onvifNameFromScopes(const QStringList &scopes)
     return {};
 }
 
+QStringList onvifScopesForDisplay(const QStringList &scopes)
+{
+    static const QString prefix = QStringLiteral("onvif://www.onvif.org/");
+    static const QString hardware = QStringLiteral("hardware/");
+    QStringList first;
+    QStringList rest;
+    for (const QString &s : scopes) {
+        if (!s.startsWith(prefix, Qt::CaseInsensitive)) {
+            rest.append(s);
+            continue;
+        }
+        const QString tail = s.mid(prefix.size());
+        if (tail.isEmpty())
+            continue;   // the prefix alone says nothing
+        const QString shown = QUrl::fromPercentEncoding(tail.toUtf8());
+        (tail.startsWith(hardware, Qt::CaseInsensitive) ? first : rest).append(shown);
+    }
+    return first + rest;
+}
+
 QByteArray wsDiscoveryProbe(const QString &messageId)
 {
     // The minimal Probe every ONVIF device answers: the WS-Discovery 2005/04 namespace, which is

@@ -174,6 +174,7 @@ private slots:
     void theFilterNarrowsEveryGroupAtOnce();
     void aSavedHostIsChosenByNameWithItsRememberedLogs();
     void aTypeThatCannotBrowseSaysWhyInItsGroup();
+    void anAddressIsShownWithoutAPortAndOnvifDetailsLeadWithTheHardware();
     void connectingDirectlyFillsTheHostFormFromAType();
     void openWaitsForARowAndALog();
 };
@@ -192,7 +193,8 @@ void TestRemoteBrowser::discoveredDevicesAppearUnderTheirTypeAndOpenByReference(
     QVERIFY(tree && log);
     QTRY_VERIFY(rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Lobby")));
     QTreeWidgetItem *lobby = rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Lobby"));
-    QCOMPARE(lobby->text(2), QStringLiteral("10.0.0.5:22"));
+    // The address alone: the advertised port (22 here) is not shown beside it.
+    QCOMPARE(lobby->text(2), QStringLiteral("10.0.0.5"));
 
     tree->setCurrentItem(lobby);
     // The type's default log is offered as soon as the device is chosen.
@@ -323,6 +325,57 @@ void TestRemoteBrowser::aTypeThatCannotBrowseSaysWhyInItsGroup()
         }
         return false;
     }());
+}
+
+void TestRemoteBrowser::anAddressIsShownWithoutAPortAndOnvifDetailsLeadWithTheHardware()
+{
+    HostBookmarkStore store = freshStore();
+    QVERIFY(store.saveType(cameras()));
+    RemoteType onvif;
+    onvif.name = QStringLiteral("Doorbells");
+    onvif.discovery = RemoteType::Discovery::Onvif;
+    QVERIFY(store.saveType(onvif));
+    HostBookmark h;
+    h.label = QStringLiteral("forwarded");
+    h.host = QStringLiteral("10.1.1.1");
+    h.port = 2222;
+    QVERIFY(store.save(h));
+
+    DiscoveredDevice cam = device(
+        QStringLiteral("urn:uuid:door-1"), QStringLiteral("Front door"),
+        QStringLiteral("10.0.0.7"),
+        {QStringLiteral("onvif://www.onvif.org/type/video_encoder"),
+         QStringLiteral("onvif://www.onvif.org/hardware/DB-11"),
+         QStringLiteral("onvif://www.onvif.org/name/Front%20door")});
+    cam.port = 80;   // the camera's web service, which says nothing about reading its log
+    m_script.devices[QStringLiteral("Doorbells")] = {cam};
+    // A Bonjour device whose TXT record merely LOOKS like a scope is shown as advertised: the
+    // reordering and the prefix are the ONVIF type's, not the text's.
+    m_script.devices[QStringLiteral("Cameras")] = {
+        device(QStringLiteral("cam"), QStringLiteral("Lobby"), QStringLiteral("10.0.0.5"),
+               {QStringLiteral("model=X1"),
+                QStringLiteral("onvif://www.onvif.org/hardware/not-a-scope")})};
+
+    RemoteBrowserDialog dialog(&store);
+    auto *tree = dialog.findChild<QTreeWidget *>(QStringLiteral("remoteBrowserTree"));
+    QTRY_VERIFY(rowNamed(tree, QStringLiteral("Doorbells"), QStringLiteral("Front door")));
+    QTRY_VERIFY(rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Lobby")));
+
+    QTreeWidgetItem *door = rowNamed(tree, QStringLiteral("Doorbells"),
+                                     QStringLiteral("Front door"));
+    QCOMPARE(door->text(2), QStringLiteral("10.0.0.7"));
+    QCOMPARE(door->text(3),
+             QStringLiteral("hardware/DB-11  type/video_encoder  name/Front door"));
+    QCOMPARE(door->toolTip(3),
+             QStringLiteral("hardware/DB-11\ntype/video_encoder\nname/Front door"));
+
+    QTreeWidgetItem *lobby = rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Lobby"));
+    QCOMPARE(lobby->text(3),
+             QStringLiteral("model=X1  onvif://www.onvif.org/hardware/not-a-scope"));
+
+    // A saved host on a port of its own: still the address alone.
+    QCOMPARE(rowNamed(tree, QStringLiteral("Saved hosts"), QStringLiteral("forwarded"))->text(2),
+             QStringLiteral("10.1.1.1"));
 }
 
 void TestRemoteBrowser::connectingDirectlyFillsTheHostFormFromAType()

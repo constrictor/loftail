@@ -128,6 +128,7 @@ private slots:
     void aReplyToSomebodyElsesProbeIsNotAnAnswer();
     void aMalformedDatagramIsAnEmptyAnswer();
     void aProbeMatchBecomesADeviceNamedByItsNameScope();
+    void theScopesAreShownHardwareFirstWithoutTheStandardPrefix();
 
     void theConnectTimeLookupFindsTheDeviceByItsId();
     void aDeviceThatDoesNotAnswerIsNotFoundAndSaysSo();
@@ -253,6 +254,40 @@ void TestDiscovery::aProbeMatchBecomesADeviceNamedByItsNameScope()
     m.scopes.clear();
     QCOMPARE(deviceFromProbeMatch(QStringLiteral("Cameras"), m).displayName,
              QStringLiteral("10.1.2.3"));
+}
+
+void TestDiscovery::theScopesAreShownHardwareFirstWithoutTheStandardPrefix()
+{
+    // Advertised in the order a real camera sends them: the hardware buried in the middle,
+    // a vendor scope of its own, and a name that is percent-encoded.
+    const QStringList advertised = {
+        QStringLiteral("onvif://www.onvif.org/type/video_encoder"),
+        QStringLiteral("onvif://www.onvif.org/Profile/Streaming"),
+        QStringLiteral("onvif://www.onvif.org/hardware/DS-2CD2143G0-I"),
+        QStringLiteral("http://www.example.com/vendor/scope"),
+        QStringLiteral("ONVIF://WWW.ONVIF.ORG/name/Lobby%20Cam"),
+        QStringLiteral("onvif://www.onvif.org/"),
+        QStringLiteral("onvif://www.onvif.org/location/country/ua")};
+    QCOMPARE(onvifScopesForDisplay(advertised),
+             (QStringList{QStringLiteral("hardware/DS-2CD2143G0-I"),
+                          QStringLiteral("type/video_encoder"),
+                          QStringLiteral("Profile/Streaming"),
+                          QStringLiteral("http://www.example.com/vendor/scope"),
+                          QStringLiteral("name/Lobby Cam"),
+                          QStringLiteral("location/country/ua")}));
+    // With no hardware scope nothing is reordered; with none at all there is nothing to show.
+    QCOMPARE(onvifScopesForDisplay({QStringLiteral("onvif://www.onvif.org/type/a"),
+                                    QStringLiteral("onvif://www.onvif.org/name/b")}),
+             (QStringList{QStringLiteral("type/a"), QStringLiteral("name/b")}));
+    QVERIFY(onvifScopesForDisplay({}).isEmpty());
+
+    // DISPLAY ONLY: the type's pattern still sees the scopes as advertised.
+    RemoteType t;
+    t.discovery = RemoteType::Discovery::Onvif;
+    t.scopeRe = QStringLiteral("^onvif://www\\.onvif\\.org/hardware/DS-");
+    DiscoveredDevice d;
+    d.details = advertised;
+    QVERIFY(deviceMatchesType(t, d));
 }
 
 void TestDiscovery::everyXAddrIsAnAddressOfTheDevice()

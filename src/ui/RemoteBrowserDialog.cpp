@@ -206,9 +206,7 @@ void RemoteBrowserDialog::reloadSources()
         row->setText(NameColumn, h.displayName());
         row->setText(TypeColumn, h.connection == RemoteType::Connection::Telnet ? tr("telnet")
                                                                                 : tr("SSH"));
-        row->setText(AddressColumn, h.port == RemoteLocation::defaultPortFor(h.transport())
-                                        ? h.host
-                                        : QStringLiteral("%1:%2").arg(h.host).arg(h.port));
+        row->setText(AddressColumn, h.host);   // no port: see onFound()
         row->setText(DetailsColumn, h.paths.join(QStringLiteral(", ")));
         row->setData(NameColumn, kKindRole, HostRow);
         row->setData(NameColumn, kKeyRole, h.displayName());
@@ -277,11 +275,21 @@ void RemoteBrowserDialog::onFound(const DiscoveredDevice &device)
     row->setText(NameColumn, device.displayName);
     row->setToolTip(NameColumn, device.id);
     row->setText(TypeColumn, device.typeName);
-    row->setText(AddressColumn, device.port > 0
-                                    ? QStringLiteral("%1:%2").arg(device.host).arg(device.port)
-                                    : device.host);
-    row->setText(DetailsColumn, device.details.join(QStringLiteral("  ")));
-    row->setToolTip(DetailsColumn, device.details.join(u'\n'));
+    // THE ADDRESS ALONE, NEVER A PORT: a device's port is whatever its advertisement names —
+    // for an ONVIF camera, its web service — and is the port the log is read on only where the
+    // type's connection is the very service advertised (SPEC.md §3), so beside an address it
+    // reads as a claim the row cannot make. A saved host's column is the address alone too,
+    // one column meaning one thing.
+    row->setText(AddressColumn, device.host);
+    // An ONVIF camera's details are scope URIs, every standard one carrying the same long
+    // prefix, so they lead with the hardware and drop it; TXT records are shown as advertised.
+    const int type = HostBookmarkStore::indexOfType(m_types, device.typeName);
+    const QStringList details =
+        type >= 0 && m_types.at(type).discovery == RemoteType::Discovery::Onvif
+            ? onvifScopesForDisplay(device.details)
+            : device.details;
+    row->setText(DetailsColumn, details.join(QStringLiteral("  ")));
+    row->setToolTip(DetailsColumn, details.join(u'\n'));
     applyFilter();
 }
 
