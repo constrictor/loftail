@@ -29,6 +29,7 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -130,7 +131,12 @@ RemoteBrowserDialog::RemoteBrowserDialog(HostBookmarkStore *store, QWidget *pare
 
     connect(buttons, &QDialogButtonBox::accepted, this, &RemoteBrowserDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    connect(m_filter, &QLineEdit::textChanged, this, &RemoteBrowserDialog::applyFilter);
+    connect(m_filter, &QLineEdit::textChanged, this, &RemoteBrowserDialog::onFilterEdited);
+    // Return in the filter is Return on the selected row. The key event is ignored by QLineEdit
+    // and goes on to the dialog's default button as well, which is Open and is enabled exactly
+    // when onActivated() accepts — and the dialog is hidden by then, so nothing is opened twice.
+    connect(m_filter, &QLineEdit::returnPressed, this, [this] { onActivated(selectedRow()); });
+    m_filter->installEventFilter(this);
     connect(m_rescan, &QPushButton::clicked, this, [this] {
         reloadSources();
         startBrowsing();
@@ -206,9 +212,7 @@ void RemoteBrowserDialog::reloadSources()
         row->setText(NameColumn, h.displayName());
         row->setText(TypeColumn, h.connection == RemoteType::Connection::Telnet ? tr("telnet")
                                                                                 : tr("SSH"));
-        row->setText(AddressColumn, h.port == RemoteLocation::defaultPortFor(h.transport())
-                                        ? h.host
-                                        : QStringLiteral("%1:%2").arg(h.host).arg(h.port));
+        row->setText(AddressColumn, h.host);   // no port: see onFound()
         row->setText(DetailsColumn, h.paths.join(QStringLiteral(", ")));
         row->setData(NameColumn, kKindRole, HostRow);
         row->setData(NameColumn, kKeyRole, h.displayName());
@@ -277,11 +281,21 @@ void RemoteBrowserDialog::onFound(const DiscoveredDevice &device)
     row->setText(NameColumn, device.displayName);
     row->setToolTip(NameColumn, device.id);
     row->setText(TypeColumn, device.typeName);
-    row->setText(AddressColumn, device.port > 0
-                                    ? QStringLiteral("%1:%2").arg(device.host).arg(device.port)
-                                    : device.host);
-    row->setText(DetailsColumn, device.details.join(QStringLiteral("  ")));
-    row->setToolTip(DetailsColumn, device.details.join(u'\n'));
+    // THE ADDRESS ALONE, NEVER A PORT: a device's port is whatever its advertisement names —
+    // for an ONVIF camera, its web service — and is the port the log is read on only where the
+    // type's connection is the very service advertised (SPEC.md §3), so beside an address it
+    // reads as a claim the row cannot make. A saved host's column is the address alone too,
+    // one column meaning one thing.
+    row->setText(AddressColumn, device.host);
+    // An ONVIF camera's details are scope URIs, every standard one carrying the same long
+    // prefix, so they lead with the hardware and drop it; TXT records are shown as advertised.
+    const int type = HostBookmarkStore::indexOfType(m_types, device.typeName);
+    const QStringList details =
+        type >= 0 && m_types.at(type).discovery == RemoteType::Discovery::Onvif
+            ? onvifScopesForDisplay(device.details)
+            : device.details;
+    row->setText(DetailsColumn, details.join(QStringLiteral("  ")));
+    row->setToolTip(DetailsColumn, details.join(u'\n'));
     applyFilter();
 }
 
@@ -297,7 +311,7 @@ void RemoteBrowserDialog::onLost(const QString &typeName, const QString &id)
             delete child;
         }
     }
-    updateActions();
+    applyFilter();   // settles the selection if the device that went was the selected one
 }
 
 void RemoteBrowserDialog::onFailed(const QString &typeName, const QString &reason)
@@ -324,6 +338,69 @@ void RemoteBrowserDialog::onFailed(const QString &typeName, const QString &reaso
     status->setFirstColumnSpanned(true);
 }
 
+QList<QTreeWidgetItem *> RemoteBrowserDialog::visibleResults() const
+{
+    QList<QTreeWidgetItem *> out;
+    for (int g = 0; g < m_tree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *group = m_tree->topLevelItem(g);
+        if (group->isHidden())
+            continue;
+        for (int i = 0; i < group->childCount(); ++i) {
+            QTreeWidgetItem *child = group->child(i);
+            const int kind = child->data(NameColumn, kKindRole).toInt();
+            if (!child->isHidden() && (kind == DeviceRow || kind == HostRow))
+                out.append(child);
+        }
+    }
+    return out;
+}
+
+void RemoteBrowserDialog::selectRow(QTreeWidgetItem *row)
+{
+    if (!row) {
+        m_tree->clearSelection();
+        return;
+    }
+    // setCurrentItem() selects without taking the focus, which is what lets the filter keep
+    // it. scrollToItem() opens a group the reader collapsed rather than leaving Return to open
+    // a row nobody can see — and it is called even though the view scrolls to a new current
+    // row by itself, because a selection that does not move (Down at the last result) is no
+    // new current row.
+    m_tree->setCurrentItem(row);
+    m_tree->scrollToItem(row);
+}
+
+void RemoteBrowserDialog::stepSelection(int step)
+{
+    // Over the RESULTS, not the tree's rows: a group heading and a status line are never
+    // chosen, so an arrow that landed on one would leave nothing selected and Open disabled.
+    // No wrap at either end, as in any list; from no selection, Down starts at the top and Up
+    // at the bottom.
+    const QList<QTreeWidgetItem *> results = visibleResults();
+    if (results.isEmpty())
+        return;
+    const qsizetype at = results.indexOf(selectedRow());
+    const qsizetype next = at < 0 ? (step > 0 ? 0 : results.size() - 1)
+                                  : qBound(qsizetype(0), at + step, results.size() - 1);
+    selectRow(results.at(next));
+}
+
+bool RemoteBrowserDialog::eventFilter(QObject *watched, QEvent *event)
+{
+    // UP AND DOWN IN THE FILTER MOVE THE SELECTION, and the focus stays where the typing is.
+    // Only the press is taken: QLineEdit does nothing with an arrow's release, and an
+    // auto-repeated press is one more step, which is what holding the key should do.
+    if (watched == m_filter && event->type() == QEvent::KeyPress) {
+        const auto *key = static_cast<QKeyEvent *>(event);
+        const Qt::KeyboardModifiers mods = key->modifiers() & ~Qt::KeypadModifier;
+        if (mods == Qt::NoModifier && (key->key() == Qt::Key_Down || key->key() == Qt::Key_Up)) {
+            stepSelection(key->key() == Qt::Key_Down ? 1 : -1);
+            return true;
+        }
+    }
+    return QDialog::eventFilter(watched, event);
+}
+
 QTreeWidgetItem *RemoteBrowserDialog::selectedRow() const
 {
     const auto items = m_tree->selectedItems();
@@ -339,6 +416,9 @@ void RemoteBrowserDialog::onSelectionChanged()
     // THE LOG FIELD FOLLOWS THE SELECTION: a device of a type offers the type's default log,
     // a saved host every log remembered on it. What was typed is replaced only by something
     // to replace it with, so a path typed before choosing a row with nothing to offer stays.
+    // An OFFER is not something typed, though, and goes with the row that offered it: the
+    // filter selects a result per keystroke, so a row passed through on the way to a host
+    // with no remembered log would otherwise hand that host a log path from somewhere else.
     QTreeWidgetItem *row = selectedRow();
     if (!row) {
         updateActions();
@@ -356,11 +436,16 @@ void RemoteBrowserDialog::onSelectionChanged()
         if (at >= 0)
             offers = m_hosts.at(at).paths;
     }
+    const QSignalBlocker block(m_log);
     if (!offers.isEmpty()) {
-        const QSignalBlocker block(m_log);
         m_log->clear();
         m_log->addItems(offers);
         m_log->setEditText(offers.first());
+    } else if (m_log->findText(m_log->currentText()) >= 0) {
+        // The field holds one of its own items, and its items are only ever offers — it
+        // inserts nothing typed (NoInsert) — so this is the last row's offer, unedited.
+        m_log->clear();
+        m_log->clearEditText();
     }
     updateActions();
 }
@@ -377,6 +462,16 @@ void RemoteBrowserDialog::onActivated(QTreeWidgetItem *item)
         return;
     }
     accept();
+}
+
+void RemoteBrowserDialog::onFilterEdited()
+{
+    applyFilter();
+    // EVERY EDIT SELECTS THE FIRST RESULT, an emptied field included, so Return opens the
+    // best match of what was just typed — even over a row picked with the arrows a moment
+    // ago, the typing being the newer word on what is wanted.
+    const QList<QTreeWidgetItem *> results = visibleResults();
+    selectRow(results.isEmpty() ? nullptr : results.first());
 }
 
 void RemoteBrowserDialog::applyFilter()
@@ -407,8 +502,20 @@ void RemoteBrowserDialog::applyFilter()
         group->setHidden(!needle.isEmpty() && visible == 0 && !groupMatches);
     }
     // A selection the filter just hid is not something Open should act on.
-    if (QTreeWidgetItem *row = selectedRow(); row && row->isHidden())
+    QTreeWidgetItem *row = selectedRow();
+    if (row && row->isHidden()) {
         m_tree->clearSelection();
+        row = nullptr;
+    }
+    // WHILE SOMETHING IS TYPED A RESULT IS SELECTED IF THERE IS ONE, so a device that turns up
+    // to match it is ready for Return as it would have been had it been there first. Only a
+    // selection that is MISSING is filled in: a device arriving above the one selected does not
+    // take the selection from under the reader. With nothing typed, nothing is chosen for them.
+    if (!row && !needle.isEmpty()) {
+        const QList<QTreeWidgetItem *> results = visibleResults();
+        if (!results.isEmpty())
+            selectRow(results.first());
+    }
     updateActions();
 }
 

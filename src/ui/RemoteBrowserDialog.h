@@ -55,6 +55,10 @@ struct DiscoveredDevice;
 //
 // Activation is itemActivated, never itemDoubleClicked — one signal is both the double-click and
 // Return, the welcome page's rule — and every control has an object name.
+//
+// THE FILTER DRIVES THE LIST FROM THE KEYBOARD: every edit selects the first result, Up and
+// Down step through the results without the focus leaving the field, and Return opens the
+// selected one exactly as Return on its row would — so type, arrow, Return is the whole gesture.
 class RemoteBrowserDialog : public QDialog
 {
     Q_OBJECT
@@ -84,14 +88,20 @@ private:
     void onFailed(const QString &typeName, const QString &reason);
     void onSelectionChanged();
     void onActivated(QTreeWidgetItem *item);
+    void onFilterEdited();
     void applyFilter();
+    void stepSelection(int step);
+    void selectRow(QTreeWidgetItem *row);
     void updateActions();
     void connectDirectly();
     void openParameters();
     void accept() override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
     QTreeWidgetItem *groupFor(const QString &typeName) const;
     QTreeWidgetItem *selectedRow() const;
+    // The device and saved-host rows the filter leaves showing, in the order they are listed.
+    QList<QTreeWidgetItem *> visibleResults() const;
 
     HostBookmarkStore    *m_store = nullptr;
     QVector<RemoteType>   m_types;

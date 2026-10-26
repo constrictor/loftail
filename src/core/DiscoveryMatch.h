@@ -70,6 +70,15 @@ bool deviceMatchesType(const RemoteType &type, const DiscoveredDevice &device);
 // is a camera its owner called "Lobby Cam". Empty when the device advertises none.
 QString onvifNameFromScopes(const QStringList &scopes);
 
+// The scopes as File ▸ Open Remote's Details column shows them: the `hardware` scope FIRST —
+// which camera it is, the thing a person scanning the list is looking for, and otherwise
+// wherever in the list the device happened to put it — then the rest in the order advertised.
+// The `onvif://www.onvif.org/` every standard scope begins with is taken off and the rest
+// percent-decoded, as onvifNameFromScopes() decodes the name; a vendor's own scope, under any
+// other prefix, is shown whole. DISPLAY ONLY: a type's scope pattern is still matched against
+// the scopes as advertised (deviceMatchesType()), and Test Discovery still shows those.
+QStringList onvifScopesForDisplay(const QStringList &scopes);
+
 // --- WS-Discovery (ONVIF), pure --------------------------------------------
 
 // The Probe message for an ONVIF NetworkVideoTransmitter, with `messageId` (a `urn:uuid:…`)
