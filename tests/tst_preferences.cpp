@@ -1748,6 +1748,11 @@ void TestPreferences::theMenuEntryHasAnAcceleratorOnEveryPlatform()
                             .arg(action->shortcut().toString())));
     // And it is the one the menu shows, which is the first in the list.
     QCOMPARE(action->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_P));
+#else
+    // Cmd+, whichever QPA plugin is loaded — the offscreen one binds Preferences to nothing.
+    QVERIFY2(action->shortcuts().contains(QKeySequence(Qt::CTRL | Qt::Key_Comma)),
+             qPrintable(QStringLiteral("expected Cmd+, got \"%1\"")
+                            .arg(action->shortcut().toString())));
 #endif
 }
 

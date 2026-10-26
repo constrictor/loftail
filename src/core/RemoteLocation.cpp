@@ -302,6 +302,13 @@ std::optional<RemoteLocation> parseDiscovered(const QString &s)
         || !escapesAreWellFormed(rawPath)) {
         return std::nullopt;
     }
+    // A RAW `@` IN THE AUTHORITY IS USERINFO to every other reader of a URL, and this scheme
+    // has none: `discover://u:secret@Type/id/p` would otherwise parse as a type called
+    // "u:secret@Type" and be shown back verbatim, which is a password on screen by the one
+    // route withoutPassword() cannot see (bugs.md 58). A type whose name really holds an `@`
+    // is spelled `%40`, which is how toString() writes it.
+    if (rawType.contains(u'@'))
+        return std::nullopt;
 
     RemoteLocation loc;
     loc.transport = RemoteLocation::Transport::Discovered;
@@ -466,10 +473,13 @@ QString RemoteLocation::toString() const
 QString RemoteLocation::toDisplayString() const
 {
     if (transport == Transport::Discovered) {
-        // As written, but the two names stay encoded where they hold a separator — the one
-        // place "as written" would produce something that reads as a different address.
+        // As written, but the two names stay encoded where they hold a separator or an `@` —
+        // the places "as written" would produce something that reads as a different address,
+        // or as one carrying a credential.
         const auto name = [](const QString &n) {
-            return n.contains(u'/') ? QString::fromUtf8(QUrl::toPercentEncoding(n, " :")) : n;
+            return n.contains(u'/') || n.contains(u'@')
+                ? QString::fromUtf8(QUrl::toPercentEncoding(n, " :"))
+                : n;
         };
         return QLatin1String(kDiscoverScheme) + name(discoveryType) + u'/' + name(host)
             + pathToUrl(path);
@@ -774,13 +784,37 @@ QString absoluteLocalPath(const QString &path)
     return cleanedToFixedPoint(QFileInfo(path).absoluteFilePath());
 }
 
-QString normalizeLogPath(const QString &s)
+namespace {
+QString normalizeLogPathOnce(const QString &s)
 {
     // Archive first: its normal form contains a remote address when the container is
     // remote, and ArchiveLocation::toString() normalizes that part itself.
     if (const auto loc = ArchiveLocation::split(s))
         return loc->toString();
     return RemoteLocation::normalize(s);
+}
+} // namespace
+
+// TO A FIXED POINT, and bounded, for cleanedToFixedPoint()'s reasons (bugs.md 59). Which
+// layer an address belongs to is decided on its RAW text — the archive cut has to be, the
+// member being opaque (bugs.md 49) — but a remote path's normal form is DECODED, and an
+// encoded `/` is the one escape whose decoding moves that decision: `sftp://h/;.xz%2f` is not
+// an archive address as written, normalizes to `ssh://h:22/;.xz/`, and that IS one (a bare
+// stream with nothing after the slash), whose own normal form is `ssh://h:22/;.xz` — the
+// answer `ssh://h/;.xz/` gets in one pass. A file name cannot hold a `/`, so `%2F` in a remote
+// path is only another spelling of the separator, and repairing to the spelled-out form's
+// answer is the right one rather than a refusal.
+QString normalizeLogPath(const QString &s)
+{
+    constexpr int kMaxNormalizePasses = 4;
+    QString normal = normalizeLogPathOnce(s);
+    for (int pass = 1; pass < kMaxNormalizePasses; ++pass) {
+        QString again = normalizeLogPathOnce(normal);
+        if (again == normal)
+            break;
+        normal = std::move(again);
+    }
+    return normal;
 }
 
 bool logPathIsSpooled(const QString &s)

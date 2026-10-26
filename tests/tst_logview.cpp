@@ -17,6 +17,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <QtTest>
+#include <QRawFont>
+#include <QTextLayout>
 
 #include <QApplication>
 #include <QClipboard>
@@ -560,7 +562,12 @@ void TestLogView::everyColumnRendersFixedPitch()
 
     // QFontInfo reports the font actually resolved, not the one requested, so this
     // fails if the family falls back to a proportional face.
-    QVERIFY(QFontInfo(view.font()).fixedPitch());
+    QVERIFY2(QFontInfo(view.font()).fixedPitch(),
+             qPrintable(QStringLiteral("resolved to \"%1\"").arg(QFontInfo(view.font()).family())));
+    // Which face, on every platform: the one line that says what the rest of this file's
+    // pixel cases were measured against, on a leg nobody here can run.
+    qInfo("log font resolves to \"%s\" at %g pt", qPrintable(QFontInfo(view.font()).family()),
+          QFontInfo(view.font()).pointSizeF());
     // Cells are painted on the viewport and headings by the header view; both must
     // inherit the same font rather than the proportional application default.
     QVERIFY(QFontInfo(view.viewport()->font()).fixedPitch());
@@ -4956,13 +4963,50 @@ void TestLogView::theSelectedRecordIsLaidOutInTheWidthItWasMeasuredIn()
     QVERIFY(wide.viewport()->height() >= lines * wide.lineHeight());
     QCOMPARE(narrow.selWrapLines(), lines);
 
+    // The strip compared stops ONE CHARACTER short of the narrow view's right edge. The
+    // narrow view's last glyph on each line is cut by its viewport, and a glyph cut by a clip
+    // is not obliged to rasterize to the pixels it has whole: under FreeType it does, under
+    // CoreText (the macOS leg, its first run) the last 5 px of every line differed while
+    // every line broke in the same place. Where the lines break is this case's whole claim,
+    // and a character short of the edge says it exactly as well.
+    const int compared = strip - qCeil(QFontMetricsF(wide.font()).horizontalAdvance(QLatin1Char('0')));
+    QVERIFY(compared > 0);
     const int msg = wide.header()->count() - 1;
-    const QRect from(wide.header()->sectionViewportPosition(msg), 0, strip,
+    const QRect from(wide.header()->sectionViewportPosition(msg), 0, compared,
                      lines * wide.lineHeight());
-    const QRect to(narrow.header()->sectionViewportPosition(msg), 0, strip,
+    const QRect to(narrow.header()->sectionViewportPosition(msg), 0, compared,
                    lines * narrow.lineHeight());
     QVERIFY(to.right() < narrow.viewport()->width());
-    QCOMPARE(renderViewport(narrow).copy(to), renderViewport(wide).copy(from));
+    const QImage got = renderViewport(narrow).copy(to).convertToFormat(QImage::Format_ARGB32);
+    const QImage want = renderViewport(wide).copy(from).convertToFormat(QImage::Format_ARGB32);
+    // How they differ, not merely that they do: QCOMPARE on two images says nothing more, and
+    // this has failed on a leg nobody here can run.
+    int differing = 0;
+    QRect where;
+    for (int y = 0; y < qMin(got.height(), want.height()); ++y) {
+        for (int x = 0; x < qMin(got.width(), want.width()); ++x) {
+            if (got.pixel(x, y) != want.pixel(x, y)) {
+                ++differing;
+                where |= QRect(x, y, 1, 1);
+            }
+        }
+    }
+    // Both images go where CI picks them up, when it says where that is: a mismatch on a
+    // leg nobody here can run is otherwise a sentence about pixels nobody can see.
+    if (differing != 0 || got.size() != want.size()) {
+        if (const QByteArray dir = qgetenv("LOFTAIL_TEST_ARTIFACTS"); !dir.isEmpty()) {
+            QDir().mkpath(QString::fromLocal8Bit(dir));
+            got.save(QString::fromLocal8Bit(dir) + QStringLiteral("/selected-narrow.png"));
+            want.save(QString::fromLocal8Bit(dir) + QStringLiteral("/selected-wide.png"));
+            renderViewport(narrow).save(QString::fromLocal8Bit(dir) + QStringLiteral("/narrow-whole.png"));
+            renderViewport(wide).save(QString::fromLocal8Bit(dir) + QStringLiteral("/wide-whole.png"));
+        }
+    }
+    QVERIFY2(got.size() == want.size() && differing == 0,
+             qPrintable(QStringLiteral("%1 of %2 pixels differ, within %3,%4 %5x%6 (font \"%7\")")
+                            .arg(differing).arg(got.width() * got.height())
+                            .arg(where.x()).arg(where.y()).arg(where.width()).arg(where.height())
+                            .arg(QFontInfo(wide.font()).family())));
 }
 
 // --- the column count is the characters that fit, unrounded (bugs.md 17) -----
@@ -5714,7 +5758,11 @@ void renderOneWrappedRecord(LogView &view, int pointSize, int wrapWidth, Wrapped
     zoomTo(view, pointSize);
     view.setWrapMode(LogView::WrapMode::AlwaysOn);
     putMessageOriginAt(view, wrapWidth);
-    settleRemeasure();
+    // Until the width-change DEBOUNCE has fired, the estimator is still keyed on the old
+    // width and measureBlockOfRecord() measures at it — one row, for a record that wraps
+    // to four at the new one. settleRemeasure()'s fixed 200 ms against a 120 ms timer
+    // held on Linux and lost on a loaded macOS runner, so this waits for the thing itself.
+    QTRY_COMPARE_WITH_TIMEOUT(view.estimatedGeometry().wrapWidth(), view.messageWrapWidth(), 5000);
     view.measureBlockOfRecord(0);
     out.modelLines = view.estimatedGeometry().recordHeightLines(0);
     out.band = messageBand(view, out.modelLines);
@@ -5798,12 +5846,34 @@ void TestLogView::aRecordOfWideOrOverhangingGlyphsIsDrawnWhole()
         QCOMPARE(view.messageWrapWidth(), width);
         // The claim, in rows: the model counts what the layout places. Against the old
         // model this is short by at least one, which is exactly how the setup was chosen.
+        // What the first non-ASCII codepoint measured, three ways — the numbers a failure
+        // here is about, on a leg (macOS) nobody here can run, where it has failed
+        // intermittently with the code unchanged.
+        QString measured;
+        for (const QChar c : probe.text) {
+            if (c.unicode() < 0x80 || c.isSurrogate())
+                continue;
+            const QString one(c);
+            QTextLayout layout(one, view.font());
+            layout.beginLayout();
+            QTextLine line = layout.createLine();
+            if (line.isValid())
+                line.setLineWidth(1.0e6);
+            layout.endLayout();
+            measured = QStringLiteral(" [U+%1: metrics %2, layout %3, in primary face %4]")
+                           .arg(uint(c.unicode()), 4, 16, QLatin1Char('0'))
+                           .arg(QFontMetricsF(view.font()).horizontalAdvance(one))
+                           .arg(line.isValid() ? line.naturalTextWidth() : -1.0)
+                           .arg(QRawFont::fromFont(view.font()).supportsCharacter(c) ? "yes" : "no");
+            break;
+        }
         QVERIFY2(rendered.modelLines == lines,
                  qPrintable(QStringLiteral("%1: the record was given %2 rows where the "
-                                           "layout places %3")
+                                           "layout places %3%4")
                                 .arg(where)
                                 .arg(rendered.modelLines)
-                                .arg(lines)));
+                                .arg(lines)
+                                .arg(measured)));
         QVERIFY2(flooredDivisionLines(probe.text, view.font(), width) < lines,
                  qPrintable(where + QStringLiteral(": the setup no longer reproduces the "
                                                    "arithmetic model's undercount")));

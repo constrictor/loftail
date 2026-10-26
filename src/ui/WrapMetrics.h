@@ -20,6 +20,7 @@
 
 #include <QFont>
 #include <QFontMetricsF>
+#include <QRawFont>
 #include <QHash>
 #include <QString>
 #include <QStringView>
@@ -113,9 +114,12 @@ private:
     Metric wideMetric(char32_t cp) const;
     Metric measure(char32_t cp) const;
     static bool isContextual(char32_t cp);
+    static bool isMark(char32_t cp);
+    qreal laidOutAdvance(const QString &s) const;
 
     QFont m_font;
     QFontMetricsF m_fm;
+    QRawFont m_primary;   // the primary face alone, which inFont() does not ask about
     // Filled whole by setFont(); U+0009 holds the blank it is laid out as.
     std::array<Metric, 128> m_ascii{};
     // A direct-mapped front cache over m_wide, keyed cp & (kSlots - 1) with the codepoint

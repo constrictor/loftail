@@ -18,6 +18,8 @@
 
 #include "WrapMetrics.h"
 
+#include <QTextLayout>
+
 #include <cmath>
 
 namespace loftail {
@@ -27,6 +29,30 @@ WrapMetrics::WrapMetrics() : m_fm(QFont()) {}
 // Whether a codepoint takes its font from the text around it rather than carrying one of
 // its own — the Common and Inherited scripts, which is where the symbols, arrows, marks
 // and emoji live.
+bool WrapMetrics::isMark(char32_t cp)
+{
+    const QChar::Category c = QChar::category(cp);
+    return c == QChar::Mark_NonSpacing || c == QChar::Mark_SpacingCombining
+        || c == QChar::Mark_Enclosing;
+}
+
+qreal WrapMetrics::laidOutAdvance(const QString &s) const
+{
+    QTextLayout layout(s, m_font);
+    QTextOption option;
+    option.setWrapMode(QTextOption::NoWrap);
+    layout.setTextOption(option);
+    layout.beginLayout();
+    QTextLine line = layout.createLine();
+    if (!line.isValid()) {
+        layout.endLayout();
+        return 0;
+    }
+    line.setLineWidth(1.0e6);
+    layout.endLayout();
+    return qMax(qreal(0), line.naturalTextWidth());
+}
+
 bool WrapMetrics::isContextual(char32_t cp)
 {
     const QChar::Script script = QChar::script(cp);
@@ -37,6 +63,7 @@ void WrapMetrics::setFont(const QFont &font)
 {
     m_font = font;
     m_fm = QFontMetricsF(font);
+    m_primary = QRawFont::fromFont(font);
     m_wide.clear();
     m_slots.fill(Slot{});
     // One Hangul syllable, which every fallback chain draws through a wide CJK face: the
@@ -86,6 +113,20 @@ WrapMetrics::Metric WrapMetrics::measure(char32_t cp) const
     // ASCII and never reach this at all.
     if (cp >= m_ascii.size() && isContextual(cp))
         advance = qMax(advance, m_fm.horizontalAdvance(m_wideBase + s) - m_wideBaseAdvance);
+    // AND THROUGH A LAYOUT, for a codepoint the PRIMARY face does not carry. The
+    // font metrics answer for a codepoint the primary face lacks is the platform's to give,
+    // and CoreText's is not the layout's: on macOS, with Menlo carrying the view, Hiragana
+    // measured ~0 through QFontMetricsF while QTextLayout — what the paint goes through —
+    // placed it at full CJK width, so forty Kana were given one row and drew four. The
+    // layout's own width is the number the paint will spend, so the wider of the two is
+    // kept, in the direction every approximation here is rounded. One layout per codepoint,
+    // once, behind the memo. GATED ON QRawFont, which asks the primary face alone — the one
+    // question inFont() cannot answer (above) — because a layout's width runs a little past
+    // the advance for a glyph the face does carry, and taking it everywhere overcounted a
+    // Cyrillic line by a row. Marks are left out because a lone mark may be shaped onto a
+    // dotted circle, and they must contribute nothing (below).
+    if (cp >= m_ascii.size() && !isMark(cp) && !m_primary.supportsCharacter(uint(cp)))
+        advance = qMax(advance, laidOutAdvance(s));
     Metric m;
     m.advance = float(advance);
     // A codepoint of NO advance is a combining mark: it joins the cluster in front of it,

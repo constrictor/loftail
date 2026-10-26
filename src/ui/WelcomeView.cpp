@@ -27,6 +27,7 @@
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QKeyEvent>
 #include <QListWidget>
 #include <QPainter>
 #include <QPushButton>
@@ -350,16 +351,17 @@ WelcomeView::WelcomeView(QWidget *parent) : QWidget(parent)
 
     m_recent = new QListWidget(column);
     m_recent->setObjectName(QStringLiteral("welcomeRecentList")); // findChild, for tests
-    // ACTIVATED, never doubleClicked: one signal is both the double-click and Return on
-    // the selected row, and a list reachable only by double-click is not reachable from
-    // a keyboard at all — which nothing on screen would say.
-    connect(m_recent, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) {
-        if (item)
-            emit recentActivated(item->data(kAddressRole).toString());
-    });
+    // ACTIVATED, never doubleClicked, AND RETURN TAKEN BY HAND. itemActivated is the
+    // double-click on every platform and Return on all but one: on macOS Qt's item views
+    // spend Return on starting an edit and never emit it, so a list relying on the signal
+    // for its keyboard path is unreachable from a keyboard there — which nothing on screen
+    // would say. eventFilter() takes Return and Enter on both lists for every platform,
+    // so there is one keyboard path rather than one per platform.
+    connect(m_recent, &QListWidget::itemActivated, this, &WelcomeView::activateRecent);
     m_recentEmpty = makeEmptyLabel(m_recent, tr("No logs opened yet."),
                                    QStringLiteral("welcomeRecentEmpty"));
     m_recent->viewport()->installEventFilter(this);
+    m_recent->installEventFilter(this);
 
     layout->addLayout(buildSection(column, tr("Recent logs"), open, m_clearRecent, m_recent));
     layout->addSpacing(fontMetrics().height());
@@ -379,20 +381,11 @@ WelcomeView::WelcomeView(QWidget *parent) : QWidget(parent)
 
     m_remotes = new QListWidget(m_remoteSection);
     m_remotes->setObjectName(QStringLiteral("welcomeRemoteList")); // findChild, for tests
-    connect(m_remotes, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) {
-        if (!item)
-            return;
-        // The HOST and the path, never the ssh:// address the tooltip shows: opening a
-        // remembered remote log also has to carry that host's poll cadence, tail-start
-        // and compression into the fetcher, and only the bookmark knows those. An empty
-        // path is a host with no remembered log and asks for the dialog instead, which
-        // the receiver decides — this row cannot tell the two apart any other way.
-        emit remoteActivated(item->data(kHostRole).toString(),
-                             item->data(kPathRole).toString());
-    });
+    connect(m_remotes, &QListWidget::itemActivated, this, &WelcomeView::activateRemote);
     m_remotesEmpty = makeEmptyLabel(m_remotes, tr("No saved hosts yet."),
                                     QStringLiteral("welcomeRemoteEmpty"));
     m_remotes->viewport()->installEventFilter(this);
+    m_remotes->installEventFilter(this);
 
     remoteOuter->addLayout(buildSection(m_remoteSection, tr("Remote hosts"), openRemote,
                                         nullptr, m_remotes));
@@ -477,8 +470,43 @@ void WelcomeView::applyThemeColours()
     }
 }
 
+void WelcomeView::activateRecent(QListWidgetItem *item)
+{
+    if (item)
+        emit recentActivated(item->data(kAddressRole).toString());
+}
+
+void WelcomeView::activateRemote(QListWidgetItem *item)
+{
+    if (!item)
+        return;
+    // The HOST and the path, never the ssh:// address the tooltip shows: opening a
+    // remembered remote log also has to carry that host's poll cadence, tail-start
+    // and compression into the fetcher, and only the bookmark knows those. An empty
+    // path is a host with no remembered log and asks for the dialog instead, which
+    // the receiver decides — this row cannot tell the two apart any other way.
+    emit remoteActivated(item->data(kHostRole).toString(),
+                         item->data(kPathRole).toString());
+}
+
 bool WelcomeView::eventFilter(QObject *watched, QEvent *event)
 {
+    // Return and Enter on a list: see the comment over the itemActivated connections. Only
+    // the PRESS is taken, and taking it is the whole of the gesture — a key's release starts
+    // nothing in an item view.
+    if (event->type() == QEvent::KeyPress && (watched == m_recent || watched == m_remotes)) {
+        const int key = static_cast<QKeyEvent *>(event)->key();
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            auto *list = static_cast<QListWidget *>(watched);
+            if (QListWidgetItem *item = list->currentItem(); item && item->isSelected()) {
+                if (list == m_recent)
+                    activateRecent(item);
+                else
+                    activateRemote(item);
+                return true;
+            }
+        }
+    }
     if (event->type() == QEvent::Resize) {
         if (watched == m_recent->viewport())
             layOutEmptyLabel(m_recent, m_recentEmpty);
