@@ -226,6 +226,7 @@ private slots:
     void aConnectSlowerThanOneSliceStillConnects();
     void aConnectNobodyWantsIsGivenUpBetweenSlices();
     void aRefusedConnectIsReportedRatherThanWaitedOut();
+    void aConnectedStateWithNoPeerIsNotAConnection();
 };
 
 void TestSocketDetach::qtStealsBytesFromTheDescriptorItHolds()
@@ -460,7 +461,8 @@ void TestSocketDetach::aConnectNobodyWantsIsGivenUpBetweenSlices()
 void TestSocketDetach::aRefusedConnectIsReportedRatherThanWaitedOut()
 {
     // The other end of it: a refusal is not a slow connect and must not be paid for as
-    // one. Qt has already phrased it, so the caller reports socket.errorString().
+    // one — and it is not a connect at all, which Qt 6.8 on macOS 15.8 says it is
+    // (SocketDetach.h). The reason comes back with the answer, for the caller to report.
     QTcpServer closed;
     QVERIFY(closed.listen(QHostAddress::LocalHost, 0));
     const quint16 port = closed.serverPort();
@@ -470,9 +472,70 @@ void TestSocketDetach::aRefusedConnectIsReportedRatherThanWaitedOut()
     QElapsedTimer elapsed;
     elapsed.start();
     socket.connectToHost(QHostAddress(QHostAddress::LocalHost), port);
-    QCOMPARE(awaitSocketConnected(socket, 20000, kSliceMs, nullptr), SocketWait::Failed);
+    QString failure;
+    const SocketWait outcome = awaitSocketConnected(socket, 20000, kSliceMs, nullptr, &failure);
+    QVERIFY2(outcome == SocketWait::Failed,
+             qPrintable(QStringLiteral("a connect to closed port %1 came back %2 (0 Connected, "
+                                       "2 TimedOut), local port %3, peer %4:%5")
+                            .arg(port)
+                            .arg(int(outcome))
+                            .arg(socket.localPort())
+                            .arg(socket.peerAddress().toString())
+                            .arg(socket.peerPort())));
     QVERIFY(elapsed.elapsed() < 20000 / 4);
-    QVERIFY(!socket.errorString().isEmpty());
+    QVERIFY(!failure.isEmpty());
+    QCOMPARE(socket.state(), QAbstractSocket::UnconnectedState);
+}
+
+void TestSocketDetach::aConnectedStateWithNoPeerIsNotAConnection()
+{
+    // THE CHECK ITSELF, reached on every platform: a socket Qt calls connected whose
+    // kernel says it has no peer is answered Failed, with a reason, and left unconnected.
+    // macOS 15.8 produces that state from a refused connect, which only its leg can show;
+    // here it is produced from a real connection the far end RESETS before anything turns
+    // an event loop, so Qt still calls it connected while the kernel already knows better.
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QTcpSocket socket;
+    socket.connectToHost(QHostAddress(QHostAddress::LocalHost), server.serverPort());
+    QCOMPARE(awaitSocketConnected(socket, 5000, kSliceMs, nullptr), SocketWait::Connected);
+    // Usually accepted already, by the loop the wait above turned.
+    QVERIFY(server.hasPendingConnections() || server.waitForNewConnection(3000));
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+
+    // A zero linger turns the close into a reset rather than an orderly end.
+    linger reset {};
+    reset.l_onoff = 1;
+    reset.l_linger = 0;
+#if defined(Q_OS_WIN)
+    QCOMPARE(::setsockopt(SOCKET(peer->socketDescriptor()), SOL_SOCKET, SO_LINGER,
+                          reinterpret_cast<const char *>(&reset), sizeof(reset)),
+             0);
+#else
+    QCOMPARE(::setsockopt(int(peer->socketDescriptor()), SOL_SOCKET, SO_LINGER, &reset,
+                          sizeof(reset)),
+             0);
+#endif
+    peer->abort();
+
+    // Waited for on the DESCRIPTOR and not through Qt: an event loop here would let Qt see
+    // the reset and move the socket off ConnectedState, and the branch under test would
+    // never be reached. The reset makes the descriptor readable.
+#if defined(Q_OS_WIN)
+    WSAPOLLFD readable { SOCKET(socket.socketDescriptor()), POLLRDNORM, 0 };
+    QVERIFY(::WSAPoll(&readable, 1, 3000) > 0);
+#else
+    pollfd readable { int(socket.socketDescriptor()), POLLIN, 0 };
+    QVERIFY(::poll(&readable, 1, 3000) > 0);
+#endif
+    QCOMPARE(socket.state(), QAbstractSocket::ConnectedState);
+
+    QString failure;
+    QCOMPARE(awaitSocketConnected(socket, 5000, kSliceMs, nullptr, &failure),
+             SocketWait::Failed);
+    QVERIFY(!failure.isEmpty());
+    QCOMPARE(socket.state(), QAbstractSocket::UnconnectedState);
 }
 
 QTEST_MAIN(TestSocketDetach)

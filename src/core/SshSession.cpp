@@ -1367,12 +1367,14 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     // machinery on this socket, which is exactly what must stop happening once SSH bytes
     // start moving (SocketDetach.h).
     d->socket.connectToHost(location.host, static_cast<quint16>(location.port));
-    switch (awaitSocketConnected(d->socket, timeoutMs, kConnectSliceMs, d->abandonCheck)) {
+    QString connectFailure;
+    switch (awaitSocketConnected(d->socket, timeoutMs, kConnectSliceMs, d->abandonCheck,
+                                 &connectFailure)) {
     case SocketWait::Connected:
         break;
     case SocketWait::Failed:
         err = Tr::tr("Cannot reach %1:%2 — %3")
-                  .arg(location.host).arg(location.port).arg(d->socket.errorString());
+                  .arg(location.host).arg(location.port).arg(connectFailure);
         d->teardown();
         return false;
     case SocketWait::TimedOut:

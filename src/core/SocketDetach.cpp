@@ -18,6 +18,7 @@
 
 #include "SocketDetach.h"
 
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QTcpSocket>
@@ -27,14 +28,59 @@
 #  include <winsock2.h>
 #  include <windows.h>
 #else
+#  include <cerrno>
 #  include <sys/socket.h>
 #  include <unistd.h>
 #endif
 
 namespace loftail {
 
+namespace {
+
+struct Tr
+{
+    Q_DECLARE_TR_FUNCTIONS(loftail::SocketDetach)
+};
+
+// Whether the kernel says `descriptor` has a peer — which every connected TCP socket does —
+// and, when it has not, why: the socket's pending error. Asked of a socket Qt has called
+// connected (SocketDetach.h on why Qt's word is not enough).
+bool kernelSeesAPeer(qintptr descriptor, QString *why)
+{
+    sockaddr_storage peer {};
+    int error = 0;
+#if defined(Q_OS_WIN)
+    int length = sizeof(peer);
+    if (::getpeername(SOCKET(descriptor), reinterpret_cast<sockaddr *>(&peer), &length) == 0)
+        return true;
+    int size = sizeof(error);
+    ::getsockopt(SOCKET(descriptor), SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&error),
+                 &size);
+    const bool refused = error == WSAECONNREFUSED;
+#else
+    socklen_t length = sizeof(peer);
+    if (::getpeername(int(descriptor), reinterpret_cast<sockaddr *>(&peer), &length) == 0)
+        return true;
+    socklen_t size = sizeof(error);
+    ::getsockopt(int(descriptor), SOL_SOCKET, SO_ERROR, &error, &size);
+    const bool refused = error == ECONNREFUSED;
+#endif
+    // Qt's own wording for a refusal, so the sentence does not depend on which of the two
+    // routes reported it; anything else is named by its number, there being no portable
+    // thread-safe way to phrase an errno here and nothing the reader would do differently.
+    if (refused)
+        *why = Tr::tr("Connection refused");
+    else if (error != 0)
+        *why = Tr::tr("The connection was not established (system error %1).").arg(error);
+    else
+        *why = Tr::tr("The connection was not established.");
+    return false;
+}
+
+} // namespace
+
 SocketWait awaitSocketConnected(QTcpSocket &socket, int timeoutMs, int sliceMs,
-                                const std::function<bool()> &abandoned)
+                                const std::function<bool()> &abandoned, QString *failure)
 {
     QElapsedTimer elapsed;
     elapsed.start();
@@ -44,10 +90,21 @@ SocketWait awaitSocketConnected(QTcpSocket &socket, int timeoutMs, int sliceMs,
         // peer, a literal address, a name lookup already in the cache — never enters a
         // loop it would have to be woken out of.
         switch (socket.state()) {
-        case QAbstractSocket::ConnectedState:
-            return SocketWait::Connected;
+        case QAbstractSocket::ConnectedState: {
+            // ...and believed only with a peer (SocketDetach.h): Qt 6.8 on macOS 15.8 calls
+            // a refused connect connected.
+            QString why;
+            if (kernelSeesAPeer(socket.socketDescriptor(), &why))
+                return SocketWait::Connected;
+            socket.abort();
+            if (failure)
+                *failure = why;
+            return SocketWait::Failed;
+        }
         case QAbstractSocket::UnconnectedState:
             // Refused, unreachable, or a name that does not resolve. Qt has phrased it.
+            if (failure)
+                *failure = socket.errorString();
             return SocketWait::Failed;
         default:
             break;
