@@ -20,6 +20,7 @@
 
 #include "DiscoveryBrowser.h"
 #include "OpenRemoteDialog.h"
+#include "RecentRemotes.h"
 #include "RemoteLocation.h"
 #include "RemoteParametersDialog.h"
 #include "UiColors.h"
@@ -36,6 +37,8 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace loftail {
 
 namespace {
@@ -45,6 +48,7 @@ enum RowKind { GroupRow = 1, StatusRow, DeviceRow, HostRow };
 constexpr int kKindRole = Qt::UserRole + 1;
 constexpr int kKeyRole = Qt::UserRole + 2;    // device id, or saved host name
 constexpr int kTypeRole = Qt::UserRole + 3;   // the remote type's name (device rows)
+constexpr int kRankRole = Qt::UserRole + 4;   // place in the recency list (device rows)
 
 enum Column { NameColumn, TypeColumn, AddressColumn, DetailsColumn };
 
@@ -56,7 +60,13 @@ QString foldKey(const QString &typeName)
 } // namespace
 
 RemoteBrowserDialog::RemoteBrowserDialog(HostBookmarkStore *store, QWidget *parent)
-    : QDialog(parent), m_store(store)
+    : RemoteBrowserDialog(store, QStringList(), parent)
+{
+}
+
+RemoteBrowserDialog::RemoteBrowserDialog(HostBookmarkStore *store,
+                                         const QStringList &recentMachines, QWidget *parent)
+    : QDialog(parent), m_store(store), m_recent(recentMachines)
 {
     setWindowTitle(tr("Open Remote Log"));
     setObjectName(QStringLiteral("remoteBrowserDialog"));
@@ -207,7 +217,15 @@ void RemoteBrowserDialog::reloadSources()
     QFont bold = m_hostsGroup->font(NameColumn);
     bold.setBold(true);
     m_hostsGroup->setFont(NameColumn, bold);
-    for (const HostBookmark &h : std::as_const(m_hosts)) {
+    // RECENTLY OPENED FIRST, newest first, and the rest in the order they were saved. A
+    // stable sort over the ranks, so "the rest" keeps that order exactly.
+    QVector<HostBookmark> listed = m_hosts;
+    std::stable_sort(listed.begin(), listed.end(),
+                     [this](const HostBookmark &a, const HostBookmark &b) {
+                         return recencyRank(a.locationFor(QString()).target())
+                              < recencyRank(b.locationFor(QString()).target());
+                     });
+    for (const HostBookmark &h : std::as_const(listed)) {
         auto *row = new QTreeWidgetItem(m_hostsGroup);
         row->setText(NameColumn, h.displayName());
         row->setText(TypeColumn, h.connection == RemoteType::Connection::Telnet ? tr("telnet")
@@ -256,6 +274,12 @@ QTreeWidgetItem *RemoteBrowserDialog::groupFor(const QString &typeName) const
     return m_typeGroups.value(foldKey(typeName), nullptr);
 }
 
+int RemoteBrowserDialog::recencyRank(const QString &machineKey) const
+{
+    const qsizetype at = m_recent.indexOf(machineKey);
+    return at < 0 ? int(m_recent.size()) : int(at);
+}
+
 void RemoteBrowserDialog::onFound(const DiscoveredDevice &device)
 {
     QTreeWidgetItem *group = groupFor(device.typeName);
@@ -273,10 +297,33 @@ void RemoteBrowserDialog::onFound(const DiscoveredDevice &device)
             row = child;
     }
     if (!row) {
-        row = new QTreeWidgetItem(group);
+        // RECENTLY OPENED FIRST: a device in the recency list goes in above every device of
+        // this type that is later in it or not in it, and one that is not in it after every
+        // device already listed — the order it would have had anyway, which is the order
+        // discovery found them in. Keyed by type and id like the address it would open, so
+        // a device that has moved keeps its place. A row is only ever INSERTED, never moved:
+        // the rows already listed keep their order, and the selection stays on the row it
+        // was on (applyFilter()'s rule).
+        RemoteLocation reference;
+        reference.transport = RemoteLocation::Transport::Discovered;
+        reference.discoveryType = device.typeName;
+        reference.host = device.id;
+        const int rank = recencyRank(reference.target());
+        int at = group->childCount();
+        for (int i = 0; i < group->childCount(); ++i) {
+            const QTreeWidgetItem *child = group->child(i);
+            if (child->data(NameColumn, kKindRole).toInt() != DeviceRow
+                || child->data(NameColumn, kRankRole).toInt() > rank) {
+                at = i;
+                break;
+            }
+        }
+        row = new QTreeWidgetItem;
         row->setData(NameColumn, kKindRole, DeviceRow);
         row->setData(NameColumn, kKeyRole, device.id);
         row->setData(NameColumn, kTypeRole, device.typeName);
+        row->setData(NameColumn, kRankRole, rank);
+        group->insertChild(at, row);
     }
     row->setText(NameColumn, device.displayName);
     row->setToolTip(NameColumn, device.id);

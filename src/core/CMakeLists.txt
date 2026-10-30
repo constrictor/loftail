@@ -347,6 +347,10 @@ target_sources(loftail_core PRIVATE
     # one. Pure data plus its JSON, kept in hosts.json beside the saved hosts.
     RemoteType.cpp
     RemoteType.h
+    # The machines remote logs were most recently opened on, which File ▸ Open Remote lists
+    # first. Pure: the list is kept beside the recent files and handed to the dialog.
+    RecentRemotes.cpp
+    RecentRemotes.h
     # Which of what a discovery found belongs to a type, and the WS-Discovery messages ONVIF
     # is found with. Pure and always compiled: the platform browse APIs decide what is on the
     # network, these decide what is shown, and they are what tst_discoverymatch and
