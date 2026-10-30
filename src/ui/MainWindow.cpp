@@ -60,6 +60,7 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include "OpenRemoteDialog.h"
+#include "RecentRemotes.h"
 #include "RemoteBrowserDialog.h"
 #include "RemoteParametersDialog.h"
 #include "OpenSerialDialog.h"
@@ -138,6 +139,10 @@ constexpr int  kMaxRecentFiles = 10;
 constexpr int  kBulkRestoreWatchMs = 500;
 constexpr int  kBulkRestoreCapMs = 60000;
 constexpr auto kRecentFilesKey = "recentFiles";
+// The machines remote logs were most recently opened on, which File ▸ Open Remote lists first
+// (RecentRemotes.h). Beside the recent files and recorded with them, so "recently opened"
+// means one thing in both places, and cleared with them.
+constexpr auto kRecentRemotesKey = "recentRemoteMachines";
 // The log text size (SPEC.md §5). An application preference, deliberately NOT in the
 // session group: the session describes one window's tabs, and two windows would
 // otherwise disagree about how big the text is. Absent means "the platform's own size".
@@ -2426,7 +2431,8 @@ void MainWindow::chooseRemoteToOpen()
     // openRemoteBookmark(), so its cadence and tail-start apply; everything else through
     // openFile(), whose priming carries a discovered device's type and a telnet host's preset.
     HostBookmarkStore store(HostBookmarkStore::defaultDir());
-    RemoteBrowserDialog dialog(&store, this);
+    RemoteBrowserDialog dialog(
+        &store, QSettings().value(QLatin1String(kRecentRemotesKey)).toStringList(), this);
     const bool accepted = dialog.exec() == QDialog::Accepted;
     refreshRemoteHostsMenu(); // the dialog may have saved or removed a host or a type
     if (!accepted)
@@ -5794,6 +5800,14 @@ void MainWindow::rememberRecentFile(const QString &path)
     while (recent.size() > kMaxRecentFiles)
         recent.removeLast();
     settings.setValue(QLatin1String(kRecentFilesKey), recent);
+
+    // The machine too, when the log is on one Open Remote can list — whichever route opened
+    // it (that dialog, Remote Hosts, the welcome page, Open Recent, the command line).
+    const QStringList machines =
+        settings.value(QLatin1String(kRecentRemotesKey)).toStringList();
+    const QStringList updated = withRecentRemoteMachine(machines, path);
+    if (updated != machines)
+        settings.setValue(QLatin1String(kRecentRemotesKey), updated);
     refreshRecentFilesMenu();
 }
 
@@ -5874,7 +5888,11 @@ void MainWindow::refreshRecentFilesMenu()
 
 void MainWindow::clearRecentFiles()
 {
-    QSettings().remove(QLatin1String(kRecentFilesKey));
+    QSettings settings;
+    settings.remove(QLatin1String(kRecentFilesKey));
+    // Forgetting what was opened forgets it everywhere it is remembered, or the order of Open
+    // Remote would go on saying which machines these were with nothing left to clear it.
+    settings.remove(QLatin1String(kRecentRemotesKey));
     refreshRecentFilesMenu(); // which repaints the menu and the welcome screen alike
 }
 

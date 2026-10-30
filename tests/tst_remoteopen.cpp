@@ -47,6 +47,7 @@
 #include "LogView.h"
 #include "MainWindow.h"
 #include "OpenRemoteDialog.h"
+#include "RecentRemotes.h"
 #include "RemoteLocation.h"
 #include "SessionStore.h"
 
@@ -164,6 +165,7 @@ private slots:
     void equivalentSpellingsRaiseTheSameTab();
     void dropOfAnSshUrlOpens();
     void remoteOpenIsRemembered();
+    void aRemoteOpenRemembersItsMachineAndClearingForgetsIt();
     void sessionRoundTripsARemoteDocument();
     void menuEntriesExist();
     void savedHostsAreOneFlatLevel();
@@ -259,6 +261,38 @@ void TestRemoteOpen::remoteOpenIsRemembered()
     // must carry no credential even when one was typed into the address.
     for (const QString &entry : recent)
         QVERIFY(!entry.contains(QStringLiteral("hunter2")));
+}
+
+void TestRemoteOpen::aRemoteOpenRemembersItsMachineAndClearingForgetsIt()
+{
+    // What File ▸ Open Remote lists first (RecentRemotes.h), recorded where the recent files
+    // are and so by every route that opens a log — newest first, one entry per machine.
+    const QString second = QStringLiteral("ssh://deploy@web2/var/log/app.log");
+    const QString sameHost = QStringLiteral("ssh://deploy@web1/var/log/other.log");
+    FakeRemoteFarm farm;
+    for (const QString &address : {url(), second, sameHost})
+        farm.at(address)->setInitialContent(sampleLog());
+
+    const QString key = QStringLiteral("recentRemoteMachines");
+    QSettings().remove(key);
+    MainWindow window;
+    window.openFile(url(), QString::fromLatin1(kPattern));
+    window.openFile(second, QString::fromLatin1(kPattern));
+    settle();
+    QCOMPARE(QSettings().value(key).toStringList(),
+             (QStringList{recentRemoteMachineKey(second), recentRemoteMachineKey(url())}));
+
+    // A second log on the first machine moves that machine to the front, and adds nothing.
+    window.openFile(sameHost, QString::fromLatin1(kPattern));
+    settle();
+    QCOMPARE(QSettings().value(key).toStringList(),
+             (QStringList{recentRemoteMachineKey(url()), recentRemoteMachineKey(second)}));
+
+    // Clear Recent Files forgets it with the files: what was opened is forgotten everywhere.
+    auto *clear = window.findChild<QAction *>(QStringLiteral("clearRecentFilesAction"));
+    QVERIFY(clear);
+    clear->trigger();
+    QVERIFY(!QSettings().contains(key));
 }
 
 void TestRemoteOpen::sessionRoundTripsARemoteDocument()

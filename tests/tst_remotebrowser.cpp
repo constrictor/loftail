@@ -36,6 +36,7 @@
 #include "FakeSecretStore.h"
 #include "HostBookmarkStore.h"
 #include "OpenRemoteDialog.h"
+#include "RecentRemotes.h"
 #include "RemoteBrowserDialog.h"
 #include "RemoteLocation.h"
 #include "SecretStore.h"
@@ -199,6 +200,8 @@ private slots:
     void aResultThatTurnsUpIsSelectedOnlyIfNothingWas();
     void returnInTheFilterOpensTheSelectedResult();
     void anOfferedLogGoesWithItsRowAndATypedOneStays();
+    void theRecencyListIsOneEntryPerMachineNewestFirst();
+    void recentlyOpenedRowsComeFirstAndTheRestKeepTheirOrder();
 
 private:
     // Two devices under Cameras and one saved host, every one of them a result of an empty
@@ -699,6 +702,139 @@ void TestRemoteBrowser::anOfferedLogGoesWithItsRowAndATypedOneStays()
     log->setEditText(QStringLiteral("/var/log/camera.log.1"));
     tree->setCurrentItem(spare);
     QCOMPARE(log->currentText(), QStringLiteral("/var/log/camera.log.1"));
+}
+
+void TestRemoteBrowser::theRecencyListIsOneEntryPerMachineNewestFirst()
+{
+    // A MACHINE, not a log: the type and the device's id, or the connection to a host.
+    QCOMPARE(recentRemoteMachineKey(QStringLiteral("discover://Lab%20Cams/cam-1/var/log/a.log")),
+             QStringLiteral("discover:Lab Cams/cam-1"));
+    QCOMPARE(recentRemoteMachineKey(QStringLiteral("ssh://deploy@web1/var/log/a.log")),
+             QStringLiteral("deploy@web1:22"));
+    QCOMPARE(recentRemoteMachineKey(QStringLiteral("telnet://root@10.0.0.9:23/var/log/a.log")),
+             QStringLiteral("telnet:root@10.0.0.9:23"));
+    // Nothing Open Remote could list, and never a password.
+    QVERIFY(recentRemoteMachineKey(QStringLiteral("/var/log/a.log")).isEmpty());
+    QVERIFY(recentRemoteMachineKey(QStringLiteral("serial://root@ttyUSB0/var/log/a.log")).isEmpty());
+    QVERIFY(!recentRemoteMachineKey(QStringLiteral("ssh://deploy:hunter2@web1/var/log/a.log"))
+                 .contains(QStringLiteral("hunter2")));
+
+    // Two logs on one machine are one entry, moved to the front by the newer open.
+    QStringList recent;
+    recent = withRecentRemoteMachine(recent, QStringLiteral("ssh://deploy@web1/var/log/a.log"));
+    recent = withRecentRemoteMachine(recent, QStringLiteral("discover://Cams/c1/var/log/a.log"));
+    recent = withRecentRemoteMachine(recent, QStringLiteral("ssh://deploy@web1/var/log/b.log"));
+    QCOMPARE(recent, (QStringList{QStringLiteral("deploy@web1:22"),
+                                  QStringLiteral("discover:Cams/c1")}));
+    // A local log leaves the list as it was.
+    QCOMPARE(withRecentRemoteMachine(recent, QStringLiteral("/var/log/a.log")), recent);
+
+    // The last twenty, the oldest dropped.
+    for (int i = 0; i < kMaxRecentRemoteMachines + 5; ++i) {
+        recent = withRecentRemoteMachine(
+            recent, QStringLiteral("discover://Cams/d%1/var/log/a.log").arg(i));
+    }
+    QCOMPARE(recent.size(), kMaxRecentRemoteMachines);
+    QCOMPARE(recent.first(),
+             QStringLiteral("discover:Cams/d%1").arg(kMaxRecentRemoteMachines + 4));
+    QCOMPARE(recent.last(), QStringLiteral("discover:Cams/d5"));
+}
+
+void TestRemoteBrowser::recentlyOpenedRowsComeFirstAndTheRestKeepTheirOrder()
+{
+    HostBookmarkStore store = freshStore();
+    QVERIFY(store.saveType(cameras()));
+    QVector<HostBookmark> hosts;
+    for (const char *name : {"alpha", "bravo", "charlie"}) {
+        HostBookmark h;
+        h.label = QString::fromLatin1(name);
+        h.host = QStringLiteral("10.2.0.") + QString::number(hosts.size() + 1);
+        QVERIFY(store.save(h));
+        hosts.append(h);
+    }
+    // Found in this order, which is the order the rest keeps.
+    m_script.devices[QStringLiteral("Cameras")] = {
+        device(QStringLiteral("a"), QStringLiteral("Lobby"), QStringLiteral("10.0.0.5"),
+               {QStringLiteral("model=X1")}),
+        device(QStringLiteral("b"), QStringLiteral("Garage door"), QStringLiteral("10.0.0.6"),
+               {QStringLiteral("model=X2")}),
+        device(QStringLiteral("c"), QStringLiteral("Porch door"), QStringLiteral("10.0.0.7"),
+               {QStringLiteral("model=X3")}),
+        device(QStringLiteral("d"), QStringLiteral("Attic"), QStringLiteral("10.0.0.8"),
+               {QStringLiteral("model=X4")})};
+    const auto namesUnder = [](QTreeWidget *tree, const QString &group) {
+        QStringList names;
+        for (QTreeWidgetItem *row : rowsUnder(tree, group))
+            names.append(row->text(0));
+        return names;
+    };
+
+    // THE CONTROL: with nothing opened yet, the order discovery found them in and the order
+    // the hosts were saved in — so what the second dialog shows is the recency list's doing.
+    {
+        RemoteBrowserDialog dialog(&store);
+        auto *tree = dialog.findChild<QTreeWidget *>(QStringLiteral("remoteBrowserTree"));
+        QTRY_COMPARE(rowsUnder(tree, QStringLiteral("Cameras")).size(), 4);
+        QCOMPARE(namesUnder(tree, QStringLiteral("Cameras")),
+                 (QStringList{QStringLiteral("Lobby"), QStringLiteral("Garage door"),
+                              QStringLiteral("Porch door"), QStringLiteral("Attic")}));
+        QCOMPARE(namesUnder(tree, QStringLiteral("Saved hosts")),
+                 (QStringList{QStringLiteral("alpha"), QStringLiteral("bravo"),
+                              QStringLiteral("charlie")}));
+    }
+
+    // Opened oldest first, through the addresses those opens record: device g and then
+    // device a, host alpha, device c, host charlie, then device e — g and e being devices
+    // nothing has found yet.
+    QStringList recent;
+    for (const QString &address :
+         {QStringLiteral("discover://Cameras/g/var/log/camera.log"),
+          QStringLiteral("discover://Cameras/a/var/log/camera.log"),
+          hosts.at(0).locationFor(QStringLiteral("/var/log/app.log")).toString(),
+          QStringLiteral("discover://Cameras/c/var/log/camera.log"),
+          hosts.at(2).locationFor(QStringLiteral("/var/log/app.log")).toString(),
+          QStringLiteral("discover://Cameras/e/var/log/camera.log")}) {
+        recent = withRecentRemoteMachine(recent, address);
+    }
+
+    RemoteBrowserDialog dialog(&store, recent);
+    auto *tree = dialog.findChild<QTreeWidget *>(QStringLiteral("remoteBrowserTree"));
+    auto *filter = dialog.findChild<QLineEdit *>(QStringLiteral("remoteBrowserFilter"));
+    QTRY_COMPARE(rowsUnder(tree, QStringLiteral("Cameras")).size(), 4);
+    // Newest first, then the rest in the order they had anyway.
+    QCOMPARE(namesUnder(tree, QStringLiteral("Cameras")),
+             (QStringList{QStringLiteral("Porch door"), QStringLiteral("Lobby"),
+                          QStringLiteral("Garage door"), QStringLiteral("Attic")}));
+    QCOMPARE(namesUnder(tree, QStringLiteral("Saved hosts")),
+             (QStringList{QStringLiteral("charlie"), QStringLiteral("alpha"),
+                          QStringLiteral("bravo")}));
+
+    // What the reader types is matched by a recent device first, though another was found
+    // before it: the first result is the one they last opened.
+    filter->setText(QStringLiteral("door"));
+    QCOMPARE(selectedName(tree), QStringLiteral("Porch door"));
+    filter->clear();
+
+    // Devices still turning up: the most recently opened goes in at the top, one opened
+    // longer ago than those listed goes in after them, one never opened at the bottom, and
+    // the selection stays on the row it was on.
+    tree->setCurrentItem(rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Garage door")));
+    const auto browsers = dialog.findChildren<DiscoveryBrowser *>();
+    QCOMPARE(browsers.size(), 1);
+    auto *network = static_cast<ScriptedBrowser *>(browsers.first());
+    // At an address nobody has seen it at: recency is the device's, not the address's.
+    network->announce(device(QStringLiteral("e"), QStringLiteral("Shed"),
+                             QStringLiteral("192.168.9.9"), {QStringLiteral("model=X5")}));
+    network->announce(device(QStringLiteral("f"), QStringLiteral("Yard"),
+                             QStringLiteral("10.0.0.10"), {QStringLiteral("model=X6")}));
+    network->announce(device(QStringLiteral("g"), QStringLiteral("Gate"),
+                             QStringLiteral("10.0.0.11"), {QStringLiteral("model=X7")}));
+    QCOMPARE(namesUnder(tree, QStringLiteral("Cameras")),
+             (QStringList{QStringLiteral("Shed"), QStringLiteral("Porch door"),
+                          QStringLiteral("Lobby"), QStringLiteral("Gate"),
+                          QStringLiteral("Garage door"), QStringLiteral("Attic"),
+                          QStringLiteral("Yard")}));
+    QCOMPARE(selectedName(tree), QStringLiteral("Garage door"));
 }
 
 int main(int argc, char *argv[])

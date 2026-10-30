@@ -65,6 +65,11 @@ class RemoteBrowserDialog : public QDialog
 
 public:
     explicit RemoteBrowserDialog(HostBookmarkStore *store, QWidget *parent = nullptr);
+    // `recentMachines` is the recency list RecentRemotes.h keeps, newest first: the devices and
+    // saved hosts it names are listed first in their groups, in that order, and everything
+    // else after them in the order it would have had anyway.
+    RemoteBrowserDialog(HostBookmarkStore *store, const QStringList &recentMachines,
+                        QWidget *parent = nullptr);
     ~RemoteBrowserDialog() override;
 
     enum class Choice { None, Discovered, SavedHost, Direct };
@@ -99,11 +104,14 @@ private:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
     QTreeWidgetItem *groupFor(const QString &typeName) const;
+    // Where a row stands in the recency list: its index, or past the end for one not in it.
+    int recencyRank(const QString &machineKey) const;
     QTreeWidgetItem *selectedRow() const;
     // The device and saved-host rows the filter leaves showing, in the order they are listed.
     QList<QTreeWidgetItem *> visibleResults() const;
 
     HostBookmarkStore    *m_store = nullptr;
+    QStringList           m_recent;   // machine keys, newest first
     QVector<RemoteType>   m_types;
     QVector<HostBookmark> m_hosts;
 
