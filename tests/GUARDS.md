@@ -109,6 +109,7 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | The SSH socket must not stay a `QTcpSocket`; `SocketDetach.h` dups the descriptor and lets Qt close its own | SSH socket (L39) | tst_socketdetach |
 | A connect is sliced with a `QEventLoop`, never with `waitForConnected()`, whose timeout resets the socket layer | Connect slices (L41) | tst_socketdetach::aTimedOutWaitForConnectedAbandonsTheAttempt<br>tst_socketdetach::aConnectSlowerThanOneSliceStillConnects |
 | `connectTo()` reaches the SSH handshake over a connection slower than one slice | Connect slices (L41) | tst_sshconnect::aConnectSlowerThanOneSliceReachesTheHandshake |
+| `awaitSocketConnected()` believes `ConnectedState` only with a peer; Qt 6.8 on macOS 15.8 calls a refused connect connected | Outstanding (macOS leg) | tst_socketdetach::aConnectedStateWithNoPeerIsNotAConnection<br>tst_socketdetach::aRefusedConnectIsReportedRatherThanWaitedOut |
 | The first connect to a host asks about its key before any credential is sent, and remembering it silences the second | First connect (L48) | tst_sshlive::aFirstConnectAsksAboutTheHostKeyAndRemembersIt<br>tst_sshlive::aRejectedHostKeySendsNoCredential |
 | The password rung is reached when no key answers, and the accepted password is handed to the prompter once | First connect (L48) | tst_sshlive::aFirstConnectAsksForThePasswordWhenNoKeyAnswers |
 | `SshExecCommands` and `ExecSizeProbe` are always compiled, `shellQuote()` being a security boundary | SFTP fallback (L41) | tst_sshexec<br>tst_execsizeprobe |

@@ -32,6 +32,14 @@
 using namespace loftail;
 using namespace loftail::fixtures;
 
+namespace {
+// What aStoppedExpansionKeepsWhatItWrote withholds from the end of its compressed container.
+// More than any zero padding libarchive's raw writer may put after a gzip member — under one
+// 10240-byte block — so the cut always falls inside the deflate data and the stream can
+// never be finished by what was delivered.
+constexpr qint64 kMissingTail = 16 * 1024;
+} // namespace
+
 // M12 — the fetcher that expands one archive member into a spool (ARCHITECTURE.md §6.4).
 //
 // Two things here are load-bearing beyond "the bytes come out right". The PRIME: start()
@@ -473,17 +481,26 @@ void TestArchiveFetcher::aStoppedExpansionKeepsWhatItWrote()
     // ArchiveFetcher::awaitInput() waiting for container bytes that never come, and
     // "still expanding when the stop arrives" is true by construction, on every machine
     // and at any speed. Only the transport is fake; the archive fetcher is the real one.
-    const QByteArray body = logBody(20000);
+    //
+    // ALL BUT A SMALL TAIL OF A LARGE CONTAINER, and never "half of a small one", because
+    // what the fetcher sees of a partial container depends on how far libarchive reads
+    // ahead before handing anything back — and that is libarchive's, and moves. Format
+    // detection alone read ~130 KB of expanded data ahead under 3.7.2 and between 850 KB
+    // and 1 MB under 3.8.10 (measured on the macOS leg), where half of a 1.2 MB log never
+    // got through detection: the prime waited for input that was never coming and the
+    // case timed out on every run. A 6 MB log delivered to within kMissingTail of its end
+    // leaves several megabytes in front of the gap, whatever the version.
+    const QByteArray body = logBody(100000);
     const QString staging = path(QStringLiteral("staging.log.gz"));
     QVERIFY(writeGzip(staging, body));
     const QByteArray compressed = fileBytes(staging);
-    QVERIFY(compressed.size() > 2);
+    QVERIFY(compressed.size() > 4 * kMissingTail);
 
     const QString url = QStringLiteral("ssh://deploy@web1/var/log/stopped.log.gz");
     FakeRemoteFarm farm;
     const auto remote = farm.at(url);
-    // Half the container, and a size that says the other half is still coming.
-    remote->setInitialContent(compressed.left(compressed.size() / 2));
+    // All but the tail, and a size that says the tail is still coming.
+    remote->setInitialContent(compressed.left(compressed.size() - kMissingTail));
     remote->setTotalSize(compressed.size());
 
     QString error;
@@ -491,7 +508,17 @@ void TestArchiveFetcher::aStoppedExpansionKeepsWhatItWrote()
     QVERIFY2(fetcher, qPrintable(error));
     QVERIFY2(fetcher->start(spoolDir(), &error), qPrintable(error));
 
-    QVERIFY(waitForPrime(*fetcher));
+    if (!waitForPrime(*fetcher)) {
+        // Said in full, because the one way this has failed is a libarchive that would not
+        // hand anything back from what was delivered, and the state is what tells that
+        // apart from a fetcher that broke.
+        const FetchStatus stuck = fetcher->status();
+        QFAIL(qPrintable(QStringLiteral("no prime: state %1, committed %2, total %3, error '%4'")
+                             .arg(int(stuck.state))
+                             .arg(stuck.committedSize)
+                             .arg(stuck.totalSize)
+                             .arg(stuck.error)));
+    }
     const qint64 committedBefore = fetcher->status().committedSize;
     QVERIFY(committedBefore > 0);
     // Nothing can have finished it: the rest of the container has not been delivered.

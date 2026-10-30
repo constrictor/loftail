@@ -236,7 +236,9 @@ bool TelnetSession::openLinkLocked(const SerialFetchOptions &options,
     // Sliced, and through awaitSocketConnected() rather than waitForConnected(), which DESTROYS
     // the attempt when its timeout expires (SocketDetach.h) — a connect slower than one slice
     // would otherwise fail outright, which is every first connect to a host not yet resolved.
-    switch (awaitSocketConnected(socket, kConnectTimeoutMs, kConnectSliceMs, {})) {
+    QString connectFailure;
+    switch (awaitSocketConnected(socket, kConnectTimeoutMs, kConnectSliceMs, {},
+                                 &connectFailure)) {
     case SocketWait::Connected:
         break;
     case SocketWait::Failed:
@@ -246,7 +248,7 @@ bool TelnetSession::openLinkLocked(const SerialFetchOptions &options,
         out->reason = Tr::tr("Cannot reach %1:%2 — %3")
                           .arg(location.host)
                           .arg(location.port)
-                          .arg(socket.errorString());
+                          .arg(connectFailure);
         return false;
     case SocketWait::TimedOut:
     case SocketWait::Abandoned:

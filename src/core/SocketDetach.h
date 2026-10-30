@@ -30,8 +30,8 @@ namespace loftail {
 
 // What awaitSocketConnected() settled on.
 enum class SocketWait {
-    Connected,  // the socket is in ConnectedState and its descriptor may be taken
-    Failed,     // the connection was refused, unreachable, unresolvable — socket.errorString()
+    Connected,  // the socket is in ConnectedState, has a peer, and its descriptor may be taken
+    Failed,     // refused, unreachable, unresolvable — the reason is in `*failure`
     TimedOut,   // `timeoutMs` ran out with the attempt still in flight
     Abandoned,  // `abandoned()` answered true between slices
 };
@@ -58,8 +58,22 @@ enum class SocketWait {
 // It needs the Qt event dispatcher of the thread it is called on, exactly as
 // QAbstractSocket does everywhere else (see startSshWorker's comment on why the SSH
 // workers are QThreads and not std::threads).
+//
+// A CONNECTED STATE IS BELIEVED ONLY WITH A PEER. On macOS 15.8 Qt 6.8 reports a REFUSED
+// connect as ConnectedState — with no peer address, no peer port and "Unknown error" — so
+// a host that refuses SSH was handed to the handshake as though it had answered, and the
+// user was told about a handshake rather than a refusal. A connected TCP socket always has
+// a peer, so the kernel is asked (getpeername) before Connected is answered; without one
+// the answer is Failed, the socket is aborted to match, and the reason is the socket's own
+// pending error. tst_socketdetach::aRefusedConnectIsReportedRatherThanWaitedOut is what
+// fails on such a machine, and only the macOS leg can run it there.
+//
+// `failure`, when not null, receives the reason for a Failed: Qt's phrasing for a failure
+// Qt saw, loftail's for the one above, which Qt has no words for. The caller reports it,
+// never socket.errorString(), which says "Unknown error" about exactly that case.
 SocketWait awaitSocketConnected(QTcpSocket &socket, int timeoutMs, int sliceMs,
-                                const std::function<bool()> &abandoned);
+                                const std::function<bool()> &abandoned,
+                                QString *failure = nullptr);
 
 // Take a connected socket AWAY FROM Qt, leaving the connection itself intact.
 //
