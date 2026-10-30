@@ -56,6 +56,21 @@ class TestSocketDetach : public QObject
     Q_OBJECT
 
 private:
+    // Whether the kernel still names a peer for `descriptor` — the same getpeername()
+    // awaitSocketConnected() asks, put to the fixture before the case relies on its answer.
+    static bool kernelStillReportsAPeer(qintptr descriptor)
+    {
+        sockaddr_storage peer {};
+#if defined(Q_OS_WIN)
+        int length = sizeof(peer);
+        return ::getpeername(SOCKET(descriptor), reinterpret_cast<sockaddr *>(&peer), &length)
+            == 0;
+#else
+        socklen_t length = sizeof(peer);
+        return ::getpeername(int(descriptor), reinterpret_cast<sockaddr *>(&peer), &length) == 0;
+#endif
+    }
+
     QTcpServer  m_server;
     QTcpSocket  m_client;
     QTcpSocket *m_peer = nullptr;
@@ -489,11 +504,12 @@ void TestSocketDetach::aRefusedConnectIsReportedRatherThanWaitedOut()
 
 void TestSocketDetach::aConnectedStateWithNoPeerIsNotAConnection()
 {
-    // THE CHECK ITSELF, reached on every platform: a socket Qt calls connected whose
-    // kernel says it has no peer is answered Failed, with a reason, and left unconnected.
-    // macOS 15.8 produces that state from a refused connect, which only its leg can show;
-    // here it is produced from a real connection the far end RESETS before anything turns
-    // an event loop, so Qt still calls it connected while the kernel already knows better.
+    // THE CHECK ITSELF, reached wherever the state can be built: a socket Qt calls connected
+    // whose kernel says it has no peer is answered Failed, with a reason, and left
+    // unconnected. macOS 15.8 produces that state from a refused connect, which only its leg
+    // can show; here it is produced from a real connection the far end RESETS before anything
+    // turns an event loop, so Qt still calls it connected while the kernel already knows
+    // better — on Linux and macOS, whose kernels drop the peer with the reset.
     QTcpServer server;
     QVERIFY(server.listen(QHostAddress::LocalHost, 0));
     QTcpSocket socket;
@@ -530,6 +546,13 @@ void TestSocketDetach::aConnectedStateWithNoPeerIsNotAConnection()
     QVERIFY(::poll(&readable, 1, 3000) > 0);
 #endif
     QCOMPARE(socket.state(), QAbstractSocket::ConnectedState);
+    // Asked of the kernel directly, as kernelStallsAConnect() asks before the slicing cases:
+    // Linux and macOS drop the peer with the reset, Winsock goes on naming it until the
+    // socket is read from — so there this is still a connection with a peer, the state under
+    // test does not exist, and the code under test is right to call it connected.
+    if (kernelStillReportsAPeer(socket.socketDescriptor()))
+        QSKIP("This kernel still names the peer of a reset socket, so a connected state with "
+              "no peer cannot be built here; the Linux and macOS legs hold the check.");
 
     QString failure;
     QCOMPARE(awaitSocketConnected(socket, 5000, kSliceMs, nullptr, &failure),
