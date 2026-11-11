@@ -81,6 +81,22 @@ void IndexWorker::run()
         }
     };
 
+    // Follow a source that grew while it was being scanned, for as long as each pass
+    // finds a worthwhile amount more (kFollowMinBytes). The first pass always asks: it is
+    // the one a spool's fetcher is most likely to have outrun — a document resumed from
+    // waiting starts on its prime, a fraction of what has expanded a few ms later. A
+    // small pass stops WITHOUT asking again, which is what leaves the source latched at
+    // exactly the size the index covers: the live watch then takes its baseline from
+    // there and misses nothing.
+    qint64 lastSize = -1;
+    const Indexer::Grow grow = [this, &lastSize](qint64 scannedTo) -> qint64 {
+        const bool smallPass = lastSize >= 0 && scannedTo - lastSize < kFollowMinBytes;
+        lastSize = scannedTo;
+        if (smallPass || m_cancel.load())
+            return scannedTo;
+        return awaitSize(scannedTo);
+    };
+
     bool cancelled = false;
     indexer.index(*source,
                   [this, source](qint64 done, qint64 total) {
@@ -88,9 +104,41 @@ void IndexWorker::run()
                       Q_UNUSED(source);
                       return !m_cancel.load();
                   },
-                  &cancelled, flush);
+                  &cancelled, flush, grow);
 
     emit finished(cancelled);
+}
+
+void IndexWorker::requestCancel()
+{
+    m_cancel.store(true);
+    {
+        // Empty on purpose: taking the mutex orders the store above against a worker
+        // that has tested the predicate and not yet blocked, which would otherwise miss
+        // this notify and wait for an answer nobody is going to give.
+        const std::lock_guard<std::mutex> lock(m_sizeMutex);
+    }
+    m_sizeReady.notify_all();
+}
+
+void IndexWorker::provideSize(qint64 size)
+{
+    {
+        const std::lock_guard<std::mutex> lock(m_sizeMutex);
+        m_answer = size;
+    }
+    m_sizeReady.notify_all();
+}
+
+qint64 IndexWorker::awaitSize(qint64 scannedTo)
+{
+    std::unique_lock<std::mutex> lock(m_sizeMutex);
+    m_answer = -1;
+    lock.unlock();
+    emit sizeNeeded(scannedTo); // queued to the controller on the GUI thread
+    lock.lock();
+    m_sizeReady.wait(lock, [this] { return m_answer >= 0 || m_cancel.load(); });
+    return m_cancel.load() ? scannedTo : m_answer;
 }
 
 IndexController::IndexController(Document *document, LogModel *model, QObject *parent)
@@ -124,6 +172,7 @@ void IndexController::start()
     connect(m_thread, &QThread::started, m_worker, &IndexWorker::run);
     connect(m_worker, &IndexWorker::batchReady, this, &IndexController::onBatch);
     connect(m_worker, &IndexWorker::progress, this, &IndexController::progress);
+    connect(m_worker, &IndexWorker::sizeNeeded, this, &IndexController::onSizeNeeded);
     connect(m_worker, &IndexWorker::finished, this, &IndexController::onFinished);
     // Tear the thread down once the worker reports completion.
     connect(m_worker, &IndexWorker::finished, m_thread, &QThread::quit);
@@ -134,6 +183,7 @@ void IndexController::start()
 
 void IndexController::cancel()
 {
+    m_cancelRequested = true;
     if (m_worker)
         m_worker->requestCancel();
 }
@@ -162,6 +212,23 @@ void IndexController::onBatch(const IndexBatch &batch)
 // It runs on the CANCELLED path too, and must: the worker flushes a final batch when it
 // stops, and "scanning can be cancelled, leaving whatever was scanned so far usable" is
 // SPEC.md §3's promise about exactly these records.
+void IndexController::onSizeNeeded(qint64 scannedTo)
+{
+    if (!m_worker || m_cancelRequested)
+        return;
+    // LiveController's order, and for its reason: a source whose origin was REPLACED must
+    // not be refreshed here, because refreshSize() is what adopts the new generation or
+    // file, and the offsets this scan holds name bytes in the old one. Answering with the
+    // size already scanned ends the scan; the live watch then sees the rotation and
+    // rescans, exactly as it would have without this. A shrink is the source's to latch
+    // (wasTruncated() is sticky), so the watch learns of that one too.
+    LogSource *src = m_document->source();
+    qint64 size = scannedTo;
+    if (src && !src->wasReplaced())
+        size = src->refreshSize();
+    m_worker->provideSize(size);
+}
+
 void IndexController::onFinished(bool cancelled)
 {
     m_running = false;

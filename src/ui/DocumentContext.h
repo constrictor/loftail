@@ -153,6 +153,9 @@ public:
     // the status bar shows whichever file is active.
     bool indexing = false;
     int  progressPercent = 0;
+    // The scan in flight is a log coming back from waiting (resumeOrSettleDocument), so
+    // onIndexFinished() writes the diagnostic line resume() used to write inline.
+    bool resumeScan = false;
 
     // What this file's source is doing, for the status bar — expanding an archive,
     // fetching a remote log, or failing to (sourceStatusText). Empty means there is

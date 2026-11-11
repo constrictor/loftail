@@ -25,6 +25,8 @@
 #include <QVector>
 
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <memory>
 
 QT_BEGIN_NAMESPACE
@@ -72,8 +74,18 @@ public:
     explicit IndexWorker(Document *document);
 
     // Request cancellation. Safe to call from the GUI thread while the worker runs;
-    // the scan checks the flag at each chunk and stops, flushing a final batch.
-    void requestCancel() { m_cancel.store(true); }
+    // the scan checks the flag at each chunk and stops, flushing a final batch. It also
+    // wakes a worker waiting on sizeNeeded(), so a controller being destroyed can join.
+    void requestCancel();
+
+    // The answer to sizeNeeded(): the source's size after the GUI thread refreshed it,
+    // or the size it was asked about to end the scan. Thread-safe.
+    void provideSize(qint64 size);
+
+    // A pass that added less than this hands the rest to the live watch instead of
+    // asking again: what is left is small enough to ingest on a tick, and a writer that
+    // never stops would otherwise keep the scan — and its notice — up for ever.
+    static constexpr qint64 kFollowMinBytes = 1024LL * 1024;
 
 public slots:
     void run(); // invoked once when the worker's thread starts
@@ -82,10 +94,19 @@ signals:
     void batchReady(const loftail::IndexBatch &batch);
     void progress(qint64 bytesProcessed, qint64 totalBytes);
     void finished(bool cancelled);
+    // The scan has reached `scannedTo`, the size the source was latched at. Refreshing a
+    // source is GUI-thread work — it may remap the file the paint path reads — so the
+    // worker asks and WAITS here, reading nothing, until provideSize() or a cancel.
+    void sizeNeeded(qint64 scannedTo);
 
 private:
+    qint64 awaitSize(qint64 scannedTo);
+
     Document         *m_document;
     std::atomic<bool> m_cancel{false};
+    std::mutex              m_sizeMutex; // std, never QMutex, in src/core (§13.1)
+    std::condition_variable m_sizeReady;
+    qint64                  m_answer = -1; // -1 == no answer yet
 };
 
 // GUI-thread orchestrator: spins up an IndexWorker on a QThread, receives batches, and
@@ -125,6 +146,7 @@ signals:
 private slots:
     void onBatch(const loftail::IndexBatch &batch);
     void onFinished(bool cancelled);
+    void onSizeNeeded(qint64 scannedTo);
 
 private:
     Document    *m_document;
@@ -132,6 +154,10 @@ private:
     QThread     *m_thread = nullptr;
     IndexWorker *m_worker = nullptr;
     bool         m_running = false;
+    // Set by cancel(). A worker waiting on sizeNeeded() leaves that wait only through an
+    // answer or a cancel, so once this is set a queued request may outlive its worker
+    // (deleteLater on thread finish) and must not be answered.
+    bool         m_cancelRequested = false;
 
     // Scanned records not yet handed to the model. Published once, by onFinished().
     QVector<Record> m_pending;
