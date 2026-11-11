@@ -3492,6 +3492,14 @@ void MainWindow::buildIndexController(DocumentContext *ctx)
     ctx->indexing = true;
     ctx->progressPercent = 0;
     m_progressBar->setRange(0, 100);
+    // A fresh open is not the active tab yet — showView() makes it so and
+    // updateActionStates() shows the box then. A reload and a resume from waiting
+    // rebuild the scan of a tab that may already BE in front, which nothing else would
+    // show the box for: the scan ran with no progress and no way to stop it.
+    if (ctx == activeContext()) {
+        m_progressBar->setValue(0);
+        m_progressBox->setVisible(true);
+    }
     // A reload has views already; a fresh open makes them below, and createView() asks
     // for the notice itself.
     refreshScanNotice(ctx);
@@ -4168,6 +4176,13 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
 {
     Document *doc = ctx->doc.get();
     ctx->indexing = false;
+    if (ctx->resumeScan) {
+        // The line LiveController writes after an inline resume, kept greppable in the
+        // same shape now that the scan is a worker's (DiagnosticLog.h).
+        ctx->resumeScan = false;
+        diagLog("wait", QStringLiteral("%1 is back — resumed, records=%2")
+                            .arg(doc->path()).arg(doc->index().records.size()));
+    }
     updateTabTitles(ctx);
     refreshScanNotice(ctx); // the scan is over: every view drops the notice
     const bool isActive = ctx == activeContext();
@@ -4496,11 +4511,26 @@ void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
     const bool settleFormat = !doc->formatSettled();
     ManualFormatProvider provider(ctx->settings.pattern);
 
+    // A LOG COMING BACK FROM WAITING IS SCANNED ON A WORKER, exactly as an ordinary open
+    // and a reload are. That is every archived and every remote log's first arrival
+    // (M17 opens them all waiting), and resume() used to index the whole spool inline,
+    // here, on the GUI thread: a 40 MB zip member froze the window for ~0.4 s with no
+    // notice and no progress, on top of the wait for the tick that noticed it — while
+    // the same file opened plainly scanned behind "Indexing … %" with the window live.
+    //
+    // ONLY from waiting. The other caller is LiveController::settleFirstBytes(), a log
+    // that opened EMPTY receiving its first bytes, which can be reached from inside
+    // onIndexFinished() — i.e. from inside the IndexController's own `finished` — where
+    // tearing the workers down would delete the controller that is emitting. That log
+    // is new by definition, so its first bytes are few and the inline scan is cheap.
+    const bool scanOnWorker = doc->isWaiting();
+
     ctx->model->beginFilterReset();
     if (ctx->digestModel)
         ctx->digestModel->beginFilterReset();
-    const bool ok = doc->resume(provider);
-    if (ok) {
+    const bool ok = doc->resume(provider, scanOnWorker ? Document::ResumeScan::Deferred
+                                                       : Document::ResumeScan::Inline);
+    if (ok && !scanOnWorker) {
         // The intern tables were built from scratch, exactly as after a rotation — and
         // so was the digest, which resume() cleared along with the filtered subset.
         doc->refreshHighlighting();
@@ -4516,9 +4546,27 @@ void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
     if (!ok)
         return;
 
+    if (scanOnWorker) {
+        // rebuildDocument()'s order: the live watch must not tick into a document whose
+        // index a worker is about to fill, and onIndexFinished() re-arms it. We are inside
+        // that controller's resumeRequested, which is a supported place to delete it —
+        // the Chosen branch below always has — and it checks a QPointer on the way out.
+        //
+        // The controller is BUILT here and STARTED at the end, so ctx->indexing is true
+        // across the format block: persistFileSettings() reads that as "the run selection
+        // is not known yet" and leaves the stored one alone, where an empty index would
+        // otherwise read as "all runs". A Chosen outcome rebuilds the document and
+        // destroys this controller unstarted, which is why it is not started first.
+        ctx->stopWorkers();
+        buildIndexController(ctx);
+        ctx->resumeScan = true;
+        diagLog("wait", QStringLiteral("%1 is back — indexing on a worker")
+                            .arg(doc->path()));
+    }
+
     for (DocumentView *v : std::as_const(ctx->views)) {
         v->logView()->setPlaceholderText(QString());
-        if (v->logView()->following())
+        if (!scanOnWorker && v->logView()->following())
             v->logView()->followTail();
     }
 
@@ -4597,8 +4645,18 @@ void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
             // Safe to use the active-context form, because the dialog was only offered
             // when this context IS the active one.
             ctx->formatNotice.clear();
-            applySettings(settled);
-            return; // ctx and doc are gone; applySettings reopened the file
+            {
+                // The scan built above for a resume from waiting is still unstarted.
+                // A new pattern or encoding rebuilds the document, which destroys it and
+                // scans again; a choice that changed only the zone or the display does
+                // not, and then this one has to run or the tab stays empty for good.
+                const QPointer<IndexController> pending =
+                    scanOnWorker ? ctx->controller : nullptr;
+                applySettings(settled);
+                if (pending)
+                    pending->start(); // idempotent if somebody already started it
+            }
+            return; // ctx and doc may be gone; applySettings reopened the file
         case FormatOutcome::Declined:
             // Either the user closed the dialog, or there was nobody to show one to. The
             // log stays readable as plain text and the status bar says where to fix it;
@@ -4606,6 +4664,16 @@ void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
             ctx->formatNotice = tr("format not recognised — File ▸ Preferences…");
             break;
         }
+    }
+
+    if (scanOnWorker) {
+        // Everything after the scan — runs, filters, highlights, the digest, the panes,
+        // the column seed, the views sent to the end, and the watch re-armed — is
+        // onIndexFinished()'s, reached by the same signal an ordinary open reaches it by.
+        updateTabTitles(ctx);
+        updateStatus();
+        ctx->controller->start();
+        return;
     }
 
     // The panes describe the ACTIVE document only; a log arriving in a background tab

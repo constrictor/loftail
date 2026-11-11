@@ -365,7 +365,7 @@ void Document::restateWaitReason(const QString &reason)
     m_waitReason = reason;
 }
 
-bool Document::resume(IFormatProvider &provider)
+bool Document::resume(IFormatProvider &provider, ResumeScan scan)
 {
     // Reuse, not Interactive: this is reached from the watch tick on the GUI thread,
     // where a connect could block the UI or prompt behind the user's back (§6.3). A
@@ -392,6 +392,15 @@ bool Document::resume(IFormatProvider &provider)
 
     m_waiting = false;
     m_waitReason.clear();
+
+    if (scan == ResumeScan::Deferred) {
+        // Emptied, not merely left as it was, for reopen()'s reason: the asynchronous
+        // caller APPENDS batches into this very object. A waiting document's index is
+        // already empty; one that opened empty and is settling its first bytes may not be.
+        // Runs are detected by the caller once its scan finishes, as after a reload.
+        clearIndex();
+        return true;
+    }
 
     Indexer indexer(m_format, m_decoder, m_sourceZone);
     m_index = indexer.index(*m_source);

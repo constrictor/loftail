@@ -254,30 +254,49 @@ bool Indexer::forwardScan(LogSource &source, qint64 startPos, QVector<Record> &r
 }
 
 RecordIndex Indexer::index(LogSource &source, const Progress &progress, bool *cancelled,
-                           const Batch &batch) const
+                           const Batch &batch, const Grow &grow) const
 {
     RecordIndex idx;
     if (cancelled)
         *cancelled = false;
 
-    const qint64 size = source.size();
+    qint64 size = source.size();
+    qint64 start = m_decoder.bomLength();
     bool wasCancelled = false;
 
     // Bridge the shared forward pass to the streaming progress/batch seam: after
     // each chunk, report progress (which may cancel) and flush a non-final batch —
     // the last record stays open for continuations still to arrive (§4).
-    const bool completed = forwardScan(
-        source, m_decoder.bomLength(), idx.records, idx.loggers, idx.threads,
-        [&](qint64 pos) -> bool {
-            if (progress && !progress(pos, size)) {
-                wasCancelled = true;
-                return false;
-            }
-            if (batch)
-                batch(idx, /*final=*/false);
-            return true;
-        });
-    Q_UNUSED(completed);
+    for (;;) {
+        const bool completed = forwardScan(
+            source, start, idx.records, idx.loggers, idx.threads,
+            [&](qint64 pos) -> bool {
+                if (progress && !progress(pos, size)) {
+                    wasCancelled = true;
+                    return false;
+                }
+                if (batch)
+                    batch(idx, /*final=*/false);
+                return true;
+            });
+        if (!completed || wasCancelled || !grow)
+            break;
+        const qint64 next = grow(size);
+        if (next <= size || source.size() != next)
+            break; // nothing more, or a refresh that does not agree with itself
+        // Carry on from the LAST record, which was provisional: it may have grown
+        // continuation lines, or ended mid-line at the old size. It is re-read whole from
+        // its own offset — a record boundary by construction — and replaced, which is
+        // scanAppendedTail()'s contract. A non-final batch never hands that record out, so
+        // nothing downstream has seen the copy being dropped.
+        if (!idx.records.isEmpty()) {
+            start = qint64(idx.records.last().offset);
+            idx.records.removeLast();
+        } else {
+            start = qMax(start, size);
+        }
+        size = next;
+    }
 
     if (wasCancelled && cancelled)
         *cancelled = true;

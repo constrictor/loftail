@@ -283,6 +283,22 @@ private:
     LogModel    *m_digestModel = nullptr;
     BatchAlerts  m_lastAlerts;
     LiveWatcher *m_watcher = nullptr;
+
+    // THE WAIT FOR A SPOOLED LOG'S FIRST BYTES IS POLLED FAST AND BACKS OFF. A spool says
+    // nothing when its prime lands — the reader polls it — so at the ordinary 750 ms
+    // cadence an archived member that expands in 50 ms sat behind a blank tab for most
+    // of a second before anything looked (the dead wait that, with resume()'s inline
+    // scan, made a .zip open several times slower than the same file opened plainly).
+    // The first look is kFirstWaitPollMs after the wait begins and each miss doubles the
+    // interval until it reaches m_basePollMs, so a fast arrival is seen within about
+    // twice the time it took, and a host that is down for minutes costs five extra
+    // ticks in total — never a fast poll for the life of the tab. A LOCAL wait is not
+    // included: its directory is watched, so its arrival is an event already.
+    void armQuickWaitPoll();
+    void endQuickWaitPoll();
+    static constexpr int kFirstWaitPollMs = 25;
+    int m_basePollMs = 750;  // what setPollInterval() asked for; LiveWatcher's default
+    int m_waitPollMs = 0;    // 0 == not in the quick cadence
     qint64       m_lastSize = 0;
     bool         m_started = false;
     // How long the origin has been gone, against the grace period above. Real elapsed

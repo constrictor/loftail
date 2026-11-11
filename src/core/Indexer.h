@@ -57,13 +57,25 @@ public:
     // batch and get the full index back unchanged.
     using Batch = std::function<void(const RecordIndex &index, bool final)>;
 
+    // Growth callback: invoked when the scan has reached the source's latched size,
+    // with that size. Returns the size the source has NOW — having had it refreshed by
+    // whoever may do so — and the scan carries on to it, or returns the same size to end
+    // the scan. May block. Empty means "the source is the size it was" (one pass).
+    //
+    // It is what lets the initial scan keep up with a SPOOL that is still filling — an
+    // archive member expanding behind it, a remote log arriving — instead of leaving
+    // everything that landed during the scan to the live watch, which ingests on the GUI
+    // thread a tick at a time. Still one forward pass (invariant #9): the continuation
+    // re-reads only the last, provisional record, exactly as scanAppendedTail() does.
+    using Grow = std::function<qint64(qint64 scannedTo)>;
+
     Indexer(const LogFormat &format, const Decoder &decoder, const QTimeZone &sourceZone);
 
     // Index the whole source. `progress` may cancel; a cancelled run returns what
     // was indexed so far with `cancelled` set. `batch`, when set, is called at each
     // chunk boundary and once more (final) at completion or cancellation.
     RecordIndex index(LogSource &source, const Progress &progress = {}, bool *cancelled = nullptr,
-                      const Batch &batch = {}) const;
+                      const Batch &batch = {}, const Grow &grow = {}) const;
 
     // Continue the single forward pass over the APPENDED tail (M6 live updates,
     // invariant #9): scan [startOffset, source.size()) as a self-contained forward

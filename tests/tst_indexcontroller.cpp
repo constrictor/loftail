@@ -80,7 +80,65 @@ private slots:
     void noRowsAppearUntilTheScanFinishes();
     void indexerCancelSeamIsDeterministic();
     void controllerCancelStaysConsistent();
+    void theScanFollowsALogThatGrowsWhileItRuns();
 };
+
+// A log that grows WHILE it is being scanned is followed by the scan rather than left
+// to the live watch — the spool of an archive member still expanding, which a resume
+// from waiting starts scanning at its 128 KB prime. Left to the watch, the rest arrived
+// a 750 ms tick at a time and was ingested on the GUI thread, so an archived open took
+// several times as long as the same file opened plainly and froze the window doing it.
+//
+// Deterministic without a clock: the growth is written from the GUI thread on the first
+// PROGRESS report, and the worker's size request is queued behind every progress report
+// of the pass it ends, so the refresh that answers it always sees the growth.
+void TestIndexController::theScanFollowsALogThatGrowsWhileItRuns()
+{
+    const QByteArray first = makeLog(20000);
+    QTemporaryFile file;
+    QVERIFY(writeLog(file, first));
+
+    Document doc;
+    QVERIFY2(doc.prepare(file.fileName(), QString::fromLatin1(kPattern), Encoding::Utf8,
+                         QTimeZone::utc()),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    IndexController controller(&doc, &model);
+    QSignalSpy finishedSpy(&controller, &IndexController::finished);
+    QSignalSpy insertedSpy(&model, &QAbstractItemModel::rowsInserted);
+
+    // More than kFollowMinBytes, so the pass over it asks once more and finds nothing.
+    QByteArray more;
+    for (int i = 20000; i < 50000; ++i) {
+        more += QByteArrayLiteral("2026-07-21 00:00:01,000 [t9] WARN  late.logger - grown ");
+        more += QByteArray::number(i);
+        more += '\n';
+    }
+    QVERIFY(more.size() > IndexWorker::kFollowMinBytes);
+    bool grown = false;
+    connect(&controller, &IndexController::progress, &controller, [&] {
+        if (grown)
+            return;
+        grown = true;
+        file.write(more);
+        file.flush();
+    });
+
+    controller.start();
+    QVERIFY(finishedSpy.wait(30000));
+    QVERIFY(grown);
+
+    QCOMPARE(model.rowCount(), 50000);
+    QCOMPARE(insertedSpy.count(), 1); // still one insert, at the end (§7.2)
+    const RecordIndex &idx = doc.index();
+    QCOMPARE(idx.loggers.name(idx.records.at(49999).loggerId), QStringLiteral("late.logger"));
+    // The source is left latched exactly where the index ends, which is what the live
+    // watch takes its baseline from — a size latched past the last record would hide
+    // those bytes from it for good on a log that then stops growing.
+    const Record &last = idx.records.last();
+    QCOMPARE(doc.source()->size(), last.offset + qint64(last.length));
+}
 
 void TestIndexController::streamsEveryRecord()
 {
