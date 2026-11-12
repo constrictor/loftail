@@ -27,6 +27,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QLineEdit>
+#include <QProxyStyle>
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -195,6 +196,7 @@ private slots:
     void anAddressIsShownWithoutAPortAndOnvifDetailsLeadWithTheHardware();
     void connectingDirectlyFillsTheHostFormFromAType();
     void openWaitsForARowAndALog();
+    void aSingleClickSelectsAndDoesNotOpenEvenWhereTheStyleActivatesOnOneClick();
     void typingKeepsTheFirstResultSelected();
     void upAndDownStepThroughTheResultsWithoutLeavingTheFilter();
     void aResultThatTurnsUpIsSelectedOnlyIfNothingWas();
@@ -253,7 +255,7 @@ void TestRemoteBrowser::discoveredDevicesAppearUnderTheirTypeAndOpenByReference(
     // The type's default log is offered as soon as the device is chosen.
     QCOMPARE(log->currentText(), QStringLiteral("/var/log/camera.log"));
 
-    // RETURN ON THE ROW opens it — itemActivated, which is both the double-click and the key.
+    // RETURN ON THE ROW opens it — taken by hand in the dialog's event filter.
     dialog.show();
     tree->setFocus();
     QTest::keyClick(tree, Qt::Key_Return);
@@ -835,6 +837,58 @@ void TestRemoteBrowser::recentlyOpenedRowsComeFirstAndTheRestKeepTheirOrder()
                           QStringLiteral("Garage door"), QStringLiteral("Attic"),
                           QStringLiteral("Yard")}));
     QCOMPARE(selectedName(tree), QStringLiteral("Garage door"));
+}
+
+namespace {
+// Breeze under Plasma's default "single-click to open": the hint that makes QAbstractItemView
+// emit itemActivated on a single click. CI resolves Fusion, which leaves it off, so without
+// this the case passes against the very connection it exists to forbid.
+class SingleClickStyle : public QProxyStyle
+{
+public:
+    int styleHint(StyleHint hint, const QStyleOption *option, const QWidget *widget,
+                  QStyleHintReturn *returnData) const override
+    {
+        if (hint == SH_ItemView_ActivateItemOnSingleClick)
+            return 1;
+        return QProxyStyle::styleHint(hint, option, widget, returnData);
+    }
+};
+} // namespace
+
+void TestRemoteBrowser::aSingleClickSelectsAndDoesNotOpenEvenWhereTheStyleActivatesOnOneClick()
+{
+    HostBookmarkStore store = freshStore();
+    QVERIFY(store.saveType(cameras()));
+    m_script.devices[QStringLiteral("Cameras")] = {
+        device(QStringLiteral("urn:uuid:cam-1"), QStringLiteral("Lobby"),
+               QStringLiteral("10.0.0.5"), {QStringLiteral("model=X100")})};
+
+    RemoteBrowserDialog dialog(&store);
+    auto *tree = dialog.findChild<QTreeWidget *>(QStringLiteral("remoteBrowserTree"));
+    auto *log = dialog.findChild<QComboBox *>(QStringLiteral("remoteBrowserLog"));
+    QVERIFY(tree && log);
+    SingleClickStyle style;
+    tree->setStyle(&style);
+    dialog.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+    QTRY_VERIFY(rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Lobby")));
+    QTreeWidgetItem *lobby = rowNamed(tree, QStringLiteral("Cameras"), QStringLiteral("Lobby"));
+    QVERIFY(style.styleHint(QStyle::SH_ItemView_ActivateItemOnSingleClick, nullptr, tree, nullptr));
+
+    const QPoint at = tree->visualItemRect(lobby).center();
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, {}, at);
+    QTest::qWait(100);
+    QVERIFY2(dialog.isVisible() && dialog.result() != int(QDialog::Accepted),
+             "a single click opened the row; it must only select it");
+    QCOMPARE(tree->currentItem(), lobby);
+    // The click is what offers the log, and the reader needs the dialog still up to see it.
+    QCOMPARE(log->currentText(), QStringLiteral("/var/log/camera.log"));
+
+    QTest::mouseDClick(tree->viewport(), Qt::LeftButton, {}, at);
+    QTRY_COMPARE(dialog.result(), int(QDialog::Accepted));
+    QCOMPARE(dialog.choice(), RemoteBrowserDialog::Choice::Discovered);
+    tree->setStyle(nullptr);
 }
 
 int main(int argc, char *argv[])

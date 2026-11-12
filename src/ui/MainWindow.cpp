@@ -38,6 +38,7 @@
 #include "FormatPreview.h"
 #include "HighlighterPane.h"
 #include "IndexController.h"
+#include "RecordViewDialog.h"
 #include "LiveController.h"
 #include "LogFormat.h"
 #include "LogModel.h"
@@ -767,6 +768,13 @@ void MainWindow::buildMenus()
     connect(m_copyColumnsAction, &QAction::triggered, this, [this]() {
         if (LogView *v = activeLogView())
             v->copySelectionAsColumns();
+    });
+    m_copyMessageAction = editMenu->addAction(tr("Copy &Message Only"));
+    m_copyMessageAction->setObjectName(QStringLiteral("copyMessageAction")); // findChild, for tests
+    m_copyMessageAction->setEnabled(false);
+    connect(m_copyMessageAction, &QAction::triggered, this, [this]() {
+        if (LogView *v = activeLogView())
+            v->copySelectionMessages();
     });
 
     // Select All (SPEC.md §5). It acts on the ACTIVE log view — the same activeLogView()
@@ -2102,6 +2110,8 @@ void MainWindow::updateActionStates()
         m_copyAction->setEnabled(onLog);
     if (m_copyColumnsAction)
         m_copyColumnsAction->setEnabled(onLog);
+    if (m_copyMessageAction)
+        m_copyMessageAction->setEnabled(onLog);
     if (m_selectAllAction)
         m_selectAllAction->setEnabled(onLog);
     if (m_exportVisibleAction)
@@ -3492,6 +3502,14 @@ void MainWindow::buildIndexController(DocumentContext *ctx)
     ctx->indexing = true;
     ctx->progressPercent = 0;
     m_progressBar->setRange(0, 100);
+    // A fresh open is not the active tab yet — showView() makes it so and
+    // updateActionStates() shows the box then. A reload and a resume from waiting
+    // rebuild the scan of a tab that may already BE in front, which nothing else would
+    // show the box for: the scan ran with no progress and no way to stop it.
+    if (ctx == activeContext()) {
+        m_progressBar->setValue(0);
+        m_progressBox->setVisible(true);
+    }
     // A reload has views already; a fresh open makes them below, and createView() asks
     // for the notice itself.
     refreshScanNotice(ctx);
@@ -4168,6 +4186,13 @@ void MainWindow::onIndexFinished(DocumentContext *ctx, bool cancelled)
 {
     Document *doc = ctx->doc.get();
     ctx->indexing = false;
+    if (ctx->resumeScan) {
+        // The line LiveController writes after an inline resume, kept greppable in the
+        // same shape now that the scan is a worker's (DiagnosticLog.h).
+        ctx->resumeScan = false;
+        diagLog("wait", QStringLiteral("%1 is back — resumed, records=%2")
+                            .arg(doc->path()).arg(doc->index().records.size()));
+    }
     updateTabTitles(ctx);
     refreshScanNotice(ctx); // the scan is over: every view drops the notice
     const bool isActive = ctx == activeContext();
@@ -4496,11 +4521,26 @@ void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
     const bool settleFormat = !doc->formatSettled();
     ManualFormatProvider provider(ctx->settings.pattern);
 
+    // A LOG COMING BACK FROM WAITING IS SCANNED ON A WORKER, exactly as an ordinary open
+    // and a reload are. That is every archived and every remote log's first arrival
+    // (M17 opens them all waiting), and resume() used to index the whole spool inline,
+    // here, on the GUI thread: a 40 MB zip member froze the window for ~0.4 s with no
+    // notice and no progress, on top of the wait for the tick that noticed it — while
+    // the same file opened plainly scanned behind "Indexing … %" with the window live.
+    //
+    // ONLY from waiting. The other caller is LiveController::settleFirstBytes(), a log
+    // that opened EMPTY receiving its first bytes, which can be reached from inside
+    // onIndexFinished() — i.e. from inside the IndexController's own `finished` — where
+    // tearing the workers down would delete the controller that is emitting. That log
+    // is new by definition, so its first bytes are few and the inline scan is cheap.
+    const bool scanOnWorker = doc->isWaiting();
+
     ctx->model->beginFilterReset();
     if (ctx->digestModel)
         ctx->digestModel->beginFilterReset();
-    const bool ok = doc->resume(provider);
-    if (ok) {
+    const bool ok = doc->resume(provider, scanOnWorker ? Document::ResumeScan::Deferred
+                                                       : Document::ResumeScan::Inline);
+    if (ok && !scanOnWorker) {
         // The intern tables were built from scratch, exactly as after a rotation — and
         // so was the digest, which resume() cleared along with the filtered subset.
         doc->refreshHighlighting();
@@ -4516,9 +4556,27 @@ void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
     if (!ok)
         return;
 
+    if (scanOnWorker) {
+        // rebuildDocument()'s order: the live watch must not tick into a document whose
+        // index a worker is about to fill, and onIndexFinished() re-arms it. We are inside
+        // that controller's resumeRequested, which is a supported place to delete it —
+        // the Chosen branch below always has — and it checks a QPointer on the way out.
+        //
+        // The controller is BUILT here and STARTED at the end, so ctx->indexing is true
+        // across the format block: persistFileSettings() reads that as "the run selection
+        // is not known yet" and leaves the stored one alone, where an empty index would
+        // otherwise read as "all runs". A Chosen outcome rebuilds the document and
+        // destroys this controller unstarted, which is why it is not started first.
+        ctx->stopWorkers();
+        buildIndexController(ctx);
+        ctx->resumeScan = true;
+        diagLog("wait", QStringLiteral("%1 is back — indexing on a worker")
+                            .arg(doc->path()));
+    }
+
     for (DocumentView *v : std::as_const(ctx->views)) {
         v->logView()->setPlaceholderText(QString());
-        if (v->logView()->following())
+        if (!scanOnWorker && v->logView()->following())
             v->logView()->followTail();
     }
 
@@ -4597,8 +4655,18 @@ void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
             // Safe to use the active-context form, because the dialog was only offered
             // when this context IS the active one.
             ctx->formatNotice.clear();
-            applySettings(settled);
-            return; // ctx and doc are gone; applySettings reopened the file
+            {
+                // The scan built above for a resume from waiting is still unstarted.
+                // A new pattern or encoding rebuilds the document, which destroys it and
+                // scans again; a choice that changed only the zone or the display does
+                // not, and then this one has to run or the tab stays empty for good.
+                const QPointer<IndexController> pending =
+                    scanOnWorker ? ctx->controller : nullptr;
+                applySettings(settled);
+                if (pending)
+                    pending->start(); // idempotent if somebody already started it
+            }
+            return; // ctx and doc may be gone; applySettings reopened the file
         case FormatOutcome::Declined:
             // Either the user closed the dialog, or there was nobody to show one to. The
             // log stays readable as plain text and the status bar says where to fix it;
@@ -4606,6 +4674,16 @@ void MainWindow::resumeOrSettleDocument(DocumentContext *ctx)
             ctx->formatNotice = tr("format not recognised — File ▸ Preferences…");
             break;
         }
+    }
+
+    if (scanOnWorker) {
+        // Everything after the scan — runs, filters, highlights, the digest, the panes,
+        // the column seed, the views sent to the end, and the watch re-armed — is
+        // onIndexFinished()'s, reached by the same signal an ordinary open reaches it by.
+        updateTabTitles(ctx);
+        updateStatus();
+        ctx->controller->start();
+        return;
     }
 
     // The panes describe the ACTIVE document only; a log arriving in a background tab
@@ -5522,6 +5600,20 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
     const bool hasPriority = prio != Priority::Unknown;
     const bool hasTime = fmt.dateGroup > 0 && rec.timestamp != Record::kNoTimestamp;
 
+    // The message's FIRST line, read through the very function the message-text axis
+    // matches against (Document::messageText), so a rule built from it is guaranteed
+    // to match the record it was made from. The first line only: the axis is a
+    // substring match over the whole message, so it still matches a multi-line record,
+    // and a stack trace's twenty lines are not a pattern anybody would edit. An
+    // unparsed line has no %m, and messageText() answers its whole text, which the
+    // axis searches too — so it is offered there as well.
+    QString message = doc->messageText(rec);
+    if (const qsizetype nl = message.indexOf(QLatin1Char('\n')); nl >= 0)
+        message.truncate(nl);
+    while (!message.isEmpty() && message.back().isSpace())
+        message.chop(1);
+    const bool hasMessage = !message.isEmpty();
+
     // A multi-record selection contributes exactly one item: the two bounds it
     // already names. Everything else reads the record that was clicked, because the
     // union of five records' subsystems is not a gesture anyone means.
@@ -5544,8 +5636,9 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
     // Which axis the clicked column names leads the menu. The CONTENTS do not depend
     // on the column: a menu whose items move is learnable, one whose items appear and
     // disappear with the column is not.
-    enum class Axis { Subsystem, Thread, Priority, Time };
-    QVector<Axis> order{Axis::Subsystem, Axis::Thread, Axis::Priority, Axis::Time};
+    enum class Axis { Subsystem, Thread, Priority, Time, Message };
+    QVector<Axis> order{Axis::Subsystem, Axis::Thread, Axis::Priority, Axis::Time,
+                        Axis::Message};
     if (column >= 0 && column < fmt.fields.size()) {
         std::optional<Axis> clicked;
         switch (fmt.fields.at(column).role) {
@@ -5553,6 +5646,7 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
         case FieldRole::Thread:   clicked = Axis::Thread; break;
         case FieldRole::Priority: clicked = Axis::Priority; break;
         case FieldRole::Date:     clicked = Axis::Time; break;
+        case FieldRole::Message:  clicked = Axis::Message; break;
         default: break;
         }
         if (clicked) {
@@ -5631,6 +5725,8 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
                     [this, selLo, selHi] { m_filterPane->setTimeRange(selLo, selHi); });
             }
             break;
+        case Axis::Message:
+            break; // highlight only; the Filters pane's message axis is a typed search
         }
     }
 
@@ -5679,17 +5775,53 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
         }
         case Axis::Time:
             break; // one record names one instant, and a rule needs two bounds
+        case Axis::Message: {
+            if (!hasMessage)
+                break;
+            // Plain text, case-sensitive: the literal line, nothing to escape, and
+            // editable in the pane like any typed text rule.
+            MatchCriteria c;
+            c.text.enabled = true;
+            c.text.matcher.set(message, false, Qt::CaseSensitive);
+            highlight(tr("Highlight This Message"), "recordHighlightMessage", c);
+            break;
+        }
         }
     }
 
     // The clipboard actions live here too — a record menu is where people look for
     // them, and these are the window's own, so the shortcuts stay visible beside them.
-    if (m_copyAction && m_copyColumnsAction) {
-        if (filterSection || highlightSection)
-            menu->addSeparator();
+    if (filterSection || highlightSection)
+        menu->addSeparator();
+    if (m_copyAction && m_copyColumnsAction && m_copyMessageAction) {
         menu->addAction(m_copyAction);
         menu->addAction(m_copyColumnsAction);
+        menu->addAction(m_copyMessageAction);
     }
+    // The whole of the CLICKED record in a window of its own (SPEC.md §5): offered for
+    // every record, not only one the table cut short, because a line too long for its
+    // column is the commoner case and the table has no other way to show it at once.
+    // The view and the row are taken now; the action fires after the menu has closed.
+    const QPointer<DocumentView> target(view);
+    add(tr("Show &Whole Record…"), "recordShowWhole", [this, target, viewRow] {
+        if (target)
+            showWholeRecord(target, viewRow);
+    });
+}
+
+void MainWindow::showWholeRecord(DocumentView *view, int viewRow)
+{
+    if (!view || !view->context() || !view->context()->doc)
+        return;
+    LogView *log = view->logView();
+    if (viewRow < 0 || viewRow >= log->header()->model()->rowCount())
+        return;
+    const QString text = log->recordText(viewRow);
+    auto *dlg = new RecordViewDialog(
+        tr("Record %1 — %2").arg(viewRow + 1)
+            .arg(logSourceDisplayName(view->context()->doc->path())),
+        text, log->font(), this);
+    dlg->show();
 }
 
 void MainWindow::showRecordMenu(DocumentView *view, int viewRow, int column,
@@ -5734,6 +5866,15 @@ void MainWindow::activateRecordColumn(DocumentView *view, int viewRow, int colum
     switch (fields.at(column).role) {
     case FieldRole::Logger: wanted = "recordShowOnlySubsystem"; break;
     case FieldRole::Thread: wanted = "recordShowOnlyThread"; break;
+    case FieldRole::Message:
+        // The "double-click to show it whole" a cut record's last line offers (SPEC.md
+        // §5) — and ONLY for such a record. On a record the table shows in full the
+        // message cell answers nothing, as it always has: a window appearing under a
+        // double-click aimed at nothing in particular is a window nobody asked for.
+        if (!view->logView()->recordIsCut(viewRow))
+            return;
+        wanted = "recordShowWhole";
+        break;
     default: return;
     }
     triggerRecordMenuItem(view, viewRow, column, wanted);

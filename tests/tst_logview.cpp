@@ -347,6 +347,10 @@ private slots:
 
     // --- marking a cell costs one redraw of it, not one per match (bugs.md 12) ---
     void aMarkedCellIsRedrawnOncePerCellAndNotOncePerMatch();
+    void aLongUnwrappedLineIsReachedBySidewaysScrollingWhereTheMessageIsLast();
+    void aLongUnwrappedLineIsStillCutWhereAColumnFollowsTheMessage();
+    void aRecordPastTheDisplayCapSaysHowMuchIsNotShown();
+    void aWrappedRecordPastTheDisplayCapSaysSoToo();
     void aRepaintMeasuresNothingItHasAlreadyMeasuredAndATailMeasuresWhatGrew();
     void everyMatchOfAWrappedCellIsMarkedWhenTheyAreBatched();
     void anElidedMarkSitsOverTheGlyphsOfTheRunAndNotOverALogicalPrefix();
@@ -1355,6 +1359,11 @@ void TestLogView::aWrappedMessageOffersNoTooltipAndAnUnwrappedOneDoes()
     const int message = columnOfRole(doc, FieldRole::Message);
     QVERIFY(message >= 0);
     view.header()->resizeSection(message, 120);
+    // FIRST, so a column follows it. A message that is the last column is no longer
+    // elided at its section at all — it runs on and is scrolled to sideways (SPEC.md §5,
+    // aLongUnwrappedLineIsReachedBySidewaysScrollingWhereTheMessageIsLast) — so the
+    // unwrapped half of this claim is about the one place an unwrapped line is still cut.
+    view.header()->moveSection(view.header()->visualIndex(message), 0);
 
     const QPoint at(view.header()->sectionViewportPosition(message) + 2,
                     view.fontMetrics().height() / 2);
@@ -4151,11 +4160,19 @@ public:
     void drawPolygon(const QPoint *, int, PolygonDrawMode) override {}
     void drawPolygon(const QPointF *, int, PolygonDrawMode) override {}
     void drawPath(const QPainterPath &) override {}
-    void drawTextItem(const QPointF &, const QTextItem &) override { textRuns += 1; }
+    void drawTextItem(const QPointF &, const QTextItem &item) override
+    {
+        textRuns += 1;
+        texts.append(item.text());
+        if (item.font().italic())
+            italicRuns += 1;
+    }
     Type type() const override { return QPaintEngine::User; }
 
     int textRuns = 0;
     int fills = 0;
+    QStringList texts; // every run's text, in the order it was drawn
+    int italicRuns = 0;
 };
 
 class CountingDevice : public QPaintDevice
@@ -6017,6 +6034,252 @@ void TestLogView::theHeightModelCountsTheLinesTheLayoutPlaces()
             }
         }
     }
+}
+
+// --- a long line, and a long record (SPEC.md §5) -----------------------------
+//
+// With wrapping off a message line used to be elided at its section, and the sideways
+// range stopped at the header's length — so where the message was the last column the
+// rest of a long line was somewhere no scrolling could reach. Where the message is last
+// it now runs on and the range follows the widest line painted. Where a column follows it
+// there is nowhere to scroll to and the section edge stands.
+
+namespace {
+
+QString recordOfLength(int chars)
+{
+    QString msg = QStringLiteral("head ");
+    while (msg.size() < chars - 4)
+        msg += QStringLiteral("abcdefghij");
+    msg.truncate(chars - 4);
+    msg += QStringLiteral("TAIL");
+    return msg;
+}
+
+bool openOne(Document &doc, QTemporaryFile &file, const QByteArray &bytes)
+{
+    if (!file.open())
+        return false;
+    file.write(bytes);
+    file.flush();
+    return doc.open(file.fileName(),
+                    QStringLiteral("%d{%Y-%m-%d %H:%M:%S,%q} [%t] %-5p %c - %m%n"),
+                    Encoding::Utf8, QTimeZone::utc());
+}
+
+QByteArray recordLine(int second, const QString &message)
+{
+    return "2026-07-21 14:32:" + QByteArray::number(second).rightJustified(2, '0')
+           + ",000 [main] INFO  net.socket - " + message.toUtf8() + '\n';
+}
+
+// Whether any pixel of `rect` in `img` is not the row's ground colour at its own top-left.
+bool inked(const QImage &img, const QRect &rect)
+{
+    const QRect r = rect.intersected(img.rect());
+    if (r.isEmpty())
+        return false;
+    const QRgb ground = img.pixel(r.topLeft());
+    for (int y = r.top(); y <= r.bottom(); ++y)
+        for (int x = r.left(); x <= r.right(); ++x)
+            if (img.pixel(x, y) != ground)
+                return true;
+    return false;
+}
+
+struct Drawn
+{
+    QStringList texts;
+    int italicRuns = 0;
+};
+
+Drawn drawnOnce(LogView &view)
+{
+    CountingDevice device(view.viewport()->size());
+    view.viewport()->render(&device, QPoint(), QRegion(), QWidget::DrawWindowBackground);
+    return Drawn{device.m_engine.texts, device.m_engine.italicRuns};
+}
+
+bool anyContains(const QStringList &texts, const QString &needle)
+{
+    for (const QString &t : texts)
+        if (t.contains(needle))
+            return true;
+    return false;
+}
+
+} // namespace
+
+void TestLogView::aLongUnwrappedLineIsReachedBySidewaysScrollingWhereTheMessageIsLast()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    const QString longMsg = recordOfLength(1500);
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openOne(doc, file, recordLine(1, longMsg) + recordLine(2, QStringLiteral("short"))),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 300);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    const int message = columnOfRole(doc, FieldRole::Message);
+    QVERIFY(message >= 0);
+    QHeaderView *header = view.header();
+    const int lineWidth = view.fontMetrics().horizontalAdvance(model.cellText(0, message));
+    QVERIFY2(lineWidth > header->sectionSize(message) + view.viewport()->width(),
+             "the line has to be longer than the section for this to test anything");
+
+    renderViewport(view); // the range follows what has been PAINTED
+    QTRY_VERIFY(view.unwrappedContentWidth() >= lineWidth);
+
+    // The sideways range reaches the END of the line, not the end of the header.
+    QScrollBar *h = view.horizontalScrollBar();
+    QTRY_VERIFY2(h->maximum() + view.viewport()->width()
+                     >= header->sectionPosition(message) + lineWidth,
+                 qPrintable(QStringLiteral("range %1 + %2 against a line ending at %3")
+                                .arg(h->maximum()).arg(view.viewport()->width())
+                                .arg(header->sectionPosition(message) + lineWidth)));
+    QVERIFY(h->maximum() + view.viewport()->width() > header->length());
+
+    // And scrolling there SHOWS it: the header follows the bar past its own length, and
+    // the last stretch of the viewport on that row carries ink.
+    h->setValue(h->maximum());
+    QCOMPARE(header->offset(), h->value());
+    const QImage img = renderViewport(view);
+    const int lh = view.lineHeight();
+    QVERIFY2(inked(img, QRect(view.viewport()->width() - 120, 0, 100, lh)),
+             "scrolled to the end of the range and the line was not drawn there");
+
+    // Nothing was cut, so there is nothing for a tooltip to add.
+    h->setValue(0);
+    const QPoint at(header->sectionViewportPosition(message) + 2, lh / 2);
+    QVERIFY(tooltipAt(view.viewport(), at).isNull());
+
+    // A line past the bound IS still cut, and says so on hover.
+    QTemporaryFile file2;
+    Document doc2;
+    const QString huge = recordOfLength(LogView::kMaxUnelidedChars + 500);
+    QVERIFY2(openOne(doc2, file2, recordLine(1, huge)), qPrintable(doc2.lastError()));
+    LogModel model2(&doc2);
+    LogView view2(&doc2, &model2);
+    view2.setWrapMode(LogView::WrapMode::Off);
+    view2.resize(700, 300);
+    renderViewport(view2);
+    const QPoint at2(view2.header()->sectionViewportPosition(message) + 2, lh / 2);
+    QCOMPARE(tooltipAt(view2.viewport(), at2), model2.cellText(0, message));
+    QToolTip::hideText();
+}
+
+void TestLogView::aLongUnwrappedLineIsStillCutWhereAColumnFollowsTheMessage()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openOne(doc, file, recordLine(1, recordOfLength(1500))), qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(700, 300);
+
+    const int message = columnOfRole(doc, FieldRole::Message);
+    QHeaderView *header = view.header();
+    header->moveSection(header->visualIndex(message), 0);
+    renderViewport(view);
+    QCoreApplication::processEvents();
+
+    // Scrolling right would reveal the next column, not more message, so the range is the
+    // header's and nothing grew it.
+    QCOMPARE(view.unwrappedContentWidth(), 0);
+    QCOMPARE(view.horizontalScrollBar()->maximum(),
+             qMax(0, header->length() - view.viewport()->width()));
+    const QPoint at(header->sectionViewportPosition(message) + 2, view.lineHeight() / 2);
+    QCOMPARE(tooltipAt(view.viewport(), at), model.cellText(0, message));
+    QToolTip::hideText();
+}
+
+// SPEC.md §5 promised "an indicator" on a record past the 100-line display cap for longer
+// than the cap has existed, and none was drawn: the table simply stopped. The last row now
+// says how many lines are not shown, in italic — the run that is asserted, since the
+// sentence itself is translated prose.
+void TestLogView::aRecordPastTheDisplayCapSaysHowMuchIsNotShown()
+{
+    QString body = QStringLiteral("first");
+    for (int k = 1; k < 150; ++k)
+        body += QStringLiteral("\ncont-%1").arg(k, 3, 10, QLatin1Char('0'));
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openOne(doc, file, recordLine(1, body) + recordLine(2, QStringLiteral("after"))),
+             qPrintable(doc.lastError()));
+    QCOMPARE(doc.index().records.at(0).lineCount, quint16(150));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.setWrapMode(LogView::WrapMode::Off);
+    view.resize(900, (RecordIndex::kDisplayLineCap + 4) * view.lineHeight() + 40);
+
+    QVERIFY(view.recordIsCut(0));
+    QVERIFY(!view.recordIsCut(1));
+
+    const Drawn d = drawnOnce(view);
+    // Rows 1..99 hold content; the 100th belongs to the sentence.
+    QVERIFY(anyContains(d.texts, QStringLiteral("cont-098")));
+    QVERIFY2(!anyContains(d.texts, QStringLiteral("cont-099")),
+             "the cut record drew its 100th line where the indicator belongs");
+    QCOMPARE(d.italicRuns, 1);
+    QVERIFY2(anyContains(d.texts, QString::number(150 - 99)),
+             "the indicator did not say how many lines are not shown");
+
+    // And the whole of it is still there to be had.
+    const QString whole = view.recordText(0);
+    QVERIFY(whole.contains(QStringLiteral("cont-149")));
+    QCOMPARE(whole.count(QLatin1Char('\n')), 149);
+}
+
+void TestLogView::aWrappedRecordPastTheDisplayCapSaysSoToo()
+{
+    if (QFontDatabase::families().isEmpty())
+        QSKIP("no fonts available to this platform plugin; nothing measures");
+
+    // One line, long enough that a narrow column wraps it far past the cap.
+    QTemporaryFile file;
+    Document doc;
+    QVERIFY2(openOne(doc, file, recordLine(1, recordOfLength(20000))
+                                    + recordLine(2, QStringLiteral("short"))),
+             qPrintable(doc.lastError()));
+
+    LogModel model(&doc);
+    LogView view(&doc, &model);
+    view.resize(900, (RecordIndex::kDisplayLineCap + 4) * view.lineHeight() + 40);
+    view.setWrapMode(LogView::WrapMode::AlwaysOn);
+    renderViewport(view);
+    QTest::qWait(250); // the debounced resize re-keys the estimator to this width
+    view.measureBlockOfRecord(0);
+    QCOMPARE(view.estimatedGeometry().recordHeightLines(0), int(RecordIndex::kDisplayLineCap));
+
+    QVERIFY(view.recordIsCut(0));
+    QVERIFY(!view.recordIsCut(1));
+    QCOMPARE(drawnOnce(view).italicRuns, 1);
+
+    // A record that fits draws no sentence at all.
+    QTemporaryFile file2;
+    Document doc2;
+    QVERIFY2(openOne(doc2, file2, recordLine(1, recordOfLength(300))), qPrintable(doc2.lastError()));
+    LogModel model2(&doc2);
+    LogView view2(&doc2, &model2);
+    view2.resize(900, 400);
+    view2.setWrapMode(LogView::WrapMode::AlwaysOn);
+    renderViewport(view2);
+    QVERIFY(!view2.recordIsCut(0));
+    QCOMPARE(drawnOnce(view2).italicRuns, 0);
 }
 
 #include "tst_logview.moc"

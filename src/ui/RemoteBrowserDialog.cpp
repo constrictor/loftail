@@ -154,8 +154,14 @@ RemoteBrowserDialog::RemoteBrowserDialog(HostBookmarkStore *store,
     connect(m_parameters, &QPushButton::clicked, this, &RemoteBrowserDialog::openParameters);
     connect(m_tree, &QTreeWidget::itemSelectionChanged, this,
             &RemoteBrowserDialog::onSelectionChanged);
-    connect(m_tree, &QTreeWidget::itemActivated, this,
+    // A DOUBLE-CLICK OPENS, A CLICK ONLY SELECTS — and never itemActivated, which a style may
+    // emit on a single click (SH_ItemView_ActivateItemOnSingleClick: Breeze under Plasma's
+    // default single-click setting). Clicking a device is how its log gets offered in the box
+    // below, so a click that opened it would close the dialog before that box could be read.
+    // Return is taken by hand in eventFilter(), WelcomeView's rule.
+    connect(m_tree, &QTreeWidget::itemDoubleClicked, this,
             [this](QTreeWidgetItem *item, int) { onActivated(item); });
+    m_tree->installEventFilter(this);
     connect(m_log, &QComboBox::editTextChanged, this, &RemoteBrowserDialog::updateActions);
     connect(m_direct, &QLineEdit::textChanged, this, &RemoteBrowserDialog::updateActions);
     connect(m_direct, &QLineEdit::returnPressed, this, &RemoteBrowserDialog::connectDirectly);
@@ -443,6 +449,18 @@ bool RemoteBrowserDialog::eventFilter(QObject *watched, QEvent *event)
         if (mods == Qt::NoModifier && (key->key() == Qt::Key_Down || key->key() == Qt::Key_Up)) {
             stepSelection(key->key() == Qt::Key_Down ? 1 : -1);
             return true;
+        }
+    }
+    // RETURN ON THE LIST opens the selected row: see the comment over the itemDoubleClicked
+    // connection. Only the press is taken, and only over a selected row, so Return elsewhere
+    // still reaches the dialog's default button.
+    if (watched == m_tree && event->type() == QEvent::KeyPress) {
+        const int key = static_cast<QKeyEvent *>(event)->key();
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            if (QTreeWidgetItem *item = m_tree->currentItem(); item && item->isSelected()) {
+                onActivated(item);
+                return true;
+            }
         }
     }
     return QDialog::eventFilter(watched, event);

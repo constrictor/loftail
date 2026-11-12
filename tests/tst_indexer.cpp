@@ -74,6 +74,7 @@ private slots:
     void severityOrder();
     void singleLineRecords();
     void aSourceThatStopsDeliveringEndsThePassWhereItGotTo();
+    void aScanThatFollowsGrowthIndexesExactlyWhatOnePassWould();
     void multiLineContinuation();
     void unparsedLeadingLines();
     void internsLoggersAndThreads();
@@ -163,6 +164,90 @@ void TestIndexer::aSourceThatStopsDeliveringEndsThePassWhereItGotTo()
     // were not.
     QCOMPARE(idx.records.size(), 2);
     QCOMPARE(idx.records.at(1).offset + idx.records.at(1).length, qint64(log.size()));
+}
+
+// The initial scan follows a source that grew while it ran (Indexer::Grow) — the spool
+// of an archive member still expanding behind it. The continuation re-reads the LAST,
+// provisional record from its own offset and replaces it, so wherever the old size cut
+// the file — between records, inside a multi-line record, halfway along a line with no
+// newline yet — the result has to be the index one pass over the whole file builds,
+// and the batches have to hand every record out exactly once.
+void TestIndexer::aScanThatFollowsGrowthIndexesExactlyWhatOnePassWould()
+{
+    class GrowingSource final : public loftail::LogSource
+    {
+    public:
+        explicit GrowingSource(QByteArray data) : m_data(std::move(data)) {}
+        QByteArrayView bytes(qint64 offset, qint64 length, QByteArray &into) override
+        {
+            Q_UNUSED(into);
+            if (offset < 0 || length <= 0 || offset >= m_latched)
+                return {};
+            return QByteArrayView(m_data.constData() + offset,
+                                  qMin<qint64>(length, m_latched - offset));
+        }
+        qint64 size() const override { return m_latched; }
+        qint64 refreshSize() override { return m_latched = m_data.size(); }
+        bool isRandomAccess() const override { return true; }
+        quint64 identity() const override { return 1; }
+        bool wasTruncated() const override { return false; }
+        void latch(qint64 n) { m_latched = n; }
+
+    private:
+        QByteArray m_data;
+        qint64 m_latched = 0;
+    };
+
+    QByteArray log;
+    for (int i = 0; i < 40; ++i) {
+        log += "2026-07-21 14:32:";
+        log += QByteArray::number(i % 60).rightJustified(2, '0');
+        log += ",000 [t" + QByteArray::number(i % 3) + "] INFO  sub" + QByteArray::number(i % 7)
+               + " - message " + QByteArray::number(i) + '\n';
+        if (i % 5 == 0)
+            log += "    at frame one\n    at frame two\n";
+    }
+    const RecordIndex whole = indexOf(log);
+    QVERIFY(whole.records.size() == 40);
+
+    const LogFormat f = fmt();
+    const Decoder dec = Decoder::detect(log.left(64 * 1024), Encoding::Utf8);
+    // Every cut: a record boundary, inside a continuation, mid-line, and the ends.
+    for (qint64 cut = 1; cut < log.size(); cut += 7) {
+        GrowingSource src(log);
+        src.latch(cut);
+        int asked = 0;
+        qint64 handedOut = 0;
+        Indexer indexer(f, dec, QTimeZone::utc());
+        const RecordIndex idx = indexer.index(
+            src, {}, nullptr,
+            [&handedOut](const RecordIndex &ix, bool final) {
+                // The worker's own rule: hold the last record back until `final`.
+                const qint64 upto = final ? ix.records.size()
+                                          : qMax(handedOut, qint64(ix.records.size()) - 1);
+                handedOut = upto;
+            },
+            [&](qint64 scannedTo) {
+                ++asked;
+                if (scannedTo != cut)
+                    return scannedTo; // grown once; the next ask ends it
+                return src.refreshSize();
+            });
+        QCOMPARE(asked, 2);
+        QCOMPARE(idx.records.size(), whole.records.size());
+        QCOMPARE(handedOut, qint64(whole.records.size()));
+        for (int i = 0; i < whole.records.size(); ++i) {
+            const Record &a = idx.records.at(i);
+            const Record &b = whole.records.at(i);
+            QCOMPARE(a.offset, b.offset);
+            QCOMPARE(a.length, b.length);
+            QCOMPARE(a.lineCount, b.lineCount);
+            QCOMPARE(a.timestamp, b.timestamp);
+            QCOMPARE(idx.loggers.name(a.loggerId), whole.loggers.name(b.loggerId));
+            QCOMPARE(idx.threads.name(a.threadId), whole.threads.name(b.threadId));
+        }
+        QCOMPARE(idx.loggers.count(), whole.loggers.count());
+    }
 }
 
 void TestIndexer::multiLineContinuation()

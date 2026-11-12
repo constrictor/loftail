@@ -29,6 +29,9 @@
 #include <QTimer>
 #include <QTreeWidget>
 #include <QDialog>
+#include <QElapsedTimer>
+#include <QProgressBar>
+#include <QSet>
 #include <QHeaderView>
 #include <QLineEdit>
 #include <QToolButton>
@@ -179,6 +182,7 @@ private slots:
     void theFormatAndTheSessionRememberAnArchivedPath();
     void aTabOpenedBeforeItsContainerExistsFillsInWhenItAppears();
     void aRestoredArchivedLogWaitsForItsContainerAndPicksItUp();
+    void aLargeArchivedLogIsScannedOnAWorkerAndArrivesWhole();
 
 private:
     QTemporaryDir m_dir;
@@ -567,6 +571,72 @@ void TestArchiveOpen::aRestoredArchivedLogWaitsForItsContainerAndPicksItUp()
 
     QTRY_VERIFY_WITH_TIMEOUT(statusText(window).contains(QStringLiteral("2 records")), 30000);
     QVERIFY(!bar->tabText(0).startsWith(QStringLiteral("◦")));
+}
+
+// AN ARCHIVED LOG OPENS AS FAST AS THE SAME LOG OPENED PLAINLY, and these are the two
+// things that made it not. Every archived open starts WAITING (M17) and comes back through
+// a resume, which (1) indexed the whole spool INLINE, on the GUI thread — a 40 MB member
+// froze the window for ~0.4 s with no notice and no progress, where the plain file scans
+// on a worker — and (2) once that moved to a worker, scanned only what had expanded when
+// it started, the 128 KB prime, leaving the rest of the member to the live watch's 750 ms
+// ticks, ingested inline again. So: the scan has to be a WORKER's (its progress bar moves,
+// which the inline resume's never did — the waiting open's own empty scan reports no
+// progress at all), and when it ends the tab has to hold EVERY record, the rows going
+// straight from none to all.
+//
+// The second half is stated here for what the user sees and is NOT the guard on it: a
+// 12 MB member has usually finished expanding before the quick wait notices its prime,
+// so a scan that never followed growth passes this case too. What pins the follow is
+// tst_indexcontroller::theScanFollowsALogThatGrowsWhileItRuns, which grows the log from
+// inside the scan with no clock involved.
+//
+// Polled with a 1 ms slice, tst_scanprogress's reason: QTRY's 50 ms step is long enough
+// for a Release build to have finished before the window it is looking for opens.
+void TestArchiveOpen::aLargeArchivedLogIsScannedOnAWorkerAndArrivesWhole()
+{
+    // Several of the indexer's 4 MB chunks, and nearly a hundred primes.
+    QByteArray log;
+    int records = 0;
+    while (log.size() < 12 * 1024 * 1024) {
+        log += "2026-08-05 00:00:01,000 [t" + QByteArray::number(records % 4)
+               + "] INFO  logger.a - line " + QByteArray::number(records)
+               + " with enough text after it to be an ordinary log line\n";
+        ++records;
+    }
+    const QString zip = path(QStringLiteral("big.zip"));
+    QVERIFY(writeZip(zip, {{QStringLiteral("app.log"), log}}));
+
+    bool unexpected = false;
+    QScopedPointer<QTimer> guard(rejectUnexpectedDialogs(&unexpected));
+
+    MainWindow window;
+    window.show();
+    auto *bar = window.findChild<QProgressBar *>(QStringLiteral("scanProgressBar"));
+    QVERIFY(bar);
+    window.openFile(zip + QStringLiteral("/app.log"), QString::fromLatin1(kPattern));
+
+    bool sawProgress = false;
+    QSet<int> rowCounts;
+    QElapsedTimer waited;
+    waited.start();
+    while (waited.elapsed() < 60000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+        if (bar->isVisible() && bar->value() > 0)
+            sawProgress = true;
+        const int rows = recordsInTab(window, 0);
+        if (rows >= 0)
+            rowCounts.insert(rows);
+        if (rows == records)
+            break;
+    }
+    QCOMPARE(recordsInTab(window, 0), records);
+    QVERIFY2(sawProgress, "the archived log was not scanned on a worker");
+    rowCounts.remove(0);
+    QVERIFY2(rowCounts.size() == 1,
+             qPrintable(QStringLiteral("the tab filled in %1 steps, not one: the scan "
+                                       "stopped short and the watch ingested the rest")
+                            .arg(rowCounts.size())));
+    QVERIFY(!unexpected);
 }
 
 int main(int argc, char *argv[])

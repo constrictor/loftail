@@ -564,7 +564,7 @@ endif()
 
 if(LOFTAIL_HAVE_SSH)
     qt_add_executable(tst_sshlive tst_sshlive.cpp)
-    target_link_libraries(tst_sshlive PRIVATE loftail_core Qt6::Test)
+    target_link_libraries(tst_sshlive PRIVATE loftail_core Qt6::Network Qt6::Test)
     add_test(NAME tst_sshlive COMMAND tst_sshlive)
 endif()
 

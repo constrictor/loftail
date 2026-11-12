@@ -144,6 +144,11 @@ public:
     // are there.
     void buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, int column);
 
+    // The clicked record, whole, in a non-modal window of its own (RecordViewDialog,
+    // SPEC.md §5). The record menu's Show Whole Record, and a double-click on the message
+    // of a record the table cut short.
+    void showWholeRecord(DocumentView *view, int viewRow);
+
     // File ▸ Restart App (Ctrl+R). Runs the active log's restart script and shows what it
     // did (SPEC.md §4); with none configured, explains and offers Preferences.
     //
@@ -834,6 +839,7 @@ private:
     QAction *m_newViewAction = nullptr; // Window ▸ New View (a second view on one file)
     QAction *m_copyAction = nullptr;
     QAction *m_copyColumnsAction = nullptr;
+    QAction *m_copyMessageAction = nullptr;
     QAction *m_selectAllAction = nullptr; // Edit ▸ Select All (every record IN VIEW)
     // Edit ▸ Find / Find Next / Find Previous. All three act on the active view's own
     // Find bar, so all three follow the active tab exactly as the copy actions above do.

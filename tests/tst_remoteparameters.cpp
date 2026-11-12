@@ -328,6 +328,19 @@ void TestRemoteParameters::theHostsPageIsTheHostFormWithNothingToOpen()
     QVERIFY(form->isVisible());
     // Manage mode: Save and Remove, no Open.
     QVERIFY(!form->findChild<QDialogButtonBox *>()->isVisible());
+    // Nor Settings from: a one-shot copy, which among a saved host's fields reads as a link.
+    // The control is the open form, which keeps it (tst_remotebrowser drives it there).
+    auto *from = form->findChild<QComboBox *>(QStringLiteral("remoteSettingsFrom"));
+    QVERIFY(from);
+    QVERIFY(!from->isVisible());
+    const QList<QLabel *> labels = form->findChildren<QLabel *>();
+    for (QLabel *label : labels) {
+        if (label->buddy() == from)
+            QVERIFY2(!label->isVisible(), "the label stayed behind with no field beside it");
+    }
+    OpenRemoteDialog openForm(&store);
+    openForm.show();
+    QVERIFY(openForm.findChild<QComboBox *>(QStringLiteral("remoteSettingsFrom"))->isVisible());
     form->findChild<QLineEdit *>(QStringLiteral("remoteHostField"))->setText(QStringLiteral("web7"));
     form->findChild<QPushButton *>(QStringLiteral("remoteSaveButton"))->click();
     QCOMPARE(store.all().size(), 1);

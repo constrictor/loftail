@@ -16,6 +16,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <QTimer>
 #include <QtTest>
 
 #include <QByteArray>
@@ -107,6 +108,11 @@ private slots:
     void aReasonThatChangesWhileWaitingIsRepublished();
     void aLocalWaitKeepsTheReasonItWasGiven();
     void theCountdownRidesTheWaitReasonAndMovesWhileTheReasonStandsStill();
+
+    // A spool says nothing when its first bytes land, so the wait for them is POLLED —
+    // and at the ordinary 750 ms an archived member that expands in 50 ms sat behind a
+    // blank tab for most of a second. The wait starts quick and backs off.
+    void aWaitingSpoolIsLookedAtQuicklyAndBacksOffToTheOrdinaryCadence();
 };
 
 void TestWaitingRemote::unreachableHostOpensWaitingAndFillsInWhenItReturns()
@@ -836,3 +842,56 @@ void TestWaitingRemote::theCountdownRidesTheWaitReasonAndMovesWhileTheReasonStan
 
 QTEST_GUILESS_MAIN(TestWaitingRemote)
 #include "tst_waitingremote.moc"
+
+void TestWaitingRemote::aWaitingSpoolIsLookedAtQuicklyAndBacksOffToTheOrdinaryCadence()
+{
+    // Read off the watch's own poll timer rather than a wall clock: the claim is about
+    // the cadence, and a CI runner's scheduling is not part of it.
+    FakeRemoteFarm farm;
+    auto remote = farm.at(url());
+    remote->setInitialContent(rec(0, "INFO ", "net.io", "hello"));
+    remote->setInitiallyUnavailable(QStringLiteral("Cannot reach web1:22 — Connection refused"));
+
+    Document doc;
+    ManualFormatProvider provider(QString::fromLatin1(kPattern));
+    QVERIFY(doc.prepare(url(), provider, Encoding::Utf8, QTimeZone::utc()));
+    QVERIFY(doc.isWaiting());
+
+    LogModel model(&doc);
+    LiveController live(&doc, &model);
+    int resumes = 0;
+    wireResume(live, doc, model, &resumes);
+    const QList<QTimer *> timers = live.findChildren<QTimer *>();
+    QCOMPARE(timers.size(), 1); // the watch's poll; anything else and this reads the wrong one
+    QTimer *poll = timers.first();
+    const int ordinary = poll->interval();
+    QCOMPARE(ordinary, 750);
+
+    live.start();
+    // The first look comes long before an ordinary tick would have...
+    QVERIFY2(poll->interval() < ordinary / 10,
+             qPrintable(QStringLiteral("first wait poll at %1 ms").arg(poll->interval())));
+
+    // ...and each miss doubles it, so a host that stays down costs a handful of quick
+    // looks in total and is then polled exactly as before — never quickly for good.
+    int previous = poll->interval();
+    int misses = 0;
+    while (poll->interval() < ordinary && misses < 20) {
+        live.checkNow();
+        QVERIFY(doc.isWaiting());
+        QVERIFY(poll->interval() > previous || poll->interval() == ordinary);
+        previous = poll->interval();
+        ++misses;
+    }
+    QCOMPARE(poll->interval(), ordinary);
+    QVERIFY2(misses <= 6, qPrintable(QStringLiteral("%1 quick looks").arg(misses)));
+    live.checkNow();
+    QCOMPARE(poll->interval(), ordinary); // stays there
+
+    // Once the log arrives the tail is polled at the ordinary cadence, quick wait or not.
+    remote->becomeAvailable();
+    live.checkNow();
+    QCOMPARE(resumes, 1);
+    QVERIFY(!doc.isWaiting());
+    QCOMPARE(poll->interval(), ordinary);
+}

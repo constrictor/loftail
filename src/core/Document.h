@@ -274,7 +274,17 @@ public:
     // when its first bytes arrive is precisely this — reopen, settle the format and the
     // encoding from the sample, re-index from the top. Leaving the waiting state is then
     // a no-op. Do not "tidy" that into an early return for !isWaiting().
-    bool resume(IFormatProvider &provider);
+    //
+    // `scan` says WHO indexes, exactly as reopen() and rescan() are split (and for the
+    // same reason). Inline scans here, on the calling thread — the watch tick, which is
+    // the GUI thread. Deferred leaves the index EMPTY and the source open, and the caller
+    // hands the scan to an IndexController: that is what MainWindow does for a log that
+    // comes back from waiting, which is every archived and every remote log's first
+    // arrival, because an inline scan of a 40 MB member froze the window for the whole
+    // of it with no progress shown, where the same file opened plainly scans on a worker
+    // behind a notice. Inline stays the default for owners with no worker to hand to.
+    enum class ResumeScan { Inline, Deferred };
+    bool resume(IFormatProvider &provider, ResumeScan scan = ResumeScan::Inline);
 
     LogSource *source() const { return m_source.get(); }
     const LogFormat &format() const { return m_format; }

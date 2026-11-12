@@ -135,7 +135,29 @@ LiveController::~LiveController() = default;
 
 void LiveController::setPollInterval(int ms)
 {
-    m_watcher->setPollInterval(ms);
+    m_basePollMs = ms;
+    // A quick wait in progress keeps its own cadence and lands on the new base when it
+    // has backed off that far, rather than being yanked to it mid-wait.
+    if (m_waitPollMs == 0 || m_waitPollMs > ms) {
+        m_waitPollMs = 0;
+        m_watcher->setPollInterval(ms);
+    }
+}
+
+void LiveController::armQuickWaitPoll()
+{
+    if (kFirstWaitPollMs >= m_basePollMs)
+        return; // already polling at least this fast
+    m_waitPollMs = kFirstWaitPollMs;
+    m_watcher->setPollInterval(m_waitPollMs);
+}
+
+void LiveController::endQuickWaitPoll()
+{
+    if (m_waitPollMs == 0)
+        return;
+    m_waitPollMs = 0;
+    m_watcher->setPollInterval(m_basePollMs);
 }
 
 void LiveController::syncBaseline()
@@ -180,6 +202,8 @@ void LiveController::start()
     // to say about it.
     publishSourceStatus();
     m_watcher->watch(m_document->path());
+    if (m_document->isWaiting() && m_document->source())
+        armQuickWaitPoll();
 }
 
 void LiveController::stop()
@@ -414,9 +438,18 @@ void LiveController::checkWhileWaiting()
         // same thing — loftail is still looking and here is how hard.
         diagLogEvery(60000, "wait", m_document->path(),
                      QStringLiteral("still waiting for %1").arg(m_document->path()));
+        if (m_waitPollMs != 0) {
+            m_waitPollMs *= 2;
+            if (m_waitPollMs >= m_basePollMs)
+                endQuickWaitPoll();
+            else
+                m_watcher->setPollInterval(m_waitPollMs);
+        }
         return;
     }
 
+    // Before the emit, which may delete this controller.
+    endQuickWaitPoll();
     m_vanishedSince.invalidate();
     // The owner has the pattern and therefore the provider; it calls Document::resume()
     // (invariant #3). It may decline — the log can vanish again between this check and
@@ -525,6 +558,10 @@ void LiveController::beginWaiting(const QString &reason, WaitCause whenAbsent)
 
     m_lastSize = 0;
     m_vanishedSince.invalidate();
+    // A spooled log that has gone keeps its source and its fetcher, which is reconnecting:
+    // look for what it brings back promptly rather than a tick late.
+    if (m_document->source())
+        armQuickWaitPoll();
     // Watching deliberately continues. Waiting is the one state where the watch is the
     // only thing making progress — stopping it here is how the log would never come
     // back (contrast completed(), where there is genuinely nothing left to look at).

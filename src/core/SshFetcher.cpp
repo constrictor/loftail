@@ -163,6 +163,7 @@ public:
         // NeedsPerson again and re-latched. §6.5 has always said this action "does have
         // a prompter"; until now nothing gave it one.
         m_wantsPrompter = true;
+        m_permissionCarried = false;
         m_wake.notify_all();
     }
 
@@ -179,7 +180,8 @@ private:
 
     void tailLoop();
     void pollOnce();
-    bool establish(bool mayPrompt, QString *error, SshSession::Failure *failure);
+    bool establish(bool mayPrompt, bool patient, QString *error, SshSession::Failure *failure,
+                   bool *reachedServer);
     void reconnect();
     bool fetchForward(qint64 fromRemoteOffset, qint64 toRemoteOffset);
     void publishHeldCommits();
@@ -245,6 +247,11 @@ private:
     // Permission for the NEXT attempt to ask a person something. Set by start() (the
     // user's own open) and by pokeNow() (File ▸ Reconnect), consumed by reconnect().
     bool           m_wantsPrompter = false;
+    // True while m_wantsPrompter is a permission CARRIED OVER from an attempt that never
+    // reached a server (reconnect()). Such an attempt may still ask, but it is no longer the
+    // one a person is watching, so it is as impatient as any other retry — otherwise a host
+    // that is down would be retried on the full connect timeout for as long as it stays down.
+    bool           m_permissionCarried = false;
 
     // Fetcher-thread only, so no lock: whether an unattended attempt that suddenly needs
     // a person is still worth repeating, and the clock it is measured on. A reboot is the
@@ -273,14 +280,16 @@ private:
 // the session is live and the state is Live. Shared by start(), which runs on the thread
 // that opened the document and may prompt, and by the worker's reconnect, which may not
 // — the only difference between the two is the prompter, which is why this takes one.
-bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *failure)
+bool SshFetcher::establish(bool mayPrompt, bool patient, QString *error,
+                           SshSession::Failure *failure, bool *reachedServer)
 {
+    *reachedServer = false;
     // An unattended retry is IMPATIENT where the first attempt is patient. A person
     // watching a connect they asked for will wait; a timer retrying in the background
     // has nothing to lose by giving up early, because the next attempt is seconds away
     // and every second spent in this one is a second the host is not being left alone.
-    const int timeout = mayPrompt ? m_options.timeoutMs
-                                  : qMin(m_options.timeoutMs, kRetryTimeoutMs);
+    const int timeout = patient ? m_options.timeoutMs
+                                : qMin(m_options.timeoutMs, kRetryTimeoutMs);
 
     // A DISCOVERED DEVICE IS FOUND AGAIN BEFORE EVERY CONNECT, the first and each reconnect —
     // which is exactly when one that moved needs finding. `endpoint` is the concrete far end
@@ -365,9 +374,11 @@ bool SshFetcher::establish(bool mayPrompt, QString *error, SshSession::Failure *
                               SshSession::Need::LogTransport,
                               SshSession::compressionFor(SshSession::Purpose::Fetch,
                                                          m_options.compress))) {
+        *reachedServer = m_session->reachedServer();
         resetSession();
         return false;
     }
+    *reachedServer = true;
     m_connectedTo = endpoint;
     if (!m_session->openFile(error, failure)) {
         resetSession();
@@ -925,17 +936,42 @@ void SshFetcher::pollOnce()
 void SshFetcher::reconnect()
 {
     bool mayPrompt = false;
+    bool patient = false;
     {
         std::unique_lock<std::mutex> lock(m_mutex);
         if (m_wantsPrompter) {
             m_wantsPrompter = false;
             mayPrompt = true;
+            patient = !m_permissionCarried;
+            m_permissionCarried = false;
         }
     }
 
     QString error;
     SshSession::Failure failure = SshSession::Failure::None;
-    if (establish(mayPrompt, &error, &failure)) {
+    bool reachedServer = false;
+    const bool ok = establish(mayPrompt, patient, &error, &failure, &reachedServer);
+
+    // THE PERMISSION IS SPENT BY AN ATTEMPT THAT COULD HAVE USED IT, NOT BY THE FIRST ONE.
+    // A prompter is consulted only once a server is answering — its host key, then the auth
+    // ladder, whose keychain rung is gated on there being somebody to ask. An attempt that
+    // never got that far (the host down, a discovered device not on the network yet) asked
+    // nobody anything, so consuming the permission there left the open with no way to sign
+    // in at all: a session restored while the device was off found it later, connected
+    // unattended, and latched "needs a password and there is no way to ask for one here"
+    // for the life of the tab — with the password one keychain read away. So it is put
+    // back, for the next attempt, until one actually reaches a server. That attempt is
+    // still the OPEN's (the log has never been shown), which is what the permission was
+    // granted for; every attempt after it is unattended exactly as before.
+    if (mayPrompt && !ok && !reachedServer) {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        if (!m_stopping) {
+            m_wantsPrompter = true;
+            m_permissionCarried = true;
+        }
+    }
+
+    if (ok) {
         // Evidence that this host's credentials work unattended, and the thing that
         // buys the grace window below on the day it stops working.
         m_grace.signedIn();

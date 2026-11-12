@@ -247,6 +247,32 @@ public:
     // clipboard exactly as it was, because the clipboard is written once at the end.
     void copySelectionRaw() const;
     void copySelectionAsColumns() const;
+    // The MESSAGE of each selected record and nothing else — every continuation line of
+    // it, exactly as the Message column holds it, one record after another separated by
+    // a newline. Bounded exactly as the two above. A format with no %m has no message
+    // field, so each record contributes its whole text, as the Message column shows an
+    // unparsed line's.
+    void copySelectionMessages() const;
+
+    // One record's whole text exactly as Copy gives it — every line, whatever the display
+    // cap or the column width cut off (SPEC.md §5). Read through the source on demand and
+    // held nowhere (invariant #1). `viewRow` is this view's row, mapped through its own
+    // model, so the digest strip answers for the record its row names.
+    QString recordText(int viewRow) const;
+
+    // Whether `viewRow` is drawn cut short: past kDisplayLineCap physical lines with
+    // wrapping off, or with wrapped text left over once its capped rows are full. Exactly
+    // the records the paint overpaints with a "not shown" line, and the ones a
+    // double-click on the message opens whole (MainWindow::activateRecordColumn).
+    bool recordIsCut(int viewRow) const;
+
+    // How far past the header the sideways range reaches — the widest unwrapped message
+    // line painted so far (unwrappedMessageWidth()). Public for the tests.
+    int unwrappedContentWidth() const { return m_unwrappedContentWidth; }
+
+    // A line longer than this is still elided with wrapping off, message last or not —
+    // reachable by tooltip, Copy or Show Whole Record rather than by scrolling sideways.
+    static constexpr int kMaxUnelidedChars = 4096;
 
     // File ▸ Export Visible (SPEC.md §5, ARCHITECTURE.md §7.1.6). Writes EVERY row of
     // this view — the filtered subset, context rows included — to `path` as the log's
@@ -580,6 +606,18 @@ private:
     // out and how far it may be drawn.
     bool messageIsLastVisibleColumn() const;
 
+    // With wrapping off: the width one physical message line is drawn and elided in —
+    // its own, up to kMaxUnelidedChars, where the message is last; the section's where a
+    // column follows it. The paint and truncatedCellText() both ask it, so they agree.
+    int unwrappedMessageWidth(const QString &line, int sectionW, bool msgLast) const;
+    void noteUnwrappedWidth(int width);
+    QString unwrappedCutText(int hiddenLines) const;
+    QString wrappedCutText() const;
+    QString sourceRecordText(int sourceRow) const;
+    // A pixel bound on the measured width as well as a character one, for a face with
+    // wide glyphs: it keeps a sideways scrollbar something a reader can drag.
+    static constexpr int kMaxUnelidedWidth = 60000;
+
     // Resolve one row's background and text color for painting (M5). Selection wins;
     // otherwise the highlight rules speak through the model's Background/Foreground
     // roles (SPEC.md §7), each falling back to the theme color — the background to an
@@ -726,6 +764,8 @@ private:
     int      m_current = -1;   // focused record (drives keyboard nav + wrap)
     int      m_anchor = -1;    // range-selection anchor
     int      m_selWrapCache = -1; // memoized selWrapLines() for the current width
+    int      m_unwrappedContentWidth = 0; // widest unwrapped message line painted so far
+    bool     m_scrollRangeQueued = false; // an updateScrollBars() is posted, not yet run
 
     // What beginFilterUpdate() captured, in source ordinals. `active` doubles as the
     // in-bracket guard: while it is set, the scrollbar clamp that endResetModel()
