@@ -461,6 +461,7 @@ require_ran "$last_log" \
     aFirstConnectAsksAboutTheHostKeyAndRemembersIt \
     aRejectedHostKeySendsNoCredential \
     aFirstConnectAsksForThePasswordWhenNoKeyAnswers \
+    aLogOpenedWhileItsHostWasDownStillAsksForThePasswordWhenItComesUp \
     theExecFallbackReadsTheSameBytes \
     theExecFallbackSizesWithoutStat \
     aMissingRemoteLogSaysItIsMissingRatherThanUnreadable \
