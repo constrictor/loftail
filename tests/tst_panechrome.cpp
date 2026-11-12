@@ -91,7 +91,7 @@ private:
     // making the title bar's copy redundant, so it is the subject of the test.
     static QStringList paneTabTitles()
     {
-        QStringList titles{QStringLiteral("Filters"), QStringLiteral("Highlighters")};
+        QStringList titles{QStringLiteral("Filter"), QStringLiteral("Highlighters")};
 #if defined(LOFTAIL_HAVE_PRESETS)
         titles << QStringLiteral("Presets");
 #endif

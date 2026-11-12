@@ -435,7 +435,7 @@ MainWindow::MainWindow(SessionRestore restore, QWidget *parent)
     // presets pane is the exception that binds to nothing, being file-independent.
     m_filterPane = new FilterPane(this);
     QDockWidget *filterDock = addPaneDock(m_filterPane, QStringLiteral("filtersDock"),
-                                          tr("Filters"));
+                                          tr("Filter"));
     connect(this, &MainWindow::activeDocumentChanged, m_filterPane, &FilterPane::setDocument);
     connect(m_filterPane, &FilterPane::filtersChanged, this, &MainWindow::applyActiveFilters);
     // End a run of typed edits when the caret leaves the box producing them, so a word
@@ -455,7 +455,7 @@ MainWindow::MainWindow(SessionRestore restore, QWidget *parent)
     m_filtersDock = filterDock;
     connect(m_filterPane, &FilterPane::activityChanged, this, [this](bool active) {
         if (m_filtersDock)
-            m_filtersDock->setWindowTitle(active ? tr("Filters •") : tr("Filters"));
+            m_filtersDock->setWindowTitle(active ? tr("Filter •") : tr("Filter"));
         // The same answer drives View ▸ Clear Filters, from the same signal: this is
         // the only notification that a filter edit has landed, and it arrives AFTER
         // the pane's debounce rather than per keystroke. The pane's own change guard
