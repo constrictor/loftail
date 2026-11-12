@@ -121,9 +121,9 @@ OpenRemoteDialog::OpenRemoteDialog(HostBookmarkStore *store, QWidget *parent)
     m_settingsFrom->setObjectName(QStringLiteral("remoteSettingsFrom"));
     m_settingsFrom->setToolTip(tr("Fill the form in from a remote type or another saved host. "
                                   "The host already typed is kept."));
-    auto *settingsFromLabel = new QLabel(tr("Settings &from:"), connectionBox);
-    settingsFromLabel->setBuddy(m_settingsFrom);
-    form->addRow(settingsFromLabel, m_settingsFrom);
+    m_settingsFromLabel = new QLabel(tr("Settings &from:"), connectionBox);
+    m_settingsFromLabel->setBuddy(m_settingsFrom);
+    form->addRow(m_settingsFromLabel, m_settingsFrom);
 
     // SSH or telnet. The rest of the form is the same address either way — a telnet far end
     // is a host, a port, an account and a log path — and only the sign-in differs.
@@ -877,6 +877,12 @@ void OpenRemoteDialog::presetAddress(const QString &host, const QString &path)
 void OpenRemoteDialog::setManageMode(bool manage)
 {
     m_buttons->setVisible(!manage);
+    // NOT ON THE SAVED-HOSTS PAGE. Among the stored fields of a host being edited, a picker
+    // that keeps showing its last choice reads as a setting of that host — "this host takes
+    // its settings from type X" — which is a link that does not exist: it is a one-shot copy.
+    // Where a form is started from an address typed into Open Remote it earns its place.
+    m_settingsFromLabel->setVisible(!manage);
+    m_settingsFrom->setVisible(!manage);
 }
 
 } // namespace loftail

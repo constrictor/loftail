@@ -87,7 +87,8 @@ public:
     QString chosenConsolePreset() const { return m_chosenConsolePreset; }
 
     // Embedded in File ▸ Remote Parameters as the editor of saved hosts: no Open, no Cancel
-    // — Save, Update and Remove are the whole of what the page is for there (M28).
+    // — Save, Update and Remove are the whole of what the page is for there (M28) — and no
+    // Settings from, which on that page reads as a stored link rather than a one-shot copy.
     void setManageMode(bool manage);
 
 private:
@@ -128,6 +129,7 @@ private:
     QComboBox *m_auth = nullptr;
     QComboBox *m_connection = nullptr;     // SSH or telnet (M28)
     QComboBox *m_settingsFrom = nullptr;   // copy settings from a remote type or saved host
+    QLabel    *m_settingsFromLabel = nullptr; // hidden with it in manage mode
     QLineEdit *m_password = nullptr;       // telnet: what the console login is answered with
     QLabel    *m_passwordLabel = nullptr;
     QComboBox *m_consolePreset = nullptr;  // telnet: the login conversation's preset
