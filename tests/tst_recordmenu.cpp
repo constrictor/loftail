@@ -19,6 +19,7 @@
 #include <QtTest>
 
 #include <QAction>
+#include <QClipboard>
 #include <QApplication>
 #include <QFile>
 #include <QGroupBox>
@@ -287,6 +288,7 @@ private slots:
     void highlightThisMessageAddsAPlainTextRuleThatMatchesTheRecord();
     void highlightThisMessageTakesTheFirstLineOfAMultiLineRecord();
     void copyActionsAreOnTheMenu();
+    void copyMessageOnlyTakesEachSelectedRecordsWholeMessage();
     void selectAllTakesTheActiveViewsVisibleRecordsAndNothingElse();
 
     // M15 — a context row is a real row: pointing at it must read ITS record, not the
@@ -732,6 +734,46 @@ void TestRecordMenu::copyActionsAreOnTheMenu()
     w.buildRecordMenu(&menu, activeView(w), kMain, -1);
     QVERIFY(menu.actions().contains(w.findChild<QAction *>(QStringLiteral("copyAction"))));
     QVERIFY(menu.actions().contains(w.findChild<QAction *>(QStringLiteral("copyColumnsAction"))));
+    QVERIFY(menu.actions().contains(w.findChild<QAction *>(QStringLiteral("copyMessageAction"))));
+}
+
+// The message and nothing else: no timestamp, thread, level or subsystem, but EVERY
+// continuation line of a multi-line record, and an unparsed line's whole text (which
+// is what its Message cell shows).
+void TestRecordMenu::copyMessageOnlyTakesEachSelectedRecordsWholeMessage()
+{
+    const QString path = m_dir.filePath(QStringLiteral("copymsg.log"));
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("a plain line\n"
+            "2026-07-21 10:00:00,000 [main] INFO  net.io - boom happened\n"
+            "    at frame one\n"
+            "    at frame two\n"
+            "2026-07-21 10:00:01,000 [worker] WARN  db.pool - quiet\n");
+    f.close();
+
+    MainWindow w;
+    auto *copyMessage = w.findChild<QAction *>(QStringLiteral("copyMessageAction"));
+    QVERIFY(copyMessage);
+    QVERIFY(!copyMessage->isEnabled()); // dead with no log open, like the other copies
+
+    w.openFile(path);
+    waitUntilIndexed(w);
+    QVERIFY(copyMessage->isEnabled());
+
+    QApplication::clipboard()->setText(QStringLiteral("untouched"));
+    // One record: the focused one when nothing else is selected.
+    activeView(w)->logView()->setCurrentRecord(1);
+    copyMessage->trigger();
+    QCOMPARE(QApplication::clipboard()->text(),
+             QStringLiteral("boom happened\n    at frame one\n    at frame two"));
+
+    w.findChild<QAction *>(QStringLiteral("selectAllAction"))->trigger();
+    copyMessage->trigger();
+    QCOMPARE(QApplication::clipboard()->text(),
+             QStringLiteral("a plain line\n"
+                            "boom happened\n    at frame one\n    at frame two\n"
+                            "quiet"));
 }
 
 // Edit ▸ Select All (SPEC.md §5). Driven through the real window because what the

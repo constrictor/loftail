@@ -2496,6 +2496,51 @@ void LogView::copySelectionAsColumns() const
     QApplication::clipboard()->setText(out);
 }
 
+void LogView::copySelectionMessages() const
+{
+    const QVector<QPair<int, int>> ranges = selectedRecordRanges();
+    if (ranges.isEmpty())
+        return;
+    const qint64 total = rangeTotal(ranges);
+    const RecordIndex &idx = m_document->index();
+
+    // Resolved once, like the columns of the form above. The model's own cell is what
+    // the Message column shows, which is what "the message" means here — and, unlike
+    // Document::messageText(), it stops where %m does on a pattern writing fields after it.
+    int msgCol = -1;
+    const QVector<Field> &fields = m_document->format().fields;
+    for (int c = 0; c < fields.size(); ++c) {
+        if (fields.at(c).role == FieldRole::Message) {
+            msgCol = c;
+            break;
+        }
+    }
+
+    QString out;
+    reserveFor(out, selectedByteLength(ranges) / qMax(1, m_document->decoder().unitSize())
+                        + total);
+
+    bool first = true;
+    const bool ok = walkSelection(ranges, total, [&](int viewRow) {
+        QString text;
+        if (msgCol >= 0) {
+            text = m_model->cellText(viewRow, msgCol);
+        } else {
+            const int r = m_model->sourceRow(viewRow);
+            if (r < 0 || r >= idx.records.size())
+                return;
+            text = sourceRecordText(r);
+        }
+        if (!first)
+            out += QLatin1Char('\n');
+        first = false;
+        out += text;
+    });
+    if (!ok)
+        return; // as above: nothing reaches the clipboard unless the whole copy did
+    QApplication::clipboard()->setText(out);
+}
+
 // The export (SPEC.md §5, ARCHITECTURE.md §7.1.6). Bytes, never text: decoding and
 // re-encoding is exactly what would lose the "original format" this exists to keep.
 LogView::ExportResult LogView::exportVisible(const QString &path, QString *error,

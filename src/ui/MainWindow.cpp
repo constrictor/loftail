@@ -769,6 +769,13 @@ void MainWindow::buildMenus()
         if (LogView *v = activeLogView())
             v->copySelectionAsColumns();
     });
+    m_copyMessageAction = editMenu->addAction(tr("Copy &Message Only"));
+    m_copyMessageAction->setObjectName(QStringLiteral("copyMessageAction")); // findChild, for tests
+    m_copyMessageAction->setEnabled(false);
+    connect(m_copyMessageAction, &QAction::triggered, this, [this]() {
+        if (LogView *v = activeLogView())
+            v->copySelectionMessages();
+    });
 
     // Select All (SPEC.md §5). It acts on the ACTIVE log view — the same activeLogView()
     // the copy actions above resolve, so what is copied afterwards is what was selected,
@@ -2103,6 +2110,8 @@ void MainWindow::updateActionStates()
         m_copyAction->setEnabled(onLog);
     if (m_copyColumnsAction)
         m_copyColumnsAction->setEnabled(onLog);
+    if (m_copyMessageAction)
+        m_copyMessageAction->setEnabled(onLog);
     if (m_selectAllAction)
         m_selectAllAction->setEnabled(onLog);
     if (m_exportVisibleAction)
@@ -5784,9 +5793,10 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
     // them, and these are the window's own, so the shortcuts stay visible beside them.
     if (filterSection || highlightSection)
         menu->addSeparator();
-    if (m_copyAction && m_copyColumnsAction) {
+    if (m_copyAction && m_copyColumnsAction && m_copyMessageAction) {
         menu->addAction(m_copyAction);
         menu->addAction(m_copyColumnsAction);
+        menu->addAction(m_copyMessageAction);
     }
     // The whole of the CLICKED record in a window of its own (SPEC.md §5): offered for
     // every record, not only one the table cut short, because a line too long for its
