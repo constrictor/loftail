@@ -266,12 +266,17 @@ QWidget *RemoteParametersDialog::buildTypesPage()
     testRow->addWidget(m_testButton);
     testRow->addWidget(m_testStatus, 1);
     testLayout->addLayout(testRow);
+    // THE RESULTS ARE THE ONE THING ON THIS PAGE WITH NO NATURAL HEIGHT, so they take whatever
+    // the form leaves below it: the group box is the right column's only stretch item and the
+    // list is the group box's. A trailing addStretch() here competes for the same pixels and
+    // pins the list to its floor under an empty band — the Filters pane's trap. The minimum is
+    // a FLOOR so a short dialog, or one with Advanced open, cannot squeeze it to nothing; it is
+    // not a row count.
     m_testResults = new QListWidget(testBox);
     m_testResults->setObjectName(QStringLiteral("remoteTypeTestResults"));
-    m_testResults->setMaximumHeight(6 * m_testResults->fontMetrics().lineSpacing());
-    testLayout->addWidget(m_testResults);
-    right->addWidget(testBox);
-    right->addStretch();
+    m_testResults->setMinimumHeight(4 * m_testResults->fontMetrics().lineSpacing());
+    testLayout->addWidget(m_testResults, 1);
+    right->addWidget(testBox, 1);
 
     for (QLineEdit *e : {m_name, m_service, m_domain, m_instanceRe, m_txtRe, m_scopeRe, m_user,
                          m_password, m_defaultLog})

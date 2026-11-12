@@ -122,6 +122,7 @@ private slots:
     void saveSaysUpdateWhenTheNameAlreadyNamesAType();
     void theDiscoveryFieldsFollowTheKindOfDiscovery();
     void testDiscoveryShowsWhatTheFormWouldFind();
+    void theDiscoveryResultsTakeTheHeightLeftBelowTheForm();
     void theHostsPageIsTheHostFormWithNothingToOpen();
 };
 
@@ -289,6 +290,31 @@ void TestRemoteParameters::testDiscoveryShowsWhatTheFormWouldFind()
     QTest::qWait(100);
     QCOMPARE(results->count(), 0);
     QVERIFY(store.types().isEmpty());
+}
+
+// The results list is the one thing on the types page with no natural height, so every pixel
+// the dialog grows by goes to it — not to an empty band under the "Try it" box. A RELATION
+// rather than a pixel count: Fusion and Breeze disagree about every term in the form above.
+void TestRemoteParameters::theDiscoveryResultsTakeTheHeightLeftBelowTheForm()
+{
+    HostBookmarkStore store = freshStore();
+    RemoteParametersDialog dialog(&store);
+    dialog.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+    auto *results = child<QListWidget>(dialog, "remoteTypeTestResults");
+    QWidget *testBox = results->parentWidget();
+    QWidget *page = testBox->parentWidget();
+    QVERIFY(results->isVisible());
+
+    const int listBefore = results->height();
+    const int gapBefore = page->height() - testBox->geometry().bottom();
+    const int pageBefore = page->height();
+
+    constexpr int kGrow = 200;
+    dialog.resize(dialog.width(), dialog.height() + kGrow);
+    QTRY_COMPARE(page->height(), pageBefore + kGrow);
+    QCOMPARE(results->height(), listBefore + kGrow);
+    QCOMPARE(page->height() - testBox->geometry().bottom(), gapBefore);
 }
 
 void TestRemoteParameters::theHostsPageIsTheHostFormWithNothingToOpen()
