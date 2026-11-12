@@ -24,6 +24,8 @@
 #include <QFile>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QTcpServer>
+#include <QTcpSocket>
 
 #include <functional>
 
@@ -339,6 +341,11 @@ private slots:
     void aFirstConnectAsksAboutTheHostKeyAndRemembersIt();
     void aRejectedHostKeySendsNoCredential();
     void aFirstConnectAsksForThePasswordWhenNoKeyAnswers();
+    // The open's one permission to ask, carried past attempts that never reached a server.
+    // A session restored while the machine was off used to spend it on the refused connect,
+    // so when the machine came up the retry was unattended and latched "needs a password
+    // and there is no way to ask for one here" for the life of the tab.
+    void aLogOpenedWhileItsHostWasDownStillAsksForThePasswordWhenItComesUp();
     // WHY a remote log cannot be read — absent, absent along with its folder, there
     // and unreadable, or a folder. The transport used to fold the first three into
     // one sentence and print a bare status number for the rest, and no fake can
@@ -1191,6 +1198,93 @@ void TestSshLive::aFirstConnectAsksForThePasswordWhenNoKeyAnswers()
     SshSession second;
     QVERIFY2(second.connectTo(m_location, &again, 20000, &error), qPrintable(error));
     QCOMPARE(again.passwordAsks, 0);
+}
+
+void TestSshLive::aLogOpenedWhileItsHostWasDownStillAsksForThePasswordWhenItComesUp()
+{
+    // Gated exactly as the case above, and for its reason: the ladder has to run out of
+    // keys and reach the prompter, which needs an account with a password.
+    const QString password = QProcessEnvironment::systemEnvironment().value(
+        QStringLiteral("LOFTAIL_TEST_SSH_PASSWORD"));
+    if (password.isEmpty())
+        QSKIP("Set LOFTAIL_TEST_SSH_PASSWORD to the account's password to run this. "
+              "packaging/test-ssh/run-ssh-tests.sh does it for the stock server.");
+
+    // Written while the home is still the real one: writeRemote() signs in with its key.
+    QVERIFY(writeRemote("2026-07-21 00:00:01,000 [t0] INFO  logger.a - up again\n"));
+
+    QTemporaryDir scratch;
+    QVERIFY(useFreshHome(&scratch, false));
+    SshCredentialCache::clear();
+    FakeSecretStore store;
+    store.setAvailable(false);
+    setSecretStore(&store);
+
+    // A PORT THAT IS DOWN NOW AND UP LATER, standing in for a machine that is switched off
+    // when the session is restored and switched on afterwards. Bound and released, so the
+    // first attempt is refused at once; then a forwarder to the real server is put on it.
+    quint16 port = 0;
+    {
+        QTcpServer probe;
+        QVERIFY(probe.listen(QHostAddress::LocalHost));
+        port = probe.serverPort();
+    }
+    RemoteLocation down = m_location;
+    down.host = QStringLiteral("127.0.0.1");
+    down.port = port;
+
+    ScriptedPrompter prompter;
+    prompter.hostKeyAnswer = SshPrompter::HostKeyChoice::AcceptOnce;
+    prompter.passwordAnswer = password;
+    // start() decides whether the open may ask from whether a prompter is installed —
+    // which it is here, as it is under a window.
+    setSshPrompter(&prompter);
+
+    QString error;
+    auto fetcher = makeSshFetcher(down, &error);
+    QVERIFY2(fetcher, qPrintable(error));
+    QTemporaryDir spoolDir;
+    QVERIFY(spoolDir.isValid());
+    QVERIFY2(fetcher->start(spoolDir.path(), &error), qPrintable(error));
+
+    // The first attempt finds nothing listening, and nobody was asked anything.
+    QTRY_VERIFY_WITH_TIMEOUT(fetcher->status().retryAtMs > 0, 15000);
+    QCOMPARE(prompter.hostKeyAsks, 0);
+    QCOMPARE(prompter.passwordAsks, 0);
+
+    // The machine comes up.
+    QTcpServer forwarder;
+    QList<QTcpSocket *> pipes;
+    QObject::connect(&forwarder, &QTcpServer::newConnection, &forwarder, [&]() {
+        while (QTcpSocket *in = forwarder.nextPendingConnection()) {
+            auto *out = new QTcpSocket(&forwarder);
+            pipes << in << out;
+            QObject::connect(in, &QTcpSocket::readyRead, out,
+                             [in, out]() { out->write(in->readAll()); });
+            QObject::connect(out, &QTcpSocket::readyRead, in,
+                             [in, out]() { in->write(out->readAll()); });
+            QObject::connect(in, &QTcpSocket::disconnected, out,
+                             &QTcpSocket::disconnectFromHost);
+            QObject::connect(out, &QTcpSocket::disconnected, in,
+                             &QTcpSocket::disconnectFromHost);
+            // Bytes the client sent before the far side was up wait in `in` until then.
+            QObject::connect(out, &QTcpSocket::connected, in,
+                             [in, out]() { out->write(in->readAll()); });
+            out->connectToHost(m_location.host, quint16(m_location.port));
+        }
+    });
+    QVERIFY(forwarder.listen(QHostAddress::LocalHost, port));
+
+    // THE ASSERTION: the next attempt reaches the server and, the open never having been
+    // shown a password question, may still ask one — so it asks, signs in and goes live,
+    // where it used to latch "needs a password and there is no way to ask for one here".
+    QTRY_VERIFY2_WITH_TIMEOUT(fetcher->status().state == FetchStatus::State::Live,
+                              qPrintable(fetcher->status().error), 30000);
+    QCOMPARE(prompter.passwordAsks, 1);
+    QCOMPARE(prompter.acceptedCount, 1);
+
+    fetcher->requestStop();
+    setSshPrompter(nullptr);
 }
 
 void TestSshLive::connectsAndReadsTheRemoteFile()

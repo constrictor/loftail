@@ -198,6 +198,15 @@ public:
     };
     CompressionMethods negotiatedCompression() const;
 
+    // Whether the last connectTo() got as far as the FAR END'S OWN QUESTIONS — the host key
+    // and then authentication, the only two points at which a prompter is consulted (and the
+    // auth ladder's keychain rung, which is gated on there being one). False for a connect
+    // that never reached a server: a name that did not resolve, a refused or timed-out TCP
+    // connect, a handshake that never completed. A caller holding a once-only permission to
+    // involve the user reads it to tell an attempt that SPENT that permission from one that
+    // never had the chance to (SshFetcher::reconnect()).
+    bool reachedServer() const;
+
     // Consulted repeatedly while connecting; returning true abandons the attempt with
     // Failure::Unreachable. Set before connectTo() by an owner that may be asked to stop
     // — which is every fetcher — and called from the connecting thread, so it must not

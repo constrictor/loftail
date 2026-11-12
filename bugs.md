@@ -74,6 +74,17 @@ Passes run and closed:
   `normalizeLogPath()` now runs to a fixed point, bounded, exactly as `cleanedToFixedPoint()`
   does for entry 47 — a repair rather than a refusal, a file name being unable to hold a `/`.
 
+- **2026-11-12**, entry 60 — reported by the user, older than M28 and not specific to it. A
+  remote log's open is granted ONE permission to ask a person something (a host key, a
+  password, and through it the keychain rung), and `SshFetcher::reconnect()` consumed it on
+  the first attempt whatever that attempt did. A session restored while the machine was off
+  spent it on a refused connect or a device discovery could not find, so when the machine
+  came up the retry was unattended and latched `remoteType:Ajax needs a password and there is
+  no way to ask for one here.` for the life of the tab — with the password typed last session
+  and one prompt (or one keychain read) away. The permission is now spent only by an attempt
+  that reached a server (`SshSession::reachedServer()`), and carried to the next one until
+  then, as an impatient retry rather than with the open's full timeout.
+
 Entry 23 is what is left, and it is not waiting on a patch: it is a standing
 product decision nobody has taken.
 

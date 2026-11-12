@@ -285,6 +285,12 @@ struct SshSession::Impl
     QString           compressIn;
     QString           compressOut;
 
+    // Set by connectTo() once the transport is up and the host key is about to be judged —
+    // the first point a prompter can be asked anything. Deliberately NOT cleared by
+    // teardown(), which every failure path calls: the answer is about the attempt that just
+    // failed and is read after it (reachedServer()).
+    bool              reachedServer = false;
+
     bool              fstatTracks = false;
     SshSession::Mode  mode = SshSession::Mode::Sftp;
     // The shell-command transport: the size ladder, the three-way "no rung answered"
@@ -1344,6 +1350,7 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     kind = Failure::Unreachable;
 
     d->teardown();
+    d->reachedServer = false;
     d->location = location;
 
     if (prompter)
@@ -1459,6 +1466,9 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
                             d->compressIn.isEmpty() ? QStringLiteral("?") : d->compressIn,
                             d->compressOut.isEmpty() ? QStringLiteral("?") : d->compressOut));
 
+    // Everything above is the network; everything from here is the server asking who we are
+    // and whether we trust it, which is where a person may be asked something.
+    d->reachedServer = true;
     if (!d->verifyHostKey(prompter, &err, &kind)) {
         d->teardown();
         return false;
@@ -1628,6 +1638,11 @@ bool SshSession::connectTo(const RemoteLocation &location, SshPrompter *prompter
     d->health.markAlive();
     kind = Failure::None;
     return true;
+}
+
+bool SshSession::reachedServer() const
+{
+    return d->reachedServer;
 }
 
 SshSession::Mode SshSession::mode() const
