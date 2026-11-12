@@ -286,14 +286,21 @@ QString paragraphForLayout(QStringView paragraph)
 // Returns the display lines used. A record is not a line (invariant #2): the message's own
 // newlines are paragraph breaks, which `QTextLayout` does not take for itself, and the
 // string split is a DECODED one, never raw bytes (invariant #8).
+//
+// `more`, when given, says whether any of `text` was left over once `maxLines` were placed —
+// the one question a record capped at kDisplayLineCap needs answered to say so on screen
+// (SPEC.md §5). It is read off where the last placed line ENDS, never off a line count:
+// the count is capped by construction, so a record exactly at the cap and one far past it
+// count alike.
 template <class Visit>
 int layoutWrappedText(const QString &text, const QFont &font, int width, bool wordWrap,
-                      int maxLines, int lineHeight, Visit &&visit)
+                      int maxLines, int lineHeight, Visit &&visit, bool *more = nullptr)
 {
     const QTextOption option = wrapOptionFor(wordWrap);
     const QList<QStringView> paragraphs = QStringView(text).split(QLatin1Char('\n'));
     int placed = 0; // display lines used so far by this record
     int base = 0;   // character offset of this paragraph within `text`
+    int laidTo = 0; // character offset just past the last placed line
     for (const QStringView &paragraph : paragraphs) {
         if (placed >= maxLines)
             break;
@@ -313,9 +320,13 @@ int layoutWrappedText(const QString &text, const QFont &font, int width, bool wo
         }
         layout.endLayout();
         visit(layout, lines, base);
+        if (!lines.isEmpty())
+            laidTo = base + lines.last().textStart() + lines.last().textLength();
         placed += int(lines.size());
         base += int(paragraph.size()) + 1; // the newline itself
     }
+    if (more)
+        *more = laidTo < int(text.size());
     return qMax(1, placed);
 }
 
@@ -325,7 +336,7 @@ int layoutWrappedText(const QString &text, const QFont &font, int width, bool wo
 // search arms. The same `QTextLayout` draws the text and answers where the run is, so the
 // two cannot disagree.
 void drawWrappedCell(QPainter &p, const QRect &rect, const QString &text, int lineHeight,
-                     bool wordWrap, const CellMark &mark)
+                     bool wordWrap, const CellMark &mark, bool *more = nullptr)
 {
     QVector<TextMatcher::Span> spans;
     if (mark.active())
@@ -369,7 +380,27 @@ void drawWrappedCell(QPainter &p, const QRect &rect, const QString &text, int li
                 }
             }
             paintMarks(p, patches, mark, drawLayout);
-        });
+        },
+        more);
+    p.restore();
+}
+
+// The last display line of a record cut short at kDisplayLineCap, overpainted with a
+// sentence saying so (SPEC.md §5). It replaces that line rather than sitting beside it:
+// a record's rows are fixed by the height model, and an indicator that needed a row of its
+// own would be a 101st line the prefix sums do not count. In the row's own colours, italic,
+// so it reads as loftail speaking rather than as the log.
+void drawCutIndicator(QPainter &p, const QRect &rect, const QColor &band, const QColor &fg,
+                      const QString &text)
+{
+    p.save();
+    p.fillRect(rect, band);
+    QFont f = p.font();
+    f.setItalic(true);
+    p.setFont(f);
+    p.setPen(fg);
+    p.drawText(rect, Qt::AlignVCenter | Qt::TextSingleLine,
+               p.fontMetrics().elidedText(text, Qt::ElideRight, rect.width()));
     p.restore();
 }
 } // namespace
@@ -642,6 +673,114 @@ bool LogView::messageIsLastVisibleColumn() const
             return false;
     }
     return true;
+}
+
+// How wide one physical line of the message may be drawn with wrapping off — the ONE
+// answer the paint and the tooltip both ask, so a tooltip appears exactly where an
+// ellipsis was drawn (SPEC.md §5).
+//
+// Where the message is the last column there is nothing after it to draw over, so the line
+// is given its own width rather than the section's and the reader scrolls sideways to its
+// end: cutting it at the section edge, which is what this was, put the rest of a long line
+// where no scrolling could reach it (the horizontal range stopped at the header's length).
+// Bounded at kMaxUnelidedChars characters, past which it elides and the rest is a tooltip,
+// a copy or Show Whole Record away — a 200 KB payload line is not something a sideways
+// scrollbar is the way to read, and measuring it on every paint is not free either.
+// Where a column FOLLOWS the message there is nowhere to scroll to, and the section edge
+// stands.
+int LogView::unwrappedMessageWidth(const QString &line, int sectionW, bool msgLast) const
+{
+    if (!msgLast)
+        return sectionW;
+    const QStringView measured = QStringView(line).left(kMaxUnelidedChars);
+    // A pixel of slack either side of the measurement: elidedText() and
+    // horizontalAdvance() reach their answers by different roads, and a line that measured
+    // its own width exactly must not then be judged a pixel too wide for it.
+    const int needed = fontMetrics().horizontalAdvance(measured.toString()) + 2;
+    return qMax(sectionW, qMin(needed, kMaxUnelidedWidth));
+}
+
+// Grows only, and only from what has been PAINTED: the widest line of a log is not known
+// without decoding every record (invariant #1), so the sideways range covers the widest
+// line seen so far and widens as the reader scrolls onto a longer one — what a text editor
+// with a lazily measured longest line does. Reset where the record space or the font moves.
+void LogView::noteUnwrappedWidth(int width)
+{
+    if (width <= m_unwrappedContentWidth)
+        return;
+    m_unwrappedContentWidth = width;
+    // Queued, never from inside the paint: setRange() re-lays the scroll area out, and a
+    // layout asked for from inside paintEvent() is one the widget is already in the
+    // middle of drawing.
+    if (m_scrollRangeQueued)
+        return;
+    m_scrollRangeQueued = true;
+    QMetaObject::invokeMethod(
+        this,
+        [this] {
+            m_scrollRangeQueued = false;
+            updateScrollBars();
+        },
+        Qt::QueuedConnection);
+}
+
+QString LogView::unwrappedCutText(int hiddenLines) const
+{
+    return tr("… %n more line(s) not shown — double-click to show the whole record", "",
+              hiddenLines);
+}
+
+QString LogView::wrappedCutText() const
+{
+    return tr("… the rest of this record is not shown — double-click to show it whole");
+}
+
+QString LogView::sourceRecordText(int sourceRow) const
+{
+    const RecordIndex &idx = m_document->index();
+    if (sourceRow < 0 || sourceRow >= idx.records.size())
+        return {};
+    const Record &rec = idx.records.at(sourceRow);
+    // Re-read per call rather than held: a rotation replaces the source.
+    LogSource *src = m_document->source();
+    // The true byte range — the full text regardless of display cap (§5). `raw` is this
+    // call's own storage: a mapped source ignores it, the buffered one fills it
+    // (LogSource::bytes).
+    QByteArray raw;
+    QString text = src ? m_document->decoder().decode(src->bytes(rec.offset, rec.length, raw))
+                       : QString();
+    while (text.endsWith(QLatin1Char('\n')) || text.endsWith(QLatin1Char('\r')))
+        text.chop(1);
+    return text;
+}
+
+QString LogView::recordText(int viewRow) const
+{
+    return sourceRecordText(m_model->sourceRow(viewRow));
+}
+
+bool LogView::recordIsCut(int viewRow) const
+{
+    if (viewRow < 0 || viewRow >= recordCount())
+        return false;
+    const int msgCol = wrappedMessageColumn();
+    const bool wrapped = estimating() || selRecordForGeometry() == viewRow;
+    if (!wrapped)
+        return geom().records.at(viewRow).lineCount > RecordIndex::kDisplayLineCap;
+    if (msgCol < 0)
+        return false;
+    // Asked of the very layout the paint draws — the wrap mode, the width and the cap —
+    // so a record the paint marked is a record this answers for, and no other.
+    bool more = false;
+    layoutWrappedText(m_model->cellText(viewRow, msgCol), font(),
+                      messageWrapWidth(),
+                      /*wordWrap=*/!estimating(), RecordIndex::kDisplayLineCap, lineHeight(),
+                      [](QTextLayout &, const QVector<QTextLine> &, int) {}, &more);
+    // Text left over once kDisplayLineCap lines are placed is a record taller than the
+    // cap, which both height models give exactly the cap — so this needs no row count of
+    // its own, and asking one would mean asking the estimator about a block not yet
+    // measured.
+    return more;
 }
 
 int LogView::selRecordForGeometry() const
@@ -934,7 +1073,11 @@ void LogView::updateScrollBars()
     verticalScrollBar()->setPageStep(page);
     verticalScrollBar()->setSingleStep(1);
 
-    const int len = m_header->length();
+    // The header's length, or past it to the end of the widest unwrapped message line
+    // painted so far where the message is the last column (unwrappedMessageWidth()).
+    int len = m_header->length();
+    if (!estimating() && m_unwrappedContentWidth > 0 && messageIsLastVisibleColumn())
+        len = qMax(len, m_header->sectionPosition(messageColumn()) + m_unwrappedContentWidth);
     horizontalScrollBar()->setRange(0, qMax(0, len - viewport()->width()));
     horizontalScrollBar()->setPageStep(viewport()->width());
     horizontalScrollBar()->setSingleStep(qMax(1, fontMetrics().averageCharWidth() * 2));
@@ -1162,6 +1305,7 @@ void LogView::applyFontChange()
     // early, and nothing below is needed: the constructor does all of it anyway.
     if (!m_header || !m_selection)
         return;
+    m_unwrappedContentWidth = 0; // every line measures differently at the new face
 
     // Where the reader is, in RECORDS, captured before anything moves. Deliberately NOT
     // the filter-anchor bracket: that expresses the anchor in SOURCE ordinals because a
@@ -1432,10 +1576,14 @@ void LogView::paintEvent(QPaintEvent *event)
                     }
                     // Character wrapping (WrapAnywhere) so the painted height matches
                     // WrapMetrics' per-character greedy fill exactly (§7.1.1).
+                    bool more = false;
                     drawWrappedCell(p, QRect(x, y, availW, rowH), m_model->cellText(r, logical),
-                                    lh, /*wordWrap=*/false, mark);
+                                    lh, /*wordWrap=*/false, mark, &more);
                     if (clip)
                         p.restore();
+                    if (more && hLines >= RecordIndex::kDisplayLineCap)
+                        drawCutIndicator(p, QRect(x, y + rowH - lh, clip ? w : availW, lh),
+                                         band, fg, wrappedCutText());
                 } else {
                     drawElidedCell(p, QRect(x, y, w, lh), m_model->cellText(r, logical), mark);
                 }
@@ -1496,18 +1644,35 @@ void LogView::paintEvent(QPaintEvent *event)
                         p.save();
                         p.setClipRect(QRect(x, y, w, rowH));
                     }
+                    bool more = false;
                     drawWrappedCell(p, QRect(x, y, availW, rowH), msg, lh,
-                                    /*wordWrap=*/true, mark);
+                                    /*wordWrap=*/true, mark, &more);
                     if (clip)
                         p.restore();
+                    if (more && hLines >= RecordIndex::kDisplayLineCap)
+                        drawCutIndicator(p, QRect(x, y + rowH - lh, clip ? w : availW, lh),
+                                         band, fg, wrappedCutText());
                 } else {
-                    // Wrap off: each physical line of the record is a clipped line of
-                    // its own (invariant #2), so each elides on its own too — and each
-                    // is marked on its own, for the same reason.
+                    // Wrap off: each physical line of the record is a line of its own
+                    // (invariant #2), so each is sized, elided and marked on its own.
+                    //
+                    // A record past kDisplayLineCap gives up its LAST row to a sentence
+                    // saying how much is not shown (SPEC.md §5) — read off the record's
+                    // true lineCount, which the display cap does not touch.
                     const QList<QStringView> segs = QStringView(msg).split(QLatin1Char('\n'));
-                    for (int li = 0; li < segs.size() && li < hLines; ++li)
-                        drawElidedCell(p, QRect(x, y + li * lh, w, lh), segs.at(li).toString(),
-                                       mark);
+                    const int trueLines = int(idx.records.at(r).lineCount);
+                    const bool cut = trueLines > hLines;
+                    const int drawn = cut ? hLines - 1 : hLines;
+                    for (int li = 0; li < segs.size() && li < drawn; ++li) {
+                        const QString seg = segs.at(li).toString();
+                        const int lw = unwrappedMessageWidth(seg, w, msgLast);
+                        if (msgLast)
+                            noteUnwrappedWidth(lw);
+                        drawElidedCell(p, QRect(x, y + li * lh, lw, lh), seg, mark);
+                    }
+                    if (cut)
+                        drawCutIndicator(p, QRect(x, y + (hLines - 1) * lh, w, lh), band, fg,
+                                         unwrappedCutText(trueLines - drawn));
                 }
             } else {
                 drawElidedCell(p, QRect(x, y, w, lh), m_model->cellText(r, logical), mark);
@@ -2135,7 +2300,9 @@ QString LogView::truncatedCellText(const QPoint &pos) const
 
     if (text.isEmpty())
         return {};
-    const int w = m_header->sectionSize(logical);
+    int w = m_header->sectionSize(logical);
+    if (logical == messageColumn())
+        w = unwrappedMessageWidth(text, w, messageIsLastVisibleColumn());
     return fontMetrics().elidedText(text, Qt::ElideRight, w) == text ? QString() : text;
 }
 
@@ -2277,17 +2444,9 @@ void LogView::copySelectionRaw() const
         const int r = m_model->sourceRow(viewRow);
         if (r < 0 || r >= idx.records.size())
             return;
-        const Record &rec = idx.records.at(r);
-        // Re-read per record rather than hoisted: a rotation replaces the source, and
-        // the walk above can re-enter the event loop between two records.
-        LogSource *src = m_document->source();
-        // The true byte range — copy yields full text regardless of display cap (§5).
-        // `raw` is this iteration's own storage: a mapped source ignores it, the
-        // buffered one fills it (LogSource::bytes).
-        QByteArray raw;
-        QString text = src ? dec.decode(src->bytes(rec.offset, rec.length, raw)) : QString();
-        while (text.endsWith(QLatin1Char('\n')) || text.endsWith(QLatin1Char('\r')))
-            text.chop(1);
+        // Re-read per record (sourceRecordText() takes the source afresh): a rotation
+        // replaces it, and the walk above can re-enter the event loop between two records.
+        const QString text = sourceRecordText(r);
         if (!first)
             out += QLatin1Char('\n');
         first = false;
@@ -2782,6 +2941,8 @@ void LogView::seedColumnWidths()
 
 void LogView::applyFormatChange()
 {
+    m_unwrappedContentWidth = 0; // new columns, new message text
+
     // Widths first, chrome second, exactly as applyFontChange() orders them: the seed is
     // what gives the header sections a size worth reserving a band for.
     seedColumnWidths();
@@ -3048,6 +3209,7 @@ void LogView::handleModelReset()
     m_current = -1;
     m_anchor = -1;
     m_selWrapCache = -1;
+    m_unwrappedContentWidth = 0; // measured over records that are no longer these
     // The index the estimator was bound to is gone; drop the cache so it rebinds
     // (with fresh measurements) on the next AlwaysOn geometry query.
     m_estimated.clear();

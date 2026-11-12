@@ -38,6 +38,7 @@
 #include "FormatPreview.h"
 #include "HighlighterPane.h"
 #include "IndexController.h"
+#include "RecordViewDialog.h"
 #include "LiveController.h"
 #include "LogFormat.h"
 #include "LogModel.h"
@@ -5752,12 +5753,36 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
 
     // The clipboard actions live here too — a record menu is where people look for
     // them, and these are the window's own, so the shortcuts stay visible beside them.
+    if (filterSection || highlightSection)
+        menu->addSeparator();
     if (m_copyAction && m_copyColumnsAction) {
-        if (filterSection || highlightSection)
-            menu->addSeparator();
         menu->addAction(m_copyAction);
         menu->addAction(m_copyColumnsAction);
     }
+    // The whole of the CLICKED record in a window of its own (SPEC.md §5): offered for
+    // every record, not only one the table cut short, because a line too long for its
+    // column is the commoner case and the table has no other way to show it at once.
+    // The view and the row are taken now; the action fires after the menu has closed.
+    const QPointer<DocumentView> target(view);
+    add(tr("Show &Whole Record…"), "recordShowWhole", [this, target, viewRow] {
+        if (target)
+            showWholeRecord(target, viewRow);
+    });
+}
+
+void MainWindow::showWholeRecord(DocumentView *view, int viewRow)
+{
+    if (!view || !view->context() || !view->context()->doc)
+        return;
+    LogView *log = view->logView();
+    if (viewRow < 0 || viewRow >= log->header()->model()->rowCount())
+        return;
+    const QString text = log->recordText(viewRow);
+    auto *dlg = new RecordViewDialog(
+        tr("Record %1 — %2").arg(viewRow + 1)
+            .arg(logSourceDisplayName(view->context()->doc->path())),
+        text, log->font(), this);
+    dlg->show();
 }
 
 void MainWindow::showRecordMenu(DocumentView *view, int viewRow, int column,
@@ -5802,6 +5827,15 @@ void MainWindow::activateRecordColumn(DocumentView *view, int viewRow, int colum
     switch (fields.at(column).role) {
     case FieldRole::Logger: wanted = "recordShowOnlySubsystem"; break;
     case FieldRole::Thread: wanted = "recordShowOnlyThread"; break;
+    case FieldRole::Message:
+        // The "double-click to show it whole" a cut record's last line offers (SPEC.md
+        // §5) — and ONLY for such a record. On a record the table shows in full the
+        // message cell answers nothing, as it always has: a window appearing under a
+        // double-click aimed at nothing in particular is a window nobody asked for.
+        if (!view->logView()->recordIsCut(viewRow))
+            return;
+        wanted = "recordShowWhole";
+        break;
     default: return;
     }
     triggerRecordMenuItem(view, viewRow, column, wanted);
