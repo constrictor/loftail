@@ -52,6 +52,8 @@ add_library(loftail_ui STATIC
     # nothing of core's and is testable with no log anywhere.
     CopyHighlightersDialog.cpp
     CopyHighlightersDialog.h
+    RecordViewDialog.cpp
+    RecordViewDialog.h
     MainWindow.cpp
     MainWindow.h
     # Per-file machinery (model, controllers, format choice) and one view onto it

@@ -42,6 +42,7 @@
 #include "LogFormat.h"
 #include "LogView.h"
 #include "MainWindow.h"
+#include "RecordViewDialog.h"
 
 using namespace loftail;
 
@@ -298,6 +299,11 @@ private slots:
     void doubleClickingAnyOtherColumnDoesNothingAtAll();
     void doubleClickingACellTheRecordCannotAnswerForDoesNothing();
     void doubleClickingTheSameCellAgainLeavesTheFilterWhereItIs();
+
+    // A record the table cut short (SPEC.md §5): the menu offers every record whole, and
+    // a double-click on the message of one past the display cap opens it — and only there.
+    void showWholeRecordIsOfferedForEveryRecordAndOpensItWhole();
+    void doubleClickingTheMessageOfACutRecordShowsItWhole();
 
     // The two filter chords (SPEC.md §5): Ctrl+Alt+click is *Show Only*, Alt+click is
     // *Hide*. Driven with real mouse events at the viewport for the reason the
@@ -744,6 +750,9 @@ void TestRecordMenu::doubleClickingAnyOtherColumnDoesNothingAtAll()
                  "a double-click outside the two value columns filtered something");
         QTRY_COMPARE(visibleRecords(w), 4);
     }
+    // Nor does a message the table shows in full open a window of its own: that is for a
+    // record cut short (doubleClickingTheMessageOfACutRecordShowsItWhole).
+    QVERIFY(w.findChildren<RecordViewDialog *>().isEmpty());
 }
 
 // Nothing that cannot be answered: an unparsed plain-text line has no subsystem, so
@@ -1005,6 +1014,68 @@ int main(int argc, char *argv[])
 
     TestRecordMenu tc;
     return QTest::qExec(&tc, argc, argv);
+}
+
+void TestRecordMenu::showWholeRecordIsOfferedForEveryRecordAndOpensItWhole()
+{
+    MainWindow w;
+    openShown(w, m_log);
+
+    // Even the unparsed line, which offers nothing to filter by: a record is a thing to
+    // read before it is a set of fields.
+    for (int row : {int(kPlain), int(kMain)}) {
+        QMenu menu;
+        w.buildRecordMenu(&menu, activeView(w), row, -1);
+        QAction *show = nullptr;
+        for (QAction *a : menu.actions())
+            if (a->objectName() == QLatin1String("recordShowWhole"))
+                show = a;
+        QVERIFY2(show, "Show Whole Record is not on the menu");
+        show->trigger();
+    }
+    const QList<RecordViewDialog *> open = w.findChildren<RecordViewDialog *>();
+    QCOMPARE(open.size(), 2);
+    QStringList texts;
+    for (RecordViewDialog *d : open)
+        texts << d->text();
+    QVERIFY(texts.contains(QStringLiteral("a plain line no pattern will ever match")));
+    QVERIFY(texts.contains(QStringLiteral("2026-07-21 10:00:00,000 [main] INFO  net.io - one")));
+    for (RecordViewDialog *d : open)
+        d->close();
+}
+
+void TestRecordMenu::doubleClickingTheMessageOfACutRecordShowsItWhole()
+{
+    const QString path = m_dir.filePath(QStringLiteral("tall.log"));
+    {
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("2026-07-21 10:00:00,000 [main] INFO  net.io - first\n");
+        for (int k = 1; k < 150; ++k)
+            f.write(QStringLiteral("  at frame %1\n").arg(k).toUtf8());
+        f.write("2026-07-21 10:00:01,000 [main] INFO  net.io - after\n");
+    }
+
+    MainWindow w;
+    openShown(w, path);
+    QVERIFY(activeView(w)->logView()->recordIsCut(0));
+    QVERIFY(!activeView(w)->logView()->recordIsCut(1));
+    // A log opens at its end, and the cut record is 100 rows tall: its first line is the
+    // one cellCentre() aims at, so put it at the top.
+    activeView(w)->logView()->verticalScrollBar()->setValue(0);
+
+    doubleClickCell(w, 0, FieldRole::Message);
+    QTRY_COMPARE(w.findChildren<RecordViewDialog *>().size(), 1);
+    const QString whole = w.findChildren<RecordViewDialog *>().first()->text();
+    QCOMPARE(whole.count(QLatin1Char('\n')), 149);
+    QVERIFY(whole.endsWith(QStringLiteral("at frame 149")));
+    QVERIFY(!activeView(w)->context()->doc->filters().anyActive());
+
+    // Off the message the gesture keeps its old meaning — none, on a Time cell. The
+    // double-click above made the tall record current, which scrolls it; aim again.
+    activeView(w)->logView()->verticalScrollBar()->setValue(0);
+    doubleClickCell(w, 0, FieldRole::Date);
+    QCOMPARE(w.findChildren<RecordViewDialog *>().size(), 1);
 }
 
 #include "tst_recordmenu.moc"

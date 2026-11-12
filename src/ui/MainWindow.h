@@ -144,6 +144,11 @@ public:
     // are there.
     void buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, int column);
 
+    // The clicked record, whole, in a non-modal window of its own (RecordViewDialog,
+    // SPEC.md §5). The record menu's Show Whole Record, and a double-click on the message
+    // of a record the table cut short.
+    void showWholeRecord(DocumentView *view, int viewRow);
+
     // File ▸ Restart App (Ctrl+R). Runs the active log's restart script and shows what it
     // did (SPEC.md §4); with none configured, explains and offers Preferences.
     //
