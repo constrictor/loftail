@@ -839,6 +839,7 @@ private:
     QAction *m_newViewAction = nullptr; // Window ▸ New View (a second view on one file)
     QAction *m_copyAction = nullptr;
     QAction *m_copyColumnsAction = nullptr;
+    QAction *m_copyMessageAction = nullptr;
     QAction *m_selectAllAction = nullptr; // Edit ▸ Select All (every record IN VIEW)
     // Edit ▸ Find / Find Next / Find Previous. All three act on the active view's own
     // Find bar, so all three follow the active tab exactly as the copy actions above do.

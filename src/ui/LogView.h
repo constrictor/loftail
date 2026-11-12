@@ -247,6 +247,12 @@ public:
     // clipboard exactly as it was, because the clipboard is written once at the end.
     void copySelectionRaw() const;
     void copySelectionAsColumns() const;
+    // The MESSAGE of each selected record and nothing else — every continuation line of
+    // it, exactly as the Message column holds it, one record after another separated by
+    // a newline. Bounded exactly as the two above. A format with no %m has no message
+    // field, so each record contributes its whole text, as the Message column shows an
+    // unparsed line's.
+    void copySelectionMessages() const;
 
     // One record's whole text exactly as Copy gives it — every line, whatever the display
     // cap or the column width cut off (SPEC.md §5). Read through the source on demand and

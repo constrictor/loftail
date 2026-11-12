@@ -769,6 +769,13 @@ void MainWindow::buildMenus()
         if (LogView *v = activeLogView())
             v->copySelectionAsColumns();
     });
+    m_copyMessageAction = editMenu->addAction(tr("Copy &Message Only"));
+    m_copyMessageAction->setObjectName(QStringLiteral("copyMessageAction")); // findChild, for tests
+    m_copyMessageAction->setEnabled(false);
+    connect(m_copyMessageAction, &QAction::triggered, this, [this]() {
+        if (LogView *v = activeLogView())
+            v->copySelectionMessages();
+    });
 
     // Select All (SPEC.md §5). It acts on the ACTIVE log view — the same activeLogView()
     // the copy actions above resolve, so what is copied afterwards is what was selected,
@@ -2103,6 +2110,8 @@ void MainWindow::updateActionStates()
         m_copyAction->setEnabled(onLog);
     if (m_copyColumnsAction)
         m_copyColumnsAction->setEnabled(onLog);
+    if (m_copyMessageAction)
+        m_copyMessageAction->setEnabled(onLog);
     if (m_selectAllAction)
         m_selectAllAction->setEnabled(onLog);
     if (m_exportVisibleAction)
@@ -5591,6 +5600,20 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
     const bool hasPriority = prio != Priority::Unknown;
     const bool hasTime = fmt.dateGroup > 0 && rec.timestamp != Record::kNoTimestamp;
 
+    // The message's FIRST line, read through the very function the message-text axis
+    // matches against (Document::messageText), so a rule built from it is guaranteed
+    // to match the record it was made from. The first line only: the axis is a
+    // substring match over the whole message, so it still matches a multi-line record,
+    // and a stack trace's twenty lines are not a pattern anybody would edit. An
+    // unparsed line has no %m, and messageText() answers its whole text, which the
+    // axis searches too — so it is offered there as well.
+    QString message = doc->messageText(rec);
+    if (const qsizetype nl = message.indexOf(QLatin1Char('\n')); nl >= 0)
+        message.truncate(nl);
+    while (!message.isEmpty() && message.back().isSpace())
+        message.chop(1);
+    const bool hasMessage = !message.isEmpty();
+
     // A multi-record selection contributes exactly one item: the two bounds it
     // already names. Everything else reads the record that was clicked, because the
     // union of five records' subsystems is not a gesture anyone means.
@@ -5613,8 +5636,9 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
     // Which axis the clicked column names leads the menu. The CONTENTS do not depend
     // on the column: a menu whose items move is learnable, one whose items appear and
     // disappear with the column is not.
-    enum class Axis { Subsystem, Thread, Priority, Time };
-    QVector<Axis> order{Axis::Subsystem, Axis::Thread, Axis::Priority, Axis::Time};
+    enum class Axis { Subsystem, Thread, Priority, Time, Message };
+    QVector<Axis> order{Axis::Subsystem, Axis::Thread, Axis::Priority, Axis::Time,
+                        Axis::Message};
     if (column >= 0 && column < fmt.fields.size()) {
         std::optional<Axis> clicked;
         switch (fmt.fields.at(column).role) {
@@ -5622,6 +5646,7 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
         case FieldRole::Thread:   clicked = Axis::Thread; break;
         case FieldRole::Priority: clicked = Axis::Priority; break;
         case FieldRole::Date:     clicked = Axis::Time; break;
+        case FieldRole::Message:  clicked = Axis::Message; break;
         default: break;
         }
         if (clicked) {
@@ -5700,6 +5725,8 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
                     [this, selLo, selHi] { m_filterPane->setTimeRange(selLo, selHi); });
             }
             break;
+        case Axis::Message:
+            break; // highlight only; the Filters pane's message axis is a typed search
         }
     }
 
@@ -5748,6 +5775,17 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
         }
         case Axis::Time:
             break; // one record names one instant, and a rule needs two bounds
+        case Axis::Message: {
+            if (!hasMessage)
+                break;
+            // Plain text, case-sensitive: the literal line, nothing to escape, and
+            // editable in the pane like any typed text rule.
+            MatchCriteria c;
+            c.text.enabled = true;
+            c.text.matcher.set(message, false, Qt::CaseSensitive);
+            highlight(tr("Highlight This Message"), "recordHighlightMessage", c);
+            break;
+        }
         }
     }
 
@@ -5755,9 +5793,10 @@ void MainWindow::buildRecordMenu(QMenu *menu, DocumentView *view, int viewRow, i
     // them, and these are the window's own, so the shortcuts stay visible beside them.
     if (filterSection || highlightSection)
         menu->addSeparator();
-    if (m_copyAction && m_copyColumnsAction) {
+    if (m_copyAction && m_copyColumnsAction && m_copyMessageAction) {
         menu->addAction(m_copyAction);
         menu->addAction(m_copyColumnsAction);
+        menu->addAction(m_copyMessageAction);
     }
     // The whole of the CLICKED record in a window of its own (SPEC.md §5): offered for
     // every record, not only one the table cut short, because a line too long for its
