@@ -53,8 +53,9 @@ struct DiscoveredDevice;
 // rather than as an address, MainWindow::openRemoteBookmark()'s contract, so its poll cadence,
 // tail-start and compression apply.
 //
-// Activation is itemActivated, never itemDoubleClicked — one signal is both the double-click and
-// Return, the welcome page's rule — and every control has an object name.
+// A click SELECTS a row and a double-click or Return OPENS it. Never itemActivated: a style may
+// emit that on a single click (Breeze under Plasma's default), which closed the dialog on the click
+// meant to choose a row. Return is taken by hand in eventFilter(). Every control has an object name.
 class RemoteBrowserDialog : public QDialog
 {
     Q_OBJECT
@@ -89,6 +90,7 @@ private:
     void connectDirectly();
     void openParameters();
     void accept() override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
     QTreeWidgetItem *groupFor(const QString &typeName) const;
     QTreeWidgetItem *selectedRow() const;

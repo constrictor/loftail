@@ -29,6 +29,7 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -138,8 +139,14 @@ RemoteBrowserDialog::RemoteBrowserDialog(HostBookmarkStore *store, QWidget *pare
     connect(m_parameters, &QPushButton::clicked, this, &RemoteBrowserDialog::openParameters);
     connect(m_tree, &QTreeWidget::itemSelectionChanged, this,
             &RemoteBrowserDialog::onSelectionChanged);
-    connect(m_tree, &QTreeWidget::itemActivated, this,
+    // A DOUBLE-CLICK OPENS, A CLICK ONLY SELECTS — and never itemActivated, which a style may
+    // emit on a single click (SH_ItemView_ActivateItemOnSingleClick: Breeze under Plasma's
+    // default single-click setting). Clicking a device is how its log gets offered in the box
+    // below, so a click that opened it would close the dialog before that box could be read.
+    // Return is taken by hand in eventFilter(), WelcomeView's rule.
+    connect(m_tree, &QTreeWidget::itemDoubleClicked, this,
             [this](QTreeWidgetItem *item, int) { onActivated(item); });
+    m_tree->installEventFilter(this);
     connect(m_log, &QComboBox::editTextChanged, this, &RemoteBrowserDialog::updateActions);
     connect(m_direct, &QLineEdit::textChanged, this, &RemoteBrowserDialog::updateActions);
     connect(m_direct, &QLineEdit::returnPressed, this, &RemoteBrowserDialog::connectDirectly);
@@ -377,6 +384,24 @@ void RemoteBrowserDialog::onActivated(QTreeWidgetItem *item)
         return;
     }
     accept();
+}
+
+bool RemoteBrowserDialog::eventFilter(QObject *watched, QEvent *event)
+{
+    // Return and Enter on the list open the selected row: see the comment over the
+    // itemDoubleClicked connection. Only the PRESS is taken — a key's release starts nothing
+    // in an item view — and only over a selected row, so Return elsewhere still reaches the
+    // dialog's default button.
+    if (watched == m_tree && event->type() == QEvent::KeyPress) {
+        const int key = static_cast<QKeyEvent *>(event)->key();
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            if (QTreeWidgetItem *item = m_tree->currentItem(); item && item->isSelected()) {
+                onActivated(item);
+                return true;
+            }
+        }
+    }
+    return QDialog::eventFilter(watched, event);
 }
 
 void RemoteBrowserDialog::applyFilter()

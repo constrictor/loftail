@@ -71,6 +71,7 @@ wall-clock check in the tree is `bench_index --selftest`, which is labelled
 | Every field in a fixture is set away from its default, or a dropped key reads as a default | Schema versions (L253) | tst_schema::theV1PoolStillReadsAsItsAuthorMeantIt |
 | Every key a fixture carries gets its own assertion, never a comparison against an assembled struct | Schema versions (L253) | tst_schema::theV1HostsFileStillReadsAsItsAuthorMeantIt |
 | Activation is `itemActivated`, never `itemDoubleClicked`, or the list is unreachable from a keyboard | Welcome screen (L11) | tst_welcome::returnOnASelectedRowOpensItToo |
+| Open Remote opens a row on a double-click or Return and never on `itemActivated`, which a style may emit on a single click | Discovery (M28) | tst_remotebrowser::aSingleClickSelectsAndDoesNotOpenEvenWhereTheStyleActivatesOnOneClick<br>tst_remotebrowser::discoveredDevicesAppearUnderTheirTypeAndOpenByReference |
 | The content column is centred by a stretch either side and carries a stretch of its own | Welcome layout (L11) | tst_welcome::theContentIsCentredRatherThanFillingTheWindow |
 | A stretch at each end of the column, so the slack is a fifth of the viewport rather than merely non-zero | Welcome layout (L11) | tst_welcome::theContentIsCentredRatherThanFillingTheWindow |
 | That case derives its window height from the content it just measured rather than writing 900 down | Welcome layout (L11) | tst_welcome::theContentIsCentredRatherThanFillingTheWindow |
