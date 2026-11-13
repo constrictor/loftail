@@ -19,7 +19,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(loftail
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "A desktop GUI viewer for log4cplus logs"
     LANGUAGES CXX)
 
