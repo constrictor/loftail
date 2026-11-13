@@ -187,6 +187,24 @@ jobs:
           [ "$zips" -eq 1 ] || { echo "::error::expected 1 Windows zip, found $zips"; exit 1; }
           [ "$debs" -ge 1 ] || { echo "::error::expected at least one .deb, found none"; exit 1; }
 
+      # linuxdeploy deliberately leaves the system graphics, X and font libraries out of
+      # the AppImage (its excludelist: libEGL, libGLX, libOpenGL, libX11, libxcb,
+      # libfontconfig, libfreetype, libharfbuzz, …) because every desktop has them and
+      # a bundled copy would fight the host's drivers. A bare runner does NOT have them
+      # all — the build job gets them through libgl1-mesa-dev, this one installed
+      # nothing, and the AppImage failed to start on libEGL.so.1. So install what a
+      # user's machine already has, which is the environment the check is meant to
+      # stand for. The list is every library the build's own linuxdeploy log reports
+      # as "Skipping deployment of blacklisted library", by package.
+      - name: Install the host libraries an AppImage expects of a desktop
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libglx0 libglvnd0 libopengl0 \
+            libx11-6 libx11-xcb1 libxcb1 libice6 libsm6 \
+            libfontconfig1 libfreetype6 libharfbuzz0b libexpat1 \
+            libgmp10 libgpg-error0 libcom-err2 libuuid1 zlib1g
+
       - name: Check the artifacts say which run and which release they are
         env:
           # As the AppImage smoke test in packaging.yml: the runner is headless and the
