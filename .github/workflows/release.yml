@@ -68,6 +68,11 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
+      # There is no checkout (below), and `gh run download` and `gh release create`
+      # find their repository from the git remote of the working directory unless told:
+      # without this both fail with "not a git repository". `gh api` is unaffected only
+      # because every call spells the repository out in its path.
+      GH_REPO: ${{ github.repository }}
       RUN_ID: ${{ inputs.run_id }}
       TAG: ${{ inputs.tag }}
     steps:
@@ -131,7 +136,14 @@ jobs:
           # Provenance is the API's guarantee, not a check of ours: these are by
           # definition the files run $RUN_ID uploaded. What is verified below is that
           # they are all here and that they know which run they came from.
-          gh run download "$RUN_ID" -D artifacts
+          #
+          # Only the packages, by name. The run also uploads CI reports beside them — the
+          # coverage HTML, the clang-tidy log and the live-test logs — and everything
+          # downloaded here is attached to the release below, so without the pattern a
+          # release would carry hundreds of report files, several of them `index.html`,
+          # which GitHub refuses as duplicate asset names AFTER the tag has been made.
+          # Every package is named loftail-* or loftail_* and no report is.
+          gh run download "$RUN_ID" -D artifacts -p 'loftail*'
           find artifacts -type f | sort
 
       - name: Check the release is complete
