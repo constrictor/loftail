@@ -68,10 +68,10 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
-      # There is no checkout (below), and `gh run download` and `gh release create`
-      # find their repository from the git remote of the working directory unless told:
-      # without this both fail with "not a git repository". `gh api` is unaffected only
-      # because every call spells the repository out in its path.
+      # There is no checkout (below), and `gh release create` finds its repository from
+      # the git remote of the working directory unless told: without this it fails with
+      # "not a git repository". `gh api` is unaffected only because every call spells
+      # the repository out in its path.
       GH_REPO: ${{ github.repository }}
       RUN_ID: ${{ inputs.run_id }}
       TAG: ${{ inputs.tag }}
@@ -143,8 +143,34 @@ jobs:
           # release would carry hundreds of report files, several of them `index.html`,
           # which GitHub refuses as duplicate asset names AFTER the tag has been made.
           # Every package is named loftail-* or loftail_* and no report is.
-          gh run download "$RUN_ID" -D artifacts -p 'loftail*'
-          find artifacts -type f | sort
+          #
+          # Fetched through the API one artifact at a time, NOT with `gh run download`:
+          # packaging.yml uploads each package with `archive: false`, so the artifact IS
+          # the file rather than a zip holding it, and `gh run download` unzips whatever
+          # it fetches and fails on the AppImage with "not a valid zip file". The
+          # endpoint below answers with the stored bytes either way, and for an
+          # `archive: false` upload the artifact's name is the file's own name.
+          mkdir -p artifacts
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name | startswith("loftail")) | "\(.id) \(.name)"' \
+            > packages.txt
+          cat packages.txt
+          while read -r id name; do
+            # </dev/null: the loop's own stdin is packages.txt, which nothing in it may read.
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" </dev/null > "artifacts/$name"
+            # A package uploaded WITHOUT archive: false would arrive here as a zip
+            # wrapping it, under its own name. None of the package formats but the
+            # Windows .zip starts with a zip's "PK" signature, so that is caught here
+            # rather than shipped as a .deb or .dmg that will not open.
+            case "$name" in
+              *.zip) ;;
+              *) if [ "$(head -c 2 "artifacts/$name" | tr -d '\0')" = "PK" ]; then
+                   echo "::error::$name arrived as a zip archive; upload it with archive: false"
+                   exit 1
+                 fi ;;
+            esac
+          done < packages.txt
+          ls -l artifacts
 
       - name: Check the release is complete
         run: |
